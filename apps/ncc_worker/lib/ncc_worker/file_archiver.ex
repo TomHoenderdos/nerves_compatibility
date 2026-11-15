@@ -7,6 +7,8 @@ defmodule NccWorker.FileArchiver do
   it will only be stored once.
   """
 
+  alias NccWorker.OptionalDepsTargets
+
   require Logger
 
   @doc """
@@ -107,9 +109,43 @@ defmodule NccWorker.FileArchiver do
       dependency_files =
         dependency_files(system_result, index)
 
-      all_files = package_files ++ dependency_files
+      all_files =
+        package_files ++
+          variant_files(system_result, build_path, package_name) ++ dependency_files
+
       Logger.debug("Found #{length(all_files)} files to archive for #{system_name}")
       all_files
+    end
+  end
+
+  # The other builds a target publishes beside its own
+  # (`NccWorker.OptionalDepsTargets`): each from its own directory under
+  # `_build/<target>/lib`, and never from the release, whose BEAMs are
+  # stripped, nor from the package's own directory, which holds the other
+  # build. A file not in that directory, or whose bytes no longer hash to what
+  # the variant records, is not archived, and the portal then leaves the
+  # variant out: `NccWorker.OptionalDepsTargets` checked them once, and this
+  # checks the bytes actually copied.
+  defp variant_files(_system_result, _build_path, nil), do: []
+
+  defp variant_files(system_result, build_path, package_name) do
+    system_result
+    |> field(:published_variants)
+    |> List.wrap()
+    |> Enum.flat_map(&variant_entries(&1, build_path, package_name))
+  end
+
+  defp variant_entries(variant, build_path, package_name) do
+    if field(variant, :variant) == "without" do
+      app_dir = Path.join([build_path, "lib", OptionalDepsTargets.variant_dir(package_name)])
+      index = app_dir |> walk_files() |> Map.new(&{Path.relative_to(&1, app_dir), &1})
+
+      variant
+      |> field(:beam_scan)
+      |> collect_manifest_entries(index, "package")
+      |> Enum.filter(fn {source, entry} -> file_sha256(source) == field(entry, :sha256) end)
+    else
+      []
     end
   end
 
@@ -325,6 +361,15 @@ defmodule NccWorker.FileArchiver do
       File.dir?(path) -> walk_files(path)
       File.regular?(path) -> [path]
       true -> []
+    end
+  end
+
+  # Read-only hashing of a file found under the worker's own build tree.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp file_sha256(path) do
+    case File.read(path) do
+      {:ok, bytes} -> :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+      {:error, _} -> nil
     end
   end
 

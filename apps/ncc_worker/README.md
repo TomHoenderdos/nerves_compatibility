@@ -79,8 +79,20 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    root `mix.lock`), then `mix compile` (no `mix firmware`) concurrently, bounded by the per-system timeout. A
    target whose compile passes gets its `beam_scan` and `compile_env` rescanned and keeps the new build, with its
    own per-system `deps_lock` (shaped like the run's) and `optional_deps: {"added": [...], "dropped": [],
-   "reason": null}`; one that fails anywhere in this gets back exactly its first build, byte for byte, no
-   per-system `deps_lock`, and `optional_deps: {"added": [], "dropped": [...], "reason": "<reason>"}`. `mix.exs`
+   "reason": null}`, and publishes its first build beside it: the moved-aside build is renamed to
+   `_build/<target>/lib/.<package>.without` and every file its firmware-time beam scan listed is checked again
+   (a plain file, same size, sha256 and mode). When they all match, the system gets
+   `published_variants: [{"variant": "without", "beam_scan": {"footprint": {"file_manifest": ...}},
+   "compile_env": [...], "deps_lock": {...}}]`, the first build's own file manifest and `compile_env` under the
+   run's `deps_lock`, and `NccWorker.FileArchiver` archives those files from that directory, hashing each one
+   again as it copies it. When they do not, or the first build has no file manifest, no `compile_env` or no
+   readable run lock, the first build is deleted, the target's log says why (`files_changed`,
+   `no_file_manifest`, `compile_env_unreadable`, `deps_lock_unreadable`, `rename_failed`,
+   `stale_variant_not_removed`), and the target publishes the new build alone, as before. The system's own keys
+   always describe the build with the optional dependencies, so a reader that ignores `published_variants` sees
+   what it always did. A target that fails anywhere in this gets back exactly its first build, byte for byte, no
+   per-system `deps_lock`, no `published_variants`, and `optional_deps: {"added": [], "dropped": [...], "reason":
+   "<reason>"}`. `mix.exs`
    and `mix.lock` are always restored from the snapshot afterwards, so nothing later (argus, the footprint scan,
    the run-level `deps_lock`) sees the optional dependencies. Nothing in this pass changes a status, a firmware
    image, `firmware_size_bytes`, `log_tail`, `error`, `dependency_scans` or `cache_candidates` of any system, and
@@ -133,7 +145,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    and each system result's `compile_env` (the `.app` file's compile-time config reads, values as base64url deterministic terms).
    For a firmware run, the run-level `deps_lock` and `package_checksum` are the status build's, read before the
    per-target optional pass in step 4; a system that pass kept its optional dependencies for carries its own
-   `deps_lock` instead (same shape), which the precompiled API prefers over the run's for that system's entries.
+   `deps_lock` instead (same shape), which the precompiled API prefers over the run's for that system's entries;
+   its `published_variants` entry, the first build, carries the run's `deps_lock` and is a second format-2 build
+   of that system.
    - `declared` — the package's declared dependencies from its own lock entry,
      `[{"app", "name", "requirement", "optional"}]` sorted by app, optional ones
      included whether or not the build resolved them. Absent when the lock could

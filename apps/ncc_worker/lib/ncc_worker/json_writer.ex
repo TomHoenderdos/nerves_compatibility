@@ -131,12 +131,15 @@ defmodule NccWorker.JsonWriter do
   # `toolchain`, `otp_full` and `system_libs` only on a passing
   # firmware target whose release they could be read for
   # (`NccWorker.SystemAbi`), `system_libs` only for a release the portal
-  # did not already know.
+  # did not already know. `published_variants` only on a target that kept
+  # the optional dependencies and also publishes its first build
+  # (`NccWorker.OptionalDepsTargets`).
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
     [
       :deps_lock,
       :optional_deps,
+      :published_variants,
       :compile_env_rule,
       :compile_inputs,
       :toolchain,

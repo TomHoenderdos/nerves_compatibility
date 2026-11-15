@@ -1448,13 +1448,14 @@ defmodule Portal.Catalog.Ingestion do
          phase_timings, hex_version_tested, beam_scan, compile_env, compile_inputs,
          dependency_scans, log_path, log_tail, failure_category, carried_from_run_id, deps_lock,
          unpublished_at, compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
-         toolchain_pkg, toolchain_version, otp_full, inserted_at, updated_at)
+         toolchain_pkg, toolchain_version, otp_full, published_variants, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.compile_inputs, s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
              s.unpublished_reason, s.native, s.portable, s.elf_needs, s.toolchain_pkg,
-             s.toolchain_version, s.otp_full, now() AT TIME ZONE 'utc', now() AT TIME ZONE 'utc'
+             s.toolchain_version, s.otp_full, s.published_variants, now() AT TIME ZONE 'utc',
+             now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
         ON m.old_id = s.id
@@ -1522,6 +1523,7 @@ defmodule Portal.Catalog.Ingestion do
     held_at = if system_pkg == "pure_elixir", do: hold
     {inputs, compiled_env} = inputs_and_env(sys, {package_name, version})
     {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
+    variants = published_variants(system_pkg, sys, {package_name, version})
 
     result =
       SystemResult
@@ -1548,7 +1550,8 @@ defmodule Portal.Catalog.Ingestion do
         unpublished_reason: if(held_at, do: SystemResult.rule2_revocation()),
         toolchain_pkg: toolchain_pkg,
         toolchain_version: toolchain_version,
-        otp_full: fact_string(sys["otp_full"])
+        otp_full: fact_string(sys["otp_full"]),
+        published_variants: variants
       })
       |> Ash.create(domain: @domain)
 
@@ -1557,7 +1560,7 @@ defmodule Portal.Catalog.Ingestion do
         staged_blobs = Map.get(staged, system_pkg, [])
 
         :ok = upsert_artifacts(staged_blobs)
-        :ok = upsert_memberships(system_result.id, sys, staged_blobs)
+        :ok = upsert_memberships(system_result.id, sys, variants, staged_blobs)
 
         :ok = maybe_store_log(system_result, system_pkg, Map.get(logs, system_pkg))
 
@@ -1598,6 +1601,59 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp drop_file_manifests(other), do: other
+
+  # The other builds a passing firmware target publishes beside its own
+  # (`NccWorker.OptionalDepsTargets`, result.json `published_variants`).
+  # Today only "without": the target's first build, made without the
+  # package's optional deps, under the run's lock. Each is kept whole or not
+  # at all, like `deps_lock/1` and `compile_env/2`: a variant whose lock or
+  # compile_env is malformed could not be matched safely, so it is dropped
+  # and the target publishes its own build alone, as before variants
+  # existed. Only the file manifest of its beam scan is stored. A result
+  # without the key (every worker before it) stores nil.
+  @variants ["without"]
+
+  defp published_variants(
+         system_pkg,
+         %{"status" => "pass", "published_variants" => list},
+         context
+       )
+       when system_pkg not in ["host", "pure_elixir"] and is_list(list) do
+    list
+    |> Enum.flat_map(&published_variant(&1, context))
+    |> Enum.uniq_by(& &1["variant"])
+    |> case do
+      [] -> nil
+      variants -> variants
+    end
+  end
+
+  defp published_variants(_system_pkg, _sys, _context), do: nil
+
+  defp published_variant(
+         %{
+           "variant" => variant,
+           "beam_scan" => %{"footprint" => %{"file_manifest" => %{} = manifest}}
+         } = raw,
+         context
+       )
+       when variant in @variants do
+    with %{} = lock <- deps_lock(raw["deps_lock"]),
+         env when is_list(env) <- compile_env(raw["compile_env"], context) do
+      [
+        %{
+          "variant" => variant,
+          "file_manifest" => Map.take(manifest, ["ebin", "priv"]),
+          "compile_env" => env,
+          "deps_lock" => lock
+        }
+      ]
+    else
+      _ -> []
+    end
+  end
+
+  defp published_variant(_raw, _context), do: []
 
   # `Portal.Catalog.BuildTimeout` keeps the log of the one target the wall
   # clock cut off: the others it reached finished their builds, and their
@@ -1796,11 +1852,17 @@ defmodule Portal.Catalog.Ingestion do
   # Intersected with what was actually staged, so a membership can never point
   # at a blob the store does not hold, and de-duplicated because a single
   # INSERT cannot touch the same conflict target twice.
-  defp upsert_memberships(system_result_id, sys, staged) do
+  #
+  # A published variant's files (`published_variants/3`) are the row's too:
+  # one set of memberships per target, the union of its builds, so the blob
+  # endpoint serves a variant's files under exactly the row's gate, and a
+  # blob both builds share is one membership.
+  defp upsert_memberships(system_result_id, sys, variants, staged) do
     stored = MapSet.new(staged, & &1.sha256)
 
     sys["beam_scan"]
     |> shas_from_scan()
+    |> Kernel.++(Enum.flat_map(variants || [], &shas_from_manifest(&1["file_manifest"])))
     |> Enum.uniq()
     |> Enum.filter(&MapSet.member?(stored, &1))
     |> Enum.sort()
@@ -1887,13 +1949,21 @@ defmodule Portal.Catalog.Ingestion do
     package_scan = sys["beam_scan"]
     dep_scans = sys["dependency_scans"] || %{}
 
+    # As the worker wrote them: `published_variants/3` decides later which
+    # are kept, and a staged blob nothing claims is only a registry entry.
+    variant_scans =
+      case sys["published_variants"] do
+        list when is_list(list) -> Enum.map(list, &(is_map(&1) && &1["beam_scan"]))
+        _ -> []
+      end
+
     dep_scan_list =
       case dep_scans do
         m when is_map(m) -> Map.values(m)
         _ -> []
       end
 
-    [package_scan | dep_scan_list]
+    [package_scan | dep_scan_list ++ variant_scans]
     |> Enum.reject(&is_nil/1)
     |> Enum.flat_map(&shas_from_scan/1)
     |> Enum.uniq()

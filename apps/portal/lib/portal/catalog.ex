@@ -118,7 +118,8 @@ defmodule Portal.Catalog do
     :elf_needs,
     :otp_full,
     :toolchain_pkg,
-    :toolchain_version
+    :toolchain_version,
+    :published_variants
   ]
   @json_fields [
     :run_id,
@@ -3116,6 +3117,7 @@ defmodule Portal.Catalog do
           package.id
           |> unrevoked_manifest_results(runs)
           |> reject_withheld_results(package.name, runs, withheld)
+          |> Enum.map(&reject_withheld_variants(&1, package.name, withheld))
 
         shas_by_system_result_id =
           results |> Enum.map(& &1.id) |> manifest_shas_for_system_results()
@@ -3162,6 +3164,19 @@ defmodule Portal.Catalog do
         Withheld.withheld?(package_name, deps, withheld, result)
     end)
   end
+
+  # A result's published variants are left out with it (above), and each one
+  # is also judged by its own lock: a variant is its own build.
+  defp reject_withheld_variants(
+         %{published_variants: [_ | _] = variants} = result,
+         name,
+         withheld
+       ) do
+    kept = Enum.reject(variants, &Withheld.withheld?(name, &1["deps_lock"], withheld, result))
+    %{result | published_variants: kept}
+  end
+
+  defp reject_withheld_variants(result, _name, _withheld), do: result
 
   defp unrevoked_manifest_results(_package_id, []), do: []
 
@@ -3271,31 +3286,77 @@ defmodule Portal.Catalog do
 
   # Every result format 1 could publish, not only the newest per system:
   # format 2 keeps one per toolchain, so an older build under another
-  # toolchain stays reachable. Dated by the run that built it.
+  # toolchain stays reachable. Dated by the run that built it. A result's
+  # published variants (`variant_builds/5`) are builds of their own beside
+  # it; format 1 never lists them.
   defp run_builds(sources) do
     runs_by_id = Map.new(sources.runs, &{&1.id, &1})
 
     for result <- sources.results,
         result.system_pkg != "host",
         stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
-        files = file_manifest(result, stored, sources.present_shas),
-        files != nil do
-      built_by = built_by(runs_by_id, result)
-      version = Map.fetch!(runs_by_id, result.run_id).version_tested
-
-      build =
-        built_by
-        |> build_inputs(result)
-        |> Map.put("dep_env", "prod")
-        |> Map.put("mix_target", mix_target(result.system_pkg))
-        |> put_declared(built_by.declared)
-        |> put_abi_facts(result)
-        |> put_inputs(result.compile_inputs)
-
+        built_by = built_by(runs_by_id, result),
+        version = Map.fetch!(runs_by_id, result.run_id).version_tested,
+        build = result_build(built_by, result),
+        {files, build} <-
+          own_build(result, build, stored, sources.present_shas) ++
+            variant_builds(result, build, stored, sources.present_shas) do
       {version, built_by.finished_at,
        Map.merge(files, %{"target" => result.system_pkg, "build" => build})}
     end
   end
+
+  defp result_build(built_by, result) do
+    built_by
+    |> build_inputs(result)
+    |> Map.put("dep_env", "prod")
+    |> Map.put("mix_target", mix_target(result.system_pkg))
+    |> put_declared(built_by.declared)
+    |> put_abi_facts(result)
+    |> put_inputs(result.compile_inputs)
+  end
+
+  defp own_build(result, build, stored, present) do
+    case file_manifest(result, stored, present) do
+      nil -> []
+      files -> [{files, build}]
+    end
+  end
+
+  # A firmware target that kept the package's optional deps also publishes
+  # its first build, made without them (`SystemResult.published_variants`):
+  # the same target, system version, toolchain and run, with its own files,
+  # `compile_env` and `deps` (the run's lock), so `newest_per_key/1`, which
+  # keys on `deps`, keeps both. Like a toolchain build, a variant is only
+  # its own files: one with a file this row does not own or this host lacks
+  # is left out whole. The ABI facts were read from the row's own priv
+  # files, so a variant whose priv files differ publishes none of them, and
+  # a client then takes it at its exact system version only.
+  defp variant_builds(%{published_variants: [_ | _] = variants} = result, build, stored, present) do
+    own_priv = priv_set(get_in(result.beam_scan || %{}, ["footprint", "file_manifest"]))
+
+    for variant <- variants,
+        files = toolchain_files(variant["file_manifest"], stored, present),
+        files != nil do
+      variant_build =
+        build
+        |> Map.put("deps", variant["deps_lock"])
+        |> Map.put("compile_env", variant["compile_env"])
+        |> keep_abi_facts(priv_set(variant["file_manifest"]) == own_priv)
+
+      {files, variant_build}
+    end
+  end
+
+  defp variant_builds(_result, _build, _stored, _present), do: []
+
+  defp priv_set(%{} = manifest),
+    do: manifest |> manifest_entries("priv") |> MapSet.new(&{&1["path"], &1["sha256"]})
+
+  defp priv_set(_manifest), do: nil
+
+  defp keep_abi_facts(build, true), do: build
+  defp keep_abi_facts(build, false), do: Map.drop(build, ["native", "portable", "elf"])
 
   # The portal makes every build with the dependency compiled as `prod`, which
   # is what Mix compiles any dependency as unless the project overrides it.

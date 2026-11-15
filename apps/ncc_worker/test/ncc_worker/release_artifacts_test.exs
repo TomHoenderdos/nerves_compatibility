@@ -135,6 +135,51 @@ defmodule NccWorker.ReleaseArtifactsTest do
     assert sha == sha256(File.read!(Path.join(build_lib, "ebin/sample.beam")))
   end
 
+  # A kept target's first build (`NccWorker.OptionalDepsTargets`) is archived
+  # from its own directory beside the new build, never from the new build or
+  # the release.
+  test "a published variant's files are archived from its own directory", %{
+    project: project,
+    archive: archive,
+    tmp_dir: work_dir
+  } do
+    first_beam = "first build beam"
+
+    write_tree(Path.join(project, "_build/rpi4/lib/.sample.without"), %{
+      "ebin/sample.beam" => first_beam
+    })
+
+    manifest = fn body ->
+      %{
+        "file_manifest" => %{
+          "ebin" => [%{"path" => "ebin/sample.beam", "sha256" => sha256(body)}],
+          "priv" => []
+        }
+      }
+    end
+
+    result = %{
+      package: %{name: "sample"},
+      systems: %{
+        "nerves_system_rpi4" => %{
+          beam_scan: %{"footprint" => manifest.(@build_files["ebin/sample.beam"])},
+          published_variants: [
+            %{variant: "without", beam_scan: %{"footprint" => manifest.(first_beam)}},
+            # A variant whose bytes are not in its directory archives nothing.
+            %{variant: "without", beam_scan: %{"footprint" => manifest.("stripped beam")}}
+          ]
+        }
+      }
+    }
+
+    assert {:ok, %{files_archived: 2}} =
+             FileArchiver.archive_manifest_files(archive, result, work_dir)
+
+    assert File.read!(Path.join(archive, sha256(first_beam))) == first_beam
+    assert File.exists?(Path.join(archive, sha256(@build_files["ebin/sample.beam"])))
+    refute File.exists?(Path.join(archive, sha256("stripped beam")))
+  end
+
   # Dependencies' files are archived but never published, and their manifests
   # come from the release scan, so they are still copied from the release.
   test "dependency files are still archived from the release", %{

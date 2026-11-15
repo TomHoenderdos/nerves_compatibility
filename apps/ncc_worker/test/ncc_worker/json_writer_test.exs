@@ -313,6 +313,58 @@ defmodule NccWorker.JsonWriterTest do
       assert decoded["cache"]["candidates"] == [candidate]
     end
 
+    test "writes a system's published variants, and omits the key without any" do
+      dir = Path.join(System.tmp_dir!(), "jw_variants_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      manifest = %{
+        "ebin" => [%{"path" => "ebin/pkg.beam", "sha256" => "aa", "size" => 1, "mode" => 33_188}],
+        "priv" => []
+      }
+
+      variant = %{
+        variant: "without",
+        beam_scan: %{"footprint" => %{"file_manifest" => manifest}},
+        compile_env: [],
+        deps_lock: %{"telemetry" => %{"version" => "1.3.0", "checksum" => "o-tel"}}
+      }
+
+      system = %{
+        status: :pass,
+        duration_sec: 1.0,
+        firmware_size_bytes: 1,
+        log_tail: "",
+        error: nil
+      }
+
+      result = %{
+        run_id: "r",
+        package: %{name: "pkg", version: "1.0.0"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{
+          "nerves_system_rpi4" => Map.put(system, :published_variants, [variant]),
+          "nerves_system_bbb" => system
+        },
+        finished_at: "2026-10-24T00:00:00Z"
+      }
+
+      assert :ok = JsonWriter.write_result(dir, result)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["systems"]["nerves_system_rpi4"]["published_variants"] == [
+               %{
+                 "variant" => "without",
+                 "beam_scan" => %{"footprint" => %{"file_manifest" => manifest}},
+                 "compile_env" => [],
+                 "deps_lock" => %{"telemetry" => %{"version" => "1.3.0", "checksum" => "o-tel"}}
+               }
+             ]
+
+      refute Map.has_key?(decoded["systems"]["nerves_system_bbb"], "published_variants")
+    end
+
     test "omits cache from result.json when no system produced a candidate" do
       dir = Path.join(System.tmp_dir!(), "jw_no_cache_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)

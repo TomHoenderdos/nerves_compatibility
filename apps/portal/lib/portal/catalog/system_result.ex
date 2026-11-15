@@ -68,7 +68,8 @@ defmodule Portal.Catalog.SystemResult do
         :unpublished_reason,
         :toolchain_pkg,
         :toolchain_version,
-        :otp_full
+        :otp_full,
+        :published_variants
       ])
     end
 
@@ -185,12 +186,25 @@ defmodule Portal.Catalog.SystemResult do
     # The package's transitive dependency closure as *this system's* build
     # locked it, same shape as `Run.deps_lock`. A firmware run's per-target
     # optional-dependency pass can recompile a passing target with the
-    # package's optional deps added and republish that target's files with
+    # package's optional deps added and publish that target's files with
     # them; when it does, the target's lock differs from the run's and this
     # is where it is recorded. Nil on every system that kept the run's own
     # build (every system before the pass existed, and any target the pass
     # did not touch or could not keep).
     attribute :deps_lock, :map do
+      public?(true)
+    end
+
+    # The other builds this target publishes beside its own, each
+    # `%{"variant", "file_manifest", "compile_env", "deps_lock"}`; nil for
+    # none. Today only "without": a firmware target that kept the package's
+    # optional deps also publishes its first build, made without them, under
+    # the run's lock (`NccWorker.OptionalDepsTargets`). Every other column
+    # describes this row's own build, and every reader that counts rows
+    # (stats, coverage, the latest status) counts the target once. Its
+    # files' memberships are the row's (`Portal.Catalog.ArtifactMembership`),
+    # so the blob endpoint serves them under the same gate as the row's own.
+    attribute :published_variants, {:array, :map} do
       public?(true)
     end
 

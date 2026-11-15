@@ -899,4 +899,162 @@ defmodule NccWorker.OptionalDepsTargetsTest do
       assert out.systems["nerves_system_bbb"].optional_deps.added == ["jason"]
     end
   end
+
+  describe "the first build published beside a kept one" do
+    # A first build whose beam scan lists its files, as a real one does: the
+    # pass re-checks them against this record before publishing them.
+    defp passing_with_files(dir, target) do
+      path = beam(dir, target)
+      bytes = File.read!(path)
+      %File.Stat{size: size, mode: mode} = File.stat!(path)
+
+      manifest = %{
+        "ebin" => [
+          %{
+            "path" => "ebin/pkg.beam",
+            "sha256" => Base.encode16(:crypto.hash(:sha256, bytes), case: :lower),
+            "size" => size,
+            "mode" => mode
+          }
+        ],
+        "priv" => []
+      }
+
+      Map.put(passing(target), :beam_scan, %{
+        "footprint" => %{"file_manifest" => manifest},
+        "errors" => []
+      })
+    end
+
+    defp without(dir, target),
+      do: Path.join([dir, "_build", target, "lib", ".pkg.without", "ebin", "pkg.beam"])
+
+    defp params_with_files(dir) do
+      systems =
+        params(dir).systems
+        |> Map.put("nerves_system_rpi4", passing_with_files(dir, "rpi4"))
+        |> Map.put("nerves_system_bbb", passing_with_files(dir, "bbb"))
+
+      params(dir, %{systems: systems})
+    end
+
+    @run_lock %{"telemetry" => %{"version" => "1.3.0", "checksum" => "o-tel"}}
+
+    test "a kept target publishes both builds, each with its own lock and compile_env",
+         %{dir: dir} do
+      params = params_with_files(dir)
+
+      compile =
+        compile_by_target(dir, %{"rpi4" => :ok, "bbb" => {:error, "mix exited with code 1"}})
+
+      assert {:ok, out} = OptionalDepsTargets.run(params, runners(dir, %{compile: compile}))
+      rpi4 = out.systems["nerves_system_rpi4"]
+
+      # The with build, as before.
+      assert File.read!(beam(dir, "rpi4")) == "second-rpi4"
+      assert rpi4.beam_scan == %{"rescanned" => "rpi4", "errors" => []}
+      assert rpi4.compile_env == [%{"second" => "rpi4"}]
+      assert rpi4.deps_lock["jason"] == %{"version" => "1.4.4", "checksum" => "o-jason"}
+
+      # The without build: the first build's own bytes, record and lock.
+      first = params.systems["nerves_system_rpi4"]
+      assert File.read!(without(dir, "rpi4")) == "first-rpi4"
+      refute File.exists?(aside(dir, "rpi4"))
+
+      assert rpi4.published_variants == [
+               %{
+                 variant: "without",
+                 beam_scan: %{"footprint" => first.beam_scan["footprint"]},
+                 compile_env: [%{"first" => "rpi4"}],
+                 deps_lock: @run_lock
+               }
+             ]
+
+      assert out.deps_lock == @run_lock
+      assert File.read!(log(dir, "rpi4")) =~ "publishing the first build beside it"
+
+      # A dropped target publishes its first build as its only one.
+      bbb = out.systems["nerves_system_bbb"]
+      refute Map.has_key?(bbb, :published_variants)
+      refute File.exists?(without(dir, "bbb"))
+      assert File.read!(beam(dir, "bbb")) == "first-bbb"
+    end
+
+    test "a first build whose bytes changed is not published; the kept build still is",
+         %{dir: dir} do
+      # The pass's compile writes into the moved-aside first build, as a
+      # writer through a shared link would.
+      compile = fn _project_dir, env, _log_file, _timeout ->
+        target = target_of(env)
+        write!(beam(dir, target), "second-#{target}")
+        if target == "rpi4", do: File.write!(Path.join(aside(dir, target), "ebin/pkg.beam"), "x")
+        :ok
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(params_with_files(dir), runners(dir, %{compile: compile}))
+
+      rpi4 = out.systems["nerves_system_rpi4"]
+      refute Map.has_key?(rpi4, :published_variants)
+      assert rpi4.beam_scan == %{"rescanned" => "rpi4", "errors" => []}
+      assert rpi4.deps_lock["jason"]
+      refute File.exists?(without(dir, "rpi4"))
+      refute File.exists?(aside(dir, "rpi4"))
+      assert File.read!(log(dir, "rpi4")) =~ "not published beside it (files_changed)"
+
+      # The untouched target keeps both.
+      assert [%{variant: "without"}] = out.systems["nerves_system_bbb"].published_variants
+      assert File.read!(without(dir, "bbb")) == "first-bbb"
+    end
+
+    test "a first build with a file gone is not published", %{dir: dir} do
+      compile = fn _project_dir, env, _log_file, _timeout ->
+        target = target_of(env)
+        write!(beam(dir, target), "second-#{target}")
+        if target == "rpi4", do: File.rm!(Path.join(aside(dir, target), "ebin/pkg.beam"))
+        :ok
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(params_with_files(dir), runners(dir, %{compile: compile}))
+
+      refute Map.has_key?(out.systems["nerves_system_rpi4"], :published_variants)
+      assert File.read!(log(dir, "rpi4")) =~ "(files_changed)"
+    end
+
+    test "a first build whose scan lists no files is not published", %{dir: dir} do
+      # `params/1`'s first builds carry a scan with no file manifest.
+      assert {:ok, out} = OptionalDepsTargets.run(params(dir), runners(dir, %{}))
+
+      for target <- @targets do
+        refute Map.has_key?(out.systems["nerves_system_#{target}"], :published_variants)
+        refute File.exists?(without(dir, target))
+        assert File.read!(log(dir, target)) =~ "(no_file_manifest)"
+      end
+    end
+
+    test "without a run lock the first build is not published", %{dir: dir} do
+      # The run lock is the first read; the pass's own read comes after deps.get.
+      calls = :counters.new(1, [])
+
+      read_lock = fn project_dir, package ->
+        :counters.add(calls, 1, 1)
+
+        if :counters.get(calls, 1) == 1,
+          do: nil,
+          else: NccWorker.DepsLock.read(project_dir, package)
+      end
+
+      assert {:ok, out} =
+               OptionalDepsTargets.run(
+                 params_with_files(dir),
+                 runners(dir, %{read_lock: read_lock})
+               )
+
+      rpi4 = out.systems["nerves_system_rpi4"]
+      assert rpi4.deps_lock["jason"]
+      refute Map.has_key?(rpi4, :published_variants)
+      assert File.read!(log(dir, "rpi4")) =~ "(deps_lock_unreadable)"
+    end
+  end
 end

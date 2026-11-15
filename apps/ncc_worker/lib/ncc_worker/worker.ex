@@ -264,7 +264,9 @@ defmodule NccWorker.Worker do
           # package's host build, and then the run's `deps_lock` names them,
           # or a firmware package's passing targets
           # (`NccWorker.OptionalDepsTargets`), and then each kept system's own
-          # `deps_lock` does while the run's stays the status build's.
+          # `deps_lock` does while the run's stays the status build's; such a
+          # system also publishes its status build beside, in
+          # `published_variants`.
           # For a firmware run `added` were kept on at least one target and
           # `dropped` on every target that tried; each passing system carries
           # its own `optional_deps`. `reason` says why they were dropped
@@ -391,6 +393,14 @@ defmodule NccWorker.Worker do
               # closure its published files were built against, shaped like
               # the run's `deps_lock`, which applies to every other system.
               optional(:deps_lock) => %{String.t() => %{String.t() => String.t()}},
+              # Only on a firmware system that kept the optional dependencies
+              # and whose first build's files were still the bytes its beam
+              # scan recorded: that first build, published beside the one
+              # with them as the `variant` "without", with its own
+              # `beam_scan` (`footprint.file_manifest` only), `compile_env`
+              # and `deps_lock` (the run's). Absent otherwise; the system's
+              # own keys always describe the build with them.
+              optional(:published_variants) => [OptionalDepsTargets.variant()],
               # Only on a firmware system that was passing when the per-target
               # pass ran: what it did on this target. `reason` as for the
               # run's `optional_deps`, `nil` when kept.

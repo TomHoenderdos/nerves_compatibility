@@ -8,13 +8,18 @@ defmodule NccWorker.OptionalDepsTargets do
   differently with them loadable, so files built without them match no such
   application (`NccWorker.DepsLock.unresolved_optional_deps/2`). After the
   firmware builds have settled every status, this recompiles the package on
-  each passing target with them added and republishes that target's files.
+  each passing target with them added and publishes that target's new files
+  beside its first ones: an application that does not lock the optional
+  dependencies matches only the first build.
 
   Nothing here changes a status, a firmware image, `firmware_size_bytes`,
   `log_tail`, `error`, `dependency_scans` or `cache_candidates`: only a kept
   target's `beam_scan` and `compile_env` are replaced, and it gains its own
-  `deps_lock`. The pass's compile is never stored in the build cache, whose
-  key would describe the lock without the optional dependencies.
+  `deps_lock` and, when its first build's files are still the bytes the
+  firmware build recorded, `published_variants` (`t:variant/0`): that first
+  build, as the build `"without"` the optional dependencies, under the run's
+  lock. The pass's compile is never stored in the build cache, whose key
+  would describe the lock without the optional dependencies.
 
   In order (see `run/2`):
 
@@ -28,9 +33,15 @@ defmodule NccWorker.OptionalDepsTargets do
        `mix.lock`.
     4. Concurrently, per target that got through 3: `mix compile`, no
        firmware, bounded by the per-system timeout, into the target's log.
-    5. A target whose compile passed is rescanned and its moved-aside first
-       build deleted. Any other target gets back exactly its first build:
-       whatever the pass left is removed and the first build renamed back.
+    5. A target whose compile passed is rescanned, and its moved-aside first
+       build renamed to `_build/<target>/lib/.<package>.without` and checked
+       file by file (path, size, sha256, mode) against the first build's
+       beam scan. One that matches is published beside the new build
+       (`published_variants`); one that does not, or has no file manifest,
+       compile_env or run lock to publish it with, is deleted, and the target
+       publishes the new build alone. Any other target gets back exactly its
+       first build: whatever the pass left is removed and the first build
+       renamed back.
     6. `mix.exs` and `mix.lock` restored from the snapshot, so nothing after
        the pass sees the optional dependencies.
 
@@ -77,6 +88,19 @@ defmodule NccWorker.OptionalDepsTargets do
         }
 
   @type summary :: %{added: [String.t()], dropped: [String.t()], reason: String.t() | nil}
+
+  @typedoc """
+  A kept target's first build, published beside the build with the optional
+  dependencies. Its files are under `_build/<target>/lib/.<package>.without`
+  (`variant_dir/1`), where `NccWorker.FileArchiver` reads them; `beam_scan`
+  holds only the first build's file manifest, and `deps_lock` is the run's.
+  """
+  @type variant :: %{
+          variant: String.t(),
+          beam_scan: %{String.t() => %{String.t() => map()}},
+          compile_env: [map()],
+          deps_lock: DepsLock.t()
+        }
 
   @type outcome :: %{
           systems: %{String.t() => map()},
@@ -146,6 +170,9 @@ defmodule NccWorker.OptionalDepsTargets do
       deps_lock: r.read_lock.(params.project_dir, params.package),
       package_checksum: r.package_checksum.(params.project_dir, params.package)
     }
+
+    # The lock a kept target's first build is published under.
+    params = Map.put(params, :run_deps_lock, run_lock.deps_lock)
 
     with {:ok, systems, summary} <- pass(params, r) do
       {:ok, Map.merge(run_lock, %{systems: systems, optional_deps: summary})}
@@ -355,17 +382,23 @@ defmodule NccWorker.OptionalDepsTargets do
     do: finish(params, r, snapshot, names, outcomes, [], nil, [])
 
   defp finish(params, r, snapshot, names, outcomes, moved, lock, broken) do
-    put_back =
+    Enum.each(outcomes, fn {target, outcome} -> log_outcome(target, names, outcome) end)
+
+    {put_back, variants} =
       outcomes
       |> Enum.filter(fn {target, _outcome} -> target in moved end)
-      |> Enum.map(fn {target, outcome} -> settle(params, r, target, outcome) end)
-      |> Kernel.++(Enum.map(broken, &{:error, &1}))
+      |> Enum.map_reduce(%{}, fn {{name, _} = target, outcome}, variants ->
+        case settle(params, r, target, outcome) do
+          {:variant, variant} -> {:ok, Map.put(variants, name, variant)}
+          settled -> {settled, variants}
+        end
+      end)
 
-    Enum.each(outcomes, fn {target, outcome} -> log_outcome(target, names, outcome) end)
+    put_back = put_back ++ Enum.map(broken, &{:error, &1})
 
     case Enum.find(put_back ++ [r.restore.(snapshot)], &(&1 != :ok)) do
       nil ->
-        {:ok, apply_outcomes(params, names, outcomes, lock), summarise(names, outcomes)}
+        {:ok, apply_outcomes(params, names, outcomes, lock, variants), summarise(names, outcomes)}
 
       {:error, reason} ->
         {:error, {:optional_deps_revert_failed, reason}}
@@ -453,18 +486,22 @@ defmodule NccWorker.OptionalDepsTargets do
       else: {:error, :dangling_link}
   end
 
-  # A kept target's first build is no longer needed; one left behind only
-  # costs disk, since nothing reads that name.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp settle(params, _r, {_name, %{env: env, log_file: log_file}}, {:kept, _scan, _ce}) do
-    {_lib, aside} = lib_paths(env, params.package)
+  # A kept target's first build is published beside the new one when its
+  # files are still exactly what the firmware build recorded; otherwise it is
+  # deleted, and one left behind only costs disk, since nothing reads either
+  # name unless `published_variants` names it.
+  defp settle(params, _r, {name, %{env: env, log_file: log_file}}, {:kept, _scan, _ce}) do
+    case keep_first_build(params, name, env) do
+      {:ok, variant} ->
+        append_log(log_file, "==> publishing the first build beside it, as the build without")
+        {:variant, variant}
 
-    case File.rm_rf(aside) do
-      {:ok, _} -> :ok
-      {:error, reason, path} -> append_log(log_file, "==> could not remove #{path}: #{reason}")
+      {:error, reason} ->
+        append_log(log_file, "==> the first build is not published beside it (#{reason})")
+        {lib, aside} = lib_paths(env, params.package)
+        Enum.each([aside, variant_path(lib, params.package)], &remove(&1, log_file))
+        :ok
     end
-
-    :ok
   end
 
   # A dropped target's compile may have left writers behind: `timeout(1)`
@@ -480,6 +517,103 @@ defmodule NccWorker.OptionalDepsTargets do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp remove(path, log_file) do
+    case File.rm_rf(path) do
+      {:ok, _} -> :ok
+      {:error, reason, path} -> append_log(log_file, "==> could not remove #{path}: #{reason}")
+    end
+  end
+
+  # The moved-aside first build, renamed to its published name and checked
+  # against what the firmware build recorded of it. The rename comes first,
+  # so the bytes checked are the bytes at the name the archiver reads.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp keep_first_build(params, name, env) do
+    {lib, aside} = lib_paths(env, params.package)
+    without = variant_path(lib, params.package)
+
+    with {:ok, variant, manifest} <- first_build(params, name),
+         {:rm, {:ok, _}} <- {:rm, File.rm_rf(without)},
+         {:rename, :ok} <- {:rename, File.rename(aside, without)},
+         :ok <- verify_files(without, manifest) do
+      {:ok, variant}
+    else
+      {:rm, _} -> {:error, "stale_variant_not_removed"}
+      {:rename, _} -> {:error, "rename_failed"}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp first_build(params, name) do
+    first = Map.fetch!(params.systems, name)
+
+    with {:manifest, %{"ebin" => ebin, "priv" => priv} = manifest}
+         when is_list(ebin) and is_list(priv) and (ebin != [] or priv != []) <-
+           {:manifest, first_manifest(first.beam_scan)},
+         {:compile_env, compile_env} when is_list(compile_env) <-
+           {:compile_env, Map.get(first, :compile_env)},
+         {:lock, %{} = lock} <- {:lock, params.run_deps_lock} do
+      variant = %{
+        variant: "without",
+        beam_scan: %{"footprint" => %{"file_manifest" => manifest}},
+        compile_env: compile_env,
+        deps_lock: lock
+      }
+
+      {:ok, variant, manifest}
+    else
+      {:manifest, _} -> {:error, "no_file_manifest"}
+      {:compile_env, _} -> {:error, "compile_env_unreadable"}
+      {:lock, _} -> {:error, "deps_lock_unreadable"}
+    end
+  end
+
+  # A scan that did not work publishes nothing, as for the pass's own.
+  defp first_manifest(%{"footprint" => %{"file_manifest" => manifest}} = scan) do
+    if Map.get(scan, "errors", []) == [],
+      do: Map.take(manifest, ["ebin", "priv"]),
+      else: nil
+  end
+
+  defp first_manifest(_scan), do: nil
+
+  # Every file the first build's scan listed is a plain file (not a link
+  # something else could still write through) with the size, sha256 and mode
+  # it recorded. Files it did not list are never published, so they are not
+  # looked at.
+  defp verify_files(dir, manifest) do
+    entries = manifest["ebin"] ++ manifest["priv"]
+    if Enum.all?(entries, &same_file?(dir, &1)), do: :ok, else: {:error, "files_changed"}
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp same_file?(dir, %{"path" => path, "sha256" => sha, "size" => size, "mode" => mode})
+       when is_binary(path) and is_binary(sha) do
+    file = Path.join(dir, path)
+
+    with {:ok, ^path} <- Path.safe_relative(path),
+         {:ok, %File.Stat{type: :regular, size: ^size, mode: ^mode}} <- File.lstat(file),
+         {:ok, bytes} <- File.read(file) do
+      sha256(bytes) == sha
+    else
+      _ -> false
+    end
+  end
+
+  defp same_file?(_dir, _entry), do: false
+
+  defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+
+  @doc """
+  The directory under `_build/<target>/lib` that a kept target's first build
+  is published from, for `NccWorker.FileArchiver`.
+  """
+  @spec variant_dir(String.t()) :: String.t()
+  def variant_dir(package), do: ".#{package}.without"
+
+  defp variant_path(lib, package), do: Path.join(Path.dirname(lib), variant_dir(package))
 
   # sobelow_skip ["Traversal.FileModule"]
   defp put_back(params, r, {_name, %{env: env}}) do
@@ -501,11 +635,18 @@ defmodule NccWorker.OptionalDepsTargets do
     build_path
   end
 
-  defp apply_outcomes(params, names, outcomes, lock) do
+  defp apply_outcomes(params, names, outcomes, lock, variants \\ %{}) do
     Enum.reduce(outcomes, params.systems, fn {{name, _target}, outcome}, systems ->
-      Map.update!(systems, name, &apply_outcome(&1, names, outcome, lock))
+      systems
+      |> Map.update!(name, &apply_outcome(&1, names, outcome, lock))
+      |> put_variant(name, Map.get(variants, name))
     end)
   end
+
+  defp put_variant(systems, _name, nil), do: systems
+
+  defp put_variant(systems, name, variant),
+    do: Map.update!(systems, name, &Map.put(&1, :published_variants, [variant]))
 
   defp apply_outcome(system, names, {:kept, scan, compile_env}, lock) do
     Map.merge(system, %{

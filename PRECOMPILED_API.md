@@ -334,7 +334,13 @@ Status codes:
       independently, so one target's entry can list an optional dependency
       that another target's entry (of the same run) lacks, when the pass
       failed for that target — a client should check `deps` per entry, never
-      assume it is the same across a package's targets.
+      assume it is the same across a package's targets. In format 2, a target
+      the pass kept them for has two builds of the same run, target and
+      system version: the one with them, and the target's first build, made
+      without them under the run's lock (the build the firmware image was
+      made from), each with its own files, `deps` and `compile_env`, so a
+      project that locks the optional dependencies and one that does not each
+      find theirs. Format 1 lists only the build with them.
     - `package_checksum` — the package's own outer Hex checksum from the
       build's `mix.lock`, a string, or `null` for runs from before it was
       recorded and for argus-only runs.
@@ -1037,7 +1043,8 @@ them.
   without the package's optional dependencies for every target, the same
   as a `pure_elixir` entry from before 2026-10-24; the per-target pass
   added on 2026-10-27 only covers runs from then on, and only the targets
-  it kept them for.
+  it kept them for. Until 2026-11-15 such a target published only its build
+  with them; the format-2 build without them appears for runs from then on.
 - Pure Elixir packages have `pure_elixir` entries only from runs after
   2026-10-20; earlier ones archived no files.
 - Toolchain builds before 2026-11-05 were made only with the package's
