@@ -5,7 +5,23 @@ defmodule NccWorker.ReleaseArtifactsTest do
 
   alias NccWorker.{AppFile, BeamScan, FileArchiver, Footprint, SourceScanner}
 
-  @moduletag :tmp_dir
+  # ExUnit's own `:tmp_dir` tag always roots under `Path.expand("tmp")`
+  # relative to this app's checkout directory, then appends this module's
+  # name and the full describe/test text. This module nests a release tree
+  # under that (`proj/_build/<target>/rel/firmware/lib/<pkg>-<vsn>/ebin/`),
+  # so a long enough checkout path, stacked with a long test name, can push
+  # a fixture path past what the filesystem allows before the test body
+  # even runs. Root every fixture under the OS temp directory instead, which
+  # is independent of the checkout path, and keep the same `tmp_dir` context
+  # key so the rest of this file is unchanged.
+  setup do
+    dir =
+      Path.join(System.tmp_dir!(), "ncc_release_artifacts_#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    %{tmp_dir: dir}
+  end
 
   # A real compiled module for the `pure_elixir` fixtures: the static rules
   # read the beams a pure Elixir result would publish.
@@ -387,8 +403,7 @@ defmodule NccWorker.ReleaseArtifactsTest do
   # `Worker.full_run_portability/3` with its trace and its rebuild compile
   # injected: whatever they raise or however long they would take, the
   # result equals an untraced run's except for `host_portability` and
-  # publication. Short names: the tmp_dir path the beam scan reads becomes an
-  # atom, which is at most 255 characters.
+  # publication.
   describe "guarded portability" do
     setup %{project: project, tmp_dir: dir} do
       pure_build(project)
