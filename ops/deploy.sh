@@ -298,6 +298,7 @@ sudo -u ncc bash -c 'cd "$1" && set -a && . "$2" && set +a && "$3" eval "$4"' --
 
 if [[ $mode == builder ]]; then
   builder_activate_image
+  builder_prune_old_images
 fi
 
 systemctl restart ncc-portal

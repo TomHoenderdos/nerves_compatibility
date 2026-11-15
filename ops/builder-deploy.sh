@@ -609,3 +609,52 @@ builder_activate_image() {
   builder_keep_paused=false
   builder_mark_paused draining
 }
+
+# Both registries get a fresh tag on every deploy that pulls an image, and
+# nothing removed the old ones: a builder left with ten `ghcr.io/.../ncc-
+# worker:<sha>` tags filled its disk, and its builds then deferred for "not
+# enough disk" for a day. Called once activation has succeeded (deploy.sh,
+# right after builder_activate_image; set -e there means a failed activation
+# never reaches this), it drops every registry-named tag of both repos
+# except the one now live and the one kept for rollback, compared by image
+# ID so a tag that still points to a kept image survives even under its
+# registry name. It only ever lists and removes tags of
+# $builder_registry_image and $builder_toolchain_registry: a local
+# `ncc-worker:*` tag (live, candidate or previous) is a different repository
+# locally and is never touched, and no other repository is either. Never
+# fails the deploy: a removal error, or docker refusing a listing, is logged
+# and ignored.
+builder_prune_old_images() {
+  local keep=' ' tag live id repo entries image_id
+
+  for live in ncc-worker:local ncc-worker:previous; do
+    id=$(builder_docker image inspect --format '{{.Id}}' "$live" 2>/dev/null) || continue
+    keep+="$id "
+  done
+  for tag in $(builder_toolchain_tags); do
+    for live in "$tag" "$tag-previous"; do
+      id=$(builder_docker image inspect --format '{{.Id}}' "$live" 2>/dev/null) || continue
+      keep+="$id "
+    done
+  done
+
+  for repo in "$builder_registry_image" "$builder_toolchain_registry"; do
+    entries=$(builder_docker images --no-trunc "$repo" \
+      --format '{{.Repository}}:{{.Tag}} {{.ID}}' 2>/dev/null) || continue
+    while read -r tag image_id; do
+      [[ -n $tag ]] || continue
+      case $keep in
+        *" $image_id "*) continue ;;
+      esac
+      if builder_docker rmi "$tag" >/dev/null 2>&1; then
+        echo "pruned old registry image: $tag"
+      else
+        echo "warning: could not prune old registry image $tag" >&2
+      fi
+    done <<<"$entries"
+  done
+
+  builder_docker image prune -f >/dev/null 2>&1 ||
+    echo 'warning: docker image prune failed' >&2
+  return 0
+}

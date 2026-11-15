@@ -957,6 +957,200 @@ echo activated >> "$EVENTS"
         self.assertEqual(events, ["pause", "check", "warm", "activated", "resume"])
 
 
+class BuilderPruneOldImagesTest(unittest.TestCase):
+    """A builder deploy pulls a freshly tagged image from both registries on
+    every run and nothing removed the old ones: a builder reached ten
+    `ghcr.io/.../ncc-worker:<sha>` tags and filled its disk, deferring every
+    build for "not enough disk" for a day. builder_prune_old_images is the
+    fix: after activation, drop every registry-named tag except the live and
+    rollback images, compared by image ID."""
+
+    WORKER_REPO = "ghcr.io/tomhoenderdos/ncc-worker"
+    TOOLCHAIN_REPO = "ghcr.io/tomhoenderdos/ncc-worker-toolchain"
+    LOCAL_ID = "sha256:" + "b" * 64
+    PREVIOUS_ID = "sha256:" + "c" * 64
+    TOOLCHAIN_LIVE_ID = "sha256:" + "d" * 64
+    TOOLCHAIN_PREVIOUS_ID = "sha256:" + "e" * 64
+    OLD_ID = "sha256:" + "a" * 64
+
+    SCRIPT = r'''
+set -euo pipefail
+source "$HELPER"
+builder_toolchain_tags() { echo ncc-worker:rpi4; }
+docker() {
+  echo "docker $*" >> "$EVENTS"
+  case "$1" in
+    image)
+      case "$2" in
+        inspect)
+          case "$5" in
+            ncc-worker:local) [ -n "${WORKER_LOCAL_ID:-}" ] || return 1
+              printf '%s\n' "$WORKER_LOCAL_ID" ;;
+            ncc-worker:previous) [ -n "${WORKER_PREVIOUS_ID:-}" ] || return 1
+              printf '%s\n' "$WORKER_PREVIOUS_ID" ;;
+            ncc-worker:rpi4) [ -n "${TOOLCHAIN_LIVE_ID:-}" ] || return 1
+              printf '%s\n' "$TOOLCHAIN_LIVE_ID" ;;
+            ncc-worker:rpi4-previous) [ -n "${TOOLCHAIN_PREVIOUS_ID:-}" ] || return 1
+              printf '%s\n' "$TOOLCHAIN_PREVIOUS_ID" ;;
+            *) return 1 ;;
+          esac
+          ;;
+        prune) return "${PRUNE_STATUS:-0}" ;;
+      esac
+      ;;
+    images)
+      case "$3" in
+        "$WORKER_REPO") printf '%s' "${WORKER_LISTING:-}" ;;
+        "$TOOLCHAIN_REPO") printf '%s' "${TOOLCHAIN_LISTING:-}" ;;
+      esac
+      ;;
+    rmi) return "${RMI_STATUS:-0}" ;;
+  esac
+}
+builder_prune_old_images
+echo after >> "$EVENTS"
+'''
+
+    def run_prune(self, worker_listing="", toolchain_listing="", **overrides):
+        with tempfile.TemporaryDirectory() as directory:
+            events = Path(directory) / "events"
+            env = {
+                **BASE_ENV,
+                "HELPER": str(HELPER),
+                "EVENTS": str(events),
+                "WORKER_REPO": self.WORKER_REPO,
+                "TOOLCHAIN_REPO": self.TOOLCHAIN_REPO,
+                "WORKER_LISTING": worker_listing,
+                "TOOLCHAIN_LISTING": toolchain_listing,
+                **overrides,
+            }
+            result = subprocess.run(
+                ["bash", "-c", self.SCRIPT], env=env, capture_output=True, text=True, timeout=5
+            )
+            lines = events.read_text().splitlines() if events.exists() else []
+            return result, lines
+
+    # The old, unreferenced tags of both registries go; the ones still live
+    # or kept for rollback do not, and the daemon's dangling layers are
+    # dropped afterwards.
+    def test_old_registry_tags_are_removed(self):
+        worker_listing = (
+            f"{self.WORKER_REPO}:oldsha {self.OLD_ID}\n"
+            f"{self.WORKER_REPO}:newsha {self.LOCAL_ID}\n"
+            f"{self.WORKER_REPO}:midsha {self.PREVIOUS_ID}\n"
+        )
+        result, lines = self.run_prune(
+            worker_listing=worker_listing,
+            WORKER_LOCAL_ID=self.LOCAL_ID,
+            WORKER_PREVIOUS_ID=self.PREVIOUS_ID,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"docker rmi {self.WORKER_REPO}:oldsha", lines)
+        self.assertNotIn(f"docker rmi {self.WORKER_REPO}:newsha", lines)
+        self.assertNotIn(f"docker rmi {self.WORKER_REPO}:midsha", lines)
+        self.assertIn("docker image prune -f", lines)
+        self.assertIn(f"pruned old registry image: {self.WORKER_REPO}:oldsha", result.stdout)
+        self.assertIn("after", lines)
+
+    # Compared by image ID, not by tag string: a registry-named tag that
+    # still points at the live or the rollback image is kept, in either
+    # repository.
+    def test_current_and_previous_images_are_kept_under_the_registry_name(self):
+        worker_listing = (
+            f"{self.WORKER_REPO}:oldsha {self.OLD_ID}\n"
+            f"{self.WORKER_REPO}:livesha {self.LOCAL_ID}\n"
+            f"{self.WORKER_REPO}:rollbacksha {self.PREVIOUS_ID}\n"
+        )
+        toolchain_listing = (
+            f"{self.TOOLCHAIN_REPO}:rpi4-oldsha {self.OLD_ID}\n"
+            f"{self.TOOLCHAIN_REPO}:rpi4-livesha {self.TOOLCHAIN_LIVE_ID}\n"
+            f"{self.TOOLCHAIN_REPO}:rpi4-rollbacksha {self.TOOLCHAIN_PREVIOUS_ID}\n"
+        )
+        result, lines = self.run_prune(
+            worker_listing=worker_listing,
+            toolchain_listing=toolchain_listing,
+            WORKER_LOCAL_ID=self.LOCAL_ID,
+            WORKER_PREVIOUS_ID=self.PREVIOUS_ID,
+            TOOLCHAIN_LIVE_ID=self.TOOLCHAIN_LIVE_ID,
+            TOOLCHAIN_PREVIOUS_ID=self.TOOLCHAIN_PREVIOUS_ID,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        removed = [line for line in lines if line.startswith("docker rmi")]
+        self.assertEqual(
+            removed,
+            [f"docker rmi {self.WORKER_REPO}:oldsha",
+             f"docker rmi {self.TOOLCHAIN_REPO}:rpi4-oldsha"],
+        )
+        self.assertNotIn(f"docker rmi {self.WORKER_REPO}:livesha", lines)
+        self.assertNotIn(f"docker rmi {self.WORKER_REPO}:rollbacksha", lines)
+        self.assertNotIn(f"docker rmi {self.TOOLCHAIN_REPO}:rpi4-livesha", lines)
+        self.assertNotIn(f"docker rmi {self.TOOLCHAIN_REPO}:rpi4-rollbacksha", lines)
+
+    # Never touched: a local ncc-worker:* tag is a different repository, and
+    # nothing outside builder_registry_image/builder_toolchain_registry is
+    # even listed.
+    def test_local_tags_and_other_repositories_are_never_listed_or_removed(self):
+        worker_listing = f"{self.WORKER_REPO}:oldsha {self.OLD_ID}\n"
+        result, lines = self.run_prune(
+            worker_listing=worker_listing,
+            WORKER_LOCAL_ID=self.LOCAL_ID,
+            WORKER_PREVIOUS_ID=self.PREVIOUS_ID,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        images_calls = [line for line in lines if line.startswith("docker images")]
+        self.assertEqual(
+            images_calls,
+            [f"docker images --no-trunc {self.WORKER_REPO} "
+             "--format {{.Repository}}:{{.Tag}} {{.ID}}",
+             f"docker images --no-trunc {self.TOOLCHAIN_REPO} "
+             "--format {{.Repository}}:{{.Tag}} {{.ID}}"],
+        )
+        self.assertFalse([line for line in lines if "docker rmi ncc-worker:" in line
+                          and "ghcr.io" not in line], lines)
+
+    # A daemon that refuses a removal (an image still referenced elsewhere,
+    # a transient error) must not fail the deploy: the function logs and
+    # moves on to the next tag and to the prune.
+    def test_a_removal_error_does_not_fail_the_deploy(self):
+        worker_listing = f"{self.WORKER_REPO}:oldsha {self.OLD_ID}\n"
+        result, lines = self.run_prune(
+            worker_listing=worker_listing,
+            WORKER_LOCAL_ID=self.LOCAL_ID,
+            WORKER_PREVIOUS_ID=self.PREVIOUS_ID,
+            RMI_STATUS="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"docker rmi {self.WORKER_REPO}:oldsha", lines)
+        self.assertIn(
+            f"warning: could not prune old registry image {self.WORKER_REPO}:oldsha",
+            result.stderr,
+        )
+        self.assertIn("docker image prune -f", lines)
+        self.assertIn("after", lines)
+
+    # A refused listing or prune call is logged the same way and never stops
+    # the function from finishing.
+    def test_a_failed_prune_call_does_not_fail_the_deploy(self):
+        result, lines = self.run_prune(
+            WORKER_LOCAL_ID=self.LOCAL_ID,
+            WORKER_PREVIOUS_ID=self.PREVIOUS_ID,
+            PRUNE_STATUS="1",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("warning: docker image prune failed", result.stderr)
+        self.assertIn("after", lines)
+
+    # Placed right after activation in deploy.sh; set -e there means a
+    # failed activation never reaches it.
+    def test_deploy_prunes_right_after_activating(self):
+        deploy = (Path(__file__).with_name("deploy.sh")).read_text()
+        activate = deploy.index("builder_activate_image")
+        prune = deploy.index("builder_prune_old_images")
+        self.assertLess(activate, prune)
+        self.assertIn(
+            "builder_activate_image\n  builder_prune_old_images\n", deploy)
+
+
 class BuilderEgressCheckTest(unittest.TestCase):
     def test_check_runs_the_new_release_as_ncc(self):
         script = r'''
