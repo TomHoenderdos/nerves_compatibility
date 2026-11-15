@@ -46,6 +46,8 @@ defmodule NccWorker.WorldTargets do
        compiled with an optional dependency the world lacks
        (`DepsLock.built_with_unresolved/2`): the copy holds the build path
        as that pass left it, and Mix rebuilds nothing when one goes away.
+       So is every lock entry the run lock lacks: its build in the copy, if
+       any, is the build with's, under that pass's closure of it.
     6. Serially, per other target: `mix deps.get` into its own deps path,
        the lock policy, and the lock byte-equal to the fixpoint's
        ("world_lock_moved" otherwise).
@@ -325,9 +327,14 @@ defmodule NccWorker.WorldTargets do
   # dependency the world does not add: the copy holds `_build/<t>/lib` as
   # that build left it, and the restored lock makes Mix rebuild none of
   # them. Such a dependency was only built with it on a target whose lib
-  # holds its build.
+  # holds its build. And every entry the run lock lacks: whatever build of
+  # it the copy holds is the build with's, made under that pass's lock, and
+  # Mix keeps it at the same lock entry even where the world's closure of it
+  # differs (an optional dep of its own only the fixpoint added).
   defp remove_stale(state, params) do
-    changed = [params.package | DepsLock.changed_closures(state.lock_before, state.lock_after)]
+    changed =
+      [params.package | DepsLock.changed_closures(state.lock_before, state.lock_after)] ++
+        (Map.keys(state.lock_after) -- Map.keys(state.lock_before))
 
     Enum.reduce(live(state), state, fn {_name, %{env: env}} = target, state ->
       with {:ok, built} <- built_with_absent(state.lock_after, world_path(env)),

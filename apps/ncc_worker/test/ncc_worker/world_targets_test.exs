@@ -379,6 +379,45 @@ defmodule NccWorker.WorldTargetsTest do
     assert "ecto" in bbb_lib
   end
 
+  # The build with added mdns_lite, the package's own optional dep, alone:
+  # it compiled mdns_lite without vintage_net, its optional dep, which only
+  # the world's fixpoint adds. mdns_lite is in no closure of the run lock, so
+  # its closure never "changed", and Mix keeps the copy's build of it at the
+  # same lock entry.
+  @new_in_world %{
+    "nerves" => [],
+    "pkg" => [{"mdns_lite", true}],
+    "mdns_lite" => [{"vintage_net", true}],
+    "vintage_net" => []
+  }
+
+  test "a dep the run lock lacks is rebuilt in the world, not kept from the build with",
+       %{dir: dir} do
+    project!(dir, @new_in_world)
+    with_lock = lock_of(~w(mdns_lite))
+
+    systems =
+      params(dir).systems
+      |> put_in(["nerves_system_rpi4", :deps_lock], with_lock)
+      |> put_in(["nerves_system_bbb", :deps_lock], with_lock)
+
+    # The build with never compiled vintage_net.
+    for target <- @targets, do: File.rm_rf!(Path.join(lib(dir, target), "vintage_net"))
+
+    params = params(dir, %{systems: systems, run_deps_lock: lock_of([])})
+    assert {:ok, out} = WorldTargets.run(params, runners(self(), dir, @new_in_world))
+
+    for target <- @targets do
+      assert world_variant(out.systems["nerves_system_#{target}"]).deps_lock ==
+               lock_of(~w(mdns_lite vintage_net))
+
+      assert_received {:compile, ^target, _path, world_lib}
+      refute "mdns_lite" in world_lib
+      # The real build path keeps the build with's.
+      assert File.exists?(Path.join([lib(dir, target), "mdns_lite", "ebin", "mdns_lite.beam"]))
+    end
+  end
+
   test "a published build without is never copied and stays as it was", %{dir: dir} do
     project!(dir, @jason)
 
