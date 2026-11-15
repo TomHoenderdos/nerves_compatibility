@@ -34,7 +34,9 @@ defmodule Portal.Builder do
   # builder host's configuration. The preflight looks for this marker, the
   # comment on the ruleset's final drop, so a table that is present but older
   # or emptied does not pass. Bump it together with that ruleset and the
-  # release's `:egress_table_hashes`.
+  # release's `:egress_table_hashes` when no build host may keep the old
+  # ruleset for a moment; a change that only adds drops keeps the marker, and
+  # the old ruleset's hashes stay in the list until every host lists the new.
   @egress_table "ncc_egress"
   @egress_marker "ncc_egress_v1"
   @egress_icc_marker "ncc_egress_icc_v1"

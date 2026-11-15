@@ -658,12 +658,19 @@ defmodule Portal.BuilderTest do
     # What the builders' status helper really lists (nft 1.1.6), captured
     # from the builder host's configuration, and the same ruleset as a
     # builder with nft 1.0.9 lists it, which spells the protocol set
-    # `{ tcp, udp }` where 1.1.6 prints `{ 6, 17 }`. The release's expected
-    # set must hold exactly their hashes: without one, every build on such a
-    # builder is refused; with any other, a ruleset nobody reviewed passes.
+    # `{ tcp, udp }` where 1.1.6 prints `{ 6, 17 }`; both for the current
+    # ruleset and for the one before it, accepted until every build host
+    # lists the current one. The release's expected set must hold exactly
+    # their hashes: without one, every build on such a builder is refused;
+    # with any other, a ruleset nobody reviewed passes.
     test "the release expects the builders' reviewed filter and nothing else" do
       hashes =
-        for name <- ["status_listing.txt", "status_listing_nft_1_0_9.txt"] do
+        for name <- [
+              "status_listing.txt",
+              "status_listing_nft_1_0_9.txt",
+              "status_listing_v1_unreserved.txt",
+              "status_listing_v1_unreserved_nft_1_0_9.txt"
+            ] do
           listing = File.read!(Path.expand("../fixtures/egress/" <> name, __DIR__))
           assert Builder.egress_table_complete?(listing), name
           Builder.egress_listing_sha256(listing)
@@ -671,6 +678,27 @@ defmodule Portal.BuilderTest do
 
       assert Enum.sort(hashes) ==
                Enum.sort(Application.fetch_env!(:portal, Portal.Builder)[:egress_table_hashes])
+    end
+
+    # The current ruleset drops every reserved or special-purpose range a
+    # build has no business reaching. nft merges adjacent prefixes in a
+    # listing: 224.0.0.0/3 is multicast 224.0.0.0/4 and reserved
+    # 240.0.0.0/4, and ::/127 is the unspecified :: and loopback ::1.
+    test "the current ruleset drops the reserved and special ranges" do
+      for name <- ["status_listing.txt", "status_listing_nft_1_0_9.txt"] do
+        listing = File.read!(Path.expand("../fixtures/egress/" <> name, __DIR__))
+        [v4] = Regex.run(~r/ip daddr \{ ([^}]*) \} drop/, listing, capture: :all_but_first)
+        [v6] = Regex.run(~r/ip6 daddr \{ ([^}]*) \} drop/, listing, capture: :all_but_first)
+
+        assert String.split(v4, ", ") == ~w(0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8
+                 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.168.0.0/16 198.18.0.0/15
+                 224.0.0.0/3),
+               name
+
+        assert String.split(v6, ", ") == ~w(::/127 ::ffff:0.0.0.0/96 64:ff9b::/96 100::/64
+                 2001:db8::/32 fc00::/7 fe80::/10 ff00::/8),
+               name
+      end
     end
 
     test "probe_egress/1 reports what nft said when the table is absent" do

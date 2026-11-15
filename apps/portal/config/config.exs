@@ -243,14 +243,25 @@ config :portal, Portal.Builder,
   # (`Portal.Builder.check_egress/0`). `NCC_EGRESS_CHECK=0` turns it off.
   egress_check: true,
   # The builders' reviewed filter: `Portal.Builder.egress_listing_sha256/1` of
-  # what the status helper on the build hosts lists. One ruleset, two
+  # what the status helper on the build hosts lists. Each ruleset has two
   # renderings: nft 1.1.6's, and that of a builder with nft 1.0.9, which
   # spells the DNS rule's protocol set `{ tcp, udp }` rather than `{ 6, 17 }`
-  # (both listings are fixtures under test/fixtures/egress).
+  # (every listing is a fixture under test/fixtures/egress).
   # A listing with any other hash refuses builds; the refusal logs the hash.
   # Change only together with that ruleset. Not overridable from the
   # environment.
   egress_table_hashes: [
+    # The current ruleset, which also drops the reserved and special ranges
+    # 192.0.0.0/24, 198.18.0.0/15, ::/128, 100::/64 and 2001:db8::/32.
+    # nft 1.1.6
+    "b8b00920ff71db7fe5af16cf7fdc9320faa60a7b717a854058ee96e0a0d5972a",
+    # nft 1.0.9
+    "d8910d1bcc775b0fe9f307c699b5f748415f848691ed22f565940c144b0082b4",
+    # The ruleset before it, still accepted so that a build host keeps
+    # building until its own configuration lists the current one; the host
+    # configuration changes separately from a release. Remove these two (and
+    # their `status_listing_v1_unreserved*` fixtures) once every build host
+    # lists the current ruleset.
     # nft 1.1.6
     "ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e",
     # nft 1.0.9

@@ -61,6 +61,18 @@ egress ruleset. A host that fails claims nothing, logs why, and shows
 `host_unready` (or `missing`, for the ruleset) as its egress state on the
 admin Builders tab until it is fixed.
 
+The ruleset lets a build reach DNS at its resolvers and TCP 80/443 on the
+Internet, and drops every private, link-local, loopback, reserved and
+special-purpose range on the way: for IPv4 RFC1918, CGNAT, 169.254.0.0/16,
+127.0.0.0/8, 0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15, multicast
+224.0.0.0/4 and 240.0.0.0/4; for IPv6 fc00::/7, fe80::/10, ::1, ::, the
+v4-mapped ::ffff:0:0/96 and NAT64 64:ff9b::/96 prefixes, discard
+100::/64, documentation 2001:db8::/32 and multicast ff00::/8 (the header
+of `priv/egress.sh` says why each). An agent release that changes the
+ruleset needs no manual step: `egress.sh verify` compares the whole chain,
+so the first slot to check after the update finds the old one wrong and
+reinstalls it before it claims.
+
 The memory limit is mandatory because under gVisor's `kvm` platform the
 container's `--pids-limit` is not enforced, so `--memory` is the only bound
 on a fork bomb.

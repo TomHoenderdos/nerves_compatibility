@@ -40,7 +40,13 @@
 #      network": OrbStack's resolver and host gateway live there),
 #      192.0.0.0/24 (IETF protocol assignments), 198.18.0.0/15
 #      (benchmarking; OrbStack's machine network), multicast and the
-#      reserved 240.0.0.0/4.
+#      reserved 240.0.0.0/4. For IPv6: unique-local fc00::/7, link-local
+#      fe80::/10, loopback ::1 and unspecified ::, the v4-mapped
+#      ::ffff:0:0/96 and NAT64 64:ff9b::/96 prefixes (both name a v4
+#      address the v4 chain never sees, a private one included), the
+#      discard-only 100::/64, documentation 2001:db8::/32 and multicast
+#      ff00::/8: the same IPv6 ranges the local builders' filter drops, and
+#      none of them a destination a build may need.
 #   4. Accept TCP 443/80 to the Internet; drop everything else.
 #
 # NCC-EGRESS filters what the containers send through FORWARD. Traffic
@@ -123,8 +129,10 @@ is_v6() { expand_v6 "$1" >/dev/null; }
 # v4-mapped v6 would reach a v4 address the v4 chain never checked.
 # 0.0.0.0/8, 192.0.0.0/24, 198.18.0.0/15 and 240.0.0.0/4 are dropped ranges
 # that are no resolver's home (OrbStack's 0.250.250.200 is a host-side
-# forwarder); a DNS accept to one would be a hole in its drop. RFC1918 and
-# CGNAT resolvers stay usable: a VPC's resolver is one of them.
+# forwarder); a DNS accept to one would be a hole in its drop. The same for
+# IPv6's NAT64 64:ff9b::/96, discard 100::/64 and documentation
+# 2001:db8::/32. RFC1918 and CGNAT resolvers (and IPv6 unique-local ones)
+# stay usable: a VPC's resolver is one of them.
 is_unusable() {
   local ip="$1" full
   if is_v4 "$ip"; then
@@ -137,6 +145,9 @@ is_unusable() {
   case "$full" in
     0000:0000:0000:0000:0000:0000:0000:000[01]) return 0 ;; # :: and ::1
     0000:0000:0000:0000:0000:ffff:*) return 0 ;;            # v4-mapped
+    0064:ff9b:0000:0000:0000:0000:*) return 0 ;;            # NAT64 64:ff9b::/96
+    0100:0000:0000:0000:*) return 0 ;;                      # discard 100::/64
+    2001:0db8:*) return 0 ;;                                # documentation
     fe[89ab]?:*) return 0 ;;                                # fe80::/10
     ff??:*) return 0 ;;                                     # multicast
   esac
@@ -246,6 +257,12 @@ V6_TAIL=(
   "-d fc00::/7 -j DROP"
   "-d fe80::/10 -j DROP"
   "-d ::1/128 -j DROP"
+  "-d ::/128 -j DROP"
+  "-d ::ffff:0.0.0.0/96 -j DROP"
+  "-d 64:ff9b::/96 -j DROP"
+  "-d 100::/64 -j DROP"
+  "-d 2001:db8::/32 -j DROP"
+  "-d ff00::/8 -j DROP"
   "-p tcp --dport 443 -j ACCEPT"
   "-p tcp --dport 80 -j ACCEPT"
 )

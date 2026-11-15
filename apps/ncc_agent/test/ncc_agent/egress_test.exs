@@ -338,6 +338,19 @@ defmodule NccAgent.EgressTest do
     assert rules =~ "-d fc00::/7 -j DROP"
     assert rules =~ "-d fe80::/10 -j DROP"
     assert rules =~ "-d ::1/128 -j DROP"
+
+    # The reserved and special IPv6 ranges, in the order verify expects.
+    assert rules =~ """
+           -A NCC-EGRESS -d ::1/128 -j DROP
+           -A NCC-EGRESS -d ::/128 -j DROP
+           -A NCC-EGRESS -d ::ffff:0.0.0.0/96 -j DROP
+           -A NCC-EGRESS -d 64:ff9b::/96 -j DROP
+           -A NCC-EGRESS -d 100::/64 -j DROP
+           -A NCC-EGRESS -d 2001:db8::/32 -j DROP
+           -A NCC-EGRESS -d ff00::/8 -j DROP
+           -A NCC-EGRESS -p tcp --dport 443 -j ACCEPT
+           """
+
     assert String.ends_with?(String.trim(rules), "-j DROP")
     assert File.read!(Path.join([dir, "state6", "DOCKER-USER"])) =~ "-j NCC-EGRESS"
 
@@ -621,6 +634,9 @@ defmodule NccAgent.EgressTest do
     nameserver fe80::1
     nameserver ::
     nameserver 2001:db8::53
+    nameserver 100::53
+    nameserver 64:ff9b::a00:1
+    nameserver 2a00::53
     """)
 
     {out, 0} = System.cmd(@script, ["install"], stderr_to_stdout: true)
@@ -633,8 +649,8 @@ defmodule NccAgent.EgressTest do
            ]
 
     assert dns.(chain(dir, "state6")) == [
-             "-A NCC-EGRESS -d 2001:db8::53/128 -p udp --dport 53 -j ACCEPT",
-             "-A NCC-EGRESS -d 2001:db8::53/128 -p tcp --dport 53 -j ACCEPT"
+             "-A NCC-EGRESS -d 2a00::53/128 -p udp --dport 53 -j ACCEPT",
+             "-A NCC-EGRESS -d 2a00::53/128 -p tcp --dport 53 -j ACCEPT"
            ]
 
     assert :ok = Egress.verify()

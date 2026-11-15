@@ -220,6 +220,10 @@ class BuilderHostSetupTest(unittest.TestCase):
             "::1",
             "fe80::1",
             "::ffff:10.0.0.1",
+            "64:ff9b::a00:1",
+            "100::53",
+            "2001:db8::53",
+            "ff02::fb",
         ]:
             refused = self.run_setup("install", NCC_DOCKER_DNS=f"1.1.1.1 {address}")
             self.assertNotEqual(refused.returncode, 0, address)
