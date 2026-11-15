@@ -202,7 +202,7 @@ defmodule NccWorker.ToolchainModeTest do
 
       for verdict <- [@traced_pass, @refused, @not_judged, @unfinished, nil] do
         build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
-        assert build.judge_revision == 13, inspect(verdict)
+        assert build.judge_revision == 15, inspect(verdict)
         assert build.judge_revision == Portability.judge_revision()
       end
 
@@ -264,9 +264,9 @@ defmodule NccWorker.ToolchainModeTest do
           makefile_rule2: true
         )
 
-      assert %{judge_revision: 14, manager: "mix"} = build
-      assert Portability.judge_revision(makefile_rule2: true) == 14
-      assert Portability.judge_revision(makefile_rule2: "true") == 13
+      assert %{judge_revision: 16, manager: "mix"} = build
+      assert Portability.judge_revision(makefile_rule2: true) == 16
+      assert Portability.judge_revision(makefile_rule2: "true") == 15
 
       unfinished = Map.put(@unfinished, :manager, "rebar3")
 
@@ -1042,9 +1042,9 @@ defmodule NccWorker.ToolchainModeTest do
   test "NCC_INPUT.judge.makefile_rule2 reaches the compile and the revision only when true",
        %{tmp_dir: dir} do
     for {judge, want, revision} <- [
-          {%{makefile_rule2: true}, true, 14},
-          {%{makefile_rule2: "yes"}, false, 13},
-          {nil, false, 13}
+          {%{makefile_rule2: true}, true, 16},
+          {%{makefile_rule2: "yes"}, false, 15},
+          {nil, false, 15}
         ] do
       parent = self()
       sub = Path.join(dir, "case#{System.unique_integer([:positive])}")

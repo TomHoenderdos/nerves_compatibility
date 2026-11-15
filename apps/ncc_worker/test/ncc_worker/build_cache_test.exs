@@ -403,6 +403,64 @@ defmodule NccWorker.BuildCacheTest do
       end
     end
 
+    # rustler_precompiled 0.10's mix.exs: its own name, and rustler as an
+    # optional dependency only (judge revision 15).
+    @rp_mix_exs """
+    defmodule RustlerPrecompiled.MixProject do
+      use Mix.Project
+      def project, do: [app: :rustler_precompiled, version: "0.10.0", deps: deps()]
+      def application, do: [extra_applications: [:logger, :inets, :ssl]]
+
+      defp deps do
+        [
+          {:rustler, "~> 0.28", optional: true},
+          {:ex_doc, "~> 0.40", only: :dev}
+        ]
+      end
+    end
+    """
+
+    defp own_name(mix_exs, name), do: String.replace(mix_exs, ":rustler_precompiled", ":" <> name)
+
+    test "a native tool named only as an optional dependency of its own passes", ctx do
+      write_own(ctx.deps, "rustler_precompiled", [{"mix.exs", @rp_mix_exs}, {"lib/r.ex", ""}])
+
+      assert BuildCache.dep_target_agnostic_rule2?(ctx.deps, "rustler_precompiled", "mix",
+               own: true
+             )
+
+      # As a dependency, or under rule 1, the mention still counts.
+      refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, "rustler_precompiled", "mix")
+      refute BuildCache.dep_target_agnostic?(ctx.deps, "rustler_precompiled")
+    end
+
+    test "any other mention of an optional tool still refuses", ctx do
+      for {mix_exs, why} <- [
+            {String.replace(@rp_mix_exs, ", optional: true", ""), "a required dependency"},
+            {String.replace(@rp_mix_exs, "optional: true", "optional: false"), "optional: false"},
+            {String.replace(@rp_mix_exs, "use Mix.Project", "use Mix.Project\n  # rustler"),
+             "a comment as well"},
+            {String.replace(@rp_mix_exs, "deps: deps()", "deps: deps(), compilers: [:rustler]"),
+             "a compiler as well"},
+            {String.replace(@rp_mix_exs, ~s|{:ex_doc|, ~s|{:zigler, "~> 0.1"},\n{:ex_doc|),
+             "another tool"},
+            {@rp_mix_exs <> "\ndefmodule Broken do", "unparsable"}
+          ] do
+        # Under another name, so its own name is no tool mention either.
+        name = "rp#{System.unique_integer([:positive])}"
+        write_own(ctx.deps, name, [{"mix.exs", own_name(mix_exs, name)}])
+        refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, name, "mix", own: true), why
+      end
+
+      # The control: the same mix.exs, under that other name, passes.
+      write_own(ctx.deps, "rp_control", [{"mix.exs", own_name(@rp_mix_exs, "rp_control")}])
+      assert BuildCache.dep_target_agnostic_rule2?(ctx.deps, "rp_control", "mix", own: true)
+
+      # A native dir refuses whatever mix.exs says.
+      write_own(ctx.deps, "rp_dir", [{"mix.exs", @rp_mix_exs}, {"native/x/Cargo.toml", ""}])
+      refute BuildCache.dep_target_agnostic_rule2?(ctx.deps, "rp_dir", "mix", own: true)
+    end
+
     test "a target read only in a function body, docs, a comment or a doc file passes", ctx do
       for {file, body} <- [
             {"lib/a.ex", "defmodule A do\n  def t, do: Mix.target()\nend\n"},

@@ -581,11 +581,66 @@ defmodule NccWorker.BuildCache do
   def dep_target_agnostic_rule2?(deps_path, name, manager, opts \\ []) do
     dir = Path.join(deps_path, name)
     own? = Keyword.get(opts, :own) == true
-    tools = if own?, do: @native_deps -- [name], else: @native_deps
+
+    tools =
+      if own?,
+        do: (@native_deps -- [name]) -- optional_only_tools(Path.join(dir, "mix.exs")),
+        else: @native_deps
 
     File.dir?(dir) and not String.starts_with?(name, "nerves") and
       not native_rule2?(dir, manager, tools) and
       not reads_target?(dir, target_read_pattern_rule2(), own?)
+  end
+
+  # Judge revision 15, `own: true` only: the native tools the package's own
+  # `mix.exs` names nowhere but as optional dependencies
+  # (rustler_precompiled's `{:rustler, "~> 0.28", optional: true}`). Each
+  # whole-word mention must be one such tuple's atom, counted on the parsed
+  # file: a comment, a compiler, a required dependency or any other mention
+  # keeps the tool. An unreadable or unparsable file keeps every tool. What
+  # an optional dependency brings is judged where it is: a toolchain build
+  # with it in its closure judges it as a dependency, and the trace still
+  # refuses the package's own compile running a native tool, as the beam
+  # scan refuses a NIF load.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp optional_only_tools(mix_exs) do
+    with {:ok, source} <- File.read(mix_exs),
+         {:ok, ast} <- Code.string_to_quoted(source, emit_warnings: false) do
+      optional = optional_dep_counts(ast)
+
+      Enum.filter(@native_deps, fn tool ->
+        mentions = length(Regex.scan(native_deps_word([tool]), source))
+        mentions > 0 and mentions == Map.get(optional, tool, 0)
+      end)
+    else
+      _ -> []
+    end
+  rescue
+    _ -> []
+  end
+
+  # How many dependency tuples name each app with `optional: true` among
+  # their options: `{:app, requirement, opts}` or `{:app, opts}`.
+  defp optional_dep_counts(ast) do
+    {_ast, counts} =
+      Macro.prewalk(ast, %{}, fn
+        {:{}, _, [app, _req, opts]} = node, acc when is_atom(app) ->
+          {node, count(acc, app, opts)}
+
+        {app, opts} = node, acc when is_atom(app) and is_list(opts) ->
+          {node, count(acc, app, opts)}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    counts
+  end
+
+  defp count(acc, app, opts) do
+    if Keyword.keyword?(opts) and Keyword.get(opts, :optional) == true,
+      do: Map.update(acc, Atom.to_string(app), 1, &(&1 + 1)),
+      else: acc
   end
 
   @doc false

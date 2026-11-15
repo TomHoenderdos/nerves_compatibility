@@ -32,8 +32,9 @@ defmodule NccWorker.Portability.Context do
   dependency's source dir when the file is in its Hex file list (a listed
   directory covers the files under it) and, for a native dependency, not
   under `priv`. Never the project's own files: they stand for the consumer
-  project. Writes are allowed only under the owning window's dependency's
-  `ebin`.
+  project. A natively built dependency's `ebin` is not readable either; the
+  judge decides a read of it (`native_ebin_app/2`). Writes are allowed only
+  under the owning window's dependency's `ebin`.
 
   The Hex file list is the `metadata.config` of the dependency's tarball in
   the run's Hex cache, used only when its outer checksum is the lock's
@@ -279,6 +280,26 @@ defmodule NccWorker.Portability.Context do
 
   defp dep_readable?(dep, real),
     do: under?(real, dep.build) or (under?(real, dep.dest) and hex_listed?(dep, real))
+
+  @doc """
+  The natively built closure dependency whose `ebin` (its build dir's, real
+  path) `real` is or lies under, else `nil`. Such a read is not readable
+  (`readable?/2`): `NccWorker.Portability.Events` observes it as a
+  `native_beam_reads` item, which the judge allows only when that
+  dependency's own compile is shown clean (`NccWorker.Portability`, judge
+  revision 15), and refuses otherwise.
+  """
+  @spec native_ebin_app(t(), String.t() | nil) :: String.t() | nil
+  def native_ebin_app(ctx, real) when is_binary(real) do
+    ctx.deps
+    |> Enum.sort()
+    |> Enum.find_value(fn {app, dep} ->
+      ebin = if dep.native?, do: ebin(ctx, app)
+      if is_binary(ebin) and under?(real, ebin), do: app
+    end)
+  end
+
+  def native_ebin_app(_ctx, _real), do: nil
 
   @doc """
   Whether `real` lies under a closure dependency's `priv` (its source dir's,

@@ -580,7 +580,9 @@ What it lists:
   up executables or reads the OS type when it runs is built and served like
   any other, since those calls run the same from a precompiled build. Native
   code and Nerves still do not: a package with native sources or build
-  dependencies, a NIF or driver load, a target read, a `nerves` name or a
+  dependencies (a native build tool it names only as an optional dependency,
+  such as rustler_precompiled's rustler, does not count: judge revision 15),
+  a NIF or driver load, a target read, a `nerves` name or a
   mention of Nerves in its sources, or with a dependency whose sources read
   the target or mention Nerves, gets a `skipped` toolchain build. Its
   `compile_env` lists the config reads that trace observed, so a

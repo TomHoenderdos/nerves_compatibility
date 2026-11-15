@@ -58,6 +58,10 @@ defmodule NccWorker.Portability.Events do
       tracer's integrity check reports for the window instead.
     * Install locations: `lib_dir`/`priv_dir` of a closure app or an
       OTP/Elixir app; nothing else.
+    * Reads of a natively built dependency's `ebin` (`Context.native_ebin_app/2`)
+      are observed as `native_beam_reads`, carrying the refusal they would
+      otherwise be; `NccWorker.Portability` refuses each unless that
+      dependency's own compile is shown clean (judge revision 15).
     * Reads: `Context.readable?/2` of the real path, relative paths and
       `get_cwd` against the window's dependency (`Context.cwd/2`). A read
       file or directory listing in a closure dependency whose tree matched
@@ -394,10 +398,21 @@ defmodule NccWorker.Portability.Events do
       Context.readable?(ctx, real) or absent_in_mix_exs?(e, ctx, owner, real) ->
         tree_read(e, ctx, real)
 
+      app = Context.native_ebin_app(ctx, real) ->
+        {:observe, "native_beam_reads", native_beam_read(e, app, host_read(e, path))}
+
       true ->
         {:refuse, host_read(e, path)}
     end
   end
+
+  # Judge revision 15: a read in a natively built dependency's `ebin` (the
+  # 1.20 type checker reading a remote module's beam) is the judge's to
+  # decide once it knows whether that dependency's own compile was clean
+  # (`NccWorker.Portability`). The refusal it would be today travels with
+  # it: anything short of a clean dependency gives exactly that.
+  defp native_beam_read(e, app, refusal),
+    do: Map.merge(summary(e), %{"app" => app, "ts" => e["ts"], "refusal" => refusal})
 
   defp tree_read(e, ctx, real) do
     case Context.tree_check(ctx, real, e["arg"]["listing"] == true) do

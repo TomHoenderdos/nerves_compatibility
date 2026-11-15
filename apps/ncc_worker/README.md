@@ -439,7 +439,17 @@ reviewed outer checksum whose tree matched its verified tarball). Revision 13 re
 byte order (`:erlang.system_info(:endian)`, so `System.endianness/0`: nx's float layouts, and every package with nx
 in its closure) as an `endian` compile input valued from the tracer's start line, instead of refusing it as a host
 read; a read whose byte order the trace does not record (no `endian` on a start line, or two VMs disagreeing) is
-"portability could not be judged".
+"portability could not be judged". Revision 15 allows a compile-time read in a natively built closure dependency's
+`ebin` (Elixir 1.20's type checker reads the beam of a module the package calls, as bumblebee's compile reads
+`Tokenizers.Tokenizer.beam`) when, and only when, it comes from the Mix VM after that dependency's window closed and
+the dependency is clean: no taint of its own, built by Mix (manager `mix` or `rebar3`), no new mapped library and no
+call into another natively built dependency in its window, and its source tree, checked again after the compile, still
+exactly its verified Hex tarball's. Anything else is the host read it always was. A natively built dependency whose
+compile observed the host (tokenizers' `use RustlerPrecompiled`) still taints every package that depends on it: a host
+value can reach a later compile through a persistent term, an ETS table or a process without a traced event, so the
+taint stays per dependency, not per module. Revision 15 also leaves out of rule 2's native-tool grep of the package
+itself a tool its `mix.exs` names only as an optional dependency (`{:rustler, "~> 0.28", optional: true}` in
+rustler_precompiled), counted on the parsed file; any other mention still counts.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's

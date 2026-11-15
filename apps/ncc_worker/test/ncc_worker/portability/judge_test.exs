@@ -479,6 +479,205 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
+  describe "a natively built dependency's beam read (judge revision 15)" do
+    # dep is natively built (on the native list), with a beam in its ebin and
+    # a verified Hex release whose files are exactly deps/dep's. bumblebee
+    # on Elixir 1.20: the type checker reads Tokenizers.Tokenizer.beam.
+    defp nat_setup(proj, dir) do
+      home = Path.join(dir, "hex")
+
+      {"dep", release} =
+        NccWorker.TracerFixtures.hex_release(home, "dep", ["lib", "mix.exs"], %{
+          "lib/dep.ex" => "",
+          "mix.exs" => ""
+        })
+
+      module = "JudgeNatDep#{System.unique_integer([:positive])}"
+      write_beam(proj, "dep", "defmodule #{module} do\n  def f, do: 1\nend\n")
+      beam = Path.join(proj, "_build/host/lib/dep/ebin/Elixir.#{module}.beam")
+      %{beam: beam, opts: [releases: %{"dep" => release}, hex_home: home, nif_waiver: false]}
+    end
+
+    defp beam_read(ts, path, file \\ "lib/pkg.ex"),
+      do: %{event(ts, "prim_file:read_file/1", file, "file_read") | "arg" => %{"path" => path}}
+
+    defp njudge(proj, r, opts, native \\ ["dep"]),
+      do: Portability.judge(proj, "pkg", r, native, Keyword.put(opts, :built_check, false))
+
+    defp read_refusal(beam),
+      do: "compile-time host read: prim_file:read_file/1 #{beam} in X.__MODULE__/1 (lib/pkg.ex:2)"
+
+    test "is allowed when the dependency's own compile is clean", %{proj: proj, dir: dir} do
+      %{beam: beam, opts: opts} = nat_setup(proj, dir)
+
+      for path <- [beam, Path.dirname(beam)] do
+        r = report(proj, %{events: [beam_read(35, path)]})
+        assert %{status: :pass, reason: nil, observations: obs} = njudge(proj, r, opts)
+
+        assert [%{"owner" => "pkg", "app" => "dep", "mfa" => "prim_file:read_file/1"} = item] =
+                 obs["native_beam_reads"]
+
+        refute Map.has_key?(item, "refusal")
+      end
+    end
+
+    test "refuses as before when the dependency's compile observed the host", %{
+      proj: proj,
+      dir: dir
+    } do
+      %{beam: beam, opts: opts} = nat_setup(proj, dir)
+      taint = %{event(15, "erlang:system_info/1", "lib/dep.ex") | "arg" => %{"key" => "os_type"}}
+
+      # tokenizers: RustlerPrecompiled read the target in its window.
+      r = report(proj, %{events: [taint, beam_read(35, beam)]})
+      assert %{status: :skip, reason: reason} = njudge(proj, r, opts)
+      assert reason == read_refusal(beam)
+
+      # Without the read the dependency's taint refuses, as it always did.
+      r = report(proj, %{events: [taint]})
+
+      assert %{reason: "closure dependency observed the host: dep (" <> _} =
+               njudge(proj, r, opts)
+    end
+
+    test "refuses when the dependency's tree is not its tarball's", %{proj: proj, dir: dir} do
+      # A source a native build generated, compiled without a traced read.
+      %{beam: beam, opts: opts} = nat_setup(proj, dir)
+      File.write!(Path.join(proj, "deps/dep/lib/generated.ex"), "")
+      r = report(proj, %{events: [beam_read(35, beam)]})
+      assert %{status: :skip, reason: reason} = njudge(proj, r, opts)
+      assert reason == read_refusal(beam)
+
+      # No verified tarball at all.
+      assert %{status: :skip} = njudge(proj, r, Keyword.put(opts, :releases, %{}))
+    end
+
+    test "refuses when native code was loaded or called in the dependency's window", %{
+      proj: proj,
+      dir: dir
+    } do
+      %{beam: beam, opts: opts} = nat_setup(proj, dir)
+      read = beam_read(35, beam)
+
+      # Its own NIF, mapped at its window's close: its compile may have run it.
+      nif = Path.join(proj, "_build/host/lib/dep/priv/dep_nif.so")
+      File.mkdir_p!(Path.dirname(nif))
+      File.write!(nif, "")
+      mapped = ["/usr/lib/libc.so.6", nif]
+
+      windows = for w <- report(proj).windows, do: put_in(w.libs["mapped_libs"], mapped)
+
+      r = report(proj, %{events: [read], windows: windows})
+      r = %{r | ending: %{r.ending | "mapped_libs" => mapped}}
+      assert %{status: :skip, reason: reason} = njudge(proj, r, opts)
+      assert reason == read_refusal(beam)
+
+      # A compile-time call into another natively built dependency.
+      call = %{
+        event(15, "nat:open/1", "lib/dep.ex", "native_closure")
+        | "arg" => %{"module" => "nat"}
+      }
+
+      r = report(proj, %{events: [call, read]})
+      assert %{status: :skip, reason: reason} = njudge(proj, r, opts)
+      assert reason == read_refusal(beam)
+    end
+
+    test "refuses when Mix did not build the dependency itself", %{proj: proj, dir: dir} do
+      %{beam: beam, opts: opts} = nat_setup(proj, dir)
+      r = report(proj, %{events: [beam_read(35, beam)]})
+
+      deps =
+        for d <- r.closure["deps"],
+            do: if(d["app"] == "dep", do: %{d | "manager" => "make"}, else: d)
+
+      r = %{r | closure: %{r.closure | "deps" => deps}}
+      assert %{status: :skip, reason: reason} = njudge(proj, r, opts)
+      assert reason == read_refusal(beam)
+    end
+
+    test "refuses a read before the dependency's window closed or from a child VM", %{
+      proj: proj,
+      dir: dir
+    } do
+      %{beam: beam, opts: opts} = nat_setup(proj, dir)
+
+      # Outside every window, before dep compiled: the host compile's beam.
+      r = report(proj, %{events: [beam_read(5, beam)]})
+      assert %{status: :skip, reason: reason} = njudge(proj, r, opts)
+      assert reason == read_refusal(beam)
+
+      # After every window (Mix's protocol consolidation in host mode) it is
+      # allowed for a clean dependency only.
+      r = report(proj, %{events: [beam_read(50, beam)]})
+      assert %{status: :pass} = njudge(proj, r, opts)
+
+      # The dependency reading its own ebin in its own window.
+      r = report(proj, %{events: [beam_read(15, beam, "lib/dep.ex")]})
+
+      assert %{status: :skip, reason: "closure dependency observed the host: dep (" <> _} =
+               njudge(proj, r, opts)
+
+      # A child VM's clock is not the Mix VM's.
+      r = report(proj, %{children: %{"pkg" => child([beam_read(35, beam)])}})
+      assert %{status: :skip, reason: reason} = njudge(proj, r, opts)
+      assert reason == read_refusal(beam)
+    end
+
+    test "the package's own ebin, natively built, still refuses", %{proj: proj, dir: dir} do
+      %{opts: opts} = nat_setup(proj, dir)
+      module = "JudgeNatPkg#{System.unique_integer([:positive])}"
+      write_beam(proj, "pkg", "defmodule #{module} do\nend\n")
+      own = Path.join(proj, "_build/host/lib/pkg/ebin/Elixir.#{module}.beam")
+      r = report(proj, %{events: [beam_read(35, own)]})
+
+      assert %{status: :skip, reason: "compile-time host read: prim_file:read_file/1" <> _} =
+               njudge(proj, r, opts, ["dep", "pkg"])
+    end
+
+    test "every other use of a clean natively built dependency still refuses", %{
+      proj: proj,
+      dir: dir
+    } do
+      %{opts: opts} = nat_setup(proj, dir)
+
+      # A compile-time call (a macro, `require`, a struct, a function call in
+      # a module body) is the native_closure channel in the package's window.
+      call = %{
+        event(35, "Elixir.Dep:__using__/1", "lib/pkg.ex", "native_closure")
+        | "arg" => %{"module" => "Elixir.Dep"}
+      }
+
+      assert %{status: :skip, reason: "calls natively built dependency at compile time: " <> _} =
+               njudge(proj, report(proj, %{events: [call]}), opts)
+
+      # An @external_resource or File read of its priv, source or build side.
+      for path <- [
+            Path.join(proj, "deps/dep/priv/x.h"),
+            Path.join(proj, "_build/host/lib/dep/priv/x.h"),
+            Path.join(proj, "_build/host/lib/dep/.mix/compile.elixir")
+          ] do
+        r = report(proj, %{events: [beam_read(35, path)]})
+
+        assert %{status: :skip, reason: "compile-time host read: " <> _} = njudge(proj, r, opts),
+               path
+      end
+    end
+
+    test "the check unavailable passes only under the test waiver", %{proj: proj, dir: dir} do
+      %{beam: beam, opts: opts} = nat_setup(proj, dir)
+      off = %{"nif_check" => "unavailable", "mapped_libs" => nil}
+
+      r =
+        report(proj, %{events: [beam_read(35, beam)], start: Map.merge(report(proj).start, off)})
+
+      r = %{r | ending: Map.merge(r.ending, off)}
+
+      assert %{status: :skip, reason: @cnj} = njudge(proj, r, opts)
+      assert %{status: :pass} = njudge(proj, r, Keyword.put(opts, :nif_waiver, true))
+    end
+  end
+
   describe "built outside the trace" do
     # The digest each app's build dir has now, as the tracer records it.
     defp built_now(proj, apps) do
@@ -2180,9 +2379,9 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
     end
 
-    test "the judge revision is 13, 14 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 13
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 14
+    test "the judge revision is 15, 16 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 15
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 16
 
       # The portal withdraws only on refusals of a judge at least this new.
       # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4

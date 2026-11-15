@@ -613,6 +613,71 @@ defmodule NccWorker.Portability.EventsTest do
     assert {:observe, "native_calls", _} = Events.decide(event, ctx, "other")
   end
 
+  describe "a read of a natively built dependency's ebin (judge revision 15)" do
+    # `nat`, natively built, with a beam in its ebin and a file in its
+    # build dir's priv.
+    defp nat_ctx(dir, proj, pkg) do
+      nat_build = Path.join(proj, "_build/host/lib/nat")
+      File.mkdir_p!(Path.join(nat_build, "ebin"))
+      File.mkdir_p!(Path.join(nat_build, "priv"))
+      File.write!(Path.join(nat_build, "ebin/Elixir.Nat.beam"), "")
+      File.write!(Path.join(nat_build, "priv/nat.so"), "")
+      File.mkdir_p!(Path.join(proj, "deps/nat/lib"))
+
+      nat = %{
+        "app" => "nat",
+        "dest" => Path.join(proj, "deps/nat"),
+        "build" => nat_build,
+        "manager" => "mix",
+        "children" => []
+      }
+
+      report = report(dir, proj, pkg, [])
+      report = update_in(report.closure["deps"], &[nat | &1])
+      {build(dir, proj, report, native: ["nat"]), nat_build}
+    end
+
+    test "is observed for the judge with the refusal it would be", %{
+      dir: dir,
+      proj: proj,
+      pkg: pkg
+    } do
+      {ctx, nat_build} = nat_ctx(dir, proj, pkg)
+      beam = Path.join(nat_build, "ebin/Elixir.Nat.beam")
+
+      for path <- [beam, Path.join(nat_build, "ebin")], owner <- ["pkg", :outside] do
+        event = ev("file_read", "prim_file:read_file/1", %{"path" => path})
+
+        assert {:observe, "native_beam_reads", %{"app" => "nat", "ts" => 50} = item} =
+                 Events.decide(event, ctx, owner)
+
+        assert item["refusal"] ==
+                 "compile-time host read: prim_file:read_file/1 #{path}" <>
+                   " in Pkg.f/0 (lib/pkg.ex:3)"
+      end
+    end
+
+    test "anything else under its build dir still refuses", %{dir: dir, proj: proj, pkg: pkg} do
+      {ctx, nat_build} = nat_ctx(dir, proj, pkg)
+
+      for path <- [Path.join(nat_build, "priv/nat.so"), nat_build, Path.join(nat_build, ".mix")] do
+        event = ev("file_read", "prim_file:read_file/1", %{"path" => path})
+        assert {:refuse, "compile-time host read: " <> _} = Events.decide(event, ctx, "pkg")
+      end
+    end
+
+    test "a non-native dependency's ebin stays plainly readable", %{
+      dir: dir,
+      proj: proj,
+      pkg: pkg
+    } do
+      {ctx, _nat_build} = nat_ctx(dir, proj, pkg)
+      path = Path.join(proj, "_build/host/lib/pkg/ebin/Elixir.Pkg.beam")
+      event = ev("file_read", "prim_file:read_file/1", %{"path" => path})
+      assert :ignore = Events.decide(event, ctx, :outside)
+    end
+  end
+
   test "a refusal inside mix.exs goes to R4", %{ctx: ctx, pkg: pkg} do
     deps_read = in_mix_exs(ev("network", "inet:gethostname/0", %{}), pkg, 4)
     opts_read = put_in(deps_read, ["user", "line"], 5)

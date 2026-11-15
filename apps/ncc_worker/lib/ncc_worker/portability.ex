@@ -33,6 +33,11 @@ defmodule NccWorker.Portability do
        its window broken or without a sentinel, a refusal in its window, R2,
        the rebar3 static rules or rebar3 trace coverage.
 
+  A read in a natively built dependency's `ebin` (`Events`'
+  `native_beam_reads`) is settled before steps 3 and 7: allowed when that
+  dependency is clean and the read came after its window, otherwise the
+  refusal of the window it fell in (`beam_reads/5`, judge revision 15).
+
   Compile-time config reads (R5) and Elixir-version reads are judged over the
   package's whole closure (`ConfigReads`, `ElixirVersion`): their refusals
   belong to the window they fell in, so in a dependency's window they taint
@@ -105,6 +110,7 @@ defmodule NccWorker.Portability do
     "config_reads" => 200,
     "elixir_version" => 50,
     "native_calls" => 50,
+    "native_beam_reads" => 50,
     "mix_exs_allowed" => 50,
     "build_root_source_path" => 50,
     "build_root_recompile_dir" => 50,
@@ -155,8 +161,16 @@ defmodule NccWorker.Portability do
   # (`:erlang.system_info(:endian)`, `System.endianness/0`; nx and every
   # package with nx in its closure) is an `endian` compile input the client
   # compares, valued from the tracer's start line, instead of a host read
-  # (bumped by two while `makefile_rule2` exists).
-  @judge_revision 13
+  # (bumped by two while `makefile_rule2` exists). 15: a read in a natively
+  # built dependency's `ebin` (Elixir 1.20's type checker reading a remote
+  # module's beam) is allowed when that dependency's own compile is clean,
+  # Mix built it, no native code ran in it and its tree is still its
+  # tarball's (`beam_reads/5`), and rule 2 leaves out of the package's own
+  # native-tool grep a tool its `mix.exs` names only as an optional
+  # dependency (rustler_precompiled's `{:rustler, ..., optional: true}`,
+  # `NccWorker.BuildCache.dep_target_agnostic_rule2?/4`) (bumped by two
+  # while `makefile_rule2` exists).
+  @judge_revision 15
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -666,7 +680,7 @@ defmodule NccWorker.Portability do
 
     decided = decided ++ config.refusals ++ version.refusals
     package_r2 = package_build_root(ctx)
-    deps = dep_results(ctx, report, decided)
+    {decided, deps} = dep_results(ctx, report, decided, libs)
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
     rebar_inputs = Enum.uniq(package_inputs ++ Enum.flat_map(deps, &elem(&1, 1).inputs))
     endian = endian_of(report)
@@ -779,9 +793,12 @@ defmodule NccWorker.Portability do
   end
 
   # Env reads and writes keep the VM they were made in: timestamps compare
-  # only within one VM (`CompileInputs`).
-  defp in_vm({:observe, kind, item}, vm) when kind in ["env_reads", "env_writes"],
-    do: {:observe, kind, Map.put(item, "vm", vm)}
+  # only within one VM (`CompileInputs`). So does a read of a natively built
+  # dependency's beam, which only the Mix VM's clock orders against that
+  # dependency's window (`beam_read/5`).
+  defp in_vm({:observe, kind, item}, vm)
+       when kind in ["env_reads", "env_writes", "native_beam_reads"],
+       do: {:observe, kind, Map.put(item, "vm", vm)}
 
   defp in_vm(decision, _vm), do: decision
 
@@ -821,8 +838,10 @@ defmodule NccWorker.Portability do
       end
 
     results = Enum.filter(main_libs(report, allowed?) ++ children, &in_scope?(elem(&1, 0), scope))
+    by_owner = Enum.group_by(results, &elem(&1, 0), &elem(&1, 1))
+    acc = %{decided: [], problems: [], native: [], waived: false, by_owner: by_owner}
 
-    Enum.reduce(results, %{decided: [], problems: [], native: [], waived: false}, fn
+    Enum.reduce(results, acc, fn
       {owner, {:refuse, reason}}, acc ->
         %{acc | decided: acc.decided ++ [{owner, {:refuse, reason}}]}
 
@@ -1135,14 +1154,135 @@ defmodule NccWorker.Portability do
   end
 
   # Every closure dependency but the package, in compile order (the
-  # closure line's), with what R3 makes of it.
-  defp dep_results(ctx, report, decided) do
+  # closure line's), with what R3 makes of it, and `decided` with every
+  # `native_beam_reads` observation settled (`beam_reads/5`): a dependency's
+  # own reads before its R3 result, since a refused one taints it, then
+  # everyone else's (the package's, outside every window).
+  defp dep_results(ctx, report, decided, libs) do
     scope = Context.closure_of(ctx, ctx.package)
 
-    for %{"app" => app} <- closure_deps(report),
-        app != ctx.package,
-        app in scope,
-        do: {app, dep_result(ctx, report, decided, app)}
+    order =
+      for %{"app" => app} <- closure_deps(report), app != ctx.package, app in scope, do: app
+
+    {decided, results} =
+      Enum.reduce(order, {decided, %{}}, fn app, {decided, results} ->
+        decided = beam_reads(decided, ctx, report, {results, libs}, &(&1 == app))
+        {decided, Map.put(results, app, dep_result(ctx, report, decided, app))}
+      end)
+
+    decided = beam_reads(decided, ctx, report, {results, libs}, &(&1 not in order))
+    {decided, Enum.map(order, &{&1, results[&1]})}
+  end
+
+  # Judge revision 15. A read in a natively built dependency's `ebin`
+  # (`Events`, `native_beam_reads`: Elixir 1.20's type checker reading a
+  # remote module's beam, as bumblebee's compile reads
+  # `Tokenizers.Tokenizer.beam`) is allowed only when it reads exactly what
+  # Mix compiles on the user's side, and is otherwise the refusal it always
+  # was. That holds when the read comes from the Mix VM after the
+  # dependency's window closed (the built check then pins the beam to what
+  # that window wrote) and the dependency is clean (`clean_native?/4`).
+  #
+  # Dependency by dependency, not module by module: a host value the
+  # dependency's compile read can reach any later compile without a traced
+  # event, through a persistent term, an ETS table or a process
+  # (`fx_uses_pt` in the tracer fixtures), so a tainted dependency's beams
+  # are never read, whichever module was.
+  defp beam_reads(decided, ctx, report, {results, libs}, owner?) do
+    calls = for {owner, {:observe, "native_calls", _}} <- decided, into: MapSet.new(), do: owner
+    known = %{results: results, libs: libs, calls: calls}
+
+    {decided, _memo} =
+      Enum.map_reduce(decided, %{}, fn
+        {owner, {:observe, "native_beam_reads", item}} = entry, memo ->
+          if owner?.(owner) do
+            {allowed?, memo} = beam_read(item, ctx, report, known, memo)
+            {if(allowed?, do: entry, else: {owner, {:refuse, item["refusal"]}}), memo}
+          else
+            {entry, memo}
+          end
+
+        entry, memo ->
+          {entry, memo}
+      end)
+
+    decided
+  end
+
+  defp beam_read(%{"app" => app} = item, ctx, report, known, memo) do
+    cond do
+      app == ctx.package or not is_binary(item["refusal"]) ->
+        {false, memo}
+
+      not Map.has_key?(known.results, app) ->
+        {false, memo}
+
+      item["vm"] != "main" or not after_window?(report, app, item["ts"]) ->
+        {false, memo}
+
+      Map.has_key?(memo, app) ->
+        {memo[app], memo}
+
+      true ->
+        clean = clean_native?(ctx, app, known)
+        {clean, Map.put(memo, app, clean)}
+    end
+  end
+
+  defp beam_read(_item, _ctx, _report, _known, memo), do: {false, memo}
+
+  defp after_window?(report, app, ts) when is_integer(ts) do
+    Enum.any?(report.windows, fn
+      %{app: ^app, close: close} when is_integer(close) -> ts > close
+      _window -> false
+    end)
+  end
+
+  defp after_window?(_report, _app, _ts), do: false
+
+  # A natively built dependency whose beams are what Mix compiles on the
+  # user's side: its own compile is clean by R3 (no taint, R2 and the rebar3
+  # rules judged), Mix built it itself (manager mix or rebar3, so no `make`
+  # ran outside the trace), no native code ran during its compile (no new
+  # mapped library in its window, no call into another natively built
+  # dependency), and its source tree is still exactly its verified tarball's
+  # (`Trees`), so every source the compile saw is the user's: the trees of a
+  # natively built dependency are not checked before the compile, and its
+  # native build may have generated sources.
+  defp clean_native?(ctx, app, known) do
+    result = known.results[app]
+
+    result.taint == nil and not match?({:error, _}, result.r2) and
+      not match?({:unjudged, _}, result.rebar) and
+      Context.manager(ctx, app) in ["mix", "rebar3"] and
+      libs_clean?(known.libs, app) and
+      not MapSet.member?(known.calls, app) and
+      tree_clean?(ctx, app)
+  end
+
+  # The tree on disk now, after the compile, against the dependency's
+  # verified tarball (`Trees.snapshot/5`, the one before the compile skips
+  # natively built dependencies): nothing a build generated, nothing
+  # changed. No verified tarball, no source dir at `deps/<app>` or no time
+  # left is not clean.
+  defp tree_clean?(%Context{project_dir: project, hex: {home, releases}} = ctx, app)
+       when is_binary(project) do
+    with %{} = release <- Map.get(releases, app),
+         true <- Context.dest(ctx, app) == Path.join([project, "deps", app]),
+         %{^app => {:ok, _members}} <- Trees.snapshot(project, %{app => release}, home, []) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp tree_clean?(_ctx, _app), do: false
+
+  defp libs_clean?(libs, app) do
+    case Map.get(libs.by_owner, app, []) do
+      [] -> false
+      checks -> Enum.all?(checks, &(&1 == {:ok, []} or (&1 == :unavailable and libs.waived)))
+    end
   end
 
   defp closure_deps(%Report{closure: %{"deps" => deps}}) when is_list(deps),
@@ -1323,7 +1463,7 @@ defmodule NccWorker.Portability do
   # which only orders it against reads: a `mix.exs` Mix evaluates again
   # makes the same write, which is one item.
   defp public_item(item) do
-    item = Map.drop(item, ["returned", "value", "ts"])
+    item = Map.drop(item, ["returned", "value", "ts", "refusal"])
 
     case item do
       %{"arg" => %{} = arg} -> %{item | "arg" => Map.delete(arg, "value")}
