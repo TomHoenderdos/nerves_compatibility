@@ -64,7 +64,7 @@ defmodule Portal.Catalog.Ingestion do
     ToolchainPriv
   }
 
-  alias Portal.Precompiled.{ElfFacts, Withheld}
+  alias Portal.Precompiled.{ElfFacts, FirmwareRefusal, Withheld}
   alias Portal.Repo
 
   @domain Portal.Catalog
@@ -1058,6 +1058,7 @@ defmodule Portal.Catalog.Ingestion do
              logs
            ),
          :ok <- copy_carried(carried, run.id),
+         _withdrawn = FirmwareRefusal.withdraw_superseded(package.id, version),
          :ok <- record_triage(package_name, version, run.id, result["argus"]) do
       {:ok, run}
     end
@@ -1448,13 +1449,15 @@ defmodule Portal.Catalog.Ingestion do
          phase_timings, hex_version_tested, beam_scan, compile_env, compile_inputs,
          dependency_scans, log_path, log_tail, failure_category, carried_from_run_id, deps_lock,
          unpublished_at, compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
-         toolchain_pkg, toolchain_version, otp_full, published_variants, inserted_at, updated_at)
+         toolchain_pkg, toolchain_version, otp_full, published_variants, build_root, inserted_at,
+         updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.compile_inputs, s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
              s.unpublished_reason, s.native, s.portable, s.elf_needs, s.toolchain_pkg,
-             s.toolchain_version, s.otp_full, s.published_variants, now() AT TIME ZONE 'utc',
+             s.toolchain_version, s.otp_full, s.published_variants, s.build_root,
+             now() AT TIME ZONE 'utc',
              now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
@@ -1551,7 +1554,8 @@ defmodule Portal.Catalog.Ingestion do
         toolchain_pkg: toolchain_pkg,
         toolchain_version: toolchain_version,
         otp_full: fact_string(sys["otp_full"]),
-        published_variants: variants
+        published_variants: variants,
+        build_root: build_root(sys["build_root"])
       })
       |> Ash.create(domain: @domain)
 
@@ -1570,6 +1574,11 @@ defmodule Portal.Catalog.Ingestion do
         {:error, reason}
     end
   end
+
+  # The worker writes `build_root` only on a judged firmware target; anything
+  # but a map is dropped rather than stored as a verdict.
+  defp build_root(%{} = build_root), do: build_root
+  defp build_root(_), do: nil
 
   # Strip `footprint.file_manifest` out of every dependency scan before it is
   # persisted.

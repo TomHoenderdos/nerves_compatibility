@@ -141,7 +141,8 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    nothing of it is archived or published; a refused variant is dropped from `published_variants`. The status, the
    firmware image and the log tail never change. Each judged system carries `build_root`: `{"status": "pass" |
    "skipped", "reason", "observations": [{"rule", "path"}], "variants": {"without": {"status", "reason"}}}`
-   (`variants` only when one was judged), and `host.log` gets a line per withheld build.
+   (`variants` only when one was judged), and `host.log` gets a line per withheld build. The portal stores it, and a
+   refusal withdraws the target's older builds of the same version (`Portal.Precompiled.FirmwareRefusal`).
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never

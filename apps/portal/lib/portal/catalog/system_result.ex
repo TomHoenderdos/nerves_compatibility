@@ -10,6 +10,7 @@ defmodule Portal.Catalog.SystemResult do
 
   @rule2_revocation "rule 2 revoked"
   @baked_build_path "baked build path"
+  @superseded_by_refusal "newer build path refusal"
 
   @doc """
   The `unpublished_reason` of a `pure_elixir` result
@@ -26,6 +27,15 @@ defmodule Portal.Catalog.SystemResult do
   """
   @spec baked_build_path() :: String.t()
   def baked_build_path, do: @baked_build_path
+
+  @doc """
+  The `unpublished_reason` of a firmware result
+  `Portal.Precompiled.FirmwareRefusal` withdrew: a newer run of the same
+  version refused or could not judge that target's build for a baked build
+  path (`build_root`).
+  """
+  @spec superseded_by_refusal() :: String.t()
+  def superseded_by_refusal, do: @superseded_by_refusal
 
   postgres do
     table("catalog_system_results")
@@ -78,7 +88,8 @@ defmodule Portal.Catalog.SystemResult do
         :toolchain_pkg,
         :toolchain_version,
         :otp_full,
-        :published_variants
+        :published_variants,
+        :build_root
       ])
     end
 
@@ -239,9 +250,22 @@ defmodule Portal.Catalog.SystemResult do
 
     # Which tool set `unpublished_at`: `rule2_revocation/0` for
     # `Portal.Precompiled.ToolchainRevocation`, `baked_build_path/0` for
-    # `Portal.Precompiled.FirmwareBuildPathWithdrawal`, nil for every other
-    # way, so each tool lists and undoes only its own. Carried copies keep it.
+    # `Portal.Precompiled.FirmwareBuildPathWithdrawal`,
+    # `superseded_by_refusal/0` for `Portal.Precompiled.FirmwareRefusal`, nil
+    # for every other way, so each tool lists and undoes only its own.
+    # Carried copies keep it.
     attribute :unpublished_reason, :string do
+      public?(true)
+    end
+
+    # A firmware target's baked build path verdict as the worker wrote it
+    # (`NccWorker.FirmwareBuildRoot`'s outcome: `status` "pass" or "skipped",
+    # `reason`, `observations`, and per judged variant `variants`). Only a
+    # passing target of a run whose worker judged it has one; nil reads as
+    # unjudged. A refusal here withdraws older runs' builds of the same
+    # version and target (`Portal.Precompiled.FirmwareRefusal`). Carried
+    # copies keep it.
+    attribute :build_root, :map do
       public?(true)
     end
 
