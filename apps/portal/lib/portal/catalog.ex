@@ -1533,18 +1533,46 @@ defmodule Portal.Catalog do
   # `native_breakdown/0` reads them. A package with no `native_components` at
   # all counts as pure, since the worker writes the map whenever it can see
   # the source.
+  #
+  # Or one the firmware builds show builds nothing native, whatever that
+  # mix.exs grep said: a passing target build of its own (not carried, in a
+  # run that is not revoked) whose published priv files hold no ELF file
+  # (`native = false`, `Portal.Precompiled.ElfFacts`), and no passing target
+  # build, in any run, that holds one. rustler_precompiled is tagged `rust`
+  # for its own app name and its optional rustler dependency, and builds no
+  # native file on any Nerves target. This only decides what is tried: the
+  # toolchain build's judge decides what is served.
   @pure_beam_clause """
-  (p.native_components ->> 'nif_language' IS NULL
-   AND NOT EXISTS (
-     SELECT 1
-     FROM jsonb_array_elements_text(
-       CASE
-         WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
-         THEN p.native_components -> 'port_languages'
-       END
-     ) AS l(lang)
-     WHERE l.lang IS NOT NULL
-   ))
+  ((p.native_components ->> 'nif_language' IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements_text(
+        CASE
+          WHEN jsonb_typeof(p.native_components -> 'port_languages') = 'array'
+          THEN p.native_components -> 'port_languages'
+        END
+      ) AS l(lang)
+      WHERE l.lang IS NOT NULL
+    ))
+   OR (EXISTS (
+         SELECT 1
+         FROM catalog_runs nr
+         JOIN catalog_system_results ns ON ns.run_id = nr.id
+         WHERE nr.package_id = p.id
+           AND ns.system_pkg NOT IN ('host', 'registry_deps', 'pure_elixir')
+           AND ns.status = 'pass'
+           AND ns.native = false
+           AND ns.carried_from_run_id IS NULL
+           AND nr.revoked_at IS NULL
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM catalog_runs nr
+         JOIN catalog_system_results ns ON ns.run_id = nr.id
+         WHERE nr.package_id = p.id
+           AND ns.status = 'pass'
+           AND ns.native = true
+       )))
   """
 
   # The system result `s` of the run `r` is evidence the version is pure: a
@@ -2023,8 +2051,8 @@ defmodule Portal.Catalog do
   recent downloads (rank 1 the most; a package without a count is unranked),
   those already known to be pure. Known: at least one non-revoked run of the
   package, any version, has a `host` or `registry_deps` pass of its own, and
-  the package records no native components, as `toolchain_backlog/3` reads
-  both. The rank is among every counted package, so a native package in the
+  the package records no native components or its firmware builds show it
+  builds nothing native, as `toolchain_backlog/3` reads both. The rank is among every counted package, so a native package in the
   top still takes its place.
   """
   @spec version_backfill_packages(non_neg_integer()) :: [{String.t(), pos_integer()}]
