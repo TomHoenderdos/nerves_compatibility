@@ -144,6 +144,22 @@ defmodule Portal.Workers.BuildTest do
              }
     end
 
+    # The worker's `NccWorker.Systems.select/1` matches system names only, so
+    # a bare target such as "rpi4" built no target at all: ingest then carried
+    # every firmware row from the previous run, and the forced re-run changed
+    # nothing (nerves_motd 0.1.18, 2026-11-15).
+    test "a targets scope naming no known system builds everything" do
+      previous_run!("scoped5", "1.0.0")
+
+      assert Build.scope_args("scoped5", "1.0.0", %{"scope" => "targets", "systems" => ["rpi4"]}) ==
+               %{systems_filter: nil, mode: nil}
+
+      assert Build.scope_args("scoped5", "1.0.0", %{
+               "scope" => "targets",
+               "systems" => ["nerves_system_rpi4", "rpi5"]
+             }) == %{systems_filter: nil, mode: nil}
+    end
+
     test "a targets scope with no systems builds everything" do
       previous_run!("scoped4", "1.0.0")
 

@@ -590,6 +590,11 @@ defmodule Portal.Workers.Build do
   # A partial scope only makes sense on top of a full run of the same version:
   # ingestion carries the systems it leaves out from that run, and an older
   # release's results say nothing about this one. Anything else builds in full.
+  #
+  # So does a targets scope naming a system the worker does not build by
+  # default (`Portal.BulkRebuild.targets/0`), such as a bare target "rpi4":
+  # the worker's filter matches system names only, so it would build no
+  # target, and ingest would carry every firmware row unchanged.
   @spec scope_args(String.t(), String.t(), map()) :: %{
           systems_filter: [String.t()] | nil,
           mode: String.t() | nil
@@ -597,8 +602,22 @@ defmodule Portal.Workers.Build do
   def scope_args(package, version, args) do
     case {args["scope"], args["systems"], latest_version_tested(package)} do
       {"argus_only", _systems, ^version} -> %{systems_filter: nil, mode: "argus_only"}
-      {"targets", [_ | _] = systems, ^version} -> %{systems_filter: systems, mode: nil}
+      {"targets", [_ | _] = systems, ^version} -> targets_scope(package, version, systems)
       _ -> %{systems_filter: nil, mode: nil}
+    end
+  end
+
+  defp targets_scope(package, version, systems) do
+    case systems -- BulkRebuild.targets() do
+      [] ->
+        %{systems_filter: systems, mode: nil}
+
+      unknown ->
+        Logger.warning(
+          "Build of #{package} #{version}: unknown systems #{inspect(unknown)}, building all"
+        )
+
+        %{systems_filter: nil, mode: nil}
     end
   end
 
