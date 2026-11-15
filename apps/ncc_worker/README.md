@@ -38,7 +38,11 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    (decimal next to jason), and the package compiles differently with them, so files built without them match no
    such application in the precompiled API. The pass never changes a status or the classification, which both come
    from the build without them. If `mix deps.get`, the lock policy or the host compile fails with them, the worker
-   restores `mix.exs` and `mix.lock`, removes `_build/host/lib/<package>` and rebuilds without them. A firmware
+   restores `mix.exs` and `mix.lock`, removes `_build/host/lib/<package>` and rebuilds without them. Both ways
+   (after the `deps.get` that adds them, and after the restore) it also removes the build of every dependency whose
+   closure in the lock changed (`NccWorker.DepsLock.changed_closures/2`): Mix rebuilds a dependency whose optional
+   dependency appeared only when that `deps.get` fetched it, and never one whose optional dependency went away, so
+   ecto built with jason would otherwise stay that way in the rebuild without jason. A firmware
    package is not given the pass: its published files come from every target's build, which it would have to
    repeat. `result.json` records the outcome as `optional_deps`:
    `{"added": ["decimal"], "dropped": [], "skipped": [], "reason": null}`, where `dropped` lists what was left out
@@ -103,7 +107,7 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    A target's drop reason is one of `deps_get_failed`, `lock_policy_violation`, `target_compile_failed` (including
    a raise from any runner, or an OOM kill), `mix_exs_edit_failed` (the inject failed, which drops every target),
    `stale_build_not_removed` (the move-aside, or the pass's own cleanup, could not rename or remove the build
-   directory), `deps_lock_unreadable` (the lock could not be read after `deps.get`, so a kept target would have no
+   directory, or the lock was unreadable around `deps.get`, so the dependencies to rebuild were unknown), `deps_lock_unreadable` (the lock could not be read after `deps.get`, so a kept target would have no
    lock of its own to publish against), `timeout` (the per-system timeout, which bounds the pass's `deps.get` as
    well as its compile, or the pass's own budget ran out before the target's `deps.get` or compile could start),
    or `run_budget_exhausted` (the run had already used too much of its time, so the pass did not start; see

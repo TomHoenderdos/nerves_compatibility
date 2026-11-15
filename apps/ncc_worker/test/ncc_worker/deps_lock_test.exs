@@ -225,4 +225,88 @@ defmodule NccWorker.DepsLockTest do
       assert DepsLock.hex_releases(dir) == :error
     end
   end
+
+  # `belt` (the package) and `ecto` (in its closure) both declare jason
+  # optional. Adding jason changes both closures; telemetry's stays the same.
+  @without_jason """
+  %{
+    "belt": {:hex, :belt, "1.0.0", "i-belt", [:mix], [{:ecto, "~> 3.0", [hex: :ecto, repo: "hexpm", optional: false]}, {:jason, "~> 1.0", [hex: :jason, repo: "hexpm", optional: true]}], "hexpm", "o-belt"},
+    "ecto": {:hex, :ecto, "3.12.5", "i-ecto", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "hexpm", optional: false]}, {:telemetry, "~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}, {:jason, "~> 1.0", [hex: :jason, repo: "hexpm", optional: true]}], "hexpm", "o-ecto"},
+    "decimal": {:hex, :decimal, "2.3.0", "i-decimal", [:mix], [], "hexpm", "o-decimal"},
+    "telemetry": {:hex, :telemetry, "1.3.0", "i-telemetry", [:rebar3], [], "hexpm", "o-telemetry"},
+    "shoehorn": {:hex, :shoehorn, "0.9.2", "i-shoehorn", [:mix], [], "hexpm", "o-shoehorn"},
+  }
+  """
+
+  @jason ~s(  "jason": {:hex, :jason, "1.4.4", "i-jason", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "o-jason"},\n)
+
+  defp with_jason, do: String.replace(@without_jason, "%{\n", "%{\n" <> @jason)
+
+  defp lock!(dir, content) do
+    File.write!(Path.join(dir, "mix.lock"), content)
+    {:ok, lock} = DepsLock.lock(dir)
+    lock
+  end
+
+  describe "closures/1" do
+    test "maps every entry to its closure's entries, optional edges only when locked",
+         %{dir: dir} do
+      without = DepsLock.closures(lock!(dir, @without_jason))
+      with = DepsLock.closures(lock!(dir, with_jason()))
+
+      assert without["ecto"] |> Map.keys() |> Enum.sort() == ~w(decimal telemetry)
+      assert with["ecto"] |> Map.keys() |> Enum.sort() == ~w(decimal jason telemetry)
+      assert with["belt"] |> Map.keys() |> Enum.sort() == ~w(decimal ecto jason telemetry)
+      assert without["telemetry"] == %{}
+    end
+  end
+
+  # Mix decides whether a dependency is stale from its own lock entry and
+  # marker, never from which of its optional dependencies are loadable: a
+  # dependency built before (or after) its optional dependency was locked keeps
+  # the beams of that build. These are the builds to remove.
+  describe "changed_closures/2" do
+    test "names every entry in both locks whose closure an added dependency changed",
+         %{dir: dir} do
+      before = lock!(dir, @without_jason)
+      after_lock = lock!(dir, with_jason())
+
+      assert DepsLock.changed_closures(before, after_lock) == ~w(belt ecto)
+    end
+
+    test "is the same set when the dependency is taken out again", %{dir: dir} do
+      with_lock = lock!(dir, with_jason())
+      without = lock!(dir, @without_jason)
+
+      assert DepsLock.changed_closures(with_lock, without) == ~w(belt ecto)
+    end
+
+    test "counts a member whose locked release changed", %{dir: dir} do
+      before = lock!(dir, @without_jason)
+
+      bumped =
+        lock!(
+          dir,
+          String.replace(@without_jason, ~s("2.3.0", "i-decimal"), ~s("2.3.1", "i-decimal2"))
+        )
+
+      assert DepsLock.changed_closures(before, bumped) == ~w(belt ecto)
+    end
+
+    test "is empty for the same lock", %{dir: dir} do
+      lock = lock!(dir, with_jason())
+      assert DepsLock.changed_closures(lock, lock) == []
+    end
+  end
+
+  describe "lock_or_empty/1" do
+    test "a missing lock is an empty one", %{dir: dir} do
+      assert DepsLock.lock_or_empty(dir) == {:ok, %{}}
+    end
+
+    test "an unreadable lock is an error", %{dir: dir} do
+      File.write!(Path.join(dir, "mix.lock"), "%{oops")
+      assert DepsLock.lock_or_empty(dir) == :error
+    end
+  end
 end

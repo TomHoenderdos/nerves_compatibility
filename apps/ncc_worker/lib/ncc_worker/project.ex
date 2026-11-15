@@ -17,6 +17,8 @@ defmodule NccWorker.Project do
   `Compatibility.OptionalDeps.never_added/0`, which the portal reads too.
   """
 
+  alias NccWorker.DepsLock
+
   @optional_deps_never_added Compatibility.OptionalDeps.never_added()
 
   @doc """
@@ -263,7 +265,10 @@ defmodule NccWorker.Project do
   `env` (`MIX_BUILD_PATH`) is removed before `deps.get`. A package compiled
   before its optional dependency existed would not be recompiled by Mix,
   because its lock entry and marker are unchanged, and the published files
-  would carry a `deps_lock` naming a dependency they never saw.
+  would carry a `deps_lock` naming a dependency they never saw. After
+  `deps.get`, so is the build of every dependency whose closure the new lock
+  changed (`NccWorker.DepsLock.changed_closures/2`): ecto built before jason
+  was locked keeps its beams unless that `deps.get` fetched jason itself.
 
   `deps_get` runs `mix deps.get` in the project with `env`; tests pass their
   own so they never reach the network.
@@ -328,8 +333,9 @@ defmodule NccWorker.Project do
 
   @doc """
   The second half of `add_optional_deps/5`, for one build env: removes the
-  package's build under that env's `MIX_BUILD_PATH`, then runs `deps_get`
-  with it. Restores nothing on an error.
+  package's build under that env's `MIX_BUILD_PATH`, runs `deps_get` with
+  it, then removes the build of every dependency whose closure the new lock
+  changed (`remove_changed_closures/3`). Restores nothing on an error.
   """
   @spec fetch_optional_deps(
           String.t(),
@@ -338,8 +344,10 @@ defmodule NccWorker.Project do
           (String.t(), list() -> :ok | {:error, term()})
         ) :: :ok | {:error, term()}
   def fetch_optional_deps(project_dir, package_name, env, deps_get \\ &run_deps_get/2) do
-    with :ok <- remove_stale_build(env, package_name) do
-      deps_get.(project_dir, env)
+    with {:ok, before} <- lock_for_closures(project_dir),
+         :ok <- remove_stale_build(env, package_name),
+         :ok <- deps_get.(project_dir, env) do
+      remove_changed_closures(project_dir, before, env)
     end
   end
 
@@ -348,11 +356,48 @@ defmodule NccWorker.Project do
   the package's build under `MIX_BUILD_PATH` in `env`, so the next compile
   rebuilds it without them. The sources fetched for them stay under `deps/`,
   which Mix ignores for a dependency `mix.exs` no longer declares.
+
+  So does the build of every dependency whose closure the restored lock
+  changes. Mix fetches nothing when an optional dependency goes, so it
+  marks nothing, and ecto built with jason would stay that way: the package
+  rebuilt "without" jason would expand ecto's macros as ecto saw jason. A
+  lock it replaces that cannot be read is still restored, then an error.
   """
   @spec drop_optional_deps(snapshot(), String.t(), keyword() | list()) :: :ok | {:error, term()}
-  def drop_optional_deps(snapshot, package_name, env) do
-    with :ok <- restore(snapshot) do
-      remove_stale_build(env, package_name)
+  def drop_optional_deps(%{lock: {lock_path, _lock}} = snapshot, package_name, env) do
+    project_dir = Path.dirname(lock_path)
+    before = lock_for_closures(project_dir)
+
+    with :ok <- restore(snapshot),
+         {:ok, before} <- before,
+         :ok <- remove_stale_build(env, package_name) do
+      remove_changed_closures(project_dir, before, env)
+    end
+  end
+
+  defp lock_for_closures(project_dir) do
+    case DepsLock.lock_or_empty(project_dir) do
+      {:ok, lock} -> {:ok, lock}
+      :error -> {:error, {:rm_rf_failed, :lock_unreadable, Path.join(project_dir, "mix.lock")}}
+    end
+  end
+
+  # The builds `DepsLock.changed_closures/2` names between `before` and the
+  # lock now on disk, under the env's build path. A lock name that is not an
+  # application name is never a path.
+  defp remove_changed_closures(project_dir, before, env) do
+    with {:ok, now} <- lock_for_closures(project_dir) do
+      before
+      |> DepsLock.changed_closures(now)
+      |> Enum.filter(&Regex.match?(~r/\A[a-z][a-z0-9_]*\z/, &1))
+      |> Enum.reduce_while(:ok, fn app, :ok -> remove_or_halt(env, app) end)
+    end
+  end
+
+  defp remove_or_halt(env, app) do
+    case remove_stale_build(env, app) do
+      :ok -> {:cont, :ok}
+      error -> {:halt, error}
     end
   end
 

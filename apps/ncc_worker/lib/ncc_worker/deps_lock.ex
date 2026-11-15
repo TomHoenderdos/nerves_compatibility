@@ -233,6 +233,60 @@ defmodule NccWorker.DepsLock do
   @spec lock(String.t()) :: {:ok, %{String.t() => tuple()}} | :error
   def lock(project_dir), do: read_lock(project_dir)
 
+  @doc """
+  The project's lock as `lock/1` reads it, with a missing `mix.lock` as an
+  empty one: a project that has locked nothing yet. `:error` only when the
+  file is there and cannot be read.
+  """
+  @spec lock_or_empty(String.t()) :: {:ok, %{String.t() => tuple()}} | :error
+  def lock_or_empty(project_dir) do
+    if File.exists?(Path.join(project_dir, "mix.lock")),
+      do: read_lock(project_dir),
+      else: {:ok, %{}}
+  end
+
+  @doc """
+  Every entry's closure in a lock `lock/1` read: `%{name => %{member =>
+  entry}}`, each member with its own lock entry, the entry itself left
+  out. An optional dependency is a member only when the lock resolved it,
+  as in `read/2`.
+  """
+  @spec closures(%{String.t() => tuple()}) :: %{String.t() => %{String.t() => tuple()}}
+  def closures(lock) do
+    graph = graph(lock)
+
+    Map.new(lock, fn {name, _entry} ->
+      members = BuildCache.closure(graph, name)
+      {name, Map.new(members, &{&1, Map.get(lock, &1)})}
+    end)
+  end
+
+  @doc """
+  The entries of both locks whose closure differs between them, sorted:
+  one gained or lost a member (an optional dependency locked or taken out
+  again), or a member's lock entry changed.
+
+  Mix rebuilds a dependency when its own lock entry changes, and marks
+  every dependency that depends on one a `deps.get` fetched. It does
+  nothing for one whose optional dependency was already in the deps dir,
+  or was taken out again: that dependency keeps the beams it was built
+  with, compiled against whatever was loadable then (measured on Elixir
+  1.19 and 1.20). A package compiled against it expands its macros as that
+  build saw them. These are the builds to remove before the next compile.
+  """
+  @spec changed_closures(%{String.t() => tuple()}, %{String.t() => tuple()}) :: [String.t()]
+  def changed_closures(before, after_lock) do
+    closures_before = closures(before)
+
+    changed =
+      for {name, closure} <- closures(after_lock),
+          Map.has_key?(closures_before, name),
+          closures_before[name] != closure,
+          do: name
+
+    Enum.sort(changed)
+  end
+
   defp locked_version({name, entry})
        when is_tuple(entry) and tuple_size(entry) >= 3 and elem(entry, 0) == :hex and
               is_binary(elem(entry, 2)),

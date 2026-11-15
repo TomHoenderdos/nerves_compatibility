@@ -22,6 +22,18 @@ defmodule NccWorker.ProjectTest do
   end
   """
 
+  # `belt` and `ecto` (in its closure) both declare jason optional.
+  @lock_without_jason """
+  %{
+    "belt": {:hex, :belt, "1.0.0", "i-belt", [:mix], [{:ecto, "~> 3.0", [hex: :ecto, repo: "hexpm", optional: false]}, {:jason, "~> 1.0", [hex: :jason, repo: "hexpm", optional: true]}], "hexpm", "o-belt"},
+    "ecto": {:hex, :ecto, "3.12.5", "i-ecto", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "hexpm", optional: false]}, {:telemetry, "~> 1.0", [hex: :telemetry, repo: "hexpm", optional: false]}, {:jason, "~> 1.0", [hex: :jason, repo: "hexpm", optional: true]}], "hexpm", "o-ecto"},
+    "decimal": {:hex, :decimal, "2.3.0", "i-decimal", [:mix], [], "hexpm", "o-decimal"},
+    "telemetry": {:hex, :telemetry, "1.3.0", "i-telemetry", [:rebar3], [], "hexpm", "o-telemetry"},
+  }
+  """
+
+  @jason_entry ~s(  "jason": {:hex, :jason, "1.4.4", "i-jason", [:mix], [{:decimal, "~> 2.0", [hex: :decimal, repo: "hexpm", optional: true]}], "hexpm", "o-jason"},\n)
+
   describe "cap_squashfs/2" do
     @sample_config """
     import Config
@@ -513,6 +525,52 @@ defmodule NccWorker.ProjectTest do
       assert {:error, {:deps_get_failed, "nope"}} =
                Project.fetch_optional_deps(dir, "pkg", [], deps_get)
     end
+
+    # Measured on Elixir 1.19 and 1.20: Mix recompiles a dependency whose
+    # optional dependency appears only when that `deps.get` fetches it. With
+    # its sources already in the deps dir, ecto keeps the beams it was built
+    # with before jason was locked. Its build goes, like the package's.
+    test "removes the build of every dependency whose closure the new lock changed",
+         %{project_dir: dir} do
+      build_path = Path.join([dir, "_build", "rpi4"])
+      File.write!(Path.join(dir, "mix.lock"), @lock_without_jason)
+      for app <- ~w(belt ecto decimal telemetry), do: mkbuild(build_path, app)
+      mkbuild(build_path, ".belt.status-build")
+
+      deps_get = fn project_dir, _env ->
+        File.write!(Path.join(project_dir, "mix.lock"), lock_with_jason())
+        :ok
+      end
+
+      assert :ok =
+               Project.fetch_optional_deps(
+                 dir,
+                 "belt",
+                 [{"MIX_BUILD_PATH", build_path}],
+                 deps_get
+               )
+
+      assert built(build_path) == ~w(.belt.status-build decimal telemetry)
+    end
+
+    test "is an error when the lock deps.get wrote cannot be read", %{project_dir: dir} do
+      build_path = Path.join([dir, "_build", "host"])
+      File.write!(Path.join(dir, "mix.lock"), @lock_without_jason)
+      lock_path = Path.join(dir, "mix.lock")
+
+      deps_get = fn _project_dir, _env ->
+        File.write!(lock_path, "%{oops")
+        :ok
+      end
+
+      assert {:error, {:rm_rf_failed, :lock_unreadable, ^lock_path}} =
+               Project.fetch_optional_deps(
+                 dir,
+                 "belt",
+                 [{"MIX_BUILD_PATH", build_path}],
+                 deps_get
+               )
+    end
   end
 
   describe "optional_deps_to_add/1" do
@@ -555,7 +613,7 @@ defmodule NccWorker.ProjectTest do
 
       assert {:ok, snapshot} = Project.snapshot(dir)
       File.write!(Path.join(dir, "mix.exs"), "changed")
-      File.write!(Path.join(dir, "mix.lock"), "changed")
+      File.write!(Path.join(dir, "mix.lock"), ~s(%{"changed": :changed}\n))
 
       assert :ok = Project.drop_optional_deps(snapshot, "pkg", [{"MIX_BUILD_PATH", build_path}])
 
@@ -564,7 +622,51 @@ defmodule NccWorker.ProjectTest do
       refute File.exists?(Path.join([build_path, "lib", "pkg"]))
       assert File.dir?(Path.join([build_path, "lib", "other"]))
     end
+
+    # The way back: Mix fetches nothing when jason goes, so nothing marks
+    # ecto, and the package rebuilt "without" jason would expand ecto's
+    # macros as ecto was built with it (measured on 1.19 and 1.20).
+    test "removes the build of every dependency whose closure the restored lock changes" do
+      dir = Path.join(System.tmp_dir!(), "project_drop_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(dir) end)
+      build_path = Path.join([dir, "_build", "host"])
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "mix.exs"), @sample_mix_exs)
+      File.write!(Path.join(dir, "mix.lock"), @lock_without_jason)
+      assert {:ok, snapshot} = Project.snapshot(dir)
+
+      File.write!(Path.join(dir, "mix.lock"), lock_with_jason())
+      for app <- ~w(belt ecto decimal telemetry jason), do: mkbuild(build_path, app)
+
+      assert :ok = Project.drop_optional_deps(snapshot, "belt", [{"MIX_BUILD_PATH", build_path}])
+
+      assert File.read!(Path.join(dir, "mix.lock")) == @lock_without_jason
+      assert built(build_path) == ~w(decimal jason telemetry)
+    end
+
+    test "restores the snapshot, then fails, when the lock it replaces cannot be read" do
+      dir = Path.join(System.tmp_dir!(), "project_drop_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(dir) end)
+      build_path = Path.join([dir, "_build", "host"])
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "mix.exs"), @sample_mix_exs)
+      File.write!(Path.join(dir, "mix.lock"), @lock_without_jason)
+      assert {:ok, snapshot} = Project.snapshot(dir)
+      File.write!(Path.join(dir, "mix.lock"), "%{oops")
+      lock_path = Path.join(dir, "mix.lock")
+
+      assert {:error, {:rm_rf_failed, :lock_unreadable, ^lock_path}} =
+               Project.drop_optional_deps(snapshot, "belt", [{"MIX_BUILD_PATH", build_path}])
+
+      assert File.read!(lock_path) == @lock_without_jason
+    end
   end
+
+  defp mkbuild(build_path, app), do: File.mkdir_p!(Path.join([build_path, "lib", app, "ebin"]))
+
+  defp built(build_path), do: build_path |> Path.join("lib") |> File.ls!() |> Enum.sort()
+
+  defp lock_with_jason, do: String.replace(@lock_without_jason, "%{\n", "%{\n" <> @jason_entry)
 
   # Call the public API with a deps.get that fails without running mix, so
   # the test never reaches Hex: mix.exs was already edited by that point,
