@@ -951,6 +951,11 @@ record(unknown, {user, unjudged, _, _}, _Info, St) -> St#st{unjudged = St#st.unj
 record(unknown, _Extent, _Info, St) -> St;
 record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _, _}},
        {Pid, _, _, _, Ts, _, _}, St0) ->
+    %% Which sentinel this is comes from the state before the checks: only
+    %% the final one (the driver's pid with its nonce) may accept Mix's
+    %% consolidated-protocol reload, so checks/2 must be told it is final
+    %% before it runs. Neither field it reads (final_pid, final_nonce) is
+    %% changed by the checks.
     {App, Final} = sentinel_app(App0, Pid, St0),
     {Checks, St} = checks(St0, case Final of
                                    true -> final;

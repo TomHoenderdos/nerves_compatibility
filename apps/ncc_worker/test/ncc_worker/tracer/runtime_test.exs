@@ -928,6 +928,41 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert {false, false, _} = final_and_end(dir), out
   end
 
+  # Version is patterned (match?/2, compare/2) but belongs to no native
+  # dependency. Replaced by a protocol of the same name, consolidated and
+  # loaded from the named consolidated dir, it meets every other condition
+  # of the reload the final sentinel accepts: only the native-module guard
+  # refuses it.
+  test "a module of no native dependency reloaded from the consolidated dir fails",
+       %{tmp_dir: dir} do
+    reload = """
+    _ = :code.purge(Version)
+    true = :code.delete(Version)
+    _ = :code.purge(Version)
+    Code.put_compiler_option(:ignore_module_conflict, true)
+    [{Version, proto}] =
+      Code.compile_string("defprotocol Version do\\n  def match?(a, b)\\n  def compare(a, b)\\nend\\n")
+    proto_dir = Path.join(Path.dirname(cons), "proto")
+    File.mkdir_p!(proto_dir)
+    File.write!(Path.join(proto_dir, "Elixir.Version.beam"), proto)
+    _ = :code.purge(Version)
+    true = :code.delete(Version)
+    _ = :code.purge(Version)
+    {:module, Version} = :code.load_abs(String.to_charlist(Path.join(proto_dir, "Elixir.Version")))
+    {:ok, consolidated} = Protocol.consolidate(Version, [])
+    File.write!(Path.join(cons, "Elixir.Version.beam"), consolidated)
+    _ = :code.purge(Version)
+    true = :code.delete(Version)
+    _ = :code.purge(Version)
+    {:module, Version} = :code.load_file(Version)
+    true = Protocol.consolidated?(Version)
+    :ok = :ncc_tracer.consolidated(tok, cons)
+    """
+
+    {0, out} = consolidation_script(dir, reload)
+    assert {false, false, _} = final_and_end(dir), out
+  end
+
   test "a native protocol consolidated inside a window fails that window's check",
        %{tmp_dir: dir} do
     {0, out} =

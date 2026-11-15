@@ -234,7 +234,7 @@ defmodule NccWorker.Portability.ElixirVersionTest do
             reviewed(release(), %{}),
             MapSet.new()
           ] do
-        assert apps == MapSet.new() or apps == reviewed()
+        assert apps == MapSet.new()
 
         assert %{refusals: [{"toolshed", {:refuse, reason}}]} =
                  judge_toolshed([toolshed_read()], @built, apps)
