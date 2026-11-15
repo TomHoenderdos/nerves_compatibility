@@ -449,7 +449,9 @@ compile observed the host (tokenizers' `use RustlerPrecompiled`) still taints ev
 value can reach a later compile through a persistent term, an ETS table or a process without a traced event, so the
 taint stays per dependency, not per module. Revision 15 also leaves out of rule 2's native-tool grep of the package
 itself a tool its `mix.exs` names only as an optional dependency (`{:rustler, "~> 0.28", optional: true}` in
-rustler_precompiled), counted on the parsed file; any other mention still counts.
+rustler_precompiled), counted on the parsed file; any other mention still counts. A closure dependency whose compile
+calls a natively built dependency (a `native_calls` observation in its window) is tainted from revision 15 on: the
+callee's NIF returns what the trace cannot see, and the caller's beams may carry it into the package.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
@@ -511,7 +513,8 @@ of these skips the build:
   `tab2list`, `first`/`next`) is a known gap. `Mix.Project.build_path`, `app_path` and `compile_path` are recorded as
   `mix_project_paths` observations and refuse nothing;
 - a build path baked into the beams outside diagnostic metadata;
-- a call into a natively built dependency while the package compiles;
+- a call into a natively built dependency while the package compiles, or while a closure dependency compiles (that
+  dependency's taint);
 - a rebar3 build with hooks, plugins, or a `platform_define` whose regex is not a string, in its `rebar.config` or in
   the `mix.rebar.config` Mix wrote for rebar3 (a regex string the OTP major does not decide is a `platform_define`
   compile input instead, for the client to evaluate against its own arch string; precompiled judge refinements,

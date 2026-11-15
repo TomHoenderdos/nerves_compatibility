@@ -30,8 +30,9 @@ defmodule NccWorker.Portability do
        (`BuildRoot.program_source_paths/3`);
     6. the rebar3 rules on the package (`Rebar`);
     7. host taint of a closure dependency (R3), the first in compile order:
-       its window broken or without a sentinel, a refusal in its window, R2,
-       the rebar3 static rules or rebar3 trace coverage.
+       its window broken or without a sentinel, a refusal in its window, a
+       compile-time call into a natively built dependency in its window
+       (`native_calls`), R2, the rebar3 static rules or rebar3 trace coverage.
 
   A read in a natively built dependency's `ebin` (`Events`'
   `native_beam_reads`) is settled before steps 3 and 7: allowed when that
@@ -168,8 +169,9 @@ defmodule NccWorker.Portability do
   # tarball's (`beam_reads/5`), and rule 2 leaves out of the package's own
   # native-tool grep a tool its `mix.exs` names only as an optional
   # dependency (rustler_precompiled's `{:rustler, ..., optional: true}`,
-  # `NccWorker.BuildCache.dep_target_agnostic_rule2?/4`) (bumped by two
-  # while `makefile_rule2` exists).
+  # `NccWorker.BuildCache.dep_target_agnostic_rule2?/4`), and a dependency
+  # whose compile calls a natively built dependency (`native_calls`) is
+  # tainted (bumped by two while `makefile_rule2` exists).
   @judge_revision 15
 
   @doc "The judge revision a toolchain build made with `opts` records."
@@ -1299,6 +1301,7 @@ defmodule NccWorker.Portability do
         [
           fn -> window_problem(report, app) end,
           fn -> first_refusal(decided, app) end,
+          fn -> native_call(decided, app) end,
           fn -> refusal_of(r2) end,
           fn -> unless match?({:error, _}, r2), do: rebar_taint(rebar) end
         ],
@@ -1310,6 +1313,27 @@ defmodule NccWorker.Portability do
 
   defp refusal_of({:refuse, reason}), do: reason
   defp refusal_of(_result), do: nil
+
+  # A compile-time call into a natively built closure dependency made in
+  # this dependency's window (`Events`' `native_calls`) taints it, as the
+  # same call refuses in the package's window. The callee's NIF, loaded from
+  # its own dirs, is allowed by the mapped-library check and its return is
+  # not traced, so a host value it hands back (CPU features, the target) can
+  # sit in this dependency's beams, which the package expands or reads with
+  # no event of its own. Whether the callee is clean says nothing about what
+  # its NIF returns.
+  defp native_call(decided, owner) do
+    Enum.find_value(decided, fn
+      {^owner, {:observe, "native_calls", %{"mfa" => mfa}}} ->
+        "calls natively built dependency at compile time: " <> to_string(mfa)
+
+      {^owner, {:observe, "native_calls", _item}} ->
+        "calls natively built dependency at compile time"
+
+      _ ->
+        nil
+    end)
+  end
 
   # For a dependency, a rebar3 coverage error is host taint (spec R3: its
   # rebar3 sentinel missing), unless R2 could not read its ebin, which makes

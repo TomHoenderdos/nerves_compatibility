@@ -309,6 +309,29 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{"dep" => "compile-time host read: os:type/0" <> _} = obs["taint"]
     end
 
+    test "a compile-time call into a natively built dependency taints the caller", %{
+      proj: proj
+    } do
+      # dep's compile calls nat (a natively built closure dependency, its NIF
+      # loaded from its own dirs): whatever the NIF returned is in dep's
+      # beams, which the package may expand or read with no traced event.
+      call = %{
+        event(15, "nat:cpu_features/0", "lib/dep.ex", "native_closure")
+        | "arg" => %{"module" => "nat"}
+      }
+
+      r = report(proj, %{events: [call]})
+
+      assert %{
+               status: :skip,
+               reason:
+                 "closure dependency observed the host: dep (calls natively built dependency at compile time: nat:cpu_features/0)",
+               observations: obs
+             } = judge(proj, r)
+
+      assert [%{"owner" => "dep", "mfa" => "nat:cpu_features/0"}] = obs["native_calls"]
+    end
+
     test "an event outside every window counts against everything", %{proj: proj} do
       r = report(proj, %{events: [event(25 + 100, "os:cmd/1", "lib/x.ex", "programs")]})
 
