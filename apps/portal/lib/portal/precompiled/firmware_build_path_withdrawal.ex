@@ -80,6 +80,9 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   @chunks ~w(StrT AtU8 Atom LitT)
 
   # `$1` the cursor (a result id, null: from the start), `$2` the page size.
+  # Driven from the refusals (few) through the run and result indexes, so a
+  # page never walks `catalog_system_results` (the largest table) in id
+  # order looking for candidates.
   # `t` is the version's refusal, the newest first, in the default config
   # variant and a `with`/`without` build: a firmware build is made in the
   # default config with at most the package's own optional deps, so a named
@@ -88,33 +91,32 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   # that an unrevoked passing build of the version finished after is
   # superseded (a newer judge published it) and is no evidence.
   @candidates_sql """
-  SELECT s.id, s.system_pkg, p.name, r.version_tested,
-         s.beam_scan->'footprint'->'file_manifest', s.published_variants, ref.reason
-  FROM catalog_system_results s
-  JOIN catalog_runs r ON r.id = s.run_id
-  JOIN catalog_packages p ON p.id = r.package_id
-  CROSS JOIN LATERAL (
-    SELECT t.reason, t.finished_at
+  WITH ref AS MATERIALIZED (
+    SELECT DISTINCT ON (t.package_id, t.version)
+           t.package_id, t.version, t.reason, t.finished_at
     FROM catalog_toolchain_builds t
-    WHERE t.package_id = r.package_id
-      AND t.version = r.version_tested
-      AND t.variant IN #{ToolchainBuild.optional_deps_variants_sql()}
+    WHERE t.variant IN #{ToolchainBuild.optional_deps_variants_sql()}
       AND t.config_variant = 'default'
       AND t.status = 'skipped'
       AND t.revoked_at IS NULL
       AND t.compile_observations IS NOT NULL
       AND t.judge_revision >= #{Portability.withdrawal_judge_revision()}
       AND starts_with(t.reason, '#{@refusal}')
-    ORDER BY t.finished_at DESC NULLS LAST, t.id
-    LIMIT 1
-  ) ref
+    ORDER BY t.package_id, t.version, t.finished_at DESC NULLS LAST, t.id
+  )
+  SELECT s.id, s.system_pkg, p.name, r.version_tested,
+         s.beam_scan->'footprint'->'file_manifest', s.published_variants, ref.reason
+  FROM ref
+  JOIN catalog_runs r ON r.package_id = ref.package_id AND r.version_tested = ref.version
+  JOIN catalog_packages p ON p.id = r.package_id
+  JOIN catalog_system_results s ON s.run_id = r.id
   WHERE s.system_pkg NOT IN ('host', 'pure_elixir')
     AND s.status = 'pass'
     AND s.unpublished_at IS NULL
     AND NOT EXISTS (
       SELECT 1 FROM catalog_toolchain_builds n
-      WHERE n.package_id = r.package_id
-        AND n.version = r.version_tested
+      WHERE n.package_id = ref.package_id
+        AND n.version = ref.version
         AND n.variant IN #{ToolchainBuild.optional_deps_variants_sql()}
         AND n.config_variant = 'default'
         AND n.status = 'pass'
