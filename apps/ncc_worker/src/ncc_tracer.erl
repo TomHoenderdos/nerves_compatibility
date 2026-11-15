@@ -8,7 +8,8 @@
          native_patterns/3, consolidated/2, finish/2, fire/1, ebin_dir/0, flush/0,
          collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
--export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0]).
+-export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0, object_verdict/4,
+         installed_app/3, cache_hit/2]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -284,6 +285,8 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     %% search the path, and those reads would be traced (pattern/3 loads
     %% each patterned module too; these are loaded first for the same reason).
     Unloaded = load_uses(),
+    put(preloaded_md5, preloaded_md5s()),
+    put(owned_md5, owned_md5s()),
     Patterns = ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role),
     _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns],
     Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
@@ -534,16 +537,17 @@ probed(Class, _Stack) -> Class.
 
 %% For a call into a module we loaded, the installed OTP application whose
 %% code made it: the frame right below the call runs a module whose object
-%% code is <code:lib_dir()>/<app>[-<vsn>]/ebin/<module>.beam, looked up now
-%% (never cached: a package could load its own module of that name). null
-%% for any other frame, module or place it was loaded from. The judge
-%% allows the call only when that application's .app lists the called
-%% module's (NccWorker.Portability.Probes).
+%% code is <code:lib_dir()>/<app>[-<vsn>]/ebin/<module>.beam, the beam on
+%% disk there being the code loaded for it (toolchain_module/1, by md5: a
+%% package could load its own module of that name, or record that file for
+%% its own code). null for any other frame, module or place it was loaded
+%% from. The judge allows the call only when that application's .app lists
+%% the called module's (NccWorker.Portability.Probes).
 caller_app({M, _F, _A, _Location}) when is_atom(M) ->
-    try installed_app(M, code:which(M)) catch _:_ -> null end;
+    try installed_app(M, code:which(M), toolchain_module(M)) catch _:_ -> null end;
 caller_app(_Frame) -> null.
 
-installed_app(M, Path) when is_list(Path), Path =/= [] ->
+installed_app(M, Path, true) when is_list(Path), Path =/= [] ->
     Lib = filename:split(norm(code:lib_dir())),
     Beam = atom_to_list(M) ++ ".beam",
     Parts = filename:split(norm(Path)),
@@ -551,7 +555,7 @@ installed_app(M, Path) when is_list(Path), Path =/= [] ->
         {Lib, [AppVsn, "ebin", Beam]} -> list_to_binary(hd(string:split(AppVsn, "-")));
         _ -> null
     end;
-installed_app(_M, _Path) -> null.
+installed_app(_M, _Path, _Toolchain) -> null.
 
 checker(Stack) ->
     try ncc_tracer_stack:checker(Stack, fun toolchain_module/1)
@@ -1061,9 +1065,11 @@ enrich(install, #{app := App} = Arg) ->
     Arg#{app := ncc_tracer_channels:term_bin(App), toolchain_app => false};
 enrich(_Channel, Arg) -> Arg.
 
+%% By the directory's real path, against the installs' real paths.
 toolchain_app(App) ->
     case code:lib_dir(App) of
-        Dir when is_list(Dir) -> under_any(norm(Dir), get(install_roots));
+        Dir when is_list(Dir) ->
+            try under_any(abs_realpath(Dir), get(install_roots)) catch _:_ -> false end;
         _ -> false
     end.
 
@@ -1356,15 +1362,24 @@ realpath([Part | Rest], Acc, Links) ->
 
 %% --- roots and toolchain modules -------------------------------------------
 
+%% The directories whose code is the toolchain's: the OTP and Elixir
+%% installs and MIX_HOME (Hex, rebar3, the archives), all read-only in the
+%% worker image. Not HEX_HOME, which is per run and writable during the
+%% compile and holds no code, and not the tracer's ebin, which lies in the
+%% run dir: only the tracer's own modules from there are trusted, by the
+%% md5 they had at start (owned_md5s/0). Each root is kept by its real
+%% path, so is each module path it is compared with (object_verdict/5).
 roots() ->
     Otp = [norm(code:root_dir())],
     Elixir = case code:lib_dir(elixir) of
                  Dir when is_list(Dir) -> [norm(filename:dirname(Dir))];
                  _ -> []
              end,
-    put(install_roots, Otp ++ Elixir),
-    Homes = [norm(mix_home()) | [norm(H) || H <- [os:getenv("HEX_HOME")], H =/= false, H =/= ""]],
-    Otp ++ Elixir ++ Homes ++ [norm(ebin_dir())].
+    put(install_roots, real_roots(Otp ++ Elixir)),
+    real_roots(Otp ++ Elixir ++ [norm(mix_home())]).
+
+real_roots(Roots) ->
+    lists:usort([R || R0 <- Roots, R <- [R0, (try realpath(R0) catch _:_ -> R0 end)]]).
 
 mix_home() ->
     case os:getenv("MIX_HOME") of
@@ -1372,23 +1387,26 @@ mix_home() ->
         V -> V
     end.
 
-%% A module whose kind decides a config-read attribution or drop is looked
-%% up afresh (ncc_tracer_stack:uncached/0): a cached answer would outlive a
-%% package redefining it.
-toolchain(M) ->
-    case lists:member(M, ncc_tracer_stack:uncached()) of
-        true -> toolchain_module(M);
-        false -> cached_toolchain(M)
-    end.
+%% Taken at start, before any package code has run: the md5 of every
+%% preloaded module and of every tracer module loaded (not the sentinel
+%% probe, whose frames are user extent).
+preloaded_md5s() ->
+    maps:from_list([{M, Md5} || M <- erlang:pre_loaded(), Md5 <- [loaded_md5(M)],
+                                Md5 =/= undefined]).
 
-cached_toolchain(M) ->
-    case get({tc, M}) of
-        undefined ->
-            V = toolchain_module(M),
-            put({tc, M}, V),
-            V;
-        V -> V
-    end.
+owned_md5s() ->
+    maps:from_list([{M, Md5} || M <- tracer_owned(), M =/= ?PROBE, Md5 <- [loaded_md5(M)],
+                                Md5 =/= undefined]).
+
+%% The md5 of the code loaded for M now (erlang:get_module_info/2, a BIF:
+%% never the module's own module_info/1), undefined when none is.
+loaded_md5(M) ->
+    try erlang:get_module_info(M, md5) catch _:_ -> undefined end.
+
+%% Every module's kind is looked up by the code loaded for it now: the
+%% verdict is kept with the md5 it was taken for, and one taken for other
+%% code (a module redefined or reloaded since) is taken again.
+toolchain(M) -> toolchain_module(M).
 
 %% A module with no object file (elixir_compiler_N running a module body,
 %% a module defined from a string, the sentinel probe) is not toolchain.
@@ -1402,29 +1420,63 @@ toolchain_module(M) ->
         false -> object_code_toolchain(M)
     end.
 
-%% code:which/1 is asked every time; only what an absolute path is, which
-%% never changes (the roots are fixed at start), is kept per path.
 object_code_toolchain(M) ->
-    case code:which(M) of
-        preloaded -> true;
-        Path when is_list(Path), Path =/= [] -> under_roots(Path);
-        _ -> false
+    Md5 = loaded_md5(M),
+    case cache_hit(get({tc, M}), Md5) of
+        {ok, V} -> V;
+        miss ->
+            V = object_verdict(M, (try code:which(M) catch _:_ -> undefined end), Md5,
+                               verdict_env()),
+            put({tc, M}, {Md5, V}),
+            V
     end.
 
-%% Kept by the absolute path: a relative one (a relative code path entry)
-%% names whatever the working directory makes of it now, so it is resolved
-%% first and never cached as written.
-under_roots(Path0) ->
-    Path = case filename:pathtype(Path0) of
-               absolute -> Path0;
-               _ -> filename:absname(Path0)
-           end,
-    case get({under_roots, Path}) of
-        undefined ->
-            V = under_any(norm(Path), get(roots)),
-            put({under_roots, Path}, V),
-            V;
-        V -> V
+%% A kept verdict holds only for the code it was taken for.
+cache_hit({Md5, V}, Md5) when is_binary(Md5), is_boolean(V) -> {ok, V};
+cache_hit(_Entry, _Md5) -> miss.
+
+verdict_env() ->
+    #{roots => get(roots), preloaded_md5 => get(preloaded_md5), owned_md5 => get(owned_md5),
+      realpath => fun abs_realpath/1, file_md5 => fun file_md5/1}.
+
+%% Whether the code loaded for M, whose md5 is Md5 and whose recorded file
+%% is Which (code:which/1), is the toolchain's. Neither the name nor the
+%% recorded file decides: code:load_binary/3 records whatever file name it
+%% is given, `preloaded` included. Toolchain only when
+%%   * the module is one of the tracer's own, with the md5 it had at start;
+%%   * the file is `preloaded` and so was the module at start, with this md5;
+%%   * the file's real path lies under a root's real path, and the beam
+%%     there is this module with this md5 (as code:modified_modules/0
+%%     compares them).
+%% Nothing loaded, an unknown name, anything else: not toolchain.
+object_verdict(_M, _Which, undefined, _Env) -> false;
+object_verdict(M, _Which, Md5, #{owned_md5 := Owned}) when is_map_key(M, Owned) ->
+    maps:get(M, Owned) =:= Md5;
+object_verdict(M, preloaded, Md5, #{preloaded_md5 := Pre}) ->
+    maps:get(M, Pre, none) =:= Md5;
+object_verdict(M, Which, Md5, #{roots := Roots, realpath := Real, file_md5 := FileMd5})
+  when is_list(Which), Which =/= [] ->
+    try Real(Which) of
+        Path when is_list(Path) ->
+            under_any(Path, Roots) andalso FileMd5(Path) =:= {ok, {M, Md5}};
+        _ -> false
+    catch
+        _:_ -> false
+    end;
+object_verdict(_M, _Which, _Md5, _Env) -> false.
+
+abs_realpath(Path) ->
+    realpath(case filename:pathtype(Path) of
+                 absolute -> Path;
+                 _ -> filename:absname(Path)
+             end).
+
+%% The beam's module and md5, read the way the code server reads it
+%% (erl_prim_loader also reads a beam inside an escript, rebar3's).
+file_md5(Path) ->
+    case erl_prim_loader:get_file(Path) of
+        {ok, Bin, _} -> beam_lib:md5(Bin);
+        _ -> error
     end.
 
 under_any(Path, Roots) -> lists:any(fun(Root) -> lists:prefix(Root ++ "/", Path) end, Roots).

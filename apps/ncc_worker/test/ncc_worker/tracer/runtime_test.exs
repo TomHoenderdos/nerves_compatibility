@@ -1096,7 +1096,11 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
   # Trace messages from two processes reach the collector in any order: a
   # child's own events can arrive before its parent's `spawn` message.
+  # The stack's modules are loaded first: a module whose code is not loaded
+  # is never the toolchain's.
   @race """
+  Code.ensure_loaded!(Mix.Project)
+  Code.ensure_loaded!(Mix.Task)
   {:ok, tok} = :ncc_tracer.start_main()
   c = :ncc_tracer.collector()
   ts = :erlang.monotonic_time(:nanosecond)

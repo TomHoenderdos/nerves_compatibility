@@ -27,7 +27,10 @@ defmodule NccWorker.Tracer.Report do
     * in the child trace of a closure app (of any app but `unknown` when
       the closure line is missing): any of the line-level problems above,
       and a child VM whose tracer modules (`start.tracer`, their md5s) are
-      not the ones the Mix VM loaded.
+      not the ones the Mix VM loaded, or whose code roots (`start.roots`,
+      the dirs whose code it takes for the toolchain's) include one the
+      Mix VM's do not: a child works its roots out from the environment
+      the compile may have changed.
 
   A child file of an app outside the closure (a stray `erl -eval` sub-VM of
   elixir_make, whose app is `unknown`) is kept in `children` under its app
@@ -549,7 +552,12 @@ defmodule NccWorker.Tracer.Report do
     }
 
     tracer = r.start && r.start["tracer"]
-    r = %{r | children: Map.new(r.children, fn {app, c} -> {app, finish_child(c, tracer)} end)}
+    roots = r.start && r.start["roots"]
+
+    r = %{
+      r
+      | children: Map.new(r.children, fn {app, c} -> {app, finish_child(c, tracer, roots)} end)
+    }
 
     structural =
       shape(items) ++ stats(r.stats) ++ windows(r) ++ order(r) ++ open_quiet(r.quiet)
@@ -604,7 +612,7 @@ defmodule NccWorker.Tracer.Report do
     end)
   end
 
-  defp finish_child(c, tracer) do
+  defp finish_child(c, tracer, roots) do
     c = %{
       c
       | compiles: Enum.reverse(c.compiles),
@@ -614,10 +622,25 @@ defmodule NccWorker.Tracer.Report do
 
     child_tracer = c.start && c.start["tracer"]
 
-    if tracer != nil and child_tracer == tracer,
+    c =
+      if tracer != nil and child_tracer == tracer,
+        do: c,
+        else: %{c | problems: c.problems ++ ["loaded a different tracer"]}
+
+    if roots_within?(c.start && c.start["roots"], roots),
       do: c,
-      else: %{c | problems: c.problems ++ ["loaded a different tracer"]}
+      else: %{c | problems: c.problems ++ ["trusted code roots the Mix VM does not"]}
   end
+
+  @doc false
+  # A child's code roots are a subset of the Mix VM's; both must be lists of
+  # strings.
+  @spec roots_within?(term(), term()) :: boolean()
+  def roots_within?(child, main) when is_list(child) and is_list(main) do
+    Enum.all?(child ++ main, &is_binary/1) and Enum.all?(child, &(&1 in main))
+  end
+
+  def roots_within?(_child, _main), do: false
 
   defp shape([]), do: ["trace-main.jsonl is empty"]
 

@@ -6,10 +6,24 @@ defmodule NccWorker.Tracer.ReportTest do
   @moduletag :tmp_dir
 
   @tracer %{"ncc_tracer" => "AA", "ncc_tracer_channels" => "BB", "ncc_tracer_stack" => "CC"}
-  @start %{"kind" => "start", "role" => "main", "app" => "main", "ts" => 1, "tracer" => @tracer}
+  @roots ["/otp", "/elixir", "/home/u/.mix"]
+  @start %{
+    "kind" => "start",
+    "role" => "main",
+    "app" => "main",
+    "ts" => 1,
+    "tracer" => @tracer,
+    "roots" => @roots
+  }
 
-  defp child_start(app, tracer \\ @tracer),
-    do: %{"kind" => "start", "role" => "child", "app" => app, "tracer" => tracer}
+  defp child_start(app, tracer \\ @tracer, roots \\ @roots),
+    do: %{
+      "kind" => "start",
+      "role" => "child",
+      "app" => app,
+      "tracer" => tracer,
+      "roots" => roots
+    }
 
   defp child_sentinel(app, checks \\ %{}),
     do:
@@ -238,6 +252,32 @@ defmodule NccWorker.Tracer.ReportTest do
       write(dir, "trace-child-r3-11.jsonl", [child_start("r3", tracer), child_sentinel("r3")])
       r = read(dir, clean())
       assert "child trace of r3: loaded a different tracer" in r.problems, inspect(r.problems)
+    end
+  end
+
+  # A child VM works its code roots out from the environment, which the
+  # compile can change before it starts one: it may trust fewer dirs than
+  # the Mix VM, never one more.
+  test "a child VM that trusts a code root the Mix VM does not is a problem",
+       %{tmp_dir: dir} do
+    why = "child trace of r3: trusted code roots the Mix VM does not"
+
+    for roots <- [@roots ++ ["/work/proj/deps/x"], ["/elsewhere"], nil, [1], "/otp"] do
+      write(dir, "trace-child-r3-11.jsonl", [
+        child_start("r3", @tracer, roots),
+        child_sentinel("r3")
+      ])
+
+      assert why in read(dir, clean()).problems, inspect(roots)
+    end
+
+    for roots <- [@roots, Enum.take(@roots, 2), []] do
+      write(dir, "trace-child-r3-11.jsonl", [
+        child_start("r3", @tracer, roots),
+        child_sentinel("r3")
+      ])
+
+      refute why in read(dir, clean()).problems, inspect(roots)
     end
   end
 
