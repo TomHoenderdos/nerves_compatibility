@@ -69,6 +69,7 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   alias Compatibility.Portability
   alias Portal.ArtifactStore
   alias Portal.Catalog.{SystemResult, ToolchainBuild}
+  alias Portal.Precompiled.FirmwareRefusal
   alias Portal.Repo
 
   @default_limit 100
@@ -146,10 +147,19 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   ORDER BY s.unpublished_at
   """
 
+  # Returns each restored result's id and its package version, which
+  # `undo/1` hands to `FirmwareRefusal` before it counts what serves again.
   @undo_sql """
-  UPDATE catalog_system_results
+  UPDATE catalog_system_results s
   SET unpublished_at = NULL, unpublished_reason = NULL, updated_at = now() AT TIME ZONE 'utc'
-  WHERE unpublished_reason = $1 AND unpublished_at = $2
+  FROM catalog_runs r
+  WHERE r.id = s.run_id AND s.unpublished_reason = $1 AND s.unpublished_at = $2
+  RETURNING s.id, r.package_id, r.version_tested
+  """
+
+  @still_served_sql """
+  SELECT count(*) FROM catalog_system_results
+  WHERE id = ANY($1::uuid[]) AND unpublished_at IS NULL
   """
 
   @type row :: %{
@@ -216,17 +226,43 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
 
   @doc """
   Puts back the results this module withdrew at `withdrawn_at` (its
-  `unpublished_reason` and exactly that `unpublished_at`). Returns how many.
+  `unpublished_reason` and exactly that `unpublished_at`). Returns how many
+  serve again.
+
+  A result withdrawn here was no candidate for `Portal.Precompiled.FirmwareRefusal`,
+  so a newer refusal of its version and target may have left it alone; in the
+  same transaction its versions go through that rule again, and a result it
+  supersedes stays withdrawn, now under that rule's reason.
   """
   @spec undo(DateTime.t() | NaiveDateTime.t()) :: {:restored, non_neg_integer()}
   def undo(%DateTime{} = withdrawn_at), do: withdrawn_at |> naive_utc() |> undo()
 
   def undo(%NaiveDateTime{} = withdrawn_at) do
-    %{num_rows: count} =
-      Repo.query!(@undo_sql, [SystemResult.baked_build_path(), withdrawn_at])
+    {:ok, {restored, served}} =
+      Repo.transaction(fn ->
+        %{rows: rows} = Repo.query!(@undo_sql, [SystemResult.baked_build_path(), withdrawn_at])
 
-    Logger.warning("restored #{count} firmware publications withdrawn at #{withdrawn_at}")
-    {:restored, count}
+        rows
+        |> Enum.map(fn [_id, package_id, version] -> {package_id, version} end)
+        |> Enum.uniq()
+        |> Enum.each(fn {package_id, version} ->
+          FirmwareRefusal.withdraw_superseded(Ecto.UUID.cast!(package_id), version)
+        end)
+
+        ids = Enum.map(rows, fn [id | _] -> id end)
+        %{rows: [[served]]} = Repo.query!(@still_served_sql, [ids])
+        {length(rows), served}
+      end)
+
+    Logger.warning(
+      "restored #{served} firmware publications withdrawn at #{withdrawn_at}" <>
+        if(served < restored,
+          do: " (#{restored - served} stay withdrawn for a newer build path refusal)",
+          else: ""
+        )
+    )
+
+    {:restored, served}
   end
 
   @doc """

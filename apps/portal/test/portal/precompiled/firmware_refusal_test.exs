@@ -256,6 +256,26 @@ defmodule Portal.Precompiled.FirmwareRefusalTest do
     assert is_nil(rpi4_of(newer).unpublished_at)
   end
 
+  test "undoing a build path withdrawal does not put back a build a newer refusal supersedes" do
+    old = run!("1.4.0", "2026-11-01T10:00:00Z", "old-beam")
+    at = ~U[2026-11-01 12:00:00.000000Z]
+
+    Repo.query!(
+      "UPDATE catalog_system_results SET unpublished_at = $1, unpublished_reason = $2 WHERE id = $3",
+      [at, SystemResult.baked_build_path(), Ecto.UUID.dump!(rpi4_of(old).id)]
+    )
+
+    # The refusal finds the older build already withdrawn and leaves it be.
+    _ = run!("1.4.0", "2026-11-02T10:00:00Z", "new-beam", refused: @refused)
+    assert rpi4_of(old).unpublished_reason == SystemResult.baked_build_path()
+
+    assert {:restored, 0} = Portal.Precompiled.FirmwareBuildPathWithdrawal.undo(at)
+
+    assert rpi4_of(old).unpublished_reason == SystemResult.superseded_by_refusal()
+    assert served_rpi4("1.4.0") == []
+    refute served_v1?("1.4.0")
+  end
+
   test "an operator sweep withdraws what a release without the rule left served, idempotently" do
     old = run!("1.4.0", "2026-11-01T10:00:00Z", "old-beam")
     _ = run!("1.4.0", "2026-11-02T10:00:00Z", "new-beam", refused: @refused)

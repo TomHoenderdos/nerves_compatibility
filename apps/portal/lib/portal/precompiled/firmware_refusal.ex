@@ -37,9 +37,14 @@ defmodule Portal.Precompiled.FirmwareRefusal do
   and timestamp.
 
   Ingest calls `withdraw_superseded/2` for the version it stored, in its
-  transaction. A release without this module stores no `build_root`, so a
-  refusal it ingested is invisible here; `withdraw_superseded/0` sweeps every
-  version for what an ingest without the rule left served:
+  transaction, and so does `Portal.Precompiled.FirmwareBuildPathWithdrawal.undo/1`
+  for the versions it puts back. A release without this module stores no
+  `build_root`, so a refusal it ingested is lost for good: no sweep can see
+  it, only a new run of that version records it again. What a sweep does
+  find is an older build that such a release ingested after a refusal this
+  one stored (both hosts are not on the same release during a deploy), or a
+  result put back by hand; `withdraw_superseded/0` sweeps every version for
+  those:
 
       bin/portal rpc 'Portal.Precompiled.FirmwareRefusal.withdraw_superseded() |> IO.inspect()'
   """
