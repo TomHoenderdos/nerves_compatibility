@@ -42,6 +42,33 @@ defmodule Portal.Toolchains.MemoryRouting do
   # so a deploy does not send its big jobs back to the small slots.
   @stranded_after_seconds 30 * 60
 
+  @doc """
+  This node's Oban config, without `:toolchain_big` when
+  `Portal.Builder.check_toolchain_big_memory/1` refuses it: a node whose
+  big slot is no bigger than its toolchain slot does not consume the queue,
+  and says why at boot, rather than OOM the same packages again. Every other
+  config passes through.
+  """
+  @spec with_checked_queue(keyword()) :: keyword()
+  def with_checked_queue(oban_config) do
+    queues = Keyword.get(oban_config, :queues)
+
+    case Portal.Builder.check_toolchain_big_memory(queues) do
+      :ok ->
+        oban_config
+
+      {:error, {_reason, big, toolchain}} ->
+        Logger.error(
+          "not running the toolchain_big queue: its memory limit " <>
+            "(NCC_TOOLCHAIN_BIG_MEMORY, else NCC_BUILD_MEMORY) is #{inspect(big)}, " <>
+            "not above the toolchain limit #{inspect(toolchain)}; set " <>
+            "NCC_TOOLCHAIN_BIG_MEMORY higher, or take toolchain_big out of OBAN_QUEUES"
+        )
+
+        Keyword.put(oban_config, :queues, Keyword.delete(queues, @big))
+    end
+  end
+
   @doc "The queue for big packages."
   @spec big_queue() :: :toolchain_big
   def big_queue, do: @big

@@ -83,13 +83,15 @@ defmodule Portal.Application do
       # A build node also runs its own ingest queue, its own Nerves cache
       # warm queue and the shared system ABI queue; see
       # `Portal.Workers.Ingest`, `Portal.Workers.WarmNerves` and
-      # `Portal.Workers.SystemAbiRun`.
+      # `Portal.Workers.SystemAbiRun`. It drops `toolchain_big` when its slot
+      # is no bigger than a toolchain one (`Portal.Toolchains.MemoryRouting`).
       {Oban,
        :portal
        |> Application.fetch_env!(Oban)
        |> Portal.Workers.Ingest.with_local_queue()
        |> Portal.Workers.WarmNerves.with_local_queue()
-       |> Portal.Workers.SystemAbiRun.with_queue()},
+       |> Portal.Workers.SystemAbiRun.with_queue()
+       |> Portal.Toolchains.MemoryRouting.with_checked_queue()},
       {Phoenix.PubSub, name: Portal.PubSub},
       # Owns the ETS table of builder rate-limit counters; precedes both
       # endpoints, whose requests count against it.

@@ -482,6 +482,33 @@ defmodule Portal.BuilderTest do
       assert Builder.toolchain_big_memory() == "3g"
     end
 
+    # A toolchain_big slot no bigger than a toolchain one OOMs the same
+    # packages again, and they cycle between the queues.
+    test "check_toolchain_big_memory/1 needs a big limit above the toolchain one",
+         %{previous: previous} do
+      big = [builds: 1, toolchain: 1, toolchain_big: 1]
+
+      put_builder([memory: "3g", toolchain_memory: "2g", toolchain_big_memory: "4g"], previous)
+      assert :ok = Builder.check_toolchain_big_memory(big)
+      assert :ok = Builder.check_toolchain_big_memory(toolchain_big: [limit: 1])
+
+      for {tmem, bmem} <- [{"2g", "2g"}, {"2g", "1g"}, {nil, nil}, {"2048m", "2g"}] do
+        put_builder([memory: "3g", toolchain_memory: tmem, toolchain_big_memory: bmem], previous)
+
+        assert {:error, {:toolchain_big_memory_not_above_toolchain, _big, _toolchain}} =
+                 Builder.check_toolchain_big_memory(big),
+               "for #{inspect({tmem, bmem})}"
+      end
+    end
+
+    test "check_toolchain_big_memory/1 is :ok on a node without toolchain_big",
+         %{previous: previous} do
+      put_builder([memory: "3g", toolchain_memory: "2g", toolchain_big_memory: nil], previous)
+      assert :ok = Builder.check_toolchain_big_memory(builds: 1, toolchain: 1)
+      assert :ok = Builder.check_toolchain_big_memory(toolchain_big: 0)
+      assert :ok = Builder.check_toolchain_big_memory(nil)
+    end
+
     test "a warm job carries NCC_WARM_MEMORY, else NCC_BUILD_MEMORY", %{previous: previous} do
       put_builder([memory: "3g", toolchain_memory: "2g", warm_memory: "256m"], previous)
       assert memory_arg(%{mode: "warm_nerves"}) == "256m"

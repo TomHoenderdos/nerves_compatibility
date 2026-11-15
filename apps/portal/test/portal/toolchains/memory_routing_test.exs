@@ -137,6 +137,49 @@ defmodule Portal.Toolchains.MemoryRoutingTest do
     end
   end
 
+  describe "with_checked_queue/1" do
+    setup do
+      previous = Application.get_env(:portal, Portal.Builder)
+      on_exit(fn -> Application.put_env(:portal, Portal.Builder, previous) end)
+      %{previous: previous}
+    end
+
+    defp put_memory(previous, tmem, bmem) do
+      Application.put_env(
+        :portal,
+        Portal.Builder,
+        Keyword.merge(previous, memory: "3g", toolchain_memory: tmem, toolchain_big_memory: bmem)
+      )
+    end
+
+    test "keeps toolchain_big when its limit is above the toolchain one", %{previous: previous} do
+      put_memory(previous, "2g", "4g")
+      config = [repo: Repo, queues: [builds: 1, toolchain: 1, toolchain_big: 1]]
+      assert MemoryRouting.with_checked_queue(config) == config
+    end
+
+    test "drops toolchain_big at boot, with an error, when its limit is not above",
+         %{previous: previous} do
+      # Both unset: each is NCC_BUILD_MEMORY.
+      put_memory(previous, nil, nil)
+      config = [repo: Repo, queues: [builds: 1, toolchain: 1, toolchain_big: 1]]
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert MemoryRouting.with_checked_queue(config)[:queues] == [builds: 1, toolchain: 1]
+        end)
+
+      assert log =~ "not running the toolchain_big queue"
+      assert log =~ "NCC_TOOLCHAIN_BIG_MEMORY"
+    end
+
+    test "leaves a config without toolchain_big or without queues alone", %{previous: previous} do
+      put_memory(previous, "2g", nil)
+      assert MemoryRouting.with_checked_queue(queues: [builds: 1]) == [queues: [builds: 1]]
+      assert MemoryRouting.with_checked_queue(testing: :manual) == [testing: :manual]
+    end
+  end
+
   describe "unique across the two queues" do
     @args %{
       package: "ip2country",

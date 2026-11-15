@@ -60,7 +60,10 @@ builder_egress_disabled() {
   )
 }
 
-# The new release's own preflight, before any live image tag moves (except on
+# The new release's own checks: the build egress filter, and a
+# toolchain_big queue in OBAN_QUEUES whose NCC_TOOLCHAIN_BIG_MEMORY is not
+# above the toolchain limit (the release would drop the queue at boot, see
+# Portal.Toolchains.MemoryRouting). Before any live image tag moves (except on
 # a daemon that has none yet) or the service restarts. By then the new
 # release is already installed and migrated, so a failure here does not keep
 # it from running: the next restart, crash or reboot starts it, and it then
@@ -76,7 +79,8 @@ builder_check_egress() {
     set +a
     exec "$3" eval "$4"
   ' -- "$builder_portal_workdir" "$builder_portal_env" "$builder_portal_bin" \
-    'case Portal.Builder.check_egress() do
+    'case with(:ok <- Portal.Builder.check_egress(),
+              do: Portal.Builder.check_toolchain_big_memory()) do
     :ok ->
       :ok
 
@@ -84,7 +88,7 @@ builder_check_egress() {
       IO.puts(:stderr, inspect(error))
       System.halt(1)
   end'; then
-    echo 'refusing to activate: the new release finds no build egress filter (see the operator runbook)' >&2
+    echo 'refusing to activate: the new release finds no build egress filter, or runs toolchain_big with an NCC_TOOLCHAIN_BIG_MEMORY not above its toolchain limit (the error is above; see the operator runbook)' >&2
     return 1
   fi
 }

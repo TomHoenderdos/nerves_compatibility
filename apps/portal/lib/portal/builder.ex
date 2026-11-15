@@ -222,6 +222,46 @@ defmodule Portal.Builder do
   def toolchain_big_memory, do: config(:toolchain_big_memory, nil) || config(:memory, nil)
 
   @doc """
+  `:ok` unless `queues` (an Oban `:queues` keyword, default this node's) run
+  `toolchain_big` with a memory limit (`toolchain_big_memory/0`) that is not
+  strictly above the toolchain one (`memory_for(%{mode: "toolchain"})`):
+  such a slot OOMs the same packages the `toolchain` slot did, and they
+  cycle between the two queues. Then `{:error,
+  {:toolchain_big_memory_not_above_toolchain, big, toolchain}}`, the two
+  configured values. A limit that is not a memory size counts as not above.
+  `Portal.Toolchains.MemoryRouting.with_checked_queue/1` drops the queue at
+  boot on it, and the builder deploy's new-release check refuses on it
+  (`ops/builder-deploy.sh`).
+  """
+  @spec check_toolchain_big_memory(keyword() | nil) ::
+          :ok | {:error, {:toolchain_big_memory_not_above_toolchain, term(), term()}}
+  def check_toolchain_big_memory(queues \\ configured_queues()) do
+    big = toolchain_big_memory()
+    toolchain = memory_for(%{mode: "toolchain"})
+
+    cond do
+      not runs_toolchain_big?(queues) -> :ok
+      above?(memory_limit_bytes(%{memory: big}), memory_limit_bytes(%{memory: toolchain})) -> :ok
+      true -> {:error, {:toolchain_big_memory_not_above_toolchain, big, toolchain}}
+    end
+  end
+
+  defp above?(big, toolchain) when is_integer(big) and is_integer(toolchain), do: big > toolchain
+  defp above?(_big, _toolchain), do: false
+
+  defp runs_toolchain_big?(queues) when is_list(queues) do
+    case Keyword.get(queues, :toolchain_big, 0) do
+      limit when is_integer(limit) -> limit > 0
+      opts when is_list(opts) -> Keyword.get(opts, :limit, 0) > 0
+      _ -> false
+    end
+  end
+
+  defp runs_toolchain_big?(_queues), do: false
+
+  defp configured_queues, do: :portal |> Application.get_env(Oban, []) |> Keyword.get(:queues)
+
+  @doc """
   The memory limit of `job`'s kind (`memory_for/1`) in bytes, or nil when it
   is not a memory limit (`Argv.memory_limit?/1`). The units are docker's,
   which are binary: `"3g"` is 3 GiB, `"512m"`, `"4096k"`, and a plain number

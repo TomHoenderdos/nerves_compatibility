@@ -980,9 +980,13 @@ builder_check_egress
                 self.assertIn("\n--\n/test/work\n/test/config/portal.env\n"
                               "/test/install/portal/bin/portal\n", args)
                 self.assertIn("Portal.Builder.check_egress()", args)
+                # A toolchain_big slot no bigger than a toolchain one refuses
+                # the activation too, so the deploy says so.
+                self.assertIn("Portal.Builder.check_toolchain_big_memory()", args)
                 self.assertEqual(result.returncode == 0, expect_ok, result.stderr)
                 if not expect_ok:
                     self.assertIn("egress filter", result.stderr)
+                    self.assertIn("NCC_TOOLCHAIN_BIG_MEMORY", result.stderr)
 
     def check_running(self, answer, status="0", portal_env="", **overrides):
         script = r'''
