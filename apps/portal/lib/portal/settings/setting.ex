@@ -55,7 +55,8 @@ defmodule Portal.Settings.Setting do
         :remote_mode,
         :remote_backlog_threshold,
         :remote_auto_on,
-        :world_variants_enabled
+        :world_variants_enabled,
+        :firmware_world_enabled
       ])
 
       upsert?(true)
@@ -141,6 +142,17 @@ defmodule Portal.Settings.Setting do
     # every node that runs portal code has a release that knows the world
     # variants, since an older one cannot read their rows.
     attribute :world_variants_enabled, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Whether a firmware build asks the worker for the firmware world build
+    # per passing target (`Portal.Settings.worker_firmware_world/1`,
+    # `NCC_INPUT.firmware_world`). Off by default: turn it on only once the
+    # web host runs a release that ingests world variants and every firmware
+    # builder runs a worker image that builds them.
+    attribute :firmware_world_enabled, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)

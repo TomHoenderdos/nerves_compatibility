@@ -78,6 +78,10 @@ defmodule Portal.Builder do
           # package names (`Compatibility.Worlds`).
           optional(:world) => String.t() | nil,
           optional(:world_members) => [String.t()] | nil,
+          # For a firmware build (no `mode`): `%{"name", "members"}`, the
+          # firmware world the worker builds per passing target
+          # (`Portal.Settings.worker_firmware_world/1`). Never sent with a mode.
+          optional(:firmware_world) => map() | nil,
           optional(:argus) => map() | nil,
           # For `mode: "warm_nerves"`: `%{"name", "version"}` pairs to warm
           # (`Portal.Workers.WarmNerves`); `[]` warms what the template resolves.
@@ -396,6 +400,7 @@ defmodule Portal.Builder do
       config_variant: Map.get(args, :config_variant),
       world: Map.get(args, :world),
       world_members: Map.get(args, :world_members),
+      firmware_world: Map.get(args, :firmware_world),
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
       system_abi: Map.get(args, :system_abi),
@@ -1004,6 +1009,7 @@ defmodule Portal.Builder do
     |> maybe_put("config_variant", Map.get(job, :config_variant))
     |> maybe_put("world", Map.get(job, :world))
     |> maybe_put("world_members", Map.get(job, :world_members))
+    |> maybe_put("firmware_world", firmware_world(job))
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))
     |> maybe_put("system_abi", Map.get(job, :system_abi))
@@ -1011,6 +1017,10 @@ defmodule Portal.Builder do
     |> maybe_put("egress_probe", Map.get(job, :egress_probe))
     |> maybe_put("judge", Map.get(job, :judge))
   end
+
+  # Only a firmware build (no mode) builds targets to put a world on.
+  defp firmware_world(%{mode: mode}) when mode != nil, do: nil
+  defp firmware_world(job), do: Map.get(job, :firmware_world)
 
   # A warm run fills the Nerves cache and a system ABI run reads system
   # releases; neither builds a package.

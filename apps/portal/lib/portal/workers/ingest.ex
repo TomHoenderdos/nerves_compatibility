@@ -235,6 +235,7 @@ defmodule Portal.Workers.Ingest do
       lease_id: lease_id,
       builder_id: args["builder_id"],
       arch: args["arch"],
+      firmware_world: args["firmware_world"],
       identity: Upload.lease_identity(lease_id)
     }
 
@@ -244,6 +245,7 @@ defmodule Portal.Workers.Ingest do
     do: %{
       kind: :local,
       arch: args["arch"] || Compatibility.Arch.current(),
+      firmware_world: args["firmware_world"],
       identity: run_identity(args)
     }
 
@@ -395,7 +397,9 @@ defmodule Portal.Workers.Ingest do
         scan_request_id: scan_request_id,
         log: build.log,
         builder_id: Map.get(source, :builder_id),
-        arch: source.arch
+        arch: source.arch,
+        # The firmware world the build job asked for, if any.
+        firmware_world: Map.get(source, :firmware_world)
       })
 
     case safe_ingest(&Ingestion.ingest/2, build.result, ingest_opts) do

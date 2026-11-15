@@ -345,7 +345,13 @@ Status codes:
       client before 0.7.0, which compares only the dependencies it locks,
       never see it. `builds` and format 1 list only the build with them. A
       target whose own lock was unusable lists no build of its own in either
-      format, rather than one under the run's lock.
+      format, rather than one under the run's lock. A target can also list,
+      in `builds_closure` only, a third build: the package compiled with the
+      optional dependencies, at any depth of its closure, that a default
+      `mix nerves.new` app has (the `nerves` world, for example muontrap and
+      nerves_time for nerves_motd, or jason, which nerves 1.x brings in), when
+      that closure differs from both other builds'. It carries no `variant`
+      key; a client matches it by its `deps` like any other closure build.
     - `package_checksum` — the package's own outer Hex checksum from the
       build's `mix.lock`, a string, or `null` for runs from before it was
       recorded and for argus-only runs.

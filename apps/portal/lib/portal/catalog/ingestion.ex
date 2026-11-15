@@ -98,6 +98,10 @@ defmodule Portal.Catalog.Ingestion do
           optional(:scan_request_id) => String.t() | nil,
           optional(:builder_id) => String.t() | nil,
           optional(:arch) => String.t() | nil,
+          # The firmware world the build job asked for (`"nerves"`), nil for
+          # none: a `world_<name>` variant is kept only when the result
+          # echoes it (`firmware_world/2`).
+          optional(:firmware_world) => String.t() | nil,
           optional(:log) => String.t() | nil,
           # Stage the logs of these systems only; every failed one when absent.
           optional(:log_systems) => [String.t()] | nil,
@@ -1051,7 +1055,7 @@ defmodule Portal.Catalog.Ingestion do
          :ok <-
            create_system_results(
              systems,
-             {run.id, rule, hold},
+             {run.id, rule, hold, firmware_world(result, opts)},
              package_name,
              version,
              staged,
@@ -1516,7 +1520,7 @@ defmodule Portal.Catalog.Ingestion do
   defp create_system_result(
          system_pkg,
          sys,
-         {run_id, rule, hold},
+         {run_id, rule, hold, world},
          package_name,
          version,
          staged,
@@ -1526,7 +1530,11 @@ defmodule Portal.Catalog.Ingestion do
     held_at = if system_pkg == "pure_elixir", do: hold
     {inputs, compiled_env} = inputs_and_env(sys, {package_name, version})
     {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
-    variants = published_variants(system_pkg, sys, {package_name, version})
+
+    variants =
+      system_pkg
+      |> published_variants(sys, {package_name, version})
+      |> gate_world(sys, world)
 
     result =
       SystemResult
@@ -1620,7 +1628,10 @@ defmodule Portal.Catalog.Ingestion do
   # and the target publishes its own build alone, as before variants
   # existed. Only the file manifest of its beam scan is stored. A result
   # without the key (every worker before it) stores nil.
-  @variants ["without"]
+  #
+  # A firmware world build (`NccWorker.WorldTargets`, "world_<name>") is
+  # kept only by `gate_world/3`.
+  @variants ["without" | Compatibility.Worlds.firmware_variants()]
 
   defp published_variants(
          system_pkg,
@@ -1663,6 +1674,48 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp published_variant(_raw, _context), do: []
+
+  # The firmware world variant the job asked for and the run says it built:
+  # `opts.firmware_world` (the Build job's arg) and the result's echo
+  # `"world:<name>"` must agree. nil keeps no world variant at all, so a run
+  # from an image or a job without the world never publishes one.
+  defp firmware_world(result, opts) do
+    with name when is_binary(name) <- Map.get(opts, :firmware_world),
+         {:ok, variant} <- Compatibility.Worlds.firmware_variant(name),
+         echo when echo == "world:" <> name <- result["firmware_world"] do
+      %{variant: variant, run_lock: deps_lock(result["deps_lock"])}
+    else
+      _ -> nil
+    end
+  end
+
+  # Keeps a world variant only when it is the one `firmware_world/2`
+  # allows and its closure differs from the build the row publishes (its
+  # own lock, or the run's) and from the build without: an equal closure is
+  # the same build to a client, which matches on the closure's names.
+  defp gate_world(nil, _sys, _world), do: nil
+
+  defp gate_world(variants, sys, world) do
+    others =
+      for(%{"variant" => "without", "deps_lock" => lock} <- variants, do: names(lock))
+      |> then(&[names(deps_lock(sys["deps_lock"]) || (world && world.run_lock)) | &1])
+
+    variants
+    |> Enum.filter(fn
+      %{"variant" => "without"} -> true
+      %{"variant" => name, "deps_lock" => lock} -> world_kept?(world, name, lock, others)
+    end)
+    |> case do
+      [] -> nil
+      kept -> kept
+    end
+  end
+
+  defp world_kept?(%{variant: name}, name, lock, others), do: names(lock) not in others
+  defp world_kept?(_world, _name, _lock, _others), do: false
+
+  defp names(%{} = lock), do: lock |> Map.keys() |> Enum.sort()
+  defp names(_lock), do: nil
 
   # `Portal.Catalog.BuildTimeout` keeps the log of the one target the wall
   # clock cut off: the others it reached finished their builds, and their

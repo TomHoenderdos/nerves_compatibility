@@ -40,10 +40,30 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
 
     assert body["input"]["run_id"] == body["run_id"]
     assert body["input"]["paths"]["files_dir"] == "/files"
+    refute Map.has_key?(body["input"], "firmware_world")
     assert body["timeout_sec"] == 7200
     assert body["upload"]["max_files"] == 20_000
     assert body["egress_required"] == true
     refute Map.has_key?(body, "warm_allowlist")
+  end
+
+  test "a lease with the firmware world carries it in the worker input", %{conn: conn} do
+    %{cert_der: der} = enrolled_builder!("c-world")
+    world = %{"name" => "nerves", "members" => ["jason"]}
+
+    {:ok, _lease} =
+      Leases.enqueue(%{
+        package: "decimal",
+        version: "2.0.0",
+        image_name: "ghcr.io/x/ncc-worker",
+        image_digest: "sha256:#{String.duplicate("b", 64)}",
+        args: %{"mode" => nil, "firmware_world" => world},
+        scan_request_id: nil,
+        priority: 5
+      })
+
+    body = conn |> with_cert(der) |> post("/builder/v1/jobs/claim", @claim) |> json_response(200)
+    assert body["input"]["firmware_world"] == world
   end
 
   test "nothing to do is 204 and a short poll returns quickly", %{conn: conn} do

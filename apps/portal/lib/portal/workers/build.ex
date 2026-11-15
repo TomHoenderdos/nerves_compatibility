@@ -211,6 +211,9 @@ defmodule Portal.Workers.Build do
 
     log_oom_retry(overrides, package, version)
 
+    settings = Portal.Settings.get()
+    scope = scope_args(package, version, args)
+
     build_args =
       %{
         package: package,
@@ -218,9 +221,10 @@ defmodule Portal.Workers.Build do
         run_id: run_id,
         image_digest: image_digest,
         # Read per build, so an admin change applies from the next build on.
-        argus: Portal.Settings.worker_argus(Portal.Settings.get())
+        argus: Portal.Settings.worker_argus(settings)
       }
-      |> Map.merge(scope_args(package, version, args))
+      |> Map.merge(scope)
+      |> Map.merge(firmware_world(scope, settings))
       |> Map.merge(overrides)
 
     started_at = DateTime.utc_now()
@@ -246,6 +250,7 @@ defmodule Portal.Workers.Build do
         {:cancel, :stale_attempt}
 
       {:ok, %{exit_code: exit_code} = build} ->
+        build = Map.put(build, :firmware_world, firmware_world_name(build_args))
         handle_outcome(classify(exit_code), build, ctx)
 
       {:error, {:insufficient_disk, free, needed}} ->
@@ -447,7 +452,9 @@ defmodule Portal.Workers.Build do
 
         # No cleanup: the scratch dir is what the ingest job reads, and it owns
         # removing it once the rows are committed.
-        enqueue_ingest(package, version, run_id, image_digest, {scan_request_id, sweep_id})
+        enqueue_ingest(package, version, run_id, image_digest, {scan_request_id, sweep_id},
+          firmware_world: build.firmware_world
+        )
     end
   end
 
@@ -547,7 +554,7 @@ defmodule Portal.Workers.Build do
   # `package` and `version` are what this job was queued to build, not what
   # the build's result.json says: the ingest checks the result against them
   # and records the run under them (see `Portal.Workers.Ingest`).
-  defp enqueue_ingest(package, version, run_id, image_digest, {scan_request_id, sweep_id}) do
+  defp enqueue_ingest(package, version, run_id, image_digest, {scan_request_id, sweep_id}, opts) do
     args =
       %{
         "run_id" => run_id,
@@ -558,6 +565,9 @@ defmodule Portal.Workers.Build do
         "arch" => Compatibility.Arch.current()
       }
       |> maybe_put("scan_request_id", scan_request_id)
+      # The firmware world this build asked for: ingest keeps a world
+      # variant only when the result echoes it (`Portal.Catalog.Ingestion`).
+      |> maybe_put("firmware_world", Keyword.get(opts, :firmware_world))
 
     meta = if sweep_id, do: %{announce_sweep: sweep_id}, else: %{}
 
@@ -582,6 +592,20 @@ defmodule Portal.Workers.Build do
         {:error, reason}
     end
   end
+
+  # The firmware world (`Portal.Settings.worker_firmware_world/1`), for a
+  # firmware build only: a partial-targets build too, never an argus-only one.
+  defp firmware_world(%{mode: nil}, settings) do
+    case Portal.Settings.worker_firmware_world(settings) do
+      nil -> %{}
+      world -> %{firmware_world: world}
+    end
+  end
+
+  defp firmware_world(_scope, _settings), do: %{}
+
+  defp firmware_world_name(%{firmware_world: %{"name" => name}}), do: name
+  defp firmware_world_name(_build_args), do: nil
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

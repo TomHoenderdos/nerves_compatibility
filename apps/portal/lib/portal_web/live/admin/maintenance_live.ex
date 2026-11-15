@@ -93,6 +93,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
     %{
       builder_version: Portal.Toolchains.builder_version(),
       worlds_enabled: Portal.Settings.get().world_variants_enabled,
+      firmware_world_enabled: Portal.Settings.get().firmware_world_enabled,
       worlds: Portal.Toolchains.worlds(),
       world_top_packages: Portal.Toolchains.world_top_packages(),
       rows:
@@ -156,6 +157,26 @@ defmodule PortalWeb.Admin.MaintenanceLive do
           {:noreply,
            socket
            |> put_flash(:info, "World builds turned #{if enabled, do: "on", else: "off"}.")
+           |> load_panels()}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, AdminMessages.error(reason)) |> load_panels()}
+      end
+    end)
+  end
+
+  def handle_event("toggle_firmware_world", params, socket) do
+    as_admin(socket, fn socket, user ->
+      enabled = params["enabled"] == "true"
+
+      case Portal.Admin.set_firmware_world_enabled(enabled, user) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_flash(
+             :info,
+             "Firmware world builds turned #{if enabled, do: "on", else: "off"}."
+           )
            |> load_panels()}
 
         {:error, reason} ->
@@ -711,6 +732,40 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               {if @toolchains.worlds_enabled,
                 do: "Turn world builds off",
                 else: "Turn world builds on"}
+            </button>
+          </div>
+
+          <div
+            id="firmware-world-builds"
+            class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <h3 class="font-semibold">Firmware world builds</h3>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                <span id="firmware-world-state">
+                  Firmware world builds are {if @toolchains.firmware_world_enabled,
+                    do: "on",
+                    else: "off"}.
+                </span>
+                Each firmware build also compiles the package per passing target with the
+                optional deps a default <code>mix nerves.new</code>
+                app has (<code>world_nerves</code>), served only under <code>builds_closure</code>.
+                Turn on only once every firmware builder runs a worker image that builds it.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="firmware-world-toggle"
+              phx-click="toggle_firmware_world"
+              phx-value-enabled={to_string(not @toolchains.firmware_world_enabled)}
+              class={[
+                "btn btn-sm",
+                if(@toolchains.firmware_world_enabled, do: "btn-ghost", else: "btn-primary")
+              ]}
+            >
+              {if @toolchains.firmware_world_enabled,
+                do: "Turn firmware world builds off",
+                else: "Turn firmware world builds on"}
             </button>
           </div>
 

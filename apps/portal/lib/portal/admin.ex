@@ -590,6 +590,25 @@ defmodule Portal.Admin do
     end
   end
 
+  @doc """
+  Turns the firmware world build (`NccWorker.WorldTargets`) on or off: the
+  `firmware_world_enabled` setting under which a firmware build asks the
+  worker for it. Turn it on only once the web host ingests world variants
+  and every firmware builder runs an image that builds them. Off stops new
+  world builds; the variants already stored stay served.
+  """
+  @spec set_firmware_world_enabled(boolean(), %{username: String.t()}) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, term()}
+  def set_firmware_world_enabled(enabled, actor) when is_boolean(enabled) do
+    with {:ok, setting} <- Portal.Settings.save(%{firmware_world_enabled: enabled}) do
+      Logger.warning(
+        "Firmware world builds turned #{if enabled, do: "on", else: "off"} by #{actor.username}"
+      )
+
+      {:ok, setting}
+    end
+  end
+
   defp remote_mode(mode) when mode in ~w(auto on off), do: {:ok, String.to_existing_atom(mode)}
   defp remote_mode(_mode), do: :error
 

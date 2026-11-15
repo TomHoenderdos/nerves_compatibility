@@ -288,6 +288,24 @@ defmodule Portal.BuilderTest do
       refute Map.has_key?(Builder.worker_input(@input_job), "argus")
     end
 
+    test "carries the firmware world on a firmware build only" do
+      world = %{"name" => "nerves", "members" => ["jason"]}
+      job = Map.put(@input_job, :firmware_world, world)
+
+      assert Builder.worker_input(job)["firmware_world"] == world
+      refute Map.has_key?(Builder.worker_input(@input_job), "firmware_world")
+
+      refute Map.has_key?(
+               Builder.worker_input(Map.put(@input_job, :firmware_world, nil)),
+               "firmware_world"
+             )
+
+      for mode <- ~w(toolchain argus_only warm_nerves system_abi) do
+        refute Map.has_key?(Builder.worker_input(Map.put(job, :mode, mode)), "firmware_world"),
+               mode
+      end
+    end
+
     test "an argus-only build tells the worker so" do
       input =
         Builder.worker_input(Map.merge(@input_job, %{systems_filter: nil, mode: "argus_only"}))

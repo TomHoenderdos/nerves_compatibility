@@ -195,6 +195,69 @@ defmodule Portal.Workers.BuildTest do
     Ingest.perform(%Oban.Job{args: job.args, attempt: 1, max_attempts: 5})
   end
 
+  describe "the firmware world" do
+    defp ok_response do
+      dir = files_dir_with([])
+
+      set_response(
+        {:ok,
+         %{exit_code: 0, result: fixture_result(), files_dir: dir, output_dir: dir, log: "ok"}}
+      )
+    end
+
+    test "off: no firmware_world in the build args or the ingest args" do
+      ok_response()
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "jason",
+                 "version" => "1.4.1",
+                 "image_digest" => "sha256:fw0"
+               })
+
+      assert_received {:stub_build_args, args}
+      assert args[:firmware_world] == nil
+      assert [job] = all_enqueued(worker: Ingest)
+      refute Map.has_key?(job.args, "firmware_world")
+    end
+
+    test "on: a firmware build asks for the nerves world and its ingest records it" do
+      {:ok, _} = Portal.Settings.save(%{firmware_world_enabled: true})
+      ok_response()
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "jason",
+                 "version" => "1.4.1",
+                 "image_digest" => "sha256:fw1"
+               })
+
+      assert_received {:stub_build_args, args}
+      assert %{"name" => "nerves", "members" => [_ | _]} = args.firmware_world
+      assert [job] = all_enqueued(worker: Ingest)
+      assert job.args["firmware_world"] == "nerves"
+    end
+
+    test "on: an argus-only build asks for none" do
+      {:ok, _} = Portal.Settings.save(%{firmware_world_enabled: true})
+      previous_run!("fwargus", "1.0.0")
+      ok_response()
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "fwargus",
+                 "version" => "1.0.0",
+                 "image_digest" => "sha256:fw2",
+                 "scope" => "argus_only",
+                 "force" => true
+               })
+
+      assert_received {:stub_build_args, args}
+      assert args.mode == "argus_only"
+      assert args[:firmware_world] == nil
+    end
+  end
+
   describe "perform/1 success" do
     test "exit 0 enqueues the ingest, which ingests and marks the request built" do
       {:ok, request} =

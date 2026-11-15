@@ -275,15 +275,17 @@ defmodule PortalWeb.Builder.JobController do
   # A done lease and its Ingest job commit together: if the enqueue fails the
   # lease stays held and the agent's retry of `complete` lands again.
   defp end_attempt(lease, 0, builder, _params) do
-    args = %{
-      "source" => "remote",
-      "lease_id" => lease.id,
-      "run_id" => lease.run_id,
-      "image_digest" => lease.image_digest,
-      "scan_request_id" => lease.scan_request_id,
-      "builder_id" => builder.id,
-      "arch" => run_arch(lease, builder)
-    }
+    args =
+      %{
+        "source" => "remote",
+        "lease_id" => lease.id,
+        "run_id" => lease.run_id,
+        "image_digest" => lease.image_digest,
+        "scan_request_id" => lease.scan_request_id,
+        "builder_id" => builder.id,
+        "arch" => run_arch(lease, builder)
+      }
+      |> put_firmware_world(lease.args["firmware_world"])
 
     Portal.Repo.transaction(fn ->
       with {:ok, :done, lease} <- Leases.complete(lease, 0),
@@ -372,6 +374,12 @@ defmodule PortalWeb.Builder.JobController do
 
   defp write_outputs(_lease, 0, _params), do: {:error, :result_unparsable}
 
+  # The world the lease asked for, so ingest keeps its variant only then.
+  defp put_firmware_world(args, %{"name" => name}) when is_binary(name),
+    do: Map.put(args, "firmware_world", name)
+
+  defp put_firmware_world(args, _world), do: args
+
   defp upload(%Plug.Upload{} = upload), do: upload
   defp upload(_), do: nil
 
@@ -395,7 +403,8 @@ defmodule PortalWeb.Builder.JobController do
         package: %{"name" => lease.package, "version" => lease.version, "source" => "hex"},
         systems_filter: lease.args["systems_filter"],
         mode: lease.args["mode"],
-        argus: lease.args["argus"]
+        argus: lease.args["argus"],
+        firmware_world: lease.args["firmware_world"]
       })
 
     agent = Images.agent()

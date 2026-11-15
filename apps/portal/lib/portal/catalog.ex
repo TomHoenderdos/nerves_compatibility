@@ -3316,12 +3316,17 @@ defmodule Portal.Catalog do
     end
   end
 
-  # A target that publishes a variant kept the optional deps, so its own
-  # files were built against its own lock. Without that lock (malformed, so
-  # dropped at ingest) the run's would stand in, and that is the lock of the
-  # build without them: its own build is refused, in both formats, rather
-  # than published under it.
-  defp own_build_refused?(%{published_variants: [_ | _], deps_lock: nil}), do: true
+  # A target that publishes a build without kept the optional deps, so its
+  # own files were built against its own lock. Without that lock (malformed,
+  # so dropped at ingest) the run's would stand in, and that is the lock of
+  # the build without them: its own build is refused, in both formats,
+  # rather than published under it. A world build alone
+  # (`NccWorker.WorldTargets`) says nothing about the row's own build: a
+  # target with no optional deps of its own has no lock of its own, and its
+  # build is the run lock's.
+  defp own_build_refused?(%{published_variants: [_ | _] = variants, deps_lock: nil}),
+    do: Enum.any?(variants, &(&1["variant"] == "without"))
+
   defp own_build_refused?(_result), do: false
 
   defp result_build(built_by, result) do

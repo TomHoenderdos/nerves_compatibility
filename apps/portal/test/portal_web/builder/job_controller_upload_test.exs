@@ -239,6 +239,43 @@ defmodule PortalWeb.Builder.JobControllerUploadTest do
     assert job.args["arch"] == "aarch64"
   end
 
+  test "a lease that asked for the firmware world hands its name to Ingest", %{conn: conn} do
+    %{builder: builder, cert_der: der} = enrolled_builder!("u-world")
+    world = %{"name" => "nerves", "members" => ["jason"]}
+
+    {:ok, _} =
+      Leases.enqueue(%{
+        package: "decimal",
+        version: "2.0.1",
+        image_name: "i",
+        image_digest: "sha256:" <> String.duplicate("3", 64),
+        args: %{"firmware_world" => world},
+        scan_request_id: nil,
+        priority: 9
+      })
+
+    {:ok, lease} = Leases.claim(builder)
+    assert lease.package == "decimal"
+
+    body =
+      conn
+      |> with_cert(der)
+      |> post("/builder/v1/jobs/#{lease.id}/complete", %{
+        "exit_code" => "0",
+        "result" =>
+          result_upload(%{
+            "run_id" => lease.run_id,
+            "package" => %{"name" => "decimal", "version" => "2.0.1"},
+            "systems" => %{"host" => %{"status" => "pass"}}
+          })
+      })
+      |> json_response(202)
+
+    assert body["outcome"] == "done"
+    assert [job] = all_enqueued(worker: Portal.Workers.Ingest)
+    assert job.args["firmware_world"] == "nerves"
+  end
+
   # A builder may produce bad results for the package it was leased, never
   # for another one: `Ingestion` takes the package from result.json.
   test "a result.json for another package or version is refused and the lease stays held",

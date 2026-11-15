@@ -51,6 +51,19 @@ defmodule Portal.SettingsTest do
     assert {:error, _} = Settings.save(%{argus_min_severity: "fatal"})
   end
 
+  test "worker_firmware_world is nil while off and the nerves world while on" do
+    refute Settings.get().firmware_world_enabled
+    assert Settings.worker_firmware_world(Settings.get()) == nil
+
+    {:ok, _} = Settings.save(%{firmware_world_enabled: true})
+    {:ok, members} = Compatibility.Worlds.firmware_members("nerves")
+
+    assert Settings.worker_firmware_world(Settings.get()) == %{
+             "name" => "nerves",
+             "members" => members
+           }
+  end
+
   test "worker_argus is nil when disabled and the worker map otherwise" do
     assert Settings.worker_argus(Settings.get()) == %{
              "analyses" => ["default", "exposure"],

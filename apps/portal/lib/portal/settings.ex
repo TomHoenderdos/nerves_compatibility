@@ -21,7 +21,8 @@ defmodule Portal.Settings do
     remote_mode: :auto,
     remote_backlog_threshold: 10,
     remote_auto_on: false,
-    world_variants_enabled: false
+    world_variants_enabled: false,
+    firmware_world_enabled: false
   }
 
   resources do
@@ -73,6 +74,19 @@ defmodule Portal.Settings do
       other -> other
     end
   end
+
+  @doc """
+  The `firmware_world` key of a firmware build's `NCC_INPUT`
+  (`NccWorker.WorldTargets`): the `nerves` world's name and members, or nil
+  while `firmware_world_enabled` is off.
+  """
+  @spec worker_firmware_world(Setting.t()) :: map() | nil
+  def worker_firmware_world(%Setting{firmware_world_enabled: true}) do
+    {:ok, members} = Compatibility.Worlds.firmware_members("nerves")
+    %{"name" => "nerves", "members" => members}
+  end
+
+  def worker_firmware_world(%Setting{}), do: nil
 
   @doc "The `argus` key of the worker's `NCC_INPUT`, or nil when argus is off."
   @spec worker_argus(Setting.t()) :: map() | nil

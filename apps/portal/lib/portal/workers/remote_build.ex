@@ -147,6 +147,9 @@ defmodule Portal.Workers.RemoteBuild do
       # Read when the lease is written, so an admin change applies from the
       # next lease on.
       "argus" => Portal.Settings.worker_argus(Portal.Settings.get()),
+      # Only for a firmware lease (no mode), as `Portal.Workers.Build`.
+      "firmware_world" =>
+        if(scope.mode == nil, do: Portal.Settings.worker_firmware_world(Portal.Settings.get())),
       "force" => force,
       # One platform digest per architecture: the claim pins the lease to
       # the claiming builder's (`Portal.Builders.Leases.claim/2`). Until

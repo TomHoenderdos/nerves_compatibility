@@ -373,6 +373,30 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
     end
   end
 
+  describe "firmware world builds" do
+    test "the toggle turns the firmware world on and off", %{conn: conn} do
+      {view, html} = live_maintenance(conn)
+
+      refute Portal.Settings.get().firmware_world_enabled
+      assert html =~ "Firmware world builds are off"
+
+      html = view |> element("#firmware-world-toggle") |> render_click()
+      assert html =~ "Firmware world builds are on"
+      assert Portal.Settings.get().firmware_world_enabled
+
+      view |> element("#firmware-world-toggle") |> render_click()
+      refute Portal.Settings.get().firmware_world_enabled
+    end
+
+    test "a demoted admin cannot turn it on", %{conn: conn, admin: admin} do
+      {view, _html} = live_maintenance(conn)
+      demote!(admin)
+
+      view |> element("#firmware-world-toggle") |> render_click()
+      refute Portal.Settings.get().firmware_world_enabled
+    end
+  end
+
   describe "world builds" do
     test "the toggle turns world builds on and off and the counts show beside the backlog",
          %{conn: conn} do
