@@ -90,12 +90,24 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
     run
   end
 
-  defp rpi4_builds do
-    %{"versions" => %{"1.4.1" => %{"builds" => builds}}} =
-      Catalog.precompiled_manifest_v2("jason")
-
-    Enum.filter(builds, &(&1["target"] == "nerves_system_rpi4"))
+  # The rpi4 builds of one list of version 1.4.1 ("builds" by default).
+  defp rpi4_builds(list \\ "builds") do
+    %{"versions" => %{"1.4.1" => version}} = Catalog.precompiled_manifest_v2("jason")
+    version |> Map.get(list, []) |> Enum.filter(&(&1["target"] == "nerves_system_rpi4"))
   end
+
+  # Every list but builds_closure, the way a device reads a version
+  # (`Precompiled.Device.Rules`: builds ++ builds_with_inputs) and every
+  # client before 0.7.0 reads it.
+  defp device_visible do
+    %{"versions" => versions} = Catalog.precompiled_manifest_v2("jason")
+
+    Enum.flat_map(versions, fn {_version, v} ->
+      v["builds"] ++ Map.get(v, "builds_with_inputs", [])
+    end)
+  end
+
+  defp shas(builds), do: for(b <- builds, e <- b["ebin"] ++ b["priv"], do: e["sha256"])
 
   defp rows(system_pkg) do
     SystemResult
@@ -188,8 +200,8 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
     test "lists the build with the optional dependency and the one without, each its own" do
       ingest!(kept_run([variant()]))
 
-      assert [with_build, without_build] =
-               Enum.sort_by(rpi4_builds(), &map_size(&1["build"]["deps"]), :desc)
+      assert [with_build] = rpi4_builds()
+      assert [without_build] = rpi4_builds("builds_closure")
 
       assert with_build["ebin"] == [
                %{"path" => "ebin/jason.beam", "sha256" => sha256(@with_bytes), "mode" => 33_188}
@@ -224,6 +236,41 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
 
       assert [%{"build" => %{"deps" => @with_lock}}] = rpi4_builds()
       assert [%{published_variants: nil}] = rows("nerves_system_rpi4")
+
+      refute Map.has_key?(
+               Catalog.precompiled_manifest_v2("jason")["versions"]["1.4.1"],
+               "builds_closure"
+             )
+    end
+
+    # A device ranks an installed build first and only ranks by rule 8, so
+    # a device that has the optional dependency could take the build
+    # without it. Only clients that check the whole env closure read
+    # builds_closure.
+    test "the build without is only in builds_closure, which no device reads" do
+      ingest!(kept_run([variant()]))
+
+      assert [%{"build" => %{"deps" => @run_lock}}] = rpi4_builds("builds_closure")
+      assert rpi4_builds("builds_with_inputs") == []
+      refute sha256(@without_bytes) in shas(device_visible())
+      assert sha256(@with_bytes) in shas(device_visible())
+    end
+
+    # Its own lock was dropped at ingest: falling back to the run's would
+    # publish the build with the optional dependency under the lock of the
+    # build without it.
+    test "a kept target whose own lock is unusable publishes only the build without" do
+      kept_run([variant()])
+      |> put_in(["systems", "nerves_system_rpi4", "deps_lock"], %{"x" => %{"version" => 1}})
+      |> ingest!()
+
+      assert [%{deps_lock: nil}] = rows("nerves_system_rpi4")
+      assert rpi4_builds() == []
+      refute sha256(@with_bytes) in shas(device_visible())
+      assert [%{"build" => %{"deps" => @run_lock}}] = rpi4_builds("builds_closure")
+
+      v1 = Catalog.precompiled_manifest("jason")
+      refute get_in(v1 || %{}, [:versions, "1.4.1", "nerves_system_rpi4"])
     end
 
     test "format 1 publishes only the build with the optional dependency" do
@@ -242,6 +289,7 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
       ingest!(kept_run([variant()]), [@with_bytes])
 
       assert [%{"build" => %{"deps" => @with_lock}}] = rpi4_builds()
+      assert rpi4_builds("builds_closure") == []
     end
 
     test "a variant missing a file it lists is left out whole" do
@@ -274,9 +322,8 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
           "WHERE system_pkg = 'nerves_system_rpi4'"
       )
 
-      builds = rpi4_builds()
-      assert [with_build] = Enum.filter(builds, &(&1["build"]["deps"] == @with_lock))
-      assert [without_build] = Enum.filter(builds, &(&1["build"]["deps"] == @run_lock))
+      assert [with_build] = rpi4_builds()
+      assert [without_build] = rpi4_builds("builds_closure")
 
       assert with_build["build"]["native"] == false
       refute Map.has_key?(without_build["build"], "native")

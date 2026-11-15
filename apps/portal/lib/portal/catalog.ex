@@ -3262,7 +3262,8 @@ defmodule Portal.Catalog do
 
   defp version_builds(list) do
     pick = fn tag ->
-      for({^tag, {_version, _at, build}} <- list, do: build) |> Enum.sort_by(&build_order/1)
+      for({^tag, {_version, _at, build}} <- list, do: Map.delete(build, :closure_only))
+      |> Enum.sort_by(&build_order/1)
     end
 
     %{"builds" => pick.(:plain)}
@@ -3281,6 +3282,15 @@ defmodule Portal.Catalog do
   # another closure. Readers of `builds_closure` check inputs anyway, so the
   # `builds_with_inputs` split does not apply to it. A version whose only
   # builds are world builds keeps an empty `builds` list.
+  #
+  # A firmware target's build without its optional deps (`variant_builds/4`)
+  # goes there too, and only there: a device ranks an installed build first
+  # and only ranks by rule 8, never refusing, so one that has the optional
+  # dependency could take it, and a client before 0.7.0 compares only the
+  # dependencies it locks. A client that checks the env closure takes it
+  # only where Mix compiles the package without them.
+  defp closure_build?({_version, _at, %{closure_only: true}}), do: true
+
   defp closure_build?({_version, _at, %{"build" => build}}),
     do: ToolchainBuild.world?(build["variant"])
 
@@ -3306,6 +3316,14 @@ defmodule Portal.Catalog do
     end
   end
 
+  # A target that publishes a variant kept the optional deps, so its own
+  # files were built against its own lock. Without that lock (malformed, so
+  # dropped at ingest) the run's would stand in, and that is the lock of the
+  # build without them: its own build is refused, in both formats, rather
+  # than published under it.
+  defp own_build_refused?(%{published_variants: [_ | _], deps_lock: nil}), do: true
+  defp own_build_refused?(_result), do: false
+
   defp result_build(built_by, result) do
     built_by
     |> build_inputs(result)
@@ -3317,17 +3335,17 @@ defmodule Portal.Catalog do
   end
 
   defp own_build(result, build, stored, present) do
-    case file_manifest(result, stored, present) do
-      nil -> []
-      files -> [{files, build}]
+    case not own_build_refused?(result) && file_manifest(result, stored, present) do
+      files when is_map(files) -> [{files, build}]
+      _ -> []
     end
   end
 
   # A firmware target that kept the package's optional deps also publishes
   # its first build, made without them (`SystemResult.published_variants`):
   # the same target, system version, toolchain and run, with its own files,
-  # `compile_env` and `deps` (the run's lock), so `newest_per_key/1`, which
-  # keys on `deps`, keeps both. Like a toolchain build, a variant is only
+  # `compile_env` and `deps` (the run's lock), listed under `builds_closure`
+  # only (`closure_build?/1`). Like a toolchain build, a variant is only
   # its own files: one with a file this row does not own or this host lacks
   # is left out whole. The ABI facts were read from the row's own priv
   # files, so a variant whose priv files differ publishes none of them, and
@@ -3344,7 +3362,7 @@ defmodule Portal.Catalog do
         |> Map.put("compile_env", variant["compile_env"])
         |> keep_abi_facts(priv_set(variant["file_manifest"]) == own_priv)
 
-      {files, variant_build}
+      {Map.put(files, :closure_only, true), variant_build}
     end
   end
 
@@ -3559,7 +3577,8 @@ defmodule Portal.Catalog do
         Enum.filter(
           results,
           &(&1.run_id == run.id and &1.system_pkg != "host" and
-              not CompileInputs.needs_check?(&1.compile_inputs))
+              not CompileInputs.needs_check?(&1.compile_inputs) and
+              not own_build_refused?(&1))
         )
 
       systems =

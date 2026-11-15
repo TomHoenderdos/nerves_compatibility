@@ -84,8 +84,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    (a plain file, same size, sha256 and mode). When they all match, the system gets
    `published_variants: [{"variant": "without", "beam_scan": {"footprint": {"file_manifest": ...}},
    "compile_env": [...], "deps_lock": {...}}]`, the first build's own file manifest and `compile_env` under the
-   run's `deps_lock`, and `NccWorker.FileArchiver` archives those files from that directory, hashing each one
-   again as it copies it. When they do not, or the first build has no file manifest, no `compile_env` or no
+   run's `deps_lock`, and `NccWorker.FileArchiver` archives those files from that directory, skipping one whose
+   bytes no longer hash to the recorded sha256 (it hashes, then copies: the portal's digest check of each stored
+   blob is what guarantees the bytes). When they do not, or the first build has no file manifest, no `compile_env` or no
    readable run lock, the first build is deleted, the target's log says why (`files_changed`,
    `no_file_manifest`, `compile_env_unreadable`, `deps_lock_unreadable`, `rename_failed`,
    `stale_variant_not_removed`), and the target publishes the new build alone, as before. The system's own keys

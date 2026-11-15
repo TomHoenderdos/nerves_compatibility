@@ -124,8 +124,9 @@ defmodule NccWorker.FileArchiver do
   # stripped, nor from the package's own directory, which holds the other
   # build. A file not in that directory, or whose bytes no longer hash to what
   # the variant records, is not archived, and the portal then leaves the
-  # variant out: `NccWorker.OptionalDepsTargets` checked them once, and this
-  # checks the bytes actually copied.
+  # variant out. The file is hashed before it is copied, not while, so this
+  # only catches a change made before archiving; the guarantee is the
+  # portal's digest check of every blob it stores (`Portal.ArtifactStore`).
   defp variant_files(_system_result, _build_path, nil), do: []
 
   defp variant_files(system_result, build_path, package_name) do

@@ -335,12 +335,17 @@ Status codes:
       that another target's entry (of the same run) lacks, when the pass
       failed for that target — a client should check `deps` per entry, never
       assume it is the same across a package's targets. In format 2, a target
-      the pass kept them for has two builds of the same run, target and
-      system version: the one with them, and the target's first build, made
-      without them under the run's lock (the build the firmware image was
-      made from), each with its own files, `deps` and `compile_env`, so a
-      project that locks the optional dependencies and one that does not each
-      find theirs. Format 1 lists only the build with them.
+      the pass kept them for also publishes its first build, made without
+      them under the run's lock (the build the firmware image was made
+      from), with its own files, `deps` and `compile_env`, in
+      `versions[v].builds_closure` only (below): a client that checks the
+      env closure takes it only where Mix compiles the package without the
+      optional dependencies, while a device, which ranks an installed build
+      first and never refuses one for an optional dependency it has, and a
+      client before 0.7.0, which compares only the dependencies it locks,
+      never see it. `builds` and format 1 list only the build with them. A
+      target whose own lock was unusable lists no build of its own in either
+      format, rather than one under the run's lock.
     - `package_checksum` — the package's own outer Hex checksum from the
       build's `mix.lock`, a string, or `null` for runs from before it was
       recorded and for argus-only runs.
@@ -625,7 +630,9 @@ What it lists:
   toolchain build, its config variants included; the `builds_with_inputs` split does not apply
   to it, since its readers check `compile_inputs` anyway. The key is absent when a version has
   no world build, so a package without one renders the bytes it did before; a version with only
-  world builds still has `"builds": []`. A world build is never listed in `builds`,
+  world builds still has `"builds": []`. The same list also holds a firmware target's build
+  without the package's optional dependencies (see `deps` above), which carries no
+  `build.variant`. A world build is never listed in `builds`,
   `builds_with_inputs` or format 1: a client before 0.7.0 compares only the dependencies it
   locks, so it would take one in a project that has, say, `decimal` only in `:test`, where Mix
   compiles the package against a closure without it. A world build whose `deps` came out equal
