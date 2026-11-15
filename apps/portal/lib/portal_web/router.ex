@@ -253,6 +253,7 @@ defmodule PortalWeb.Router do
       live "/builders", PortalWeb.Admin.BuildersLive, :index
       live "/memory", PortalWeb.Admin.MemoryLive, :index
       live "/not-precompiled", PortalWeb.Admin.NotPrecompiledLive, :index
+      live "/reports", PortalWeb.Admin.ReportsLive, :index
       live "/maintenance", PortalWeb.Admin.MaintenanceLive, :index
     end
   end

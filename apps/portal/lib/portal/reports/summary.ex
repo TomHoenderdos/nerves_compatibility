@@ -6,10 +6,12 @@ defmodule Portal.Reports.Summary do
       ops/portal-rpc.sh 'Portal.Reports.Summary.by_package() |> IO.inspect(limit: :infinity)'
       ops/portal-rpc.sh 'Portal.Reports.Summary.by_client(since: ~U[2026-11-01 00:00:00Z]) |> IO.inspect()'
       ops/portal-rpc.sh 'Portal.Reports.Summary.by_target(limit: 20) |> IO.inspect()'
+      ops/portal-rpc.sh 'Portal.Reports.Summary.by_reason_code() |> IO.inspect()'
       ops/portal-rpc.sh 'Portal.Reports.Summary.storage() |> IO.inspect()'
 
   Each row carries its group (`package, version, reason_code`,
-  `client, reason_code` or `target, otp, reason_code`), `count` (lines),
+  `client, reason_code`, `target, otp, reason_code`, or `reason_code` alone),
+  `count` (lines),
   `reports` and `reporters` (distinct; a report whose reporter key retention
   cleared counts no reporter), `first_seen` and `last_seen` (when the reports
   arrived), and the requeue state of its lines: `queued`, `skipped` (any
@@ -79,6 +81,16 @@ defmodule Portal.Reports.Summary do
     |> base()
     |> group_by([report: r, line: l], [r.target, r.otp, l.reason_code])
     |> select([report: r, line: l], %{target: r.target, otp: r.otp, reason_code: l.reason_code})
+    |> stats()
+  end
+
+  @doc "Grouped by reason code alone: which miss cause is biggest right now."
+  @spec by_reason_code(keyword()) :: [map()]
+  def by_reason_code(opts \\ []) do
+    opts
+    |> base()
+    |> group_by([line: l], l.reason_code)
+    |> select([line: l], %{reason_code: l.reason_code})
     |> stats()
   end
 
