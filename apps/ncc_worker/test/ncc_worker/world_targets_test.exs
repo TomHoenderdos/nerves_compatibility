@@ -544,6 +544,30 @@ defmodule NccWorker.WorldTargetsTest do
     assert out.world.reason == "run_budget_exhausted"
   end
 
+  test "a copy that fails half way drops that target and leaves no world dir", %{dir: dir} do
+    project!(dir, @jason)
+    lock_before = File.read!(Path.join(dir, "mix.lock"))
+    params = params(dir, %{run_deps_lock: lock_of(~w(decimal ecto))})
+
+    copy = fn from, to ->
+      if String.contains?(to, "/rpi4.world/") do
+        File.mkdir_p!(Path.join(to, "partial"))
+        {:error, {1, "No space left on device"}}
+      else
+        {_, 0} = System.cmd("cp", ["-a", from, to])
+        :ok
+      end
+    end
+
+    runners = runners(self(), dir, @jason, %{copy: copy})
+
+    assert {:ok, out} = WorldTargets.run(params, runners)
+    assert world_variant(out.systems["nerves_system_rpi4"]) == nil
+    assert world_variant(out.systems["nerves_system_bbb"])
+    assert File.read!(log(dir, "rpi4")) =~ "dropped (copy_failed)"
+    assert_clean(dir, lock_before)
+  end
+
   test "a failed compile drops that target only and cleans up", %{dir: dir} do
     project!(dir, @jason)
     lock_before = File.read!(Path.join(dir, "mix.lock"))

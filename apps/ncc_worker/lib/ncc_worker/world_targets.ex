@@ -518,7 +518,8 @@ defmodule NccWorker.WorldTargets do
     progress = Map.get(state, :progress, %{added: [], rounds: 0})
 
     checked = post_check(params, state.owned)
-    Enum.each(state.copied, &remove_world/1)
+    # Every target a copy was started for, a failed one included.
+    Enum.each(state.owned, &remove_world/1)
     restored = Project.restore(state.snapshot)
 
     case Enum.find([error, checked, restored], &(&1 not in [nil, :ok])) do
