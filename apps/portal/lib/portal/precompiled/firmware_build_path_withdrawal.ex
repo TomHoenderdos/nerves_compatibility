@@ -14,7 +14,9 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   `pure_elixir`, with files, not withdrawn) is a candidate when its package
   version has an unrevoked, traced toolchain build (any toolchain or
   optional-dependency variant, the default config variant) refused as `bakes the build path: ` at
-  `Compatibility.Portability.withdrawal_judge_revision/0` or later. That
+  `Compatibility.Portability.withdrawal_judge_revision/0` or later, and no
+  unrevoked passing build of the version (same variants and config) finished
+  after it: a refusal a later judge overturned is no evidence. That
   refusal is the host judge's R2 verdict on the same source, the rule the
   worker now applies to firmware builds too. The portal cannot rerun that
   rule (it needs the build's source tree), so it confirms on the result's
@@ -66,7 +68,7 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
 
   alias Compatibility.Portability
   alias Portal.ArtifactStore
-  alias Portal.Catalog.SystemResult
+  alias Portal.Catalog.{SystemResult, ToolchainBuild}
   alias Portal.Repo
 
   @default_limit 100
@@ -79,8 +81,12 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
 
   # `$1` the cursor (a result id, null: from the start), `$2` the page size.
   # `t` is the version's refusal, the newest first, in the default config
-  # variant: a firmware build is made in the default config, and a named
-  # config variant's verdict says nothing about it.
+  # variant and a `with`/`without` build: a firmware build is made in the
+  # default config with at most the package's own optional deps, so a named
+  # config variant's or a world variant's verdict says nothing about it (and
+  # a variant this release does not know is not its to read). A refusal
+  # that an unrevoked passing build of the version finished after is
+  # superseded (a newer judge published it) and is no evidence.
   @candidates_sql """
   SELECT s.id, s.system_pkg, p.name, r.version_tested,
          s.beam_scan->'footprint'->'file_manifest', s.published_variants, ref.reason
@@ -88,10 +94,11 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   JOIN catalog_runs r ON r.id = s.run_id
   JOIN catalog_packages p ON p.id = r.package_id
   CROSS JOIN LATERAL (
-    SELECT t.reason
+    SELECT t.reason, t.finished_at
     FROM catalog_toolchain_builds t
     WHERE t.package_id = r.package_id
       AND t.version = r.version_tested
+      AND t.variant IN #{ToolchainBuild.optional_deps_variants_sql()}
       AND t.config_variant = 'default'
       AND t.status = 'skipped'
       AND t.revoked_at IS NULL
@@ -104,6 +111,16 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   WHERE s.system_pkg NOT IN ('host', 'pure_elixir')
     AND s.status = 'pass'
     AND s.unpublished_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM catalog_toolchain_builds n
+      WHERE n.package_id = r.package_id
+        AND n.version = r.version_tested
+        AND n.variant IN #{ToolchainBuild.optional_deps_variants_sql()}
+        AND n.config_variant = 'default'
+        AND n.status = 'pass'
+        AND n.revoked_at IS NULL
+        AND n.finished_at > ref.finished_at
+    )
     AND ($1::uuid IS NULL OR s.id > $1::uuid)
     AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m WHERE m.system_result_id = s.id)
   ORDER BY s.id

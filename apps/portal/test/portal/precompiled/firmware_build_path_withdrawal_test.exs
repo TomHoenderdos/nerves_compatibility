@@ -229,6 +229,55 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawalTest do
     assert {:dry_run, %{confirmed: []}} = Withdrawal.withdraw()
   end
 
+  # A toolchain build row of jason `version`, written directly.
+  defp toolchain_row!(version, status, opts) do
+    package =
+      Catalog.Package |> Ash.Query.filter(name == "jason") |> Ash.read_one!(domain: Catalog)
+
+    Catalog.ToolchainBuild
+    |> Ash.Changeset.for_create(:create, %{
+      package_id: package.id,
+      version: version,
+      toolchain: Keyword.get(opts, :toolchain, "1.20/29"),
+      builder_version: Keyword.get(opts, :builder_version, 2),
+      variant: Keyword.get(opts, :variant, :with),
+      config_variant: "default",
+      status: status,
+      reason: Keyword.get(opts, :reason),
+      deps_lock: %{},
+      compile_observations: %{"refusals" => []},
+      judge_revision: Portability.withdrawal_judge_revision(),
+      run_id: "tc-row-#{System.unique_integer([:positive])}",
+      finished_at: Keyword.fetch!(opts, :finished_at)
+    })
+    |> Ash.create!(domain: Catalog)
+  end
+
+  test "a refusal a later passing build of the version overturned is no evidence" do
+    firmware_run!("1.4.1", beam(FxFwOverturned, "/work/proj/deps_rpi4/fx/lib"))
+    toolchain_build!("1.4.1", @baked)
+
+    # A pass that finished before the refusal does not overturn it.
+    toolchain_row!("1.4.1", :pass, builder_version: 0, finished_at: ~U[2026-11-01 10:00:00Z])
+    assert {:dry_run, %{confirmed: [_]}} = Withdrawal.withdraw()
+
+    toolchain_row!("1.4.1", :pass, finished_at: ~U[2026-11-10 10:00:00Z])
+    assert {:dry_run, %{confirmed: [], clean: [], unreadable: []}} = Withdrawal.withdraw()
+  end
+
+  test "a world variant's refusal is no evidence for a firmware build" do
+    firmware_run!("1.4.1", beam(FxFwWorld, "/work/proj/deps_rpi4/fx/lib"))
+    [world | _] = Catalog.ToolchainBuild.variants() -- [:with, :without]
+
+    toolchain_row!("1.4.1", :skipped,
+      variant: world,
+      reason: @baked,
+      finished_at: ~U[2026-11-10 10:00:00Z]
+    )
+
+    assert {:dry_run, %{confirmed: []}} = Withdrawal.withdraw()
+  end
+
   test "a variant's files count for its result" do
     firmware_run!("1.4.1", beam(FxFwVariant, "/home/nerves/.mix/x"), variant: true)
     toolchain_build!("1.4.1", @baked)
