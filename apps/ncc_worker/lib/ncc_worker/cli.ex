@@ -269,7 +269,12 @@ defmodule NccWorker.CLI do
   # toolchain, warm, system ABI) ignores it once it is checked.
   defp validate_firmware_world(%{firmware_world: %{} = world} = input) do
     with {:ok, world} <- NccWorker.WorldDeps.validate(world[:name], world["members"]) do
-      if Map.get(input, :mode) == nil,
+      # A world this image does not pin has no variant to publish under
+      # (`Compatibility.Worlds.firmware_variant/1`): ignored, like a key an
+      # older image does not read, so the run builds as without one.
+      known? = match?({:ok, _}, Compatibility.Worlds.firmware_variant(world.name))
+
+      if Map.get(input, :mode) == nil and known?,
         do: {:ok, %{input | firmware_world: world}},
         else: {:ok, Map.delete(input, :firmware_world)}
     end

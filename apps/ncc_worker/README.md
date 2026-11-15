@@ -136,8 +136,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    under ecto). Nothing is copied or compiled when no member is reachable from the lock. Otherwise each passing
    target's published build has its `priv`/`include` links made its own, `_build/<target>/lib` is copied
    (`cp -a`, no `.<package>.*` dirs) to `_build/<target>.world/lib`, and everything after builds under that path:
-   the fixpoint once (in the first target's env), the package and every dependency whose closure changed removed
-   from each world build path, `deps.get` and the lock policy for each other target serially (the lock must not
+   the fixpoint once (in the first target's env), the package, every dependency whose closure changed, and every
+   dependency the build with may have compiled with an optional dependency the world lacks removed from each world
+   build path, `deps.get` and the lock policy for each other target serially (the lock must not
    move), then `mix compile`, the beam scan and `compile_env` concurrently. A kept target's build is renamed to
    `_build/<target>/lib/.<package>.world_nerves`, checked against its scan, and appended to the system's
    `published_variants` as `{"variant": "world_nerves", "beam_scan": {"footprint": {"file_manifest": ...}},
@@ -149,7 +150,9 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    outside the closure that was not in the lock before), `world_lock_moved`, `world_not_converged`, `copy_failed`,
    `files_changed`, or any reason of the pass above. The run then has `firmware_world: "world:nerves"` (the echo,
    whatever was kept) and `optional_deps.firmware_world: {"name", "added", "rounds", "kept": [systems], "reason"}`.
-   An image before this ignores the key and publishes no world.
+   An image before this ignores the key and publishes no world, and so does this one for a well-formed world it
+   does not pin (`Compatibility.Worlds.firmware_variant/1`); a malformed one exits `10`. `NccWorker.FirmwareBuildRoot`
+   judges the world build from its own `.<package>.world_nerves` dir, like the build without from its own.
 
    Partial runs (`systems_filter`) run the pass over the targets that were actually built. Toolchain and
    pure-Elixir runs are unaffected by any of this; see above for their own optional-dependency pass.

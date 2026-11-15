@@ -49,6 +49,16 @@ defmodule NccWorker.FirmwareWorldInputTest do
     end
   end
 
+  # A world this image does not pin has no variant name to publish under:
+  # the sub-pass would have nothing to label its build with. Ignored, so a
+  # portal ahead of the image builds as before rather than failing the run.
+  test "a well-formed world this image does not know is ignored" do
+    assert {:ok, input} =
+             parse(%{"firmware_world" => %{"name" => "nerves2", "members" => @nerves}})
+
+    refute Map.has_key?(input, :firmware_world)
+  end
+
   test "an invalid firmware world exits 10" do
     for world <- [
           %{"name" => "nerves", "members" => ["Bad"]},
