@@ -40,7 +40,7 @@ defmodule Portal.Workers.UpdateCheck do
 
   ## A toolchain build for the release that earns no full run
 
-  A patch release of a passing package earns no full run, so
+  A patch release of a passing *pure* package earns no full run, so
   `latest_version` stays behind it, and a toolchain build is only ever
   wanted for a version with a run or one `Portal.Catalog.VersionBackfill`
   reaches. For such a release the run records the registry's latest
@@ -49,6 +49,16 @@ defmodule Portal.Workers.UpdateCheck do
   nominates: the toolchain build compiles and judges that version itself.
   A prerelease is never nominated, and a nomination is cleared once a full
   run reaches its version or a toolchain build of it exists.
+
+  A package with native code in its dependency closure (`native?/1`, read
+  the same way `Portal.Catalog.toolchain_backlog/3`'s pure-BEAM clause is)
+  has no such path: that query restricts the `hex_latest_version` candidate
+  to pure packages, because a toolchain build only ever compiles on the
+  host, never on a Nerves target. Nominating a native package's patch
+  release would record a version nothing ever builds, so instead it takes
+  the ordinary rebuild path below -- the same one a minor or major release
+  takes -- and its precompiled files keep coming from the firmware `Build`
+  they always needed.
 
   ## Scope
 
@@ -218,7 +228,7 @@ defmodule Portal.Workers.UpdateCheck do
     # and intersecting in memory is bounded by the size of the catalogue.
     drifted =
       Package
-      |> Ash.Query.select([:id, :name, :latest_version])
+      |> Ash.Query.select([:id, :name, :latest_version, :native_components])
       |> Ash.read!(domain: Portal.Catalog)
       |> Enum.flat_map(fn package ->
         case Map.fetch(by_name, package.name) do
@@ -298,7 +308,31 @@ defmodule Portal.Workers.UpdateCheck do
 
   defp rebuild?(package, entry, statuses) do
     significant?(package.latest_version, entry.latest_version) or
-      not passing?(package.id, statuses)
+      not passing?(package.id, statuses) or native?(package)
+  end
+
+  # A package with native code in its dependency closure, read the same way
+  # `Portal.Catalog.toolchain_backlog/3`'s pure-BEAM clause is: a NIF
+  # language, or any port language. A package with no `native_components` at
+  # all reads as pure, same as there.
+  #
+  # The patch-release skip above only saves load for a pure package: a pure
+  # package's skipped patch release is still nominated for a toolchain build
+  # (`nominate/1`), but `toolchain_backlog/3` restricts that candidate to
+  # pure packages, so a native package's nomination would be a verdict
+  # nothing ever builds. Treating it as significant instead sends it down
+  # the ordinary rebuild path, the same one a minor or major release takes.
+  defp native?(%{native_components: nil}), do: false
+
+  defp native?(%{native_components: components}) do
+    not is_nil(components["nif_language"]) or port_language?(components)
+  end
+
+  defp port_language?(components) do
+    case components["port_languages"] do
+      languages when is_list(languages) -> Enum.any?(languages, &(not is_nil(&1)))
+      _ -> false
+    end
   end
 
   # Whether a version change is worth a rebuild on its own.

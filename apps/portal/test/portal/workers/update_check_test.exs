@@ -84,6 +84,26 @@ defmodule Portal.Workers.UpdateCheckTest do
     package
   end
 
+  # A package whose dependency closure has native code, read the same way
+  # `Portal.Catalog.toolchain_backlog/3`'s pure-BEAM clause does: a NIF
+  # language on record is enough regardless of what else is in the map.
+  defp native_passing_package(name, latest_version) do
+    package =
+      Ash.create!(
+        Package,
+        %{
+          name: name,
+          latest_version: latest_version,
+          native_components: %{"nif_language" => "c"}
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+    run(package, :pass)
+    package
+  end
+
   defp backfill_jobs do
     Repo.all(from(j in Oban.Job, where: j.worker == "Portal.Workers.Backfill"))
   end
@@ -292,6 +312,21 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert queued_packages() == []
     end
 
+    # The patch-skip optimization only saves load for a pure package: a pure
+    # package's skipped patch release still gets a toolchain-build nomination
+    # (`hex_latest_version`), but `Portal.Catalog.toolchain_backlog/3`
+    # restricts that nomination to pure packages, so skipping a native
+    # package's patch release the same way would leave it permanently
+    # unbuilt -- exactly the 67-package gap docs/superpowers/ops/factory/
+    # hex-all.md found (hackney, lazy_html, quic, evision, ...).
+    test "a patch bump on a passing native package is queued, unlike a pure one" do
+      native_passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1, nominated: 0}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
     # The exception that makes the filter safe to ship: a red badge has to be
     # clearable, and a patch release on a failing package is usually the
     # maintainer fixing exactly what we flagged.
@@ -483,6 +518,15 @@ defmodule Portal.Workers.UpdateCheckTest do
       hex_says([{"alpha", "1.2.5"}])
       assert {:ok, %{nominated: 1}} = UpdateCheck.run()
       assert hex_latest("alpha") == "1.2.5"
+    end
+
+    test "a patch release of a passing native package is queued instead of nominated" do
+      native_passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1, nominated: 0}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+      assert hex_latest("alpha") == nil
     end
 
     test "a release that earns a full run, or no drift, nominates nothing" do
