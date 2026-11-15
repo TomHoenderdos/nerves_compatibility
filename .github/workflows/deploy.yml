@@ -127,6 +127,9 @@ jobs:
           context: .
           file: apps/ncc_worker/Dockerfile
           platforms: ${{ matrix.platform }}
+          # The commit label `make build` sets: a builder deploy compares it
+          # to keep ncc-worker:previous on a rerun (ops/builder-deploy.sh).
+          labels: ncc.commit=${{ github.sha }}
           provenance: false
           sbom: false
           outputs: type=image,name=${{ env.WORKER_IMAGE }},push-by-digest=true,name-canonical=true,push=true

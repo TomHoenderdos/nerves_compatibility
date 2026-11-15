@@ -256,12 +256,15 @@ config :portal, Portal.Builder,
     # nft 1.1.6
     "b8b00920ff71db7fe5af16cf7fdc9320faa60a7b717a854058ee96e0a0d5972a",
     # nft 1.0.9
-    "d8910d1bcc775b0fe9f307c699b5f748415f848691ed22f565940c144b0082b4",
-    # The ruleset before it, still accepted so that a build host keeps
-    # building until its own configuration lists the current one; the host
-    # configuration changes separately from a release. Remove these two (and
-    # their `status_listing_v1_unreserved*` fixtures) once every build host
-    # lists the current ruleset.
+    "d8910d1bcc775b0fe9f307c699b5f748415f848691ed22f565940c144b0082b4"
+  ],
+  # The ruleset before it, still accepted so that a build host keeps building
+  # until its own configuration lists the current one (the host configuration
+  # changes separately from a release), but every check that finds it logs a
+  # warning naming the hash. Empty this list (and remove the
+  # `status_listing_v1_unreserved*` fixtures) once every build host lists the
+  # current ruleset.
+  egress_table_hashes_superseded: [
     # nft 1.1.6
     "ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e",
     # nft 1.0.9

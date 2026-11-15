@@ -226,29 +226,29 @@ if ! git diff --quiet; then
   exit 1
 fi
 
-# A builder deploy is marked incomplete from here, before the checkout
-# moves, until its last step passes (the end of this script). A run that
-# stops anywhere in between, for whatever reason, leaves the checkout on
-# the new commit and the old ncc-portal often still active: exactly what a
-# finished deploy looks like to ops/deploy-builders.sh's preflight, which
-# then skipped the host unless given -f. The preflight reads this file and
-# redeploys a host that has it. That is safe because every step below is
-# safe to repeat on a host already on the commit: the checkout merge is a
-# no-op, the drain pauses (or takes over its own earlier pause, see
-# builder-deploy.sh), the image pull and release build produce the same
-# commit's artifacts, migrations already run are skipped, the previous
-# images are re-kept and the egress checks run again. The flock above keeps
-# a redeploy from racing a run that is still going.
-deploy_incomplete=$NCC_INSTALL_DIR/deploy-incomplete
-if [[ $mode == builder ]]; then
-  printf '%s\n' "${1:-head}" >"$deploy_incomplete"
-fi
-
 git fetch origin main
 target=${1:-$(git rev-parse origin/main)}
 if [[ "$target" != "$(git rev-parse origin/main)" ]]; then
   echo 'refusing to deploy: requested commit is no longer the head of main' >&2
   exit 1
+fi
+# A builder deploy is marked incomplete from here, once the commit is known
+# to be main's head and before anything moves, until its last step passes
+# (the end of this script). A run that stops anywhere in between leaves the
+# checkout on the new commit and the old ncc-portal often still active:
+# exactly what a finished deploy looks like to ops/deploy-builders.sh's
+# preflight, which then skipped the host unless given -f. The preflight
+# reads this file and redeploys a host that has it. A run refused above
+# moved nothing, so it marks nothing. Redeploying is safe because every
+# step below is safe to repeat on a host already on the commit: the
+# checkout merge is a no-op, the drain pauses (or takes over its own
+# earlier pause, see builder-deploy.sh), the image pull and release build
+# produce the same commit's artifacts, migrations already run are skipped,
+# the previous images are kept (by commit label) and the egress checks run
+# again. The flock above keeps a redeploy from racing a run still going.
+deploy_incomplete=$NCC_INSTALL_DIR/deploy-incomplete
+if [[ $mode == builder ]]; then
+  printf '%s\n' "$target" >"$deploy_incomplete"
 fi
 git merge --ff-only "$target"
 test "$(git rev-parse HEAD)" = "$target"

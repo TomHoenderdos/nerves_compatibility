@@ -259,6 +259,11 @@ V6_TAIL=(
   "-d ::1/128 -j DROP"
   "-d ::/128 -j DROP"
   "-d ::ffff:0.0.0.0/96 -j DROP"
+  # Dropping NAT64 means a builder whose only way out is NAT64 (an IPv6-only
+  # host behind DNS64) cannot reach any IPv4-only server (GitHub, for one)
+  # from a build: the same trade the local builders' ruleset makes. Such a host
+  # needs IPv4 egress of its own; this drop stays, as the prefix would
+  # otherwise reach a private v4 address the v4 chain never checks.
   "-d 64:ff9b::/96 -j DROP"
   "-d 100::/64 -j DROP"
   "-d 2001:db8::/32 -j DROP"

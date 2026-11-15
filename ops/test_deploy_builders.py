@@ -97,12 +97,15 @@ class DeployMarkerTest(unittest.TestCase):
     def test_deploy_writes_the_marker_before_the_merge_and_clears_it_last(self):
         text = SCRIPT.with_name("deploy.sh").read_text()
         write = text.index('>"$deploy_incomplete"')
-        self.assertLess(write, text.index("git fetch origin main"))
+        # Only once the commit is checked to be main's head: a run refused
+        # before that moved nothing and must not send the host round again.
+        self.assertLess(text.index("git fetch origin main"), write)
+        self.assertLess(text.index("no longer the head of main"), write)
         self.assertLess(write, text.index("git merge --ff-only"))
         clear = text.index('rm -f "$deploy_incomplete"')
         self.assertLess(text.index("  builder_check_running_egress"), clear)
         self.assertLess(text.index("systemctl restart ncc-portal"), clear)
-        self.assertIn("if [[ $mode == builder ]]; then\n  printf '%s\\n' \"${1:-head}\" "
+        self.assertIn("if [[ $mode == builder ]]; then\n  printf '%s\\n' \"$target\" "
                       '>"$deploy_incomplete"', text)
 
 

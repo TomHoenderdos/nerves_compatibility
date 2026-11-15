@@ -813,8 +813,9 @@ defmodule Portal.Builder do
   # and the bridge icc table, written by the helper, which takes no input,
   # then closed. Passes only a complete listing whose normalised sha256
   # (`egress_listing_sha256/1`) is in `:expected_hashes`, by default the
-  # release's `:egress_table_hashes`: a table that is present but weakened
-  # has another hash. The whole read is bounded by `:timeout_ms` and
+  # release's `:egress_table_hashes`, or in `:superseded_hashes` (default
+  # `:egress_table_hashes_superseded`), which passes with a warning: a table
+  # that is present but weakened has another hash. The whole read is bounded by `:timeout_ms` and
   # `@egress_status_max_bytes`: a wedged or runaway helper fails closed
   # instead of blocking the caller's `:builds` slot.
   @spec probe_egress(keyword()) :: :ok | {:error, term()}
@@ -827,6 +828,11 @@ defmodule Portal.Builder do
     expected =
       Keyword.get_lazy(opts, :expected_hashes, fn -> config(:egress_table_hashes, []) end)
 
+    superseded =
+      Keyword.get_lazy(opts, :superseded_hashes, fn ->
+        config(:egress_table_hashes_superseded, [])
+      end)
+
     timeout_ms = Keyword.get(opts, :timeout_ms, @egress_probe_timeout_ms)
     deadline = System.monotonic_time(:millisecond) + timeout_ms
 
@@ -834,7 +840,9 @@ defmodule Portal.Builder do
       {:ok, conn} ->
         result = read_status(conn, deadline, [], 0)
         :gen_tcp.close(conn)
-        with {:ok, listing} <- result, do: egress_listing_result(listing, expected)
+
+        with {:ok, listing} <- result,
+             do: egress_listing_result(listing, expected, superseded)
 
       {:error, reason} ->
         {:error, {:status_socket, socket, reason}}
@@ -853,7 +861,7 @@ defmodule Portal.Builder do
     end
   end
 
-  defp egress_listing_result(listing, expected) do
+  defp egress_listing_result(listing, expected, superseded) do
     hash = egress_listing_sha256(listing)
 
     cond do
@@ -866,11 +874,22 @@ defmodule Portal.Builder do
       expected == [] ->
         {:error, {:no_expected_egress_hashes, hash}}
 
-      hash not in expected ->
-        {:error, {:unexpected_egress_table, hash}}
+      hash in expected ->
+        :ok
+
+      # A host still on the ruleset the current one replaced builds on, but
+      # says so on every check, so the transition window shows in the logs
+      # until its configuration lists the current ruleset.
+      hash in superseded ->
+        Logger.warning(
+          "build egress filter is the superseded ruleset (#{hash}); " <>
+            "update this host's ncc_egress table to the current one"
+        )
+
+        :ok
 
       true ->
-        :ok
+        {:error, {:unexpected_egress_table, hash}}
     end
   end
 

@@ -664,20 +664,46 @@ defmodule Portal.BuilderTest do
     # their hashes: without one, every build on such a builder is refused;
     # with any other, a ruleset nobody reviewed passes.
     test "the release expects the builders' reviewed filter and nothing else" do
-      hashes =
-        for name <- [
-              "status_listing.txt",
-              "status_listing_nft_1_0_9.txt",
-              "status_listing_v1_unreserved.txt",
-              "status_listing_v1_unreserved_nft_1_0_9.txt"
-            ] do
+      hashes = fn names ->
+        for name <- names do
           listing = File.read!(Path.expand("../fixtures/egress/" <> name, __DIR__))
           assert Builder.egress_table_complete?(listing), name
           Builder.egress_listing_sha256(listing)
         end
+        |> Enum.sort()
+      end
 
-      assert Enum.sort(hashes) ==
-               Enum.sort(Application.fetch_env!(:portal, Portal.Builder)[:egress_table_hashes])
+      config = Application.fetch_env!(:portal, Portal.Builder)
+
+      assert hashes.(["status_listing.txt", "status_listing_nft_1_0_9.txt"]) ==
+               Enum.sort(config[:egress_table_hashes])
+
+      assert hashes.([
+               "status_listing_v1_unreserved.txt",
+               "status_listing_v1_unreserved_nft_1_0_9.txt"
+             ]) == Enum.sort(config[:egress_table_hashes_superseded])
+    end
+
+    # The ruleset the current one replaced still passes, so a host whose
+    # configuration is not updated yet keeps building, but every check says
+    # so: the transition window is visible until the list is emptied.
+    test "a superseded ruleset passes with a warning naming its hash" do
+      fixture = &File.read!(Path.expand("../fixtures/egress/" <> &1, __DIR__))
+      old = fixture.("status_listing_v1_unreserved.txt")
+      hash = Builder.egress_listing_sha256(old)
+      socket = egress_status_socket(old)
+
+      log = capture_log(fn -> assert :ok = Builder.probe_egress(socket: socket) end)
+      assert log =~ "superseded ruleset (#{hash})"
+
+      # Only as superseded: without that list it is any other ruleset.
+      assert {:error, {:unexpected_egress_table, ^hash}} =
+               Builder.probe_egress(socket: socket, superseded_hashes: [])
+
+      # The current ruleset passes quietly.
+      current = egress_status_socket(fixture.("status_listing.txt"))
+      log = capture_log(fn -> assert :ok = Builder.probe_egress(socket: current) end)
+      refute log =~ "superseded"
     end
 
     # The current ruleset drops every reserved or special-purpose range a

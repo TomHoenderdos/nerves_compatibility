@@ -328,6 +328,12 @@ builder_prepare() {
   elif [[ $available != true ]]; then
     echo 'builder queues are missing or the running release did not answer; refusing deployment' >&2
     return 1
+  else
+    # Running queues: whatever pause a marker left here has ended (resumed
+    # by hand, say, or a resume whose marker removal failed). A marker kept
+    # past that would let a later run take over a pause an operator then
+    # made on the same process, so it goes.
+    builder_unmark_paused
   fi
 
   builder_paused=true
@@ -534,13 +540,20 @@ builder_kill_warm() {
   fi
 }
 
-# Succeeds when both tags name one image, by ID; never for an ID that
-# cannot be read.
-builder_same_image() {
-  local a b
-  a=$(builder_docker image inspect --format '{{.Id}}' "$1" 2>/dev/null) || return 1
-  b=$(builder_docker image inspect --format '{{.Id}}' "$2" 2>/dev/null) || return 1
-  [[ -n $a && $a == "$b" ]]
+# Succeeds when both tags are images of the commit being deployed, by their
+# `ncc.commit` label (make build, make build-toolchains and deploy.yml set
+# it). Not by image ID: a rebuild of the same commit (a failed pull, then
+# `make build`) gets an ID of its own, and the live tag would look like the
+# old release's image and be moved to previous. An image without the label,
+# or with another commit's (or a `-dirty` one), counts as different, so the
+# live tag moves to previous as it always did.
+builder_same_commit() {
+  local sha a b
+  sha=$(git -C "$builder_src" rev-parse HEAD 2>/dev/null) || return 1
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || return 1
+  a=$(builder_docker image inspect --format '{{ index .Config.Labels "ncc.commit" }}' "$1" 2>/dev/null) || return 1
+  b=$(builder_docker image inspect --format '{{ index .Config.Labels "ncc.commit" }}' "$2" 2>/dev/null) || return 1
+  [[ $a == "$sha" && $b == "$sha" ]]
 }
 
 builder_activate_image() {
@@ -572,16 +585,16 @@ builder_activate_image() {
     fi
   done
   builder_check_egress || return 1
-  # A live tag already on the candidate's image is this commit's, activated
-  # by an earlier run of this deploy that failed later on: moving it to
-  # previous would replace the rollback image with the one being deployed.
+  # A live tag already on this commit's image was activated by an earlier
+  # run of this deploy that failed later on: moving it to previous would
+  # replace the rollback image with this commit's own.
   if [[ $fresh != *" ncc-worker:local "* ]] &&
-    ! builder_same_image ncc-worker:local ncc-worker:deploy; then
+    ! builder_same_commit ncc-worker:local ncc-worker:deploy; then
     builder_docker tag ncc-worker:local ncc-worker:previous
     builder_docker tag ncc-worker:deploy ncc-worker:local
   fi
   for tag in $tags; do
-    if [[ $fresh != *" $tag "* ]] && ! builder_same_image "$tag" "$tag-deploy"; then
+    if [[ $fresh != *" $tag "* ]] && ! builder_same_commit "$tag" "$tag-deploy"; then
       builder_docker tag "$tag" "$tag-previous"
       builder_docker tag "$tag-deploy" "$tag"
     fi

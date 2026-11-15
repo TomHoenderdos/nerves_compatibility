@@ -149,6 +149,23 @@ class BuilderDeploymentTest(unittest.TestCase):
                 self.assertIn("already paused", result.stderr)
                 self.assertEqual(self.marker, marker)
 
+    # Running queues end whatever pause a marker described, so the marker
+    # goes: kept, it would let a later run take over a pause an operator
+    # then made on the same process.
+    def test_running_queues_clear_a_stale_marker(self):
+        # This run writes no marker of its own (no InvocationID) and cannot
+        # resume, so only the clear can have removed the stale one.
+        result, events = self.run_deploy(RESUME_STATUS="1", INVOCATION="",
+                                         marker=f"{self.INVOCATION}\nactivating\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIsNone(self.marker)
+        self.assertNotIn("taking the pause over", result.stdout)
+
+        result, events = self.run_deploy(marker=f"{self.INVOCATION}\nactivating\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, ["pause", "build", "resume"])
+        self.assertIsNone(self.marker)
+
     # No InvocationID to compare with: nothing can be taken over.
     def test_a_marker_is_not_trusted_without_the_services_invocation_id(self):
         result, events = self.run_deploy(AVAILABLE="paused", INVOCATION="",
@@ -419,7 +436,11 @@ builder_activate_image
 
     # A rerun after a deploy that activated and then failed finds the live
     # tags already on this commit's images. Moving them to previous would
-    # lose the rollback images; they stay where they are.
+    # lose the rollback images; they stay where they are. "This commit's" is
+    # the `ncc.commit` label, not the image ID: a rebuild of the same commit
+    # (a failed pull, then `make build`) has an ID of its own. A live image
+    # without the label, or with another commit's, moves to previous as
+    # before.
     def test_a_rerun_keeps_the_previous_images_of_an_earlier_activation(self):
         script = r'''
 set -euo pipefail
@@ -427,35 +448,60 @@ source "$HELPER"
 builder_check_egress() { :; }
 builder_warm_nerves() { :; }
 builder_toolchain_tags() { echo ncc-toolchain:rpi4; }
+git() { echo 0123456789abcdef0123456789abcdef01234567; }
 docker() {
   echo "docker $*" >> "$EVENTS"
   if [[ $1 == image && $2 == inspect && $3 == --format ]]; then
+    case $3$4 in *ncc.commit*) ;; *) return 1 ;; esac
     case $5 in
-      ncc-worker:local | ncc-worker:deploy) echo sha256:new ;;
-      ncc-toolchain:rpi4) echo "sha256:$TOOLCHAIN_LIVE" ;;
-      ncc-toolchain:rpi4-deploy) echo sha256:tc-new ;;
+      ncc-worker:local) printf '%s\n' "$WORKER_LIVE" ;;
+      ncc-toolchain:rpi4) printf '%s\n' "$TOOLCHAIN_LIVE" ;;
+      *-deploy | ncc-worker:deploy) echo 0123456789abcdef0123456789abcdef01234567 ;;
     esac
   fi
 }
 builder_activate_image
 '''
-        for live, moved in (("tc-new", False), ("tc-old", True)):
-            with self.subTest(live=live), tempfile.TemporaryDirectory() as directory:
+        sha = self.SHA
+        for worker, toolchain, worker_moved, toolchain_moved in (
+            (sha, sha, False, False),
+            (sha, "f" * 40, False, True),
+            ("", sha, True, False),
+            ("<no value>", "", True, True),
+            (sha + "-dirty", sha + "-dirty", True, True),
+        ):
+            with self.subTest(worker=worker, toolchain=toolchain), \
+                    tempfile.TemporaryDirectory() as directory:
                 events = Path(directory) / "events"
                 result = subprocess.run(
                     ["bash", "-c", script],
                     env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
-                         "TOOLCHAIN_LIVE": live},
+                         "WORKER_LIVE": worker, "TOOLCHAIN_LIVE": toolchain},
                     capture_output=True, text=True, timeout=5,
                 )
                 lines = events.read_text().splitlines()
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertFalse([line for line in lines if "ncc-worker:previous" in line], lines)
-                self.assertNotIn("docker tag ncc-worker:deploy ncc-worker:local", lines)
                 self.assertEqual(
-                    "docker tag ncc-toolchain:rpi4 ncc-toolchain:rpi4-previous" in lines, moved)
+                    "docker tag ncc-worker:local ncc-worker:previous" in lines, worker_moved)
                 self.assertEqual(
-                    "docker tag ncc-toolchain:rpi4-deploy ncc-toolchain:rpi4" in lines, moved)
+                    "docker tag ncc-worker:deploy ncc-worker:local" in lines, worker_moved)
+                self.assertEqual(
+                    "docker tag ncc-toolchain:rpi4 ncc-toolchain:rpi4-previous" in lines,
+                    toolchain_moved)
+                self.assertEqual(
+                    "docker tag ncc-toolchain:rpi4-deploy ncc-toolchain:rpi4" in lines,
+                    toolchain_moved)
+
+    # The worker image carries the label that comparison reads, however it
+    # is built: `make build`, `make build-clean` and deploy.yml's push.
+    def test_worker_builds_carry_the_commit_label(self):
+        for target in ("build", "build-clean"):
+            make = subprocess.run(
+                ["make", "-n", target, "TOOLCHAIN_COMMIT=" + self.SHA],
+                cwd=SRC, capture_output=True, text=True, timeout=10, check=True)
+            self.assertIn(f"--label ncc.commit={self.SHA}", make.stdout, target)
+        workflow = (SRC / ".github" / "workflows" / "deploy.yml").read_text()
+        self.assertIn("labels: ncc.commit=${{ github.sha }}", workflow)
 
     def test_activation_without_a_candidate_moves_no_tag(self):
         script = r'''

@@ -22,6 +22,10 @@ TOOLCHAIN_SUFFIX :=
 # only one labelled with the commit it deploys. CI passes the same label. A
 # checkout with uncommitted changes labels `<sha>-dirty`, which no deploy takes.
 TOOLCHAIN_COMMIT ?= $(shell sha=$$(git rev-parse HEAD 2>/dev/null) && if git diff --quiet HEAD 2>/dev/null; then echo "$$sha"; else echo "$$sha-dirty"; fi)
+# The same label on the worker image: a rerun of a builder deploy keeps
+# ncc-worker:previous when the live image already is this commit's
+# (ops/builder-deploy.sh, builder_same_commit).
+WORKER_COMMIT ?= $(TOOLCHAIN_COMMIT)
 
 all: help
 
@@ -51,12 +55,12 @@ help:
 # `make build-clean` when you actually want those refetched.
 build: apps/ncc_worker/Dockerfile
 	@echo "Building worker Docker image..."
-	docker build -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
+	docker build -f apps/ncc_worker/Dockerfile --label ncc.commit=$(WORKER_COMMIT) -t $(WORKER_IMAGE) .
 	@echo "Build complete: $(WORKER_IMAGE)"
 
 build-clean: apps/ncc_worker/Dockerfile
 	@echo "Building worker Docker image from scratch..."
-	docker build --no-cache -f apps/ncc_worker/Dockerfile -t $(WORKER_IMAGE) .
+	docker build --no-cache -f apps/ncc_worker/Dockerfile --label ncc.commit=$(WORKER_COMMIT) -t $(WORKER_IMAGE) .
 	@echo "Build complete: $(WORKER_IMAGE)"
 
 build-toolchains: apps/ncc_worker/Dockerfile.toolchain
