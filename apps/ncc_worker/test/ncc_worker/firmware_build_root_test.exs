@@ -221,5 +221,43 @@ defmodule NccWorker.FirmwareBuildRootTest do
       assert %{status: "pass", variants: %{"without" => %{status: "skipped"}}} = result.build_root
       assert line =~ "(without) not published"
     end
+
+    test "each variant is judged from its own dir", %{proj: proj} do
+      build(proj, "defmodule FxFwGateOwn2 do\n  def x, do: :ok\nend\n")
+      build(proj, "defmodule FxFwGateWithout2 do\n  def x, do: :ok\nend\n", ".fx.without")
+
+      build(
+        proj,
+        "defmodule FxFwGateWorld do\n  def p, do: Path.expand(\"x\", __DIR__)\nend\n",
+        ".fx.world_nerves"
+      )
+
+      variant = fn name ->
+        %{
+          variant: name,
+          beam_scan: %{"footprint" => %{"file_manifest" => manifest()}},
+          compile_env: [],
+          deps_lock: %{}
+        }
+      end
+
+      system =
+        Map.put(passing(), :published_variants, [variant.("without"), variant.("world_nerves")])
+
+      {systems, [line]} =
+        FirmwareBuildRoot.gate(%{"nerves_system_rpi0_2" => system}, params(proj), judge: &judge/4)
+
+      result = systems["nerves_system_rpi0_2"]
+      assert [%{variant: "without"}] = result.published_variants
+
+      assert %{
+               variants: %{
+                 "without" => %{status: "pass"},
+                 "world_nerves" => %{status: "skipped"}
+               }
+             } = result.build_root
+
+      assert line =~ "(world_nerves) not published"
+    end
   end
 end

@@ -138,13 +138,17 @@ defmodule NccWorker.FirmwareBuildRoot do
         {result, []}
       end
 
-    variant_dir = Path.join([build_path, "lib", OptionalDepsTargets.variant_dir(ctx.package)])
-
     {kept, judged, variant_lines} =
       Enum.reduce(variants(result), {[], %{}, []}, fn variant, {kept, judged, lines} ->
         label = to_string(variant[:variant] || variant["variant"])
 
-        case variant_verdict(variant, variant_dir, ctx, judge, opts) do
+        case variant_verdict(
+               variant,
+               variant_dir(build_path, ctx.package, label),
+               ctx,
+               judge,
+               opts
+             ) do
           :keep ->
             {kept ++ [variant], judged, lines}
 
@@ -164,6 +168,18 @@ defmodule NccWorker.FirmwareBuildRoot do
 
     {result, own_lines ++ variant_lines}
   end
+
+  # Each variant from its own `.<package>.<variant>` dir, and only a
+  # variant this image publishes: any other name is never a path.
+  @variants ["without" | Compatibility.Worlds.firmware_variants()]
+
+  defp variant_dir(build_path, package, label) when label in @variants,
+    do: Path.join([build_path, "lib", OptionalDepsTargets.variant_dir(package, label)])
+
+  defp variant_dir(_build_path, _package, _label), do: nil
+
+  defp variant_verdict(_variant, nil, _ctx, _judge, _opts),
+    do: {:withhold, "portability could not be judged (unknown variant)"}
 
   defp variant_verdict(variant, dir, ctx, judge, opts) do
     if manifest?(variant[:beam_scan] || variant["beam_scan"]) do
