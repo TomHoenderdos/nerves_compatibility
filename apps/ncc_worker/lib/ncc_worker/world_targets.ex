@@ -270,16 +270,11 @@ defmodule NccWorker.WorldTargets do
          {:stray, []} <- {:stray, strays(state.lock_before, lock_after, world_lock)} do
       state = Map.merge(state, %{lock_after: lock_after, world_lock: world_lock})
 
-      state =
-        Enum.reduce(state.copied, state, fn {name, _} = target, state ->
-          with_lock = get_in(params.systems, [name, :deps_lock])
-
-          if is_map(with_lock) and names(with_lock) == names(world_lock),
-            do: drop(state, target, "same_closure_as_with"),
-            else: state
-        end)
-
-      state |> remove_stale(params) |> fetch_others(params, r) |> compile_all(params, r)
+      state
+      |> drop_same_as_with(params, world_lock)
+      |> remove_stale(params)
+      |> fetch_others(params, r)
+      |> compile_all(params, r)
     else
       {:lock, _, _} ->
         state |> drop_all("deps_lock_unreadable") |> then(&finish(params, r, &1, nil))
@@ -294,6 +289,19 @@ defmodule NccWorker.WorldTargets do
         state |> drop_all("world_extra_deps") |> then(&finish(params, r, &1, nil))
     end
   end
+
+  defp drop_same_as_with(state, params, world_lock) do
+    Enum.reduce(state.copied, state, fn {name, _} = target, state ->
+      if same_as_with?(params.systems[name], world_lock),
+        do: drop(state, target, "same_closure_as_with"),
+        else: state
+    end)
+  end
+
+  defp same_as_with?(%{deps_lock: %{} = with_lock}, world_lock),
+    do: names(with_lock) == names(world_lock)
+
+  defp same_as_with?(_system, _world_lock), do: false
 
   # Lock entries the fixpoint added that the package never reaches: they
   # would be loadable while it compiles. The template's own entries were
@@ -342,6 +350,8 @@ defmodule NccWorker.WorldTargets do
     end)
   end
 
+  # Reads only the generated worker project's mix.lock.
+  # sobelow_skip ["Traversal.FileModule"]
   defp fetch({_name, %{env: env, log_file: log_file}}, params, r, lock_bytes) do
     with {:time, left} when left > 0 <- {:time, time_left(params, r)},
          :ok <-
@@ -439,18 +449,18 @@ defmodule NccWorker.WorldTargets do
 
     case reaped do
       :ok ->
-        {state, variants} =
-          Enum.reduce(built, {state, %{}}, fn {{name, _} = target, scan, ce}, {state, acc} ->
-            case keep(target, params, scan, ce, state.world_lock) do
-              {:ok, variant} -> {state, Map.put(acc, name, variant)}
-              {:error, reason} -> {drop(state, target, reason), acc}
-            end
-          end)
-
+        {state, variants} = Enum.reduce(built, {state, %{}}, &keep_built(&1, &2, params))
         finish(params, r, Map.put(state, :variants, variants), nil)
 
       error ->
         finish(params, r, state, error)
+    end
+  end
+
+  defp keep_built({{name, _} = target, scan, ce}, {state, acc}, params) do
+    case keep(target, params, scan, ce, state.world_lock) do
+      {:ok, variant} -> {state, Map.put(acc, name, variant)}
+      {:error, reason} -> {drop(state, target, reason), acc}
     end
   end
 
@@ -509,13 +519,7 @@ defmodule NccWorker.WorldTargets do
 
         systems =
           Enum.reduce(variants, params.systems, fn {name, variant}, systems ->
-            Map.update!(systems, name, fn system ->
-              Map.put(
-                system,
-                :published_variants,
-                List.wrap(system[:published_variants]) ++ [variant]
-              )
-            end)
+            Map.update!(systems, name, &append_variant(&1, variant))
           end)
 
         reason =
@@ -533,6 +537,9 @@ defmodule NccWorker.WorldTargets do
         {:error, {:optional_deps_revert_failed, reason}}
     end
   end
+
+  defp append_variant(system, variant),
+    do: Map.put(system, :published_variants, List.wrap(system[:published_variants]) ++ [variant])
 
   # Every build this pass owned the links of is checked again: the build
   # the target publishes, and its build without when it has one.

@@ -133,29 +133,23 @@ defmodule NccWorker.WorldTargetsTest do
 
   defp lock_of(names), do: Map.new(names, &{&1, %{"version" => "1.0.0", "checksum" => "o-#{&1}"}})
 
-  defp manifest_of(app_dir) do
-    entries = fn sub ->
-      root = Path.join(app_dir, sub)
+  defp manifest_of(app_dir),
+    do: %{"ebin" => entries(app_dir, "ebin"), "priv" => entries(app_dir, "priv")}
 
-      if File.dir?(root) do
-        for file <- Path.wildcard(Path.join(root, "**"), match_dot: true),
-            File.regular?(file) do
-          bytes = File.read!(file)
-          %File.Stat{size: size, mode: mode} = File.stat!(file)
+  defp entries(app_dir, sub) do
+    root = Path.join(app_dir, sub)
 
-          %{
-            "path" => Path.relative_to(file, app_dir),
-            "sha256" => Base.encode16(:crypto.hash(:sha256, bytes), case: :lower),
-            "size" => size,
-            "mode" => mode
-          }
-        end
-      else
-        []
-      end
+    for file <- Path.wildcard(Path.join(root, "**"), match_dot: true), File.regular?(file) do
+      bytes = File.read!(file)
+      %File.Stat{size: size, mode: mode} = File.stat!(file)
+
+      %{
+        "path" => Path.relative_to(file, app_dir),
+        "sha256" => Base.encode16(:crypto.hash(:sha256, bytes), case: :lower),
+        "size" => size,
+        "mode" => mode
+      }
     end
-
-    %{"ebin" => entries.("ebin"), "priv" => entries.("priv")}
   end
 
   defp passing(dir, target, extra \\ %{}) do
