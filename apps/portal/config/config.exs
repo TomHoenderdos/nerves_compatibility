@@ -143,7 +143,15 @@ config :portal, Oban,
        # releases without a library table. Rows and one Hex read per system;
        # carries `:maintenance`, the web host's queue. The runs it queues go
        # to the build nodes' `:system_abi` queue.
-       {"13 * * * *", Portal.Workers.SystemAbiObserve}
+       {"13 * * * *", Portal.Workers.SystemAbiObserve},
+       # Daily at 05:11 UTC, off every hourly and five-minute entry above:
+       # queue a `Portal.Workers.Backfill` for every hex.pm package the
+       # catalogue has never tested (`Portal.CatalogSeed`). Without this the
+       # seed had no schedule at all and the gap between runs was whatever a
+       # human remembered to do by hand (see
+       # docs/superpowers/ops/factory/hex-all.md). Carries `:intake`, the web
+       # host's queue: hex.pm lookups, not builds.
+       {"11 5 * * *", Portal.Workers.CatalogSeedSweep}
      ]}
   ]
 

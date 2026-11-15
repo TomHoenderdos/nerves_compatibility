@@ -203,6 +203,16 @@ defmodule Portal.ObanConfigTest do
     assert queues[:system_abi] == 1
   end
 
+  test "the catalog seed sweep is scheduled daily on the intake queue" do
+    {_mod, opts} = plugin(Oban.Plugins.Cron)
+
+    assert {"11 5 * * *", Portal.Workers.CatalogSeedSweep} =
+             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.CatalogSeedSweep}, &1))
+
+    # Hex.pm lookups, not builds: the web host's queue.
+    assert Portal.Workers.CatalogSeedSweep.__opts__()[:queue] == :intake
+  end
+
   test "the hex metadata refresh is scheduled weekly on the intake queue" do
     {_mod, opts} = plugin(Oban.Plugins.Cron)
 
