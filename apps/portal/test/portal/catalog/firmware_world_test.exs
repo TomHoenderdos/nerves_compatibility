@@ -144,6 +144,26 @@ defmodule Portal.Catalog.FirmwareWorldTest do
       assert kinds(rpi4_row()) == ["without"]
     end
 
+    # The world only ever adds to the run's closure: a world lock that
+    # lacks a run-lock entry, or names it at another release, is not one
+    # the worker wrote.
+    test "dropped when its lock does not hold the run lock" do
+      muontrap = %{"muontrap" => %{"version" => "2.0.1", "checksum" => "mt"}}
+      ingest!(run([without(), world(muontrap)]))
+      assert kinds(rpi4_row()) == ["without"]
+
+      moved = Map.put(@world_lock, "decimal", %{"version" => "2.2.0", "checksum" => "other"})
+
+      ingest!(run([without(), world(moved)]) |> Map.put("run_id", "fixture-jason-2"))
+
+      assert Enum.all?(
+               SystemResult
+               |> Ash.Query.filter(system_pkg == "nerves_system_rpi4")
+               |> Ash.read!(domain: Catalog),
+               &(kinds(&1) == ["without"])
+             )
+    end
+
     test "a malformed world build is dropped whole" do
       ingest!(run([without(), world(%{"muontrap" => %{"version" => 2}})]))
       assert kinds(rpi4_row()) == ["without"]

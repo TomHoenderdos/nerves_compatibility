@@ -1711,7 +1711,11 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
-  defp world_kept?(%{variant: name}, name, lock, others), do: names(lock) not in others
+  # The world only adds to the run's closure (`NccWorker.WorldTargets`):
+  # every run-lock entry is in its lock, at the same release.
+  defp world_kept?(%{variant: name, run_lock: %{} = run_lock}, name, lock, others),
+    do: Map.take(lock, Map.keys(run_lock)) == run_lock and names(lock) not in others
+
   defp world_kept?(_world, _name, _lock, _others), do: false
 
   defp names(%{} = lock), do: lock |> Map.keys() |> Enum.sort()
