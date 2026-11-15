@@ -408,7 +408,11 @@ refusing, and for the package itself leaves its own name out of the native-tool 
 where it can run at compile time (elixir_make), and drops rule 2's "nerves-specific source" refusal. Revision 11 accepts, at the trace's
 final sentinel only, Mix's reload of a natively built dependency's protocol from the project's consolidated dir (same
 md5 as that file), and lets toolshed 0.5.0's reviewed `System.version/0` read through (only the release with the
-reviewed outer checksum whose tree matched its verified tarball).
+reviewed outer checksum whose tree matched its verified tarball). Revision 13 records a compile-time read of the
+byte order (`:erlang.system_info(:endian)`, so `System.endianness/0`: nx's float layouts, and every package with nx
+in its closure) as an `endian` compile input valued from the tracer's start line, instead of refusing it as a host
+read; a read whose byte order the trace does not record (no `endian` on a start line, or two VMs disagreeing) is
+"portability could not be judged".
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
@@ -683,14 +687,17 @@ environment reads of the package's closure, which no longer refuse a build (`Ncc
 `default` is the app's `.app` env default at the locked version, `seen` what the read returned, and
 `{"kind": "platform_define", "regex", "matched"}`: a rebar3 `platform_define` regex in the closure that the OTP major
 does not decide, with whether it matched the builder's `rebar_utils:get_arch/0` string (`Rebar.arch/0`; one `re`
-cannot compile, or not ASCII, records `config_unrecorded`). A value the trace could not
+cannot compile, or not ASCII, records `config_unrecorded`), and `{"kind": "endian", "value": "little" | "big"}`: the
+closure read the byte order at compile time, with the byte order the traced compile ran with (judge revision 13; the
+client compares its own `System.endianness/0`). A value the trace could not
 capture, over 64 KiB, under a private-looking name (`NCC_*`, `*TOKEN*`, `*SECRET*`, `*_KEY`, `*_PASS`, `*_PROXY`,
 ...) or holding a URL with userinfo (`scheme://user:pass@`) is `"unrecordable"`.
 Each kind has its own cap inside the list's 256 items: more than 128 `env` items record `env_all` instead, more
 than 96 `config_order` items or 32 of any other kind record `config_unrecorded`; a cap never drops the build. A
 `config_order` item whose app, key or reader no item may name (an empty atom, one with `=` or NUL, or over 256 bytes)
 records `config_unrecorded` too.
-Other host reads (`os:type`, `system_info`, files, the network, programs, init arguments) still refuse.
+Other host reads (`os:type`, `system_info` keys other than `endian` and the ones constant within an OTP major,
+files, the network, programs, init arguments) still refuse.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

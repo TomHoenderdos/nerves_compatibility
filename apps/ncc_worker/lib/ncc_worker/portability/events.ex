@@ -23,7 +23,10 @@ defmodule NccWorker.Portability.Events do
       `pathtype/1`, `normalize/2` and `real_path/4`; never a function that runs a fun it
       was given, so a package callback tail-calling the read is refused).
       `machine`, `smp_support`, `threads` and `heap_type` are allowed
-      (constant within an OTP major); every other key refuses, and the
+      (constant within an OTP major); `endian` is observed as
+      `endian_reads`, a compile input `CompileInputs` records with the
+      builder's byte order for the client to compare, wherever it is read
+      (judge revision 13); every other key refuses, and the
       reason names the key and, when another function than the package's
       made the call, that function (`via`). The tracer
       writes no line for those path-handling reads (it counts them as
@@ -294,6 +297,14 @@ defmodule NccWorker.Portability.Events do
     do: key in ["machine", "otp_release"]
 
   defp epp_read?(_event), do: false
+
+  # The byte order (`System.endianness/0`, nx picking a float layout): a
+  # compile input, never a refusal, whoever reads it and from wherever. Its
+  # value is the machine's alone, the tracer's start line records it, and
+  # `CompileInputs` turns the read into an `endian` item the client compares
+  # with its own. Only the exact atom key: a tuple key renders otherwise.
+  defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => "endian"}} = e),
+    do: {:observe, "endian_reads", summary(e)}
 
   # OTP's own conversion of a big integer (`binary_to_integer/1` on a long
   # literal traps to erlang:big_binary_to_int/2) sizes its chunks by the

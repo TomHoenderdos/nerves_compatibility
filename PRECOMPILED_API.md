@@ -608,6 +608,10 @@ What it lists:
     3.28, `rebar_utils:otp_release1/1`), or the major alone when that file cannot be read; the wordsize is `8 * erlang:system_info({wordsize, external})`. Each distinct regex is
     listed once. A regex the builder's `re` cannot compile, or one that is not ASCII, is recorded as
     `config_unrecorded` instead. A regex the OTP major does decide is not listed, as before.
+  - `{"kind": "endian", "value": "little" | "big"}` (judge revision 13 and later): the closure
+    read the byte order at compile time (`:erlang.system_info(:endian)`, `System.endianness/0`),
+    such as nx choosing its float layouts. `value` is the byte order the build's compile ran with.
+    Listed once, however many reads there were.
 
   A `compile_env` value may also be `"unrecordable"`, which matches no config. A list the portal
   rejects as malformed is stored as `[{"kind": "config_unrecorded"}]` with the build's `compile_env`
@@ -697,11 +701,16 @@ build fails as the reason it was not used:
     - a `platform_define` item holds when the client, computing its own arch string the way
       rebar3 does (above) under the OTP it would compile with, gets the same `matched` for
       `regex`. Else `platform_define_differs`, with the regex as its argument. A client that
-      cannot compute the arch string treats the item as differing.
+      cannot compute the arch string treats the item as differing;
+    - an `endian` item holds when `value` is the client's own `System.endianness/0`, else
+      `endian_differs`, with the build's and the client's byte order as its arguments. A client
+      that does not know the kind treats the item as malformed: a miss.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
     being installed, `default` is `:error`, and the device's value for the key equals `seen`.
-    On a device, an `env` item recorded unset holds, one recorded set is `env_set_at_build`. A
+    On a device, an `env` item recorded unset holds, one recorded set is `env_set_at_build`, and
+    an `endian` item is `endian_differs` (the device cannot check the machine its firmware was
+    compiled on). A
     client never prints the project's value. A build that carries `compile_inputs` is exempt
     from the source scan's environment-variable rule (`rule8_env`).
 
@@ -804,7 +813,8 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `needed_lib_missing`, `symbol_version_missing`, `system_unknown`,
 `system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
 `config_unrecorded`, `config_order_differs`, `rebar3_global_config`,
-`erl_compiler_options`, `platform_define_differs`. Another code is stored as `unknown`.
+`erl_compiler_options`, `platform_define_differs`, `endian_differs`. Another code is stored as
+`unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300

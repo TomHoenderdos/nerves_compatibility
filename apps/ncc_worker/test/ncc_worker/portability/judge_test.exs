@@ -406,6 +406,79 @@ defmodule NccWorker.Portability.JudgeTest do
   # The setup's project with a report that passes as it is.
   defp clean_judged_project(proj), do: {proj, report(proj)}
 
+  describe "the byte order (judge revision 13)" do
+    defp endian_event(ts, file),
+      do: %{event(ts, "erlang:system_info/1", file) | "arg" => %{"key" => "endian"}}
+
+    defp with_endian(report, endian),
+      do: %{report | start: Map.put(report.start, "endian", endian)}
+
+    test "the package's own read is a compared input, not a refusal", %{proj: proj} do
+      # nx: `System.endianness/0` in lib/nx/floating.ex's module body.
+      for endian <- ["little", "big"] do
+        r = proj |> report(%{events: [endian_event(35, "lib/pkg.ex")]}) |> with_endian(endian)
+
+        assert %{status: :pass, reason: nil, compile_inputs: inputs} = judge(proj, r)
+        assert inputs == [%{"kind" => "endian", "value" => endian}]
+      end
+    end
+
+    test "a dependency's read no longer taints: the package records it", %{proj: proj} do
+      # polaris, nx_image, safetensors: nx read the byte order in its window.
+      r = proj |> report(%{events: [endian_event(15, "lib/dep.ex")]}) |> with_endian("little")
+
+      assert %{status: :pass, compile_inputs: [%{"kind" => "endian", "value" => "little"}]} =
+               v = judge(proj, r)
+
+      assert v.observations["taint"] == %{}
+    end
+
+    test "a read outside the package's closure records nothing", %{proj: proj} do
+      r = proj |> report(%{events: [endian_event(25, "lib/other.ex")]}) |> with_endian("little")
+      assert %{status: :pass, compile_inputs: []} = judge(proj, r)
+    end
+
+    test "a read with no byte order on the start line could not be judged", %{proj: proj} do
+      for endian <- [:absent, nil, "native", ""] do
+        r = report(proj, %{events: [endian_event(35, "lib/pkg.ex")]})
+        r = if endian == :absent, do: r, else: with_endian(r, endian)
+
+        assert %{status: :skip, reason: @cnj, compile_inputs: nil, observations: obs} =
+                 judge(proj, r),
+               inspect(endian)
+
+        assert "byte order read but not recorded by the tracer" in obs["problems"]
+      end
+    end
+
+    test "a child VM that ran with another byte order could not be judged", %{proj: proj} do
+      kid = child([], %{start: @libs |> Map.put("app", "dep") |> Map.put("endian", "big")})
+
+      r =
+        proj
+        |> report(%{events: [endian_event(35, "lib/pkg.ex")], children: %{"dep" => kid}})
+        |> with_endian("little")
+
+      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r)
+      assert "byte order read but not recorded by the tracer" in obs["problems"]
+    end
+
+    test "without a read, the start line's byte order changes nothing", %{proj: proj} do
+      for endian <- [:absent, "big"] do
+        r = report(proj)
+        r = if endian == :absent, do: r, else: with_endian(r, endian)
+        assert %{status: :pass, compile_inputs: []} = judge(proj, r)
+      end
+    end
+
+    test "the read is observed for the admin", %{proj: proj} do
+      r = proj |> report(%{events: [endian_event(35, "lib/pkg.ex")]}) |> with_endian("little")
+
+      assert %{observations: %{"endian_reads" => [%{"owner" => "pkg", "file" => "lib/pkg.ex"}]}} =
+               judge(proj, r)
+    end
+  end
+
   describe "built outside the trace" do
     # The digest each app's build dir has now, as the tracer records it.
     defp built_now(proj, apps) do
@@ -2107,9 +2180,9 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
     end
 
-    test "the judge revision is 11, 12 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 11
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 12
+    test "the judge revision is 13, 14 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 13
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 14
 
       # The portal withdraws only on refusals of a judge at least this new.
       # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4

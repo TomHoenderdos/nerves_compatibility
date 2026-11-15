@@ -1522,6 +1522,9 @@ start_line(Role, App, Depth) ->
     #{kind => start, role => Role, app => bin(App), ts => now_ns(),
       cwd => ncc_tracer_channels:chars(Cwd), depth => Depth,
       otp_release => bin(erlang:system_info(otp_release)), elixir => elixir_version(),
+      %% The byte order a compile-time endianness read returns here: the
+      %% judge records it as a compile input a client compares.
+      endian => atom_to_binary(erlang:system_info(endian)),
       roots => [ncc_tracer_channels:chars(R) || R <- get(roots)],
       otp_root => ncc_tracer_channels:chars(code:root_dir()), elixir_root => elixir_root(),
       home => env_bin("HOME"), mix_home => ncc_tracer_channels:chars(mix_home()),

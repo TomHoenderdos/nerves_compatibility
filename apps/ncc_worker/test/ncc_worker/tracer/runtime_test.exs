@@ -65,7 +65,9 @@ defmodule NccWorker.Tracer.RuntimeTest do
       """)
 
     lines = lines(Path.join(dir, "trace-main.jsonl"))
-    assert [%{"role" => "main", "depth" => 64}] = kind(lines, "start")
+    assert [%{"role" => "main", "depth" => 64} = start] = kind(lines, "start")
+    # The byte order the compile ran with, for an endianness read's input.
+    assert start["endian"] == Atom.to_string(:erlang.system_info(:endian))
     [open] = kind(lines, "window_open")
     [%{"app" => "fx_attr", "depth_ok" => true} = close] = kind(lines, "window_close")
 
@@ -440,7 +442,8 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     [file] = Path.wildcard(Path.join(dir, "trace-child-r3-*.jsonl"))
     lines = lines(file)
-    assert [%{"role" => "child", "app" => "r3"}] = kind(lines, "start")
+    assert [%{"role" => "child", "app" => "r3"} = start] = kind(lines, "start")
+    assert start["endian"] == Atom.to_string(:erlang.system_info(:endian))
     assert [%{"app" => "r3"}] = kind(lines, "sentinel")
     assert [%{"result" => "ok", "module" => "r3", "source" => source}] = kind(lines, "compile")
     assert source =~ "r3.erl"

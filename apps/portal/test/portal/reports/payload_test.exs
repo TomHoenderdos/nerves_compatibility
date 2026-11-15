@@ -164,7 +164,7 @@ defmodule Portal.Reports.PayloadTest do
   end
 
   test "known codes are the shared table" do
-    assert length(Payload.known_codes()) == 45
+    assert length(Payload.known_codes()) == 46
     assert "not_built_target" in Payload.known_codes()
 
     # In the client's table order (`Precompiled.Reason`).
@@ -173,7 +173,9 @@ defmodule Portal.Reports.PayloadTest do
 
     refute "unknown" in Payload.known_codes()
     # Appended: earlier codes keep their place.
-    assert List.last(Payload.known_codes()) == "platform_define_differs"
+    assert List.last(Payload.known_codes()) == "endian_differs"
+
+    assert Enum.take(Payload.known_codes(), -2) == ~w(platform_define_differs endian_differs)
   end
 
   describe "type confusion" do
@@ -317,7 +319,7 @@ defmodule Portal.Reports.PayloadTest do
   test "the compile-time input codes are known, with their arguments" do
     for code <-
           ~w(env_differs env_set_at_build env_all config_unrecorded config_order_differs
-             platform_define_differs) do
+             platform_define_differs endian_differs) do
       assert code in Payload.known_codes()
     end
 
@@ -333,5 +335,9 @@ defmodule Portal.Reports.PayloadTest do
     l = line("hackney", "4.11.1", "miss", "platform_define_differs", ["R14"])
     assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
     assert line.reason_code == "platform_define_differs" and line.reason_args == ["R14"]
+
+    l = line("nx", "1.0.0", "miss", "endian_differs", ["little", "big"])
+    assert {:ok, %{lines: [line]}} = Payload.validate(%{body() | "lines" => [l]})
+    assert line.reason_code == "endian_differs" and line.reason_args == ["little", "big"]
   end
 end

@@ -293,9 +293,12 @@ defmodule NccWorker.Portability.EventsTest do
              inspect(caller)
     end
 
-    for key <- ["version", "system_architecture", "os_type", "endian"] do
+    for key <- ["version", "system_architecture", "os_type"] do
       assert {:refuse, _} = Events.decide(wordsize(key, @big_int), ctx, "pkg"), key
     end
+
+    assert {:observe, "endian_reads", _} =
+             Events.decide(wordsize("endian", @big_int), ctx, "pkg")
 
     other = %{wordsize("wordsize", @big_int) | "mfa" => "os:type/0", "arg" => %{}}
     assert {:refuse, _} = Events.decide(other, ctx, "pkg")
@@ -831,7 +834,10 @@ defmodule NccWorker.Portability.EventsTest do
               "path" => "/usr/x.beam",
               "code_loading" => true
             }),
-            ev("os_identity", "erlang:system_info/1", %{"key" => "endian", "code_loading" => true}),
+            ev("os_identity", "erlang:system_info/1", %{
+              "key" => "nif_version",
+              "code_loading" => true
+            }),
             ev("os_identity", "os:type/0", %{"code_loading" => true}),
             # A flag that is not exactly `true` is no flag.
             ev("file_read", "prim_file:read_link/1", %{"path" => "/usr", "code_loading" => "true"})
@@ -866,7 +872,7 @@ defmodule NccWorker.Portability.EventsTest do
       for {first, key} <- [
             {{"erl_prim_loader", "read_file", 1}, "os_type"},
             {{"erl_prim_loader", "name_split", 2}, "os_type"},
-            {{"erl_prim_loader", "pathtype", 1}, "endian"}
+            {{"erl_prim_loader", "pathtype", 1}, "nif_version"}
           ] do
         event = ev("os_identity", "erlang:system_info/1", %{"key" => key}, first: first)
         assert {:refuse, _} = Events.decide(event, ctx, "pkg"), inspect(first)
@@ -888,7 +894,7 @@ defmodule NccWorker.Portability.EventsTest do
       end
 
       for key <-
-            ~w(version nif_version driver_version endian wordsize system_architecture) ++
+            ~w(version nif_version driver_version wordsize system_architecture) ++
               ["{allocator,sys_alloc}"] do
         assert {:refuse, reason} =
                  Events.decide(
@@ -900,6 +906,36 @@ defmodule NccWorker.Portability.EventsTest do
         assert reason ==
                  "compile-time host read: erlang:system_info/1 (#{key}) in Pkg.f/0 (lib/pkg.ex:3)"
       end
+    end
+
+    test "the byte order is a compile input, wherever and however it is read", %{ctx: ctx} do
+      # nx's `System.endianness/0` in a module body, and the same read with
+      # every stack shape and owner: never a refusal. `CompileInputs` records
+      # the builder's byte order and the client compares its own.
+      for event <- [
+            ev("os_identity", "erlang:system_info/1", %{"key" => "endian"}),
+            ev("os_identity", "erlang:system_info/1", %{"key" => "endian"},
+              first: {"Elixir.System", "endianness", 0}
+            ),
+            ev("os_identity", "erlang:system_info/1", %{"key" => "endian"},
+              user: nil,
+              extent: "lineage"
+            ),
+            ev("os_identity", "erlang:system_info/1", %{"key" => "endian", "code_loading" => true})
+          ],
+          owner <- ["pkg", "dep", :outside] do
+        assert {:observe, "endian_reads", %{"mfa" => "erlang:system_info/1"}} =
+                 Events.decide(event, ctx, owner),
+               inspect({event, owner})
+      end
+
+      # Only the endian key: a tuple key that mentions it is not that read.
+      assert {:refuse, _} =
+               Events.decide(
+                 ev("os_identity", "erlang:system_info/1", %{"key" => "{endian,big}"}),
+                 ctx,
+                 "pkg"
+               )
     end
 
     test "a reason names the env var and the frame that made the call", %{ctx: ctx} do

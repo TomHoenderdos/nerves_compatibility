@@ -11,12 +11,20 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
           "itself. `env` items carry `name`, `value` and `set_by` (`inputs` too when " <>
           "`set_by` is `build`); `env_all` and `config_unrecorded` carry `kind` alone; " <>
           "`config_order` items carry `app`, `path`, `reader`, `default` and `seen`; " <>
-          "`platform_define` items carry `regex` and `matched`.",
+          "`platform_define` items carry `regex` and `matched`; `endian` items carry `value`, " <>
+          "the build's byte order (`little` or `big`).",
       type: :object,
       properties: %{
         kind: %Schema{
           type: :string,
-          enum: ["env", "env_all", "config_unrecorded", "config_order", "platform_define"]
+          enum: [
+            "env",
+            "env_all",
+            "config_unrecorded",
+            "config_order",
+            "platform_define",
+            "endian"
+          ]
         },
         regex: %Schema{
           type: :string,
@@ -51,8 +59,10 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
         value: %Schema{
           type: :string,
           description:
-            "`base64url(:erlang.term_to_binary(:error | {:ok, binary}, [:deterministic]))`, " <>
-              "or `unrecordable`, which matches nothing."
+            "For `env`: `base64url(:erlang.term_to_binary(:error | {:ok, binary}, " <>
+              "[:deterministic]))`, or `unrecordable`, which matches nothing. For `endian`: " <>
+              "`little` or `big`, the byte order the build's compile read, which a client " <>
+              "compares with its own `System.endianness/0`."
         },
         set_by: %Schema{type: :string, enum: ["host", "build"]},
         inputs: %Schema{type: :string, enum: ["recorded", "unknown"]}

@@ -110,6 +110,7 @@ defmodule NccWorker.Portability do
     "build_root_recompile_dir" => 50,
     "mix_project_paths" => 50,
     "env_reads" => 50,
+    "endian_reads" => 50,
     "env_writes" => 50,
     "config_writes" => 50
   }
@@ -150,8 +151,12 @@ defmodule NccWorker.Portability do
   # natively built dependency's consolidated protocol, and toolshed 0.5.0's
   # reviewed `System.version/0` read is let through
   # (`ElixirVersion.reviewed_apps/2`) (bumped by two while `makefile_rule2`
-  # exists).
-  @judge_revision 11
+  # exists). 13: a compile-time read of the byte order
+  # (`:erlang.system_info(:endian)`, `System.endianness/0`; nx and every
+  # package with nx in its closure) is an `endian` compile input the client
+  # compares, valued from the tracer's start line, instead of a host read
+  # (bumped by two while `makefile_rule2` exists).
+  @judge_revision 13
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -664,6 +669,7 @@ defmodule NccWorker.Portability do
     deps = dep_results(ctx, report, decided)
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
     rebar_inputs = Enum.uniq(package_inputs ++ Enum.flat_map(deps, &elem(&1, 1).inputs))
+    endian = endian_of(report)
 
     %{
       ctx: ctx,
@@ -671,11 +677,12 @@ defmodule NccWorker.Portability do
       report: report,
       decided: decided,
       config: config,
-      inputs: CompileInputs.build(decided, config.inputs ++ rebar_inputs),
+      inputs: CompileInputs.build(decided, config.inputs ++ rebar_inputs, endian),
       trace_problems:
         trace_problems(report, ctx) ++
           built_problems(ctx, report, opts) ++
-          unjudged ++ libs.problems ++ config.problems ++ version.problems,
+          unjudged ++
+          libs.problems ++ config.problems ++ version.problems ++ endian_problems(decided, endian),
       libs: libs,
       package_window: window_problem(report, ctx.package),
       package_r2: package_r2,
@@ -716,6 +723,30 @@ defmodule NccWorker.Portability do
           Reasons.manager_mismatch() <>
             "#{app} (trace #{traced || "none"}, tarball #{computed})"
     end)
+  end
+
+  # The byte order the traced compile ran with: the one every VM's start
+  # line names (the Mix VM's and each child's), else nil. A child VM runs on
+  # the same machine, so a disagreement or a missing value means the trace
+  # cannot say what a byte-order read returned.
+  defp endian_of(%Report{start: start, children: children}) do
+    values = [start | Enum.map(children || %{}, fn {_app, child} -> child.start end)]
+
+    case values |> Enum.map(&endian_value/1) |> Enum.uniq() do
+      [endian] when endian in ["little", "big"] -> endian
+      _ -> nil
+    end
+  end
+
+  defp endian_value(%{"endian" => endian}), do: endian
+  defp endian_value(_start), do: nil
+
+  # A byte-order read the build cannot value is could-not-judge (step 1):
+  # `CompileInputs` would record it as `config_unrecorded`, a miss for every
+  # client, so the trace is the one at fault.
+  defp endian_problems(decided, endian) do
+    read? = Enum.any?(decided, &match?({_owner, {:observe, "endian_reads", _}}, &1))
+    if read? and endian == nil, do: ["byte order read but not recorded by the tracer"], else: []
   end
 
   defp elixir_of(%Report{start: %{"elixir" => elixir}}) when is_binary(elixir), do: elixir

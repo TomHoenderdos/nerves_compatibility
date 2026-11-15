@@ -47,6 +47,11 @@ defmodule NccWorker.Portability.CompileInputs do
   was not recorded instead (`env_all` for `env`, `config_unrecorded` for
   the rest), so the list never grows past the shared cap and the build is
   never dropped for it.
+
+  A compile-time read of the byte order (`endian_reads`, `Events`) is one
+  `endian` item, valued with the byte order `build/3` is given (the traced
+  compile's, from the tracer's start line); without a known one it is
+  `config_unrecorded`.
   """
 
   alias Compatibility.{CompileInputs, RecordedValue}
@@ -62,8 +67,8 @@ defmodule NccWorker.Portability.CompileInputs do
   # anywhere in the decoded value.
   @userinfo_url ~r{[a-z][a-z0-9+.-]*://[^/?#@\s]*@}i
 
-  @spec build([{term(), term()}], [map()]) :: [map()]
-  def build(decided, config_inputs) do
+  @spec build([{term(), term()}], [map()], term()) :: [map()]
+  def build(decided, config_inputs, endian \\ nil) do
     reads = for {_owner, {:observe, "env_reads", item}} <- decided, do: item
 
     writes =
@@ -88,7 +93,22 @@ defmodule NccWorker.Portability.CompileInputs do
         do: {[], true},
         else: {env, all != [] or named_bad != []}
 
-    env ++ cap_config(if(all?, do: [@env_all], else: []) ++ config_inputs)
+    env ++
+      cap_config(
+        if(all?, do: [@env_all], else: []) ++ endian_inputs(decided, endian) ++ config_inputs
+      )
+  end
+
+  # Any byte-order read in the closure (`Events`, `endian_reads`) is one
+  # `endian` item with the byte order the traced compile ran with (the
+  # tracer's start line). A read whose byte order is not known records
+  # `config_unrecorded`, which no client matches: never nothing.
+  defp endian_inputs(decided, endian) do
+    cond do
+      not Enum.any?(decided, &match?({_owner, {:observe, "endian_reads", _}}, &1)) -> []
+      endian in ["little", "big"] -> [%{"kind" => "endian", "value" => endian}]
+      true -> [@unrecorded]
+    end
   end
 
   defp cap_config(inputs) do

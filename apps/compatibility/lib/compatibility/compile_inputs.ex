@@ -27,8 +27,12 @@ defmodule Compatibility.CompileInputs do
       (escapes resolved), `matched` (a boolean) whether it matched the
       builder's `rebar_utils:get_arch/0` string. A client computes its own
       arch string the same way and compares.
+    * `%{"kind" => "endian", "value" => "little" | "big"}`: the closure read
+      the byte order at compile time (`System.endianness/0`,
+      `:erlang.system_info(:endian)`); `value` is the builder's. A client
+      compares its own `System.endianness/0`. Judge revision 13 and later.
 
-  `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
+  An env item's `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
   of `:error` or `{:ok, binary}`) or `"unrecordable"`, which matches nothing.
   """
 
@@ -111,6 +115,9 @@ defmodule Compatibility.CompileInputs do
        do:
          map_size(item) == 6 and name?(app) and name?(key) and name?(reader) and value?(default) and
            value?(seen)
+
+  defp item?(%{"kind" => "endian", "value" => value} = item) when value in ["little", "big"],
+    do: map_size(item) == 2
 
   defp item?(%{"kind" => "platform_define", "regex" => regex, "matched" => matched} = item)
        when is_boolean(matched),

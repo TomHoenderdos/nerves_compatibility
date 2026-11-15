@@ -30,7 +30,7 @@ defmodule Portal.Reports.Payload do
                   symbol_version_missing system_unknown system_bound_compile
                   env_differs env_set_at_build env_all config_unrecorded
                   config_order_differs rebar3_global_config erl_compiler_options
-                  platform_define_differs)
+                  platform_define_differs endian_differs)
 
   @top ~w(format client built_at elixir otp os target system system_version lines lock contact)
   @os_keys ~w(family arch)

@@ -32,6 +32,45 @@ defmodule NccWorker.Portability.CompileInputsTest do
       }}}
   end
 
+  defp endian_read(owner \\ "pkg"),
+    do: {owner, {:observe, "endian_reads", %{"mfa" => "erlang:system_info/1"}}}
+
+  describe "the byte order" do
+    test "a read records one endian item with the builder's byte order" do
+      decided = [endian_read(), endian_read("dep"), endian_read(:outside)]
+
+      for endian <- ["little", "big"] do
+        assert CompileInputs.build(decided, [], endian) == [
+                 %{"kind" => "endian", "value" => endian}
+               ]
+      end
+    end
+
+    test "no read, no item, whatever the byte order" do
+      assert CompileInputs.build([read("A", rec(:error))], [], "little") == [
+               %{"kind" => "env", "name" => "A", "value" => rec(:error), "set_by" => "host"}
+             ]
+
+      assert CompileInputs.build([], []) == []
+    end
+
+    # Fail closed: an input the build cannot state is one no client matches.
+    test "a read without a known byte order records config_unrecorded, never nothing" do
+      for endian <- [nil, "", "native", "LITTLE", :little] do
+        assert CompileInputs.build([endian_read()], [], endian) == [
+                 %{"kind" => "config_unrecorded"}
+               ],
+               inspect(endian)
+      end
+    end
+
+    test "the item validates as the shared shape and needs a check" do
+      items = CompileInputs.build([endian_read()], [], "little")
+      assert {:ok, ^items} = Compatibility.CompileInputs.validate(items)
+      assert Compatibility.CompileInputs.needs_check?(items)
+    end
+  end
+
   test "a host read records its value, deduplicated and sorted" do
     decided = [read("B", rec(:error)), read("A", rec({:ok, "1"})), read("B", rec(:error))]
 

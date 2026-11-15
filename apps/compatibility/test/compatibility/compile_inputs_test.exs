@@ -94,6 +94,27 @@ defmodule Compatibility.CompileInputsTest do
     assert CompileInputs.needs_check?([%{"kind" => "config_unrecorded"}])
   end
 
+  @endian %{"kind" => "endian", "value" => "little"}
+
+  test "an endian item is accepted in its exact shape and needs a check" do
+    big = %{@endian | "value" => "big"}
+    assert CompileInputs.validate([@endian, big]) == {:ok, [@endian, big]}
+    assert CompileInputs.needs_check?([@endian])
+  end
+
+  test "a malformed endian item is malformed" do
+    for bad <- [
+          Map.put(@endian, "extra", 1),
+          Map.delete(@endian, "value"),
+          %{@endian | "value" => "native"},
+          %{@endian | "value" => "Little"},
+          %{@endian | "value" => :little},
+          %{@endian | "value" => nil}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad)
+    end
+  end
+
   @define %{"kind" => "platform_define", "regex" => "R14", "matched" => false}
 
   test "a platform_define item is accepted in its exact shape and needs a check" do
