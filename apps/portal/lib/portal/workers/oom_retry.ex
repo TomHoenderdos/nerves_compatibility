@@ -6,8 +6,10 @@ defmodule Portal.Workers.OomRetry do
   and `Portal.Workers.ToolchainBuild` return as `{:error, "worker/runner exit
   137"}`, and Oban stores in the job's `errors`, newest last. The attempt
   after one retries with less memory demand: `Build` with one target at a
-  time (`NCC_BUILD_CONCURRENCY=1`), `ToolchainBuild` at the build memory
-  limit rather than the toolchain one.
+  time (`NCC_BUILD_CONCURRENCY=1`). `ToolchainBuild` moves the job to the
+  `toolchain_big` queue before its retry while a node runs that queue
+  (`Portal.Toolchains.MemoryRouting.move_to_big/2`), and otherwise retries
+  it at the build memory limit rather than the toolchain one.
   """
 
   @doc "True on an attempt after the first whose newest error is an exit 137."

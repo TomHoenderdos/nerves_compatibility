@@ -60,6 +60,31 @@ defmodule Portal.Workers.IngestQueueTest do
     end
   end
 
+  describe "builder_queues/1 and toolchain_big" do
+    test "a node running toolchain_big drains it, one without does not list it" do
+      assert Ingest.builder_queues(:"portal@host-c",
+               builds: 1,
+               toolchain: 1,
+               toolchain_big: 1
+             ) == [
+               "builds",
+               "ingest",
+               "ingest_portal_host_c",
+               "warm_nerves_portal_host_c",
+               "system_abi",
+               "toolchain",
+               "toolchain_big"
+             ]
+
+      refute "toolchain_big" in Ingest.builder_queues(:"portal@host-c", builds: 1, toolchain: 1)
+
+      refute "toolchain_big" in Ingest.builder_queues(:"portal@host-c",
+               builds: 1,
+               toolchain_big: 0
+             )
+    end
+  end
+
   describe "with_local_queue/2" do
     test "a build node's Oban config gains its own ingest queue" do
       config = [repo: Portal.Repo, queues: [builds: 3, ingest: 3]]

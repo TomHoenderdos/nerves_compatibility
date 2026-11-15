@@ -86,6 +86,14 @@ defmodule Portal.Workers.ToolchainSweep do
   to conflict rather than be queued twice. A conflict still counts against the
   cap; the queue's limit of 1, not the count, bounds the load.
 
+  Each build goes on `:toolchain`, or on `:toolchain_big` for a package
+  whose memory record shows an OOM or a near-limit peak, while a node runs
+  that queue (`Portal.Toolchains.MemoryRouting.router/2`, one record query
+  for the whole run). Every run, skipped or not, first moves the builds left
+  waiting on `:toolchain_big` with no node to run them back to `:toolchain`
+  (`MemoryRouting.rescue_stranded/1`). `ToolchainBuild`'s `unique` ignores
+  the queue, so the same build never waits on both.
+
   This worker's own `unique` (24 h, `states: :incomplete`) only blocks a new
   cron insert while an earlier one is still `available`, `scheduled`,
   `executing` or `retryable` -- not while one has `completed`, which is every
@@ -106,6 +114,7 @@ defmodule Portal.Workers.ToolchainSweep do
   alias Portal.Catalog.VersionBackfill
   alias Portal.Repo
   alias Portal.Toolchains
+  alias Portal.Toolchains.MemoryRouting
   alias Portal.Workers.ToolchainBuild
 
   # Oban states in which a ToolchainBuild job is still backlog: not yet run,
@@ -119,6 +128,8 @@ defmodule Portal.Workers.ToolchainSweep do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: args}) do
+    MemoryRouting.rescue_stranded()
+
     if args["force"] == true or not queue_topped_up?() do
       sweep()
     else
@@ -161,10 +172,9 @@ defmodule Portal.Workers.ToolchainSweep do
         |> Enum.map(&{build_args(&1, image, builder_version), tier(&1)})
       end)
 
-    counts =
-      backlogs
-      |> pick(cap)
-      |> Enum.frequencies_by(&enqueue/1)
+    picked = pick(backlogs, cap)
+    queue_for = MemoryRouting.router(Enum.map(picked, fn {args, _tier} -> args.package end))
+    counts = Enum.frequencies_by(picked, &enqueue(&1, queue_for))
 
     for %{toolchain: toolchain} <- Toolchains.images() do
       [named, refresh, default, backfill, reopen, world] =
@@ -285,8 +295,10 @@ defmodule Portal.Workers.ToolchainSweep do
     }
   end
 
-  defp enqueue({args, tier}) do
-    case args |> ToolchainBuild.new(priority: priority(args.variant, tier)) |> Oban.insert() do
+  defp enqueue({args, tier}, queue_for) do
+    opts = [priority: priority(args.variant, tier), queue: queue_for.(args.package)]
+
+    case args |> ToolchainBuild.new(opts) |> Oban.insert() do
       {:ok, %Oban.Job{conflict?: true}} ->
         {args.toolchain, :pending, tier}
 

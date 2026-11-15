@@ -606,6 +606,88 @@ defmodule Portal.Workers.ToolchainBuildTest do
       assert log =~ "after exit 137 at the build memory limit"
     end
 
+    test "a job on toolchain_big runs at NCC_TOOLCHAIN_BIG_MEMORY" do
+      put_builder(toolchain_big_memory: "4g")
+      respond(0)
+
+      job = Oban.Testing.build_job(ToolchainBuild, @args, queue: :toolchain_big)
+      assert :ok = ToolchainBuild.perform(job)
+
+      assert_received {:build_args, %{memory: "4g"}}
+    end
+
+    test "toolchain_big falls back to NCC_BUILD_MEMORY, also on its OOM retry" do
+      job =
+        oom_job(~s({:error, "worker/runner exit 137"}))
+        |> Map.put(:queue, "toolchain_big")
+
+      assert {:error, _} = ToolchainBuild.perform(job)
+      assert_received {:build_args, %{memory: "6g"}}
+    end
+
+    test "an OOM with an attempt left moves the job to toolchain_big while a node runs it" do
+      live_big_queue(true)
+      job = executing_job!()
+
+      log =
+        capture_log([level: :info], fn -> assert {:error, _} = ToolchainBuild.perform(job) end)
+
+      assert Repo.get!(Oban.Job, job.id).queue == "toolchain_big"
+      assert log =~ "retrying on toolchain_big"
+    end
+
+    test "with no node on toolchain_big, an OOM retries on toolchain as before" do
+      live_big_queue(false)
+      job = executing_job!()
+
+      assert {:error, _} = ToolchainBuild.perform(job)
+      assert Repo.get!(Oban.Job, job.id).queue == "toolchain"
+    end
+
+    test "an OOM on the last attempt is not moved" do
+      live_big_queue(true)
+      job = executing_job!(attempt: 2)
+
+      assert {:error, _} = ToolchainBuild.perform(job)
+      assert Repo.get!(Oban.Job, job.id).queue == "toolchain"
+    end
+
+    test "another failure is not moved" do
+      live_big_queue(true)
+      respond(10)
+      job = executing_job!()
+
+      assert {:error, _} = ToolchainBuild.perform(job)
+      assert Repo.get!(Oban.Job, job.id).queue == "toolchain"
+    end
+
+    defp put_builder(overrides) do
+      Application.put_env(
+        :portal,
+        Portal.Builder,
+        Keyword.merge(Application.get_env(:portal, Portal.Builder), overrides)
+      )
+    end
+
+    defp live_big_queue(live?) do
+      checks = if live?, do: [%{"queue" => "toolchain_big", "local_limit" => 1}], else: []
+      Application.put_env(:portal, Portal.Toolchains.MemoryRouting, checks: fn -> checks end)
+      on_exit(fn -> Application.delete_env(:portal, Portal.Toolchains.MemoryRouting) end)
+    end
+
+    # A job row as Oban's fetch leaves it: `executing`, at `attempt`.
+    defp executing_job!(opts \\ []) do
+      {:ok, job} = @args |> ToolchainBuild.new() |> Oban.insert()
+      attempt = Keyword.get(opts, :attempt, 1)
+
+      Repo.update_all(
+        from(j in Oban.Job, where: j.id == ^job.id),
+        set: [state: "executing", attempt: attempt, attempted_at: DateTime.utc_now()]
+      )
+
+      Repo.get!(Oban.Job, job.id)
+    end
+
     test "attempt 2 after another error keeps the toolchain limit" do
       job = oom_job(~s({:error, "worker/runner exit 10"}))
       capture_log(fn -> assert {:error, _} = ToolchainBuild.perform(job) end)

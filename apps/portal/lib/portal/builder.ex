@@ -213,6 +213,15 @@ defmodule Portal.Builder do
   def memory_for(_job), do: config(:memory, nil)
 
   @doc """
+  The memory limit of a toolchain run on the `toolchain_big` queue
+  (`Portal.Toolchains.MemoryRouting`): `NCC_TOOLCHAIN_BIG_MEMORY`
+  (`:toolchain_big_memory`), falling back to `NCC_BUILD_MEMORY` (`:memory`).
+  `Portal.Workers.ToolchainBuild` passes it as the run's `:memory`.
+  """
+  @spec toolchain_big_memory() :: String.t() | pos_integer() | nil
+  def toolchain_big_memory, do: config(:toolchain_big_memory, nil) || config(:memory, nil)
+
+  @doc """
   The memory limit of `job`'s kind (`memory_for/1`) in bytes, or nil when it
   is not a memory limit (`Argv.memory_limit?/1`). The units are docker's,
   which are binary: `"3g"` is 3 GiB, `"512m"`, `"4096k"`, and a plain number
@@ -677,8 +686,9 @@ defmodule Portal.Builder do
   @doc """
   The memory limit preflight: `:ok` when `NCC_BUILD_MEMORY` (`:memory`) is a
   positive size `docker run --memory` reads (`Argv.memory_limit?/1`), and
-  `NCC_TOOLCHAIN_MEMORY` (`:toolchain_memory`) and `NCC_WARM_MEMORY`
-  (`:warm_memory`) are each unset or one too.
+  `NCC_TOOLCHAIN_MEMORY` (`:toolchain_memory`), `NCC_TOOLCHAIN_BIG_MEMORY`
+  (`:toolchain_big_memory`) and `NCC_WARM_MEMORY` (`:warm_memory`) are each
+  unset or one too.
 
   Otherwise logs which variable is wrong and returns
   `{:error, :build_memory_limit_missing}`, which every worker that builds
@@ -692,6 +702,7 @@ defmodule Portal.Builder do
     limits = [
       {"NCC_BUILD_MEMORY", config(:memory, nil), :required},
       {"NCC_TOOLCHAIN_MEMORY", config(:toolchain_memory, nil), :optional},
+      {"NCC_TOOLCHAIN_BIG_MEMORY", config(:toolchain_big_memory, nil), :optional},
       {"NCC_WARM_MEMORY", config(:warm_memory, nil), :optional}
     ]
 

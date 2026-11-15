@@ -291,6 +291,38 @@ defmodule Portal.Reports.RequeueTest do
     )
   end
 
+  test "a host report for a package that OOMs as a toolchain build queues it on toolchain_big" do
+    Application.put_env(:portal, Portal.Toolchains.MemoryRouting,
+      checks: fn -> [%{"queue" => "toolchain_big", "local_limit" => 1}] end
+    )
+
+    on_exit(fn -> Application.delete_env(:portal, Portal.Toolchains.MemoryRouting) end)
+
+    Portal.Test.RunMemoryFixtures.insert_run_memory!(%{
+      kind: :toolchain,
+      package: "jason",
+      exit_code: 137,
+      oom_killed: true,
+      finished_at: DateTime.utc_now()
+    })
+
+    package!("jason") |> run!("1.0.0", [])
+
+    id =
+      miss!("jason", "1.4.5",
+        body: %{
+          "target" => "host",
+          "system" => nil,
+          "system_version" => nil,
+          "elixir" => "1.19.5",
+          "otp" => 28
+        }
+      )
+
+    assert :ok = requeue(id)
+    assert_enqueued(worker: ToolchainBuild, queue: :toolchain_big, args: %{"package" => "jason"})
+  end
+
   test "a host report for a toolchain nobody builds on is unbuildable" do
     package!("jason") |> run!("1.0.0", [])
 

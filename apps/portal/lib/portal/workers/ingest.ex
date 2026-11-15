@@ -151,9 +151,10 @@ defmodule Portal.Workers.Ingest do
   node's Nerves cache warm queue (`Portal.Workers.WarmNerves`), the
   `system_abi` queue (`Portal.Workers.SystemAbiRun`) when the node runs
   builds, and the
-  `toolchain` queue (`Portal.Workers.ToolchainBuild`) when the node runs it.
+  `toolchain` and `toolchain_big` queues (`Portal.Workers.ToolchainBuild`)
+  each when the node runs it.
 
-  The toolchain queue is conditional because the deploy refuses to go ahead
+  The toolchain queues are conditional because the deploy refuses to go ahead
   when a listed queue has no producer on the node (`Oban.check_queue/1` finds
   none), and a build host only runs it once its `OBAN_QUEUES` names it.
   """
@@ -161,7 +162,8 @@ defmodule Portal.Workers.Ingest do
   def builder_queues(node \\ node(), queues \\ configured_queues()) do
     ["builds", "ingest", local_queue(node), Portal.Workers.WarmNerves.local_queue(node)] ++
       if(local_queue_limit(queues) != nil, do: ["system_abi"], else: []) ++
-      if runs_queue?(queues, :toolchain), do: ["toolchain"], else: []
+      if(runs_queue?(queues, :toolchain), do: ["toolchain"], else: []) ++
+      if runs_queue?(queues, :toolchain_big), do: ["toolchain_big"], else: []
   end
 
   defp configured_queues, do: :portal |> Application.get_env(Oban, []) |> Keyword.get(:queues)

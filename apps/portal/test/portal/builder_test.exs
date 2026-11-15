@@ -419,10 +419,18 @@ defmodule Portal.BuilderTest do
 
     test "check_memory_limit/0 rejects a set-but-invalid per-kind limit and names it",
          %{previous: previous} do
-      for {key, var} <- [toolchain_memory: "NCC_TOOLCHAIN_MEMORY", warm_memory: "NCC_WARM_MEMORY"],
+      for {key, var} <- [
+            toolchain_memory: "NCC_TOOLCHAIN_MEMORY",
+            toolchain_big_memory: "NCC_TOOLCHAIN_BIG_MEMORY",
+            warm_memory: "NCC_WARM_MEMORY"
+          ],
           value <- ["lots", "", "0"] do
         put_builder(
-          Keyword.put([memory: "8g", toolchain_memory: nil, warm_memory: nil], key, value),
+          Keyword.put(
+            [memory: "8g", toolchain_memory: nil, toolchain_big_memory: nil, warm_memory: nil],
+            key,
+            value
+          ),
           previous
         )
 
@@ -462,6 +470,16 @@ defmodule Portal.BuilderTest do
 
       put_builder([memory: "3g", toolchain_memory: nil, warm_memory: "256m"], previous)
       assert memory_arg(%{mode: "toolchain"}) == "3g"
+    end
+
+    test "toolchain_big_memory/0 is NCC_TOOLCHAIN_BIG_MEMORY, else NCC_BUILD_MEMORY",
+         %{previous: previous} do
+      put_builder([memory: "3g", toolchain_memory: "2g", toolchain_big_memory: "4g"], previous)
+      assert Builder.toolchain_big_memory() == "4g"
+      assert memory_arg(%{mode: "toolchain", memory: Builder.toolchain_big_memory()}) == "4g"
+
+      put_builder([memory: "3g", toolchain_memory: "2g", toolchain_big_memory: nil], previous)
+      assert Builder.toolchain_big_memory() == "3g"
     end
 
     test "a warm job carries NCC_WARM_MEMORY, else NCC_BUILD_MEMORY", %{previous: previous} do

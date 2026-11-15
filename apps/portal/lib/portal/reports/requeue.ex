@@ -705,6 +705,7 @@ defmodule Portal.Reports.Requeue do
         config_variant: "default"
       },
       priority: @priority,
+      queue: Portal.Toolchains.MemoryRouting.router([package]).(package),
       meta: %{report_id: report.id}
     )
   end

@@ -791,6 +791,106 @@ defmodule Portal.Workers.ToolchainSweepTest do
     end
   end
 
+  describe "perform/1 memory routing" do
+    setup %{previous: previous} do
+      one_toolchain(previous)
+      on_exit(fn -> Application.delete_env(:portal, Portal.Toolchains.MemoryRouting) end)
+
+      for name <- ~w(ip2country text jason), do: run!(name, "1.0.0")
+
+      Portal.Test.RunMemoryFixtures.insert_run_memory!(%{
+        kind: :toolchain,
+        package: "ip2country",
+        version: "0.9.0",
+        exit_code: 137,
+        oom_killed: true,
+        memory_limit_bytes: 2 * 1024 ** 3,
+        peak_used_bytes: nil,
+        finished_at: ago(3600)
+      })
+
+      Portal.Test.RunMemoryFixtures.insert_run_memory!(%{
+        kind: :toolchain,
+        package: "text",
+        memory_limit_bytes: 2 * 1024 ** 3,
+        peak_used_bytes: trunc(1.9 * 1024 ** 3),
+        finished_at: ago(3600)
+      })
+
+      Portal.Test.RunMemoryFixtures.insert_run_memory!(%{
+        kind: :toolchain,
+        package: "jason",
+        memory_limit_bytes: 2 * 1024 ** 3,
+        peak_used_bytes: 200 * 1024 ** 2,
+        finished_at: ago(3600)
+      })
+
+      :ok
+    end
+
+    defp live_big_queue(checks) do
+      Application.put_env(:portal, Portal.Toolchains.MemoryRouting, checks: fn -> checks end)
+    end
+
+    defp queues do
+      ToolchainBuild
+      |> then(&all_enqueued(worker: &1))
+      |> Map.new(&{&1.args["package"], &1.queue})
+    end
+
+    test "an OOM or a near-limit peak goes on toolchain_big, a normal package on toolchain" do
+      live_big_queue([%{"queue" => "toolchain_big", "local_limit" => 1}])
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert queues() == %{
+               "ip2country" => "toolchain_big",
+               "text" => "toolchain_big",
+               "jason" => "toolchain"
+             }
+    end
+
+    test "with no node on toolchain_big, everything stays on toolchain" do
+      live_big_queue([])
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert queues() == %{
+               "ip2country" => "toolchain",
+               "text" => "toolchain",
+               "jason" => "toolchain"
+             }
+    end
+
+    test "a build already on toolchain is not queued again on toolchain_big" do
+      live_big_queue([])
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      live_big_queue([%{"queue" => "toolchain_big", "local_limit" => 1}])
+      assert :ok = perform_job(ToolchainSweep, %{"force" => true})
+
+      assert length(all_enqueued(worker: ToolchainBuild)) == 3
+      assert queues()["ip2country"] == "toolchain"
+    end
+
+    test "every run moves stranded toolchain_big jobs back", %{previous: previous} do
+      one_toolchain(previous, sweep_skip_when_queued: 1)
+      live_big_queue([])
+
+      {:ok, job} =
+        %{package: "han", version: "1.0.0", toolchain: "1.19/28", builder_version: 1}
+        |> ToolchainBuild.new(
+          queue: :toolchain_big,
+          scheduled_at: DateTime.add(DateTime.utc_now(), -7200, :second)
+        )
+        |> Oban.insert()
+
+      # Skipped by the top-up guard, still rescued.
+      assert :ok = perform_job(ToolchainSweep, %{})
+      assert Portal.Repo.get!(Oban.Job, job.id).queue == "toolchain"
+    end
+  end
+
   describe "perform/1 top-up guard" do
     test "at or above the threshold, an unforced sweep enqueues nothing and skips the backlog",
          %{previous: previous} do

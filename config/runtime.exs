@@ -89,6 +89,10 @@ if portal_available? do
   # queue of its own for those ingests (`Portal.Workers.Ingest.local_queue/0`),
   # as wide as `ingest`. Nothing to list here for it. `remote` belongs on the
   # web box: it only writes `builder_leases` rows for remote builders to claim.
+  # `toolchain_big` goes only on the build boxes with memory to spare: it runs
+  # the toolchain builds of the packages that need more than a `toolchain`
+  # slot, each at NCC_TOOLCHAIN_BIG_MEMORY (`Portal.Toolchains.MemoryRouting`).
+  # The unset default leaves it out: a single node has no bigger slot to give.
   parsed_queues =
     case System.get_env("OBAN_QUEUES") do
       nil ->
@@ -186,6 +190,9 @@ if portal_available? do
   # kind (a toolchain run, a Nerves cache warm) and fall back to
   # NCC_BUILD_MEMORY when unset; set but not a limit, they refuse every build.
   # NCC_WARM_MEMORY also bounds the deploy-time warm (ops/builder-deploy.sh).
+  # NCC_TOOLCHAIN_BIG_MEMORY caps a toolchain run on the `toolchain_big` queue
+  # (`Portal.Toolchains.MemoryRouting`: the packages whose memory record shows
+  # an OOM or a near-limit peak), with the same fallback and the same refusal.
   builder_env = [
     docker_image: System.get_env("NCC_DOCKER_IMAGE"),
     scratch_root: System.get_env("NCC_SCRATCH_ROOT"),
@@ -216,6 +223,7 @@ if portal_available? do
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),
     toolchain_memory: System.get_env("NCC_TOOLCHAIN_MEMORY"),
+    toolchain_big_memory: System.get_env("NCC_TOOLCHAIN_BIG_MEMORY"),
     warm_memory: System.get_env("NCC_WARM_MEMORY"),
     build_concurrency: System.get_env("NCC_BUILD_CONCURRENCY"),
     run_as_user: System.get_env("NCC_BUILD_USER"),

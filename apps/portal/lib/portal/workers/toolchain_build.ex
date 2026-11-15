@@ -1,6 +1,8 @@
 defmodule Portal.Workers.ToolchainBuild do
   @moduledoc """
-  Oban worker (queue `:toolchain`) that builds one pure-BEAM package version on
+  Oban worker (queue `:toolchain`, or `:toolchain_big` for a package whose
+  memory record says it needs more, see `Portal.Toolchains.MemoryRouting`)
+  that builds one pure-BEAM package version on
   one toolchain image (`mode: "toolchain"`, `NCC_INPUT.toolchain`) and hands the
   result to `Portal.Workers.Ingest` with `kind: "toolchain"` and its own
   `package`, `version` and `toolchain`, which the ingest checks the result
@@ -56,9 +58,12 @@ defmodule Portal.Workers.ToolchainBuild do
   use Oban.Worker,
     queue: :toolchain,
     max_attempts: 2,
-    # One build per identity while one is pending or running. A `Build` job for
+    # One build per identity while one is pending or running, on either
+    # queue: `fields` leaves out Oban's default `:queue`, so a job on
+    # `:toolchain_big` conflicts with one on `:toolchain`. A `Build` job for
     # the same package and version is another worker, so it never conflicts.
     unique: [
+      fields: [:args, :worker],
       keys: [:package, :version, :toolchain, :builder_version, :variant, :config_variant],
       period: :infinity,
       states: :incomplete
@@ -73,6 +78,7 @@ defmodule Portal.Workers.ToolchainBuild do
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Package
   alias Portal.Catalog.RunMemory
+  alias Portal.Toolchains.MemoryRouting
   alias Portal.Workers.{Ingest, OomRetry}
 
   @zero_digest "sha256:" <> String.duplicate("0", 64)
@@ -181,9 +187,14 @@ defmodule Portal.Workers.ToolchainBuild do
     outcome
   end
 
-  # A toolchain run gets the smaller `NCC_TOOLCHAIN_MEMORY`; the attempt after
-  # one is OOM-killed (exit 137) runs at the build limit instead. It has one
-  # target, so there is no concurrency to lower.
+  # A toolchain run gets the smaller `NCC_TOOLCHAIN_MEMORY`, one on
+  # `:toolchain_big` `NCC_TOOLCHAIN_BIG_MEMORY`. The attempt after one is
+  # OOM-killed (exit 137) moved to `:toolchain_big` when a node runs it
+  # (`retry/6`); when none did, it runs here at the build limit instead. It has
+  # one target, so there is no concurrency to lower.
+  defp oom_overrides(%Oban.Job{queue: "toolchain_big"}),
+    do: %{memory: Builder.toolchain_big_memory()}
+
   defp oom_overrides(job) do
     if OomRetry.oom_retry?(job) do
       Logger.info(
@@ -241,6 +252,11 @@ defmodule Portal.Workers.ToolchainBuild do
     {:cancel, reason}
   end
 
+  defp handle({:ok, %{exit_code: 137} = build}, job, run_id, image_digest) do
+    move_after_oom(job)
+    retry(job, run_id, image_digest, "worker/runner exit 137", excerpt_from(build.log))
+  end
+
   defp handle({:ok, %{exit_code: exit_code} = build}, job, run_id, image_digest) do
     retry(job, run_id, image_digest, "worker/runner exit #{exit_code}", excerpt_from(build.log))
   end
@@ -277,6 +293,20 @@ defmodule Portal.Workers.ToolchainBuild do
     log = excerpt_from_file(Builder.runner_log_path(run_id))
     retry(job, run_id, image_digest, "builder error: #{inspect(reason)}", log, reason)
   end
+
+  # An OOM-killed run with an attempt left retries on `:toolchain_big` rather
+  # than on this host: Oban's retry keeps the row's queue, so moving the
+  # executing row moves the next attempt, inside the same attempt cap. Only
+  # while a node runs that queue; otherwise the retry stays here, at the
+  # build limit (`oom_overrides/1`).
+  defp move_after_oom(%Oban.Job{queue: "toolchain", attempt: attempt, max_attempts: max} = job)
+       when attempt < max do
+    if MemoryRouting.move_to_big(job.id) do
+      Logger.info("Toolchain build #{describe(job)} OOM-killed; retrying on toolchain_big")
+    end
+  end
+
+  defp move_after_oom(_job), do: :ok
 
   defp retry(job, run_id, image_digest, message, log, error \\ nil) do
     Logger.warning("Toolchain build retry for #{describe(job)}: #{message}")
