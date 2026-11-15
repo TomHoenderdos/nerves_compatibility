@@ -76,6 +76,13 @@ defmodule NccWorker.Portability.ElixirVersionTest do
     assert %{refusals: [{"pkg", {:refuse, @prefix <> "System.build_info/0" <> _}}]} =
              judge([obs("pkg", ev("System.build_info/0"))])
 
+    # The Elixir install's byte order, not the VM's: no client checks it.
+    assert %{refusals: [{"dep", {:refuse, @prefix <> "System.compiled_endianness/0" <> _}}]} =
+             judge([obs("dep", ev("System.compiled_endianness/0"))])
+
+    assert %{refusals: [{"pkg", _}], problems: []} =
+             judge([obs("pkg", ev("System.compiled_endianness/0"))], "not a version")
+
     m3 = ev("Version.match?/3", {@built, ">= 1.0.0"})
     assert %{refusals: [{"pkg", _}]} = judge([obs("pkg", read()), obs("pkg", m3)])
   end

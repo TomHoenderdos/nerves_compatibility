@@ -12,6 +12,10 @@ defmodule NccWorker.Portability.ElixirVersion do
 
     * `System.build_info/0` refuses: it carries the build's revision and
       date, not only the version;
+    * `System.compiled_endianness/0` refuses: it is the byte order of the
+      machine that compiled the Elixir install, not the running VM's
+      (`System.endianness/0`, an `endian` compile input a client compares),
+      and no client can check it;
     * every `Version.match?/2` or `Version.compare/2` call one of whose
       arguments is exactly the built version must give the same result for
       the built version and every x.y.P final release from the built patch
@@ -49,6 +53,9 @@ defmodule NccWorker.Portability.ElixirVersion do
   @prefix "compile-time Elixir patch dependence: "
   @judged ["Version.match?/2", "Version.compare/2"]
   @last_patch 99
+  # Reads of the Elixir install itself, beyond its version: refused
+  # whatever the built version is.
+  @install_reads ["System.build_info/0", "System.compiled_endianness/0"]
   @no_version "no Elixir version in the trace"
 
   # Reviewed `System.version/0` reads, by app (judge round 3). Each passes
@@ -116,9 +123,10 @@ defmodule NccWorker.Portability.ElixirVersion do
 
   def reviewed_apps(_releases, _trees), do: MapSet.new()
 
-  # `System.build_info/0` refuses whatever the built version is, so a
-  # window with such a read refuses even when the version is unknown; every
-  # other window then cannot be judged.
+  # `System.build_info/0` and `System.compiled_endianness/0`
+  # (`@install_reads`) refuse whatever the built version is, so a window with
+  # such a read refuses even when the version is unknown; every other window
+  # then cannot be judged.
   defp judge_windows(by_owner, built, versions, reviewed) do
     results =
       for {owner, items} <- Enum.sort(by_owner),
@@ -131,9 +139,9 @@ defmodule NccWorker.Portability.ElixirVersion do
   end
 
   defp window(items, owner, built, versions, reviewed) do
-    case Enum.find(items, &(&1["mfa"] == "System.build_info/0")) do
+    case Enum.find(items, &(&1["mfa"] in @install_reads)) do
       nil -> items |> unreviewed(owner, versions, reviewed) |> compared(built, versions)
-      info -> {:refuse, @prefix <> "System.build_info/0" <> where(info)}
+      info -> {:refuse, @prefix <> info["mfa"] <> where(info)}
     end
   end
 

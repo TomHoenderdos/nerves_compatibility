@@ -53,6 +53,14 @@ defmodule NccWorker.Tracer.FixturesEndianTest do
         @os :os.type()
         def v, do: {@e, @os}
       end
+      """),
+    # The Elixir install's byte order, which no client can check: refused.
+    "fx_endian_compiled" =>
+      lib("fx_endian_compiled", """
+      defmodule FxEndianCompiled do
+        @e System.compiled_endianness()
+        def e, do: @e
+      end
       """)
   }
 
@@ -98,5 +106,13 @@ defmodule NccWorker.Tracer.FixturesEndianTest do
   test "another host read next to it still refuses", ctx do
     assert %{status: :skip, reason: "compile-time host read: os:type/0" <> _, compile_inputs: nil} =
              verdict(ctx, "fx_endian_os")
+  end
+
+  test "System.compiled_endianness/0 refuses: the client checks only the VM's", ctx do
+    assert %{
+             status: :skip,
+             reason: "compile-time Elixir patch dependence: System.compiled_endianness/0" <> _,
+             compile_inputs: nil
+           } = verdict(ctx, "fx_endian_compiled")
   end
 end

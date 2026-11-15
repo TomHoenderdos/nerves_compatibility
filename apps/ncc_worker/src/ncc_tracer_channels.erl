@@ -71,6 +71,9 @@ patterns() ->
      {erlang, load_nif, 2}, {erl_ddll, load, 2}, {erl_ddll, load_driver, 2},
      {erl_ddll, try_load, 3},
      {'Elixir.System', version, 0}, {'Elixir.System', build_info, 0},
+     %% The Elixir install's byte order, baked when Elixir was compiled: not
+     %% erlang:system_info(endian), so it needs a pattern of its own.
+     {'Elixir.System', compiled_endianness, 0},
      {'Elixir.Version', 'match?', 2}, {'Elixir.Version', 'match?', 3},
      {'Elixir.Version', compare, 2},
      {erlang, trace, 3}, {erlang, trace_pattern, 2}, {erlang, trace_pattern, 3},
