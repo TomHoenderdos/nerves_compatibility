@@ -45,6 +45,15 @@ defmodule NccWorker.WorldDeps do
   """
   @type progress :: %{added: [String.t()], rounds: pos_integer()}
 
+  @doc """
+  The world members the lock's closure of the package has as unresolved
+  optional dependencies: what the fixpoint's first round would add. Empty
+  means the world closure is the closure the project already has.
+  """
+  @spec first_round(String.t(), String.t(), [String.t()]) :: [map()]
+  def first_round(project_dir, package_name, members),
+    do: members_to_add(project_dir, package_name, MapSet.new(members))
+
   @doc "The most rounds `resolve/4` runs before it gives up."
   @spec max_rounds() :: pos_integer()
   def max_rounds, do: @max_rounds
@@ -103,7 +112,11 @@ defmodule NccWorker.WorldDeps do
   worker failure (exit 10): the project could not be put back.
 
   `opts`: `env:` (the host build env `deps.get` runs in), `deps_get:`
-  (`Project.add_optional_deps/5`'s, for tests), `max_rounds:`.
+  (`Project.add_optional_deps/5`'s, for tests), `max_rounds:`, and
+  `outside_closure: false`, which leaves the stray check to the caller: a
+  firmware project's lock legitimately holds the template's dependencies
+  (`NccWorker.WorldTargets` checks against the lock before the fixpoint
+  instead). A `deps_get` that returns `{:error, :timeout}` is "timeout".
   """
   @spec resolve(String.t(), String.t(), [String.t()], keyword()) ::
           {:ok, progress()}
@@ -129,7 +142,9 @@ defmodule NccWorker.WorldDeps do
   defp round(project_dir, package_name, members, opts, progress, max) do
     case members_to_add(project_dir, package_name, members) do
       [] ->
-        verify(project_dir, package_name, progress)
+        if Keyword.get(opts, :outside_closure, true),
+          do: verify(project_dir, package_name, progress),
+          else: {:ok, progress}
 
       deps when progress.rounds >= max ->
         {:error, "world_not_converged", Enum.map(deps, & &1.app), progress}
@@ -169,6 +184,7 @@ defmodule NccWorker.WorldDeps do
   end
 
   defp add_reason({:deps_get_failed, _output}), do: "deps_get_failed"
+  defp add_reason(:timeout), do: "timeout"
   defp add_reason({:rm_rf_failed, _reason, _path}), do: "stale_build_not_removed"
   defp add_reason(_reason), do: "mix_exs_edit_failed"
 

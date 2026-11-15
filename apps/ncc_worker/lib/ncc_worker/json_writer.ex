@@ -81,6 +81,8 @@ defmodule NccWorker.JsonWriter do
     # result that never went through `NccWorker.ProcessSweep.enforce_and_report/2`,
     # `requested_optional_deps` for a run whose input made no optional-deps
     # request (`NccWorker.Worker.put_requested_optional_deps/2`),
+    # `firmware_world` for a run that did not run the firmware world
+    # sub-pass (`NccWorker.WorldTargets`),
     # `host_portability` for every run whose selection was not `pure_elixir`
     # (`NccWorker.Worker.pure_elixir_result/3`), and `resources` for a result
     # that did not come from `NccWorker.Worker.run/1` (`NccWorker.Resources`).
@@ -99,6 +101,7 @@ defmodule NccWorker.JsonWriter do
         :egress_probe,
         :process_sweep,
         :requested_optional_deps,
+        :firmware_world,
         :host_portability,
         :resources
       ]

@@ -208,7 +208,8 @@ defmodule NccWorker.CLI do
   def parse_input(content) do
     with {:ok, input} <- decode_input(content),
          {:ok, input} <- validate_optional_deps(input),
-         {:ok, input} <- validate_world(input) do
+         {:ok, input} <- validate_world(input),
+         {:ok, input} <- validate_firmware_world(input) do
       validate_config_variant(input)
     end
   end
@@ -260,6 +261,25 @@ defmodule NccWorker.CLI do
   defp world_fields(%{world: name} = input), do: {:ok, name, input[:world_members]}
   defp world_fields(_input), do: {:error, {:invalid_world, :missing}}
 
+  # The firmware world (`NccWorker.WorldTargets`), `firmware_world: %{"name",
+  # "members"}`: a third build per passing firmware target, checked like a
+  # toolchain world (`NccWorker.WorldDeps.validate/2`) and refused whole when
+  # it fails (exit 10). Its own key, apart from `world`, which is only for
+  # `optional_deps: "world"`. A run that builds no target (argus-only,
+  # toolchain, warm, system ABI) ignores it once it is checked.
+  defp validate_firmware_world(%{firmware_world: %{} = world} = input) do
+    with {:ok, world} <- NccWorker.WorldDeps.validate(world[:name], world["members"]) do
+      if Map.get(input, :mode) == nil,
+        do: {:ok, %{input | firmware_world: world}},
+        else: {:ok, Map.delete(input, :firmware_world)}
+    end
+  end
+
+  defp validate_firmware_world(%{firmware_world: other}),
+    do: {:error, {:invalid_world, {:firmware_world, other}}}
+
+  defp validate_firmware_world(input), do: {:ok, input}
+
   # The portal records a toolchain build under the config variant it asked
   # for; a name this image does not pin would build some other config.
   defp validate_config_variant(%{config_variant: value} = input) do
@@ -270,7 +290,7 @@ defmodule NccWorker.CLI do
 
   defp validate_config_variant(input), do: {:ok, input}
 
-  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps world world_members config_variant judge makefile_rule2)a
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps world world_members firmware_world config_variant judge makefile_rule2)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
 
   @spec atomize_keys(map()) :: map()

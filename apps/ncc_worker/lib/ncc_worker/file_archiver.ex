@@ -119,7 +119,8 @@ defmodule NccWorker.FileArchiver do
   end
 
   # The other builds a target publishes beside its own
-  # (`NccWorker.OptionalDepsTargets`): each from its own directory under
+  # (`NccWorker.OptionalDepsTargets`, `NccWorker.WorldTargets`): each from
+  # its own `.<package>.<variant>` directory under
   # `_build/<target>/lib`, and never from the release, whose BEAMs are
   # stripped, nor from the package's own directory, which holds the other
   # build. A file not in that directory, or whose bytes no longer hash to what
@@ -136,9 +137,17 @@ defmodule NccWorker.FileArchiver do
     |> Enum.flat_map(&variant_entries(&1, build_path, package_name))
   end
 
+  # Only the variants this image publishes name a dir; any other value
+  # names none, so no path is ever built from what a result says.
+  @variants ["without" | Compatibility.Worlds.firmware_variants()]
+
   defp variant_entries(variant, build_path, package_name) do
-    if field(variant, :variant) == "without" do
-      app_dir = Path.join([build_path, "lib", OptionalDepsTargets.variant_dir(package_name)])
+    name = field(variant, :variant)
+
+    if name in @variants do
+      app_dir =
+        Path.join([build_path, "lib", OptionalDepsTargets.variant_dir(package_name, name)])
+
       index = app_dir |> walk_files() |> Map.new(&{Path.relative_to(&1, app_dir), &1})
 
       variant

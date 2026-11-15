@@ -127,6 +127,30 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    moved — and every passing target is dropped with reason `run_budget_exhausted`, so a slow run keeps its
    statuses rather than losing the whole run.
 
+   **Firmware world** (`NCC_INPUT.firmware_world: {"name": "nerves", "members": [...]}`, sent by the portal while
+   its `firmware_world_enabled` setting is on; `NccWorker.WorldTargets`). After the pass above, on the same budget
+   and deadline, each passing target can publish a third build: the package compiled with, at every depth of its
+   closure, each unresolved optional dependency that is a world member (the prod set of a default `mix nerves.new`
+   app, `Compatibility.Worlds.firmware_members/1`), resolved by the toolchain world's fixpoint
+   (`NccWorker.WorldDeps`). It runs also when the package has no optional dependency of its own (an optional jason
+   under ecto). Nothing is copied or compiled when no member is reachable from the lock. Otherwise each passing
+   target's published build has its `priv`/`include` links made its own, `_build/<target>/lib` is copied
+   (`cp -a`, no `.<package>.*` dirs) to `_build/<target>.world/lib`, and everything after builds under that path:
+   the fixpoint once (in the first target's env), the package and every dependency whose closure changed removed
+   from each world build path, `deps.get` and the lock policy for each other target serially (the lock must not
+   move), then `mix compile`, the beam scan and `compile_env` concurrently. A kept target's build is renamed to
+   `_build/<target>/lib/.<package>.world_nerves`, checked against its scan, and appended to the system's
+   `published_variants` as `{"variant": "world_nerves", "beam_scan": {"footprint": {"file_manifest": ...}},
+   "compile_env": [...], "deps_lock": {...}}`, the world closure. Every passing target's published build and its
+   build without are checked again afterwards; a changed byte is `{:error, {:optional_deps_revert_failed, _}}`
+   (exit `10`). The world build paths are removed and `mix.exs`/`mix.lock` restored on every path. A target is
+   dropped, with the reason in its log, as `same_closure_as_without` (the world closure is the run lock's),
+   `same_closure_as_with` (it is the target's own `deps_lock`), `world_extra_deps` (the fixpoint locked a package
+   outside the closure that was not in the lock before), `world_lock_moved`, `world_not_converged`, `copy_failed`,
+   `files_changed`, or any reason of the pass above. The run then has `firmware_world: "world:nerves"` (the echo,
+   whatever was kept) and `optional_deps.firmware_world: {"name", "added", "rounds", "kept": [systems], "reason"}`.
+   An image before this ignores the key and publishes no world.
+
    Partial runs (`systems_filter`) run the pass over the targets that were actually built. Toolchain and
    pure-Elixir runs are unaffected by any of this; see above for their own optional-dependency pass.
 

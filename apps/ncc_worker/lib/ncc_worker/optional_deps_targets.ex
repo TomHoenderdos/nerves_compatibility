@@ -106,7 +106,10 @@ defmodule NccWorker.OptionalDepsTargets do
           systems: %{String.t() => map()},
           optional_deps: summary(),
           deps_lock: DepsLock.t() | nil,
-          package_checksum: String.t() | nil
+          package_checksum: String.t() | nil,
+          # The pass's deadline, in the `now` runner's monotonic seconds: the
+          # world sub-pass (`NccWorker.WorldTargets`) draws on the same budget.
+          deadline: integer()
         }
 
   @typedoc """
@@ -175,7 +178,8 @@ defmodule NccWorker.OptionalDepsTargets do
     params = Map.put(params, :run_deps_lock, run_lock.deps_lock)
 
     with {:ok, systems, summary} <- pass(params, r) do
-      {:ok, Map.merge(run_lock, %{systems: systems, optional_deps: summary})}
+      {:ok,
+       Map.merge(run_lock, %{systems: systems, optional_deps: summary, deadline: params.deadline})}
     end
   end
 
@@ -429,8 +433,12 @@ defmodule NccWorker.OptionalDepsTargets do
   # `{:error, _}` when the link is still in place (the first build can go
   # back as it was), `{:broken, reason}` when it is gone and could not be
   # put back.
+  @doc false
+  # Public for `NccWorker.WorldTargets`, which owns the published builds the
+  # same way before its own compile.
+  @spec own_links(String.t()) :: :ok | {:error, term()} | {:broken, term()}
   # sobelow_skip ["Traversal.FileModule"]
-  defp own_links(aside) do
+  def own_links(aside) do
     Enum.reduce_while(~w(priv include), :ok, fn sub, :ok ->
       case own_if_link(Path.join(aside, sub)) do
         :ok -> {:cont, :ok}
@@ -583,7 +591,10 @@ defmodule NccWorker.OptionalDepsTargets do
   # something else could still write through) with the size, sha256 and mode
   # it recorded. Files it did not list are never published, so they are not
   # looked at.
-  defp verify_files(dir, manifest) do
+  @doc false
+  # Public for `NccWorker.WorldTargets`.
+  @spec verify_files(String.t(), map()) :: :ok | {:error, String.t()}
+  def verify_files(dir, manifest) do
     entries = manifest["ebin"] ++ manifest["priv"]
     if Enum.all?(entries, &same_file?(dir, &1)), do: :ok, else: {:error, "files_changed"}
   end
@@ -611,7 +622,15 @@ defmodule NccWorker.OptionalDepsTargets do
   is published from, for `NccWorker.FileArchiver`.
   """
   @spec variant_dir(String.t()) :: String.t()
-  def variant_dir(package), do: ".#{package}.without"
+  def variant_dir(package), do: variant_dir(package, "without")
+
+  @doc """
+  The directory under `_build/<target>/lib` that a published variant of a
+  target is read from: `.<package>.<variant>` (`"without"` here,
+  `"world_<name>"` from `NccWorker.WorldTargets`).
+  """
+  @spec variant_dir(String.t(), String.t()) :: String.t()
+  def variant_dir(package, variant), do: ".#{package}.#{variant}"
 
   defp variant_path(lib, package), do: Path.join(Path.dirname(lib), variant_dir(package))
 
@@ -693,7 +712,11 @@ defmodule NccWorker.OptionalDepsTargets do
     File.write(log_file, line <> "\n", [:append])
   end
 
-  defp default_runners do
+  @doc false
+  # The real runners, for `NccWorker.WorldTargets`, which runs the same
+  # `mix` steps.
+  @spec default_runners() :: runners()
+  def default_runners do
     %{
       deps_get: &deps_get/4,
       lock_policy: &LockPolicy.validate/1,

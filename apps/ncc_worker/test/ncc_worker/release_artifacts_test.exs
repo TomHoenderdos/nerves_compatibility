@@ -180,6 +180,61 @@ defmodule NccWorker.ReleaseArtifactsTest do
     refute File.exists?(Path.join(archive, sha256("stripped beam")))
   end
 
+  # A target publishing the build without and the world build reads each
+  # from its own `.<pkg>.<variant>` dir; an unknown variant name reads
+  # nothing, so no path is built from it.
+  test "two published variants are archived each from its own directory", %{
+    project: project,
+    archive: archive,
+    tmp_dir: work_dir
+  } do
+    write_tree(Path.join(project, "_build/rpi4/lib/.sample.without"), %{
+      "ebin/sample.beam" => "without beam"
+    })
+
+    write_tree(Path.join(project, "_build/rpi4/lib/.sample.world_nerves"), %{
+      "ebin/sample.beam" => "world beam"
+    })
+
+    write_tree(Path.join(project, "_build/rpi4/lib/.sample.world_other"), %{
+      "ebin/sample.beam" => "other beam"
+    })
+
+    manifest = fn body ->
+      %{
+        "file_manifest" => %{
+          "ebin" => [%{"path" => "ebin/sample.beam", "sha256" => sha256(body)}],
+          "priv" => []
+        }
+      }
+    end
+
+    result = %{
+      package: %{name: "sample"},
+      systems: %{
+        "nerves_system_rpi4" => %{
+          beam_scan: %{"footprint" => manifest.(@build_files["ebin/sample.beam"])},
+          published_variants: [
+            %{variant: "without", beam_scan: %{"footprint" => manifest.("without beam")}},
+            %{variant: "world_nerves", beam_scan: %{"footprint" => manifest.("world beam")}},
+            # The world build's record with the without build's bytes: its
+            # own dir does not hold them, so nothing is staged.
+            %{variant: "world_nerves", beam_scan: %{"footprint" => manifest.("without beam")}},
+            %{variant: "world_other", beam_scan: %{"footprint" => manifest.("other beam")}},
+            %{variant: "../sample", beam_scan: %{"footprint" => manifest.("other beam")}}
+          ]
+        }
+      }
+    }
+
+    assert {:ok, %{files_archived: 3}} =
+             FileArchiver.archive_manifest_files(archive, result, work_dir)
+
+    assert File.read!(Path.join(archive, sha256("without beam"))) == "without beam"
+    assert File.read!(Path.join(archive, sha256("world beam"))) == "world beam"
+    refute File.exists?(Path.join(archive, sha256("other beam")))
+  end
+
   # Dependencies' files are archived but never published, and their manifests
   # come from the release scan, so they are still copied from the release.
   test "dependency files are still archived from the release", %{

@@ -47,4 +47,58 @@ defmodule Compatibility.WorldsTest do
     assert Enum.all?(members, &Regex.match?(~r/^[a-z][a-z0-9_]*$/, &1))
     assert [] == members -- (members -- Compatibility.OptionalDeps.never_added())
   end
+
+  describe "the firmware world" do
+    @nerves ~w(
+      beam_notify circular_buffer elixir_make interactive_cmd jason logger_backends mdns_lite
+      muontrap nerves nerves_discovery nerves_logging nerves_motd nerves_pack nerves_runtime
+      nerves_ssh nerves_time nerves_uevent one_dhcpd property_table ring_logger shoehorn
+      ssh_subsystem_fwup tablet toolshed uboot_env vintage_net vintage_net_direct
+      vintage_net_ethernet vintage_net_wifi
+    )
+
+    # The worker's own `nerves.new --no-nerves-pack --prerelease` template,
+    # rpi4, less the system, nerves_system_br and the toolchain.
+    @template ~w(
+      nerves logger_backends ring_logger circular_buffer toolshed nerves_runtime nerves_logging
+      nerves_uevent uboot_env property_table elixir_make interactive_cmd nerves_discovery tablet
+    )
+
+    test "nerves is the 29 prod packages of a default nerves.new 1.17.4 app, less the system" do
+      assert Worlds.firmware_names() == ["nerves"]
+      assert {:ok, members} = Worlds.firmware_members("nerves")
+      assert length(members) == 29
+      assert members == Enum.sort(@nerves)
+      assert Worlds.firmware_generator("nerves") == {:ok, {"nerves_bootstrap", "1.17.4"}}
+    end
+
+    test "is not a toolchain world" do
+      refute "nerves" in Worlds.names()
+      refute :world_nerves in Worlds.variants()
+      assert Worlds.members("nerves") == :error
+      assert Worlds.variant("nerves") == :error
+      assert Worlds.world("world_nerves") == :error
+    end
+
+    test "its variant is the published variant world_nerves" do
+      assert Worlds.firmware_variant("nerves") == {:ok, "world_nerves"}
+      assert Worlds.firmware_variant("phx") == :error
+      assert Worlds.firmware_variant(nil) == :error
+      assert Worlds.firmware_variants() == ["world_nerves"]
+      assert Worlds.firmware_members("phx") == :error
+    end
+
+    test "holds no system, toolchain or never-added name, and is valid for the worker" do
+      {:ok, members} = Worlds.firmware_members("nerves")
+      refute Enum.any?(members, &String.starts_with?(&1, ["nerves_system_", "nerves_toolchain_"]))
+      assert [] == members -- (members -- Compatibility.OptionalDeps.never_added())
+      assert length(members) <= 200
+      assert Enum.all?(members, &Regex.match?(~r/^[a-z][a-z0-9_]*$/, &1))
+    end
+
+    test "covers every package of the worker's own template, so it only ever adds" do
+      {:ok, members} = Worlds.firmware_members("nerves")
+      assert @template -- members == []
+    end
+  end
 end

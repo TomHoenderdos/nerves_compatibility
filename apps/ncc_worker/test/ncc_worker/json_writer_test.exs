@@ -542,6 +542,46 @@ defmodule NccWorker.JsonWriterTest do
     end
   end
 
+  describe "firmware_world" do
+    @tag :tmp_dir
+    test "echoes the firmware world and its summary, and leaves the key out without", %{
+      tmp_dir: dir
+    } do
+      base = %{
+        run_id: "fw",
+        package: %{name: "nerves_motd", version: "0.1.18"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{},
+        finished_at: "2026-11-15T10:00:00Z",
+        scope: "full"
+      }
+
+      world = %{name: "nerves", added: ["muontrap"], rounds: 2, kept: ["s"], reason: nil}
+
+      result =
+        Map.merge(base, %{
+          firmware_world: "world:nerves",
+          optional_deps: %{
+            added: [],
+            dropped: [],
+            skipped: [],
+            reason: nil,
+            firmware_world: world
+          }
+        })
+
+      assert :ok = JsonWriter.write_result(dir, result)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert decoded["firmware_world"] == "world:nerves"
+      assert decoded["optional_deps"]["firmware_world"]["kept"] == ["s"]
+
+      assert :ok = JsonWriter.write_result(dir, base)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      refute Map.has_key?(decoded, "firmware_world")
+    end
+  end
+
   describe "host_portability" do
     @tag :tmp_dir
     test "host_portability is written when present and absent otherwise", %{tmp_dir: dir} do

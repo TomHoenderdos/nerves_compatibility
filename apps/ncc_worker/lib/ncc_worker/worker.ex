@@ -34,7 +34,8 @@ defmodule NccWorker.Worker do
     Systems,
     TargetDepsGet,
     WarmNerves,
-    WorldDeps
+    WorldDeps,
+    WorldTargets
   }
 
   alias Compatibility.Portability, as: PortabilityReasons
@@ -91,6 +92,12 @@ defmodule NccWorker.Worker do
           # normalises to these two keys.
           optional(:world) => String.t(),
           optional(:world_members) => [String.t()],
+          # For a firmware run (no `mode`): the firmware world to build per
+          # passing target after the optional pass (`NccWorker.WorldTargets`),
+          # `%{"name", "members"}` in NCC_INPUT, checked like `world`
+          # (`NccWorker.WorldDeps.validate/2`) and normalised to atom keys.
+          # Any other mode ignores it.
+          optional(:firmware_world) => %{name: String.t(), members: [String.t()]},
           # For "toolchain": a `Compatibility.ConfigVariants` name; its overlay
           # is written as `config/config.exs` before the compile
           # (`NccWorker.ConfigOverlay`). Absent is `default`, no overlay.
@@ -257,6 +264,11 @@ defmodule NccWorker.Worker do
           # when present: the portal checks it against the variant it queued
           # the build as.
           optional(:requested_optional_deps) => String.t(),
+          # `"world:<name>"` when the run ran the firmware world sub-pass
+          # (`NCC_INPUT.firmware_world`, `NccWorker.WorldTargets`), whatever
+          # it kept; the portal keeps a world variant only from a run that
+          # echoes the world its job asked for.
+          optional(:firmware_world) => String.t(),
           # The package's optional dependencies the generated project did not
           # resolve on its own (`NccWorker.DepsLock.unresolved_optional_deps/2`),
           # and what the best-effort second pass did with them. Statuses and
@@ -300,7 +312,12 @@ defmodule NccWorker.Worker do
             required(:skipped) => [String.t()],
             required(:reason) => String.t() | nil,
             optional(:world) => String.t(),
-            optional(:rounds) => pos_integer()
+            optional(:rounds) => pos_integer(),
+            # A firmware run asked for a firmware world: its name, the
+            # members its fixpoint added, the rounds, the systems that
+            # publish it, and the first dropped target's reason when none
+            # does (`NccWorker.WorldTargets`).
+            optional(:firmware_world) => WorldTargets.summary()
           },
           # The package's transitive dependency closure as locked for this
           # build, itself excluded, keyed by name. For a firmware run, the
@@ -399,8 +416,11 @@ defmodule NccWorker.Worker do
               # scan recorded: that first build, published beside the one
               # with them as the `variant` "without", with its own
               # `beam_scan` (`footprint.file_manifest` only), `compile_env`
-              # and `deps_lock` (the run's). Absent otherwise; the system's
-              # own keys always describe the build with them.
+              # and `deps_lock` (the run's). A passing target the firmware
+              # world was kept on (`NccWorker.WorldTargets`) also has the
+              # variant "world_<name>", with the world closure's lock.
+              # Absent otherwise; the system's own keys always describe the
+              # build with them (the first build when there were none).
               optional(:published_variants) => [OptionalDepsTargets.variant()],
               # Only on a passing firmware system that publishes files: R2 on
               # them (`NccWorker.FirmwareBuildRoot`). "skipped" removed the
@@ -978,7 +998,8 @@ defmodule NccWorker.Worker do
       paths: paths,
       timeout: timeout,
       started_at: Map.get(input, :started_at, System.monotonic_time(:second)),
-      known_system_abi: List.wrap(input[:known_system_abi])
+      known_system_abi: List.wrap(input[:known_system_abi]),
+      firmware_world: input[:firmware_world]
     }
 
     with {:ok, system_results, optional_deps, run_lock} <-
@@ -1075,6 +1096,7 @@ defmodule NccWorker.Worker do
     {:ok,
      result
      |> put_optional_deps(optional_deps)
+     |> put_firmware_world(optional_deps)
      |> put_deps_lock(scope, run_lock, project_dir, input.package.name)
      |> put_host_portability(system_results)}
   end
@@ -1092,6 +1114,13 @@ defmodule NccWorker.Worker do
 
   defp put_optional_deps(result, optional_deps),
     do: Map.put(result, :optional_deps, optional_deps)
+
+  # The firmware world's echo, `"world:<name>"`: the portal keeps a world
+  # variant only from a run that says it built the world it asked for.
+  defp put_firmware_world(result, %{firmware_world: %{name: name}}),
+    do: Map.put(result, :firmware_world, "world:" <> name)
+
+  defp put_firmware_world(result, _optional_deps), do: result
 
   # The package's optional dependencies, as a best-effort pass after its
   # status is settled. A real application almost always has them in its lock
@@ -1317,11 +1346,17 @@ defmodule NccWorker.Worker do
       run_elapsed_sec: System.monotonic_time(:second) - pass.started_at
     }
 
-    with {:ok, out} <- OptionalDepsTargets.run(params) do
+    with {:ok, out} <- OptionalDepsTargets.run(params),
+         {:ok, systems, world} <- firmware_world(params, out, pass) do
       log_target_pass(pass.paths, out.systems)
-      systems = gate_build_root(out.systems, pass, envs)
+      systems = gate_build_root(systems, pass, envs)
 
-      {:ok, systems, Map.put(out.optional_deps, :skipped, skipped),
+      optional_deps =
+        out.optional_deps
+        |> Map.put(:skipped, skipped)
+        |> put_present(:firmware_world, world)
+
+      {:ok, systems, optional_deps,
        %{
          deps_lock: out.deps_lock,
          package_checksum: out.package_checksum,
@@ -1349,6 +1384,38 @@ defmodule NccWorker.Worker do
 
     Enum.each(lines, &log_host(pass.paths, &1))
     systems
+  end
+
+  # The firmware world sub-pass (`NccWorker.WorldTargets`), when the input
+  # asked for one: after the optional pass, on its budget and deadline.
+  defp firmware_world(_params, out, %{firmware_world: nil}), do: {:ok, out.systems, nil}
+
+  defp firmware_world(params, out, %{firmware_world: world} = pass) do
+    world_params =
+      params
+      |> Map.take([:project_dir, :package, :targets, :timeout_sec, :concurrency])
+      |> Map.merge(%{
+        world: world,
+        systems: out.systems,
+        deadline: out.deadline,
+        run_deps_lock: out.deps_lock,
+        run_elapsed_sec: System.monotonic_time(:second) - pass.started_at
+      })
+
+    with {:ok, %{systems: systems, world: summary}} <- WorldTargets.run(world_params) do
+      log_world(pass.paths, summary)
+      {:ok, systems, summary}
+    end
+  end
+
+  defp log_world(paths, %{name: name, kept: [], reason: reason}),
+    do: log_host(paths, "World #{name} not published: #{reason}")
+
+  defp log_world(paths, %{name: name, kept: kept, added: added}) do
+    log_host(
+      paths,
+      "World #{name} (#{Enum.join(added, ", ")}) published on #{Enum.join(kept, ", ")}"
+    )
   end
 
   # Each passing target's toolchain, OTP and rootfs library table
