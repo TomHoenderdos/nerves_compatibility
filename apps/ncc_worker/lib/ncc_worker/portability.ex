@@ -648,7 +648,13 @@ defmodule NccWorker.Portability do
         ConfigReads.app_defaults(ctx)
       )
 
-    version = ElixirVersion.judge(decided, elixir)
+    version =
+      ElixirVersion.judge(
+        decided,
+        elixir,
+        ElixirVersion.reviewed_apps(elem(ctx.hex, 1), ctx.trees)
+      )
+
     decided = decided ++ config.refusals ++ version.refusals
     package_r2 = package_build_root(ctx)
     deps = dep_results(ctx, report, decided)

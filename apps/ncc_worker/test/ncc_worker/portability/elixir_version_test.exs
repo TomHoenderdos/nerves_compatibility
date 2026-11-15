@@ -185,4 +185,102 @@ defmodule NccWorker.Portability.ElixirVersionTest do
       assert reason =~ "System.version/0 read without a patch-invariant Version comparison"
     end
   end
+
+  describe "the reviewed toolshed 0.5.0 read" do
+    @toolshed_sum "44a39f384d813d1991c4637eca23f62e9f91135e496c868c400b42ed01eb51d2"
+
+    defp toolshed_read(overrides \\ %{}) do
+      Map.merge(
+        %{
+          "mfa" => "System.version/0",
+          "arg" => %{},
+          "module" => "elixir_compiler_9",
+          "file" => "lib/toolshed.ex",
+          "line" => 13,
+          "first" => "elixir_compiler_9",
+          "first_kind" => "user",
+          "extent" => "frame"
+        },
+        overrides
+      )
+    end
+
+    defp release(version \\ "0.5.0", sum \\ @toolshed_sum),
+      do: %{"toolshed" => %{name: "toolshed", version: version, checksum: sum}}
+
+    defp verified, do: %{"toolshed" => {:ok, %{"lib/toolshed.ex" => "x"}}}
+
+    defp reviewed(releases \\ release(), trees \\ verified()),
+      do: ElixirVersion.reviewed_apps(releases, trees)
+
+    defp judge_toolshed(items, built \\ @built, apps \\ reviewed()),
+      do: ElixirVersion.judge(Enum.map(items, &obs("toolshed", &1)), built, apps)
+
+    test "passes on every patch and pre-release of 1.19 and 1.20" do
+      assert reviewed() == MapSet.new(["toolshed"])
+
+      for minor <- ["1.19", "1.20"], p <- [0, 5, 9, 10, 99], suffix <- ["", "-rc.0", "-dev"] do
+        built = "#{minor}.#{p}#{suffix}"
+        assert %{refusals: [], problems: []} = judge_toolshed([toolshed_read()], built), built
+      end
+    end
+
+    test "any other checksum, version or an unverified tree refuses" do
+      for apps <- [
+            reviewed(release("0.5.0", String.duplicate("0", 64))),
+            reviewed(release("0.4.2")),
+            reviewed(release(), %{"toolshed" => {:unverified, "no verified tarball"}}),
+            reviewed(release(), %{"toolshed" => {:differs, "modified file lib/toolshed.ex"}}),
+            reviewed(release(), %{}),
+            MapSet.new()
+          ] do
+        assert apps == MapSet.new() or apps == reviewed()
+
+        assert %{refusals: [{"toolshed", {:refuse, reason}}]} =
+                 judge_toolshed([toolshed_read()], @built, apps)
+
+        assert reason =~ "System.version/0 read without a patch-invariant Version comparison"
+      end
+    end
+
+    test "another app, file, line or frame kind refuses" do
+      other = ElixirVersion.judge([obs("pkg", toolshed_read())], @built, reviewed())
+      assert %{refusals: [{"pkg", _}]} = other
+
+      for overrides <- [
+            %{"file" => "lib/toolshed/cmd.ex"},
+            %{"line" => 14},
+            %{"first_kind" => "none"},
+            %{"module" => "Elixir.Toolshed"},
+            %{"mfa" => "System.build_info/0"}
+          ] do
+        assert %{refusals: [{"toolshed", _}]} =
+                 judge_toolshed([toolshed_read(overrides)]),
+               inspect(overrides)
+      end
+    end
+
+    test "a second read in the window refuses" do
+      assert %{refusals: [{"toolshed", _}]} =
+               judge_toolshed([toolshed_read(), toolshed_read()])
+
+      assert %{refusals: [{"toolshed", _}]} =
+               judge_toolshed([toolshed_read(), toolshed_read(%{"line" => 40})])
+    end
+
+    # `>= "1.16"` is decided by the "x.y." prefix every patch of a minor
+    # shares, so it cannot flip inside one; the judge still evaluates it
+    # over the built minor, and a trace with no usable version is not judged.
+    test "a trace with no usable Elixir version is not judged" do
+      assert %{refusals: [], problems: ["no Elixir version in the trace"]} =
+               judge_toolshed([toolshed_read()], "not a version")
+    end
+
+    test "every other observation of the window is still judged" do
+      bad = ev("Version.match?/2", {@built, ">= 1.19.6"})
+
+      assert %{refusals: [{"toolshed", {:refuse, @prefix <> "Version.match?/2" <> _}}]} =
+               judge_toolshed([toolshed_read(), bad])
+    end
+  end
 end
