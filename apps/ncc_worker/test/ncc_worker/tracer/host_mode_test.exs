@@ -124,6 +124,21 @@ defmodule NccWorker.Tracer.HostModeTest do
            ) == []
   end
 
+  # Mix consolidates FxShape at the end of the project compile and loads it
+  # again from the project's consolidated dir, without the native patterns
+  # its dependency's modules carry: the final sentinel accepts exactly that.
+  test "a natively built dependency's protocol consolidated by the project compile passes",
+       %{tmp_dir: dir} do
+    proj = fixture(dir)
+    traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host, native: ["fx_leaf"])
+    assert {:ok, 0} = traced.result, traced.log
+    assert traced.report.problems == []
+
+    assert File.regular?(
+             Path.join([proj, "_build/host/lib/fixture_wrapper/consolidated/Elixir.FxShape.beam"])
+           )
+  end
+
   test "an untraced mix compile right after the host trace compiles nothing", %{tmp_dir: dir} do
     proj = fixture(dir)
     traced = TracerFixtures.trace(proj, ["fx_top"], mode: :host)

@@ -53,6 +53,7 @@ traced(Token, Packages, Native, Mode) ->
     Closure = with_build_lock(Config, fun() -> compile(Token, Packages, Native) end),
     case project(Mode, Closure) of
         ok ->
+            _ = consolidated(Token, Mode, Config),
             _ = ncc_tracer:finish(Token, ok),
             ok;
         {not_in_closure, Missing} ->
@@ -80,6 +81,21 @@ project_compile() ->
     catch
         Class:Reason:Stack -> {failed, Class, Reason, Stack}
     end.
+
+%% The project compile ends with Mix's protocol consolidation, which loads
+%% every consolidated protocol again from the project's consolidated dir,
+%% without the patterns a natively built dependency's protocol had: the
+%% tracer is told the dir, so its final sentinel can tell that reload from
+%% any other (ncc_tracer:consolidated/2). If the dir cannot be had, nothing
+%% is named and such a reload fails the check, as before.
+consolidated(Token, host, Config) ->
+    try 'Elixir.Mix.Project':consolidation_path(Config) of
+        Dir when is_binary(Dir) -> ncc_tracer:consolidated(Token, Dir);
+        _ -> skip
+    catch
+        _:_ -> skip
+    end;
+consolidated(_Token, _Mode, _Config) -> skip.
 
 %% Unlike `mix deps.compile`, no `deps.precompile`: it is a hook, a no-op in a
 %% plain project, and in a full run's Nerves project nerves_bootstrap aliases

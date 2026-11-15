@@ -809,6 +809,134 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"integrity_ok" => true}] = kind(lines, "end")
   end
 
+  # A natively built dependency's protocol, with native patterns on its
+  # module, then consolidated and reloaded the way Mix's compile.protocols
+  # does after the project compile: `reload` is the script that reloads it
+  # (and names the consolidated dir to the tracer, or not), `window?` whether
+  # that happens inside a window instead of after the last one.
+  defp consolidation_script(dir, reload, window? \\ false) do
+    ebin = Path.join(dir, "fx_ebin")
+    cons = Path.join(dir, "consolidated")
+    File.mkdir_p!(ebin)
+    File.mkdir_p!(cons)
+
+    [{FxBus, bin}] =
+      Code.compile_string("defprotocol FxBus do\n  def transfer(bus)\nend\n", "fx_bus.ex")
+
+    File.write!(Path.join(ebin, "Elixir.FxBus.beam"), bin)
+    :code.purge(FxBus)
+    :code.delete(FxBus)
+    :code.purge(FxBus)
+
+    {open, close} =
+      if window?,
+        do:
+          {":ok = :ncc_tracer.window_open(tok, \"fx\")",
+           ":ok = :ncc_tracer.window_close(tok, \"fx\")"},
+        else: {"", ""}
+
+    run_script(dir, """
+    {:ok, tok} = :ncc_tracer.start_main()
+    ebin = #{inspect(ebin)}
+    cons = #{inspect(cons)}
+    true = Code.prepend_path(ebin)
+    {:module, FxBus} = :code.ensure_loaded(FxBus)
+    :ok = :ncc_tracer.native_patterns(tok, "fx_native", ebin)
+    #{open}
+    {:ok, consolidated} = Protocol.consolidate(FxBus, [])
+    File.write!(Path.join(cons, "Elixir.FxBus.beam"), consolidated)
+    true = Code.prepend_path(cons)
+    #{reload}
+    #{close}
+    :ok = :ncc_tracer.finish(tok, "ok")
+    """)
+  end
+
+  @reload """
+  _ = :code.purge(FxBus)
+  true = :code.delete(FxBus)
+  {:module, FxBus} = :code.load_file(FxBus)
+  true = Protocol.consolidated?(FxBus)
+  """
+
+  defp final_and_end(dir) do
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    [final] = Enum.filter(kind(lines, "sentinel"), &(&1["app"] == "__final__"))
+    [ending] = kind(lines, "end")
+    {final["integrity_ok"], ending["integrity_ok"], lines}
+  end
+
+  test "a native protocol Mix consolidated after the last window passes the final check",
+       %{tmp_dir: dir} do
+    {0, out} =
+      consolidation_script(dir, @reload <> ":ok = :ncc_tracer.consolidated(tok, cons)")
+
+    assert {true, true, _} = final_and_end(dir), out
+  end
+
+  test "a reloaded native protocol fails the final check when no consolidated dir was named",
+       %{tmp_dir: dir} do
+    {0, out} = consolidation_script(dir, @reload)
+    assert {false, false, _} = final_and_end(dir), out
+  end
+
+  test "a native protocol reloaded from another dir fails the final check", %{tmp_dir: dir} do
+    other = Path.join(dir, "other")
+
+    {0, out} =
+      consolidation_script(
+        dir,
+        @reload <> ":ok = :ncc_tracer.consolidated(tok, #{inspect(other)})"
+      )
+
+    assert {false, false, _} = final_and_end(dir), out
+  end
+
+  test "a native protocol whose loaded code is not the consolidated file fails the final check",
+       %{tmp_dir: dir} do
+    # Loaded under the consolidated file's path, but the code is the
+    # unconsolidated beam from the dependency's ebin.
+    reload = """
+    _ = :code.purge(FxBus)
+    true = :code.delete(FxBus)
+    original = File.read!(Path.join(ebin, "Elixir.FxBus.beam"))
+    path = String.to_charlist(Path.join(cons, "Elixir.FxBus.beam"))
+    {:module, FxBus} = :code.load_binary(FxBus, path, original)
+    :ok = :ncc_tracer.consolidated(tok, cons)
+    """
+
+    {0, out} = consolidation_script(dir, reload)
+    assert {false, false, _} = final_and_end(dir), out
+  end
+
+  test "a native module that is no protocol, reloaded from the consolidated dir, fails",
+       %{tmp_dir: dir} do
+    # A plain module of the native dependency, its beam copied into the
+    # consolidated dir and reloaded from there.
+    reload = """
+    [{FxPlain, plain}] = Code.compile_string("defmodule FxPlain do\\n  def f, do: 1\\nend\\n")
+    File.write!(Path.join(ebin, "Elixir.FxPlain.beam"), plain)
+    :ok = :ncc_tracer.native_patterns(tok, "fx_plain", ebin)
+    File.write!(Path.join(cons, "Elixir.FxPlain.beam"), plain)
+    _ = :code.purge(FxPlain)
+    true = :code.delete(FxPlain)
+    {:module, FxPlain} = :code.load_file(FxPlain)
+    :ok = :ncc_tracer.consolidated(tok, cons)
+    """
+
+    {0, out} = consolidation_script(dir, reload)
+    assert {false, false, _} = final_and_end(dir), out
+  end
+
+  test "a native protocol consolidated inside a window fails that window's check",
+       %{tmp_dir: dir} do
+    {0, out} =
+      consolidation_script(dir, @reload <> ":ok = :ncc_tracer.consolidated(tok, cons)", true)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
   test "a killed watcher is recorded and fails the end", %{tmp_dir: dir} do
     {0, out} =
       run_script(dir, """

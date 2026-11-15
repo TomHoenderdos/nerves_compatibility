@@ -5,7 +5,8 @@
 %% (rebar3). Writes one JSON object per line; NccWorker.Tracer.Report reads them.
 -export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3, built/3,
          config_env/2,
-         native_patterns/3, finish/2, fire/1, ebin_dir/0, flush/0, collector/0]).
+         native_patterns/3, consolidated/2, finish/2, fire/1, ebin_dir/0, flush/0,
+         collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0]).
 
@@ -45,6 +46,8 @@
 %% carry it. watcher, wref: the process that records the collector's death,
 %% monitored in turn. tampered: a forged request or a dead watcher was seen;
 %% it fails every check until the end.
+%% consolidated: the project's protocol consolidation dir, named by the
+%% driver after the project compile (host mode), else none.
 %% returns: per process, a stack of the return-traced calls awaiting their return ({call, CallId, Args} or skip).
 %% values: each recorded value's ETF => its value_id; value_bytes: the bytes
 %% of value lines written, at most max_value_bytes.
@@ -54,7 +57,8 @@
              token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0, path_os_reads = 0,
              max_calls, max_user, max_queue, overflow = false, final = false,
-             returns = #{}, values = #{}, value_bytes = 0, max_value_bytes}).
+             returns = #{}, values = #{}, value_bytes = 0, max_value_bytes,
+             consolidated = none}).
 
 %% --- API used by the driver ---------------------------------------------
 
@@ -106,6 +110,12 @@ config_env(Token, {Entries, Truncated}) when is_list(Entries), is_boolean(Trunca
 config_env(Token, _Error) -> call(Token, config_env_error).
 
 native_patterns(Token, App, Ebin) -> call(Token, {native, bin(App), to_list(Ebin)}).
+
+%% The project's protocol consolidation dir (Mix.Project.consolidation_path/1),
+%% named by the driver once the project compile is done (host mode), before
+%% finish/2: the final sentinel then accepts the protocol reloads Mix made
+%% from it (consolidated_protocol/2).
+consolidated(Token, Dir) -> call(Token, {consolidated, to_list(Dir)}).
 
 %% The final sentinel counts only when fired by the process that asked the
 %% collector for its nonce, carrying that nonce: a package calling the probe
@@ -360,27 +370,57 @@ wanted(Session, {M, _, _} = MFA, MS) ->
 %% Every check sets the missing ones again and reports the window.
 %% A session that is gone (destroyed by a package, or by our own overflow)
 %% makes trace:info/3 fail: that is a failed check too.
+%% When: sentinel, final (the final sentinel) or close (a window close or
+%% the finish).
 patterns_check(#st{unpatterned = Lost, overflow = Overflow} = St0, When) ->
     {Patterned, St} = case Overflow of
                           true -> {false, St0};
-                          false -> repatterned(St0)
+                          false -> repatterned(St0, When)
                       end,
     Ok = Patterned andalso not Lost,
-    {Ok, St#st{unpatterned = When =:= sentinel andalso not Ok}}.
+    {Ok, St#st{unpatterned = When =/= close andalso not Ok}}.
 
-repatterned(#st{session = Session, wanted = Wanted} = St) ->
+repatterned(#st{session = Session, wanted = Wanted} = St, When) ->
     try
-        Checked = [rewanted(Session, W) || W <- Wanted],
+        Checked = [rewanted(Session, W, When, St) || W <- Wanted],
         {lists:all(fun({Ok, _}) -> Ok end, Checked), St#st{wanted = [W || {_, W} <- Checked]}}
     catch
         _:_ -> {false, St}
     end.
 
-rewanted(Session, {MFA, MS, Loaded} = W) ->
+rewanted(Session, {MFA, MS, Loaded} = W, When, St) ->
     case traced(Session, MFA, Loaded) of
         true -> {true, W};
-        false -> {false, wanted(Session, MFA, MS)}
+        false ->
+            %% Patterned again (and loaded, if it is not) before it is judged.
+            Again = wanted(Session, MFA, MS),
+            {When =:= final andalso consolidated_protocol(MFA, St), Again}
     end.
+
+%% The one reload the final sentinel accepts, once it has patterned the
+%% module again: Mix's protocol consolidation, which runs at the end of the
+%% project compile in host mode, after the last window, purges every
+%% protocol it consolidated, and the next use loads it from the project's
+%% consolidated dir, without the patterns a natively built dependency's
+%% modules carry (native/3). Only a module of such a dependency, only from
+%% the dir the driver named (consolidated/2), only a protocol (it exports
+%% __protocol__/1), and only when the code loaded now is that file's (same
+%% module md5). Any other lost pattern, and this one in a window or before
+%% the dir is named, still fails the check. Calls into that module between
+%% the purge and the final sentinel are not traced: they come after every
+%% window closed and every built digest was taken, so they cannot reach a
+%% judged beam.
+consolidated_protocol({M, _, _}, #st{consolidated = Dir, native = Native})
+  when is_list(Dir), is_map_key(M, Native) ->
+    Beam = filename:join(Dir, atom_to_list(M) ++ ".beam"),
+    try
+        code:which(M) =:= Beam
+            andalso lists:member({'__protocol__', 1}, erlang:get_module_info(M, exports))
+            andalso beam_lib:md5(Beam) =:= {ok, {M, erlang:get_module_info(M, md5)}}
+    catch
+        _:_ -> false
+    end;
+consolidated_protocol(_MFA, _St) -> false.
 
 traced(Session, {M, F, A}, WasLoaded) ->
     case erlang:module_loaded(M) of
@@ -879,7 +919,7 @@ depth_seen(_M, _F, _Args, St) -> St.
 %% check the judge reads for the window.
 depth_check(#st{set_depth = Set, lowered = Lowered} = St, When) ->
     Ok = erlang:system_flag(backtrace_depth, Set) =:= Set andalso not Lowered,
-    {Ok, St#st{depth = Set, lowered = When =:= sentinel andalso not Ok}}.
+    {Ok, St#st{depth = Set, lowered = When =/= close andalso not Ok}}.
 
 channel(M, F, Args, St) ->
     case app_call(M, F, Args) of
@@ -911,8 +951,11 @@ record(unknown, {user, unjudged, _, _}, _Info, St) -> St#st{unjudged = St#st.unj
 record(unknown, _Extent, _Info, St) -> St;
 record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _, _}},
        {Pid, _, _, _, Ts, _, _}, St0) ->
-    {Checks, St} = checks(St0, sentinel),
-    {App, Final} = sentinel_app(App0, Pid, St),
+    {App, Final} = sentinel_app(App0, Pid, St0),
+    {Checks, St} = checks(St0, case Final of
+                                   true -> final;
+                                   false -> sentinel
+                               end),
     write(St, Checks#{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid)}),
     St#st{final = St#st.final orelse Final};
 record({Channel, Arg} = Class, {user, Kind, First, _} = Extent, {_, M, F, _, _, _, _} = Info, St) ->
@@ -1151,6 +1194,7 @@ request({built, App, Dir}, _From, St) ->
     write(St, Fields#{kind => built, app => App, ts => now_ns()}),
     {ok, St};
 request({native, App, Ebin}, _From, St) -> {ok, native(App, Ebin, St)};
+request({consolidated, Dir}, _From, St) -> {ok, St#st{consolidated = Dir}};
 request({config_env, Entries, Truncated}, _From, St) ->
     write(St, #{kind => config_env, entries => Entries, truncated => Truncated, ts => now_ns()}),
     {ok, St};
