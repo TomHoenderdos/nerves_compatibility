@@ -1420,9 +1420,12 @@ toolchain_module(M) ->
         false -> object_code_toolchain(M)
     end.
 
+%% Old code is checked before the kept verdict: reloading the same binary
+%% leaves the md5 as it was.
 object_code_toolchain(M) ->
     Md5 = loaded_md5(M),
-    case cache_hit(get({tc, M}), Md5) of
+    case old_code(M) orelse cache_hit(get({tc, M}), Md5) of
+        true -> false;
         {ok, V} -> V;
         miss ->
             V = object_verdict(M, (try code:which(M) catch _:_ -> undefined end), Md5,
@@ -1437,7 +1440,12 @@ cache_hit(_Entry, _Md5) -> miss.
 
 verdict_env() ->
     #{roots => get(roots), preloaded_md5 => get(preloaded_md5), owned_md5 => get(owned_md5),
-      realpath => fun abs_realpath/1, file_md5 => fun file_md5/1}.
+      realpath => fun abs_realpath/1, file_md5 => fun file_md5/1, old_code => fun old_code/1}.
+
+%% A module with old code: a process may still run the code it had before
+%% its last load, under the same name, whatever the current code is.
+old_code(M) ->
+    try erlang:check_old_code(M) catch _:_ -> true end.
 
 %% Whether the code loaded for M, whose md5 is Md5 and whose recorded file
 %% is Which (code:which/1), is the toolchain's. Neither the name nor the
@@ -1448,13 +1456,23 @@ verdict_env() ->
 %%   * the file's real path lies under a root's real path, and the beam
 %%     there is this module with this md5 (as code:modified_modules/0
 %%     compares them).
-%% Nothing loaded, an unknown name, anything else: not toolchain.
+%% Never while old code of the module exists (any frame of it may be
+%% running that code). Nothing loaded, an unknown name, anything else: not
+%% toolchain.
 object_verdict(_M, _Which, undefined, _Env) -> false;
-object_verdict(M, _Which, Md5, #{owned_md5 := Owned}) when is_map_key(M, Owned) ->
+object_verdict(M, Which, Md5, #{old_code := Old} = Env) ->
+    case (try Old(M) catch _:_ -> true end) of
+        false -> current_verdict(M, Which, Md5, Env);
+        _ -> false
+    end;
+object_verdict(_M, _Which, _Md5, _Env) -> false.
+
+current_verdict(_M, _Which, undefined, _Env) -> false;
+current_verdict(M, _Which, Md5, #{owned_md5 := Owned}) when is_map_key(M, Owned) ->
     maps:get(M, Owned) =:= Md5;
-object_verdict(M, preloaded, Md5, #{preloaded_md5 := Pre}) ->
+current_verdict(M, preloaded, Md5, #{preloaded_md5 := Pre}) ->
     maps:get(M, Pre, none) =:= Md5;
-object_verdict(M, Which, Md5, #{roots := Roots, realpath := Real, file_md5 := FileMd5})
+current_verdict(M, Which, Md5, #{roots := Roots, realpath := Real, file_md5 := FileMd5})
   when is_list(Which), Which =/= [] ->
     try Real(Which) of
         Path when is_list(Path) ->
@@ -1463,7 +1481,7 @@ object_verdict(M, Which, Md5, #{roots := Roots, realpath := Real, file_md5 := Fi
     catch
         _:_ -> false
     end;
-object_verdict(_M, _Which, _Md5, _Env) -> false.
+current_verdict(_M, _Which, _Md5, _Env) -> false.
 
 abs_realpath(Path) ->
     realpath(case filename:pathtype(Path) of

@@ -16,7 +16,8 @@ defmodule NccWorker.Tracer.ToolchainTrustTest do
         preloaded_md5: %{},
         owned_md5: %{},
         realpath: & &1,
-        file_md5: fn _path -> :error end
+        file_md5: fn _path -> :error end,
+        old_code: fn _module -> false end
       },
       overrides
     )
@@ -112,6 +113,55 @@ defmodule NccWorker.Tracer.ToolchainTrustTest do
       for which <- [~c"", :non_existing, :cover_compiled, :undefined] do
         refute :ncc_tracer.object_verdict(:lists, which, md5(:lists), env), inspect(which)
       end
+    end
+  end
+
+  describe "old code" do
+    # A process can keep running a module's old code after a reload, under
+    # the same name: whatever the current code is, the module is not the
+    # toolchain's while old code of it exists.
+    test "a module with old code is not the toolchain's, even when its current code is",
+         %{tmp_dir: dir} do
+      module = :"fx_old_code_#{System.unique_integer([:positive])}"
+
+      forms = [
+        {:attribute, 1, :module, module},
+        {:attribute, 1, :export, [f: 0]},
+        {:function, 1, :f, 0, [{:clause, 1, [], [], [{:atom, 1, :ok}]}]}
+      ]
+
+      {:ok, ^module, bin} = :compile.forms(forms, [:binary])
+      path = root_path(dir, "#{module}.beam")
+      on_exit(fn -> for _ <- 1..2, do: :code.purge(module) || :code.delete(module) end)
+
+      {:module, ^module} = :code.load_binary(module, path, bin)
+      md5 = md5(module)
+
+      env =
+        env(dir, %{
+          file_md5: fn ^path -> {:ok, {module, md5}} end,
+          old_code: &:erlang.check_old_code/1
+        })
+
+      assert :ncc_tracer.object_verdict(module, path, md5, env)
+
+      # Loaded a second time: the first load's code is old code now.
+      {:module, ^module} = :code.load_binary(module, path, bin)
+      assert :erlang.check_old_code(module)
+      assert md5(module) == md5
+      refute :ncc_tracer.object_verdict(module, path, md5, env)
+
+      # A preloaded or tracer-owned name is no exception.
+      refute :ncc_tracer.object_verdict(module, :preloaded, md5, %{
+               env
+               | preloaded_md5: %{module => md5}
+             })
+
+      refute :ncc_tracer.object_verdict(module, ~c"/x", md5, %{env | owned_md5: %{module => md5}})
+
+      # Purged: no old code, the current code is judged again.
+      true = :code.soft_purge(module)
+      assert :ncc_tracer.object_verdict(module, path, md5, env)
     end
   end
 
