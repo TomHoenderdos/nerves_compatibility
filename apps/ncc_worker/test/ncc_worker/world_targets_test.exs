@@ -336,6 +336,49 @@ defmodule NccWorker.WorldTargetsTest do
     end
   end
 
+  # The optional pass (`NccWorker.OptionalDepsTargets`) left
+  # `_build/<t>/lib` as its build with saw it: ecto rebuilt with x_lib, the
+  # package's own optional dep, which the world does not add. The run lock
+  # is restored, so ecto's closure does not change between the run lock and
+  # the world's, yet its build in the copy is the one with x_lib.
+  @with_left %{
+    "nerves" => [],
+    "pkg" => [{"ecto", false}, {"nerves_time", true}, {"x_lib", true}],
+    "ecto" => [{"decimal", false}, {"x_lib", true}],
+    "decimal" => [],
+    "nerves_time" => [],
+    "x_lib" => []
+  }
+
+  test "a dep the build with recompiled with an optional dep the world lacks is rebuilt",
+       %{dir: dir} do
+    project!(dir, @with_left)
+    with_lock = lock_of(~w(decimal ecto nerves_time x_lib))
+
+    systems =
+      params(dir).systems
+      |> put_in(["nerves_system_rpi4", :deps_lock], with_lock)
+      |> put_in(["nerves_system_bbb", :deps_lock], with_lock)
+
+    # The build with compiled x_lib on rpi4 only.
+    File.rm_rf!(Path.join(lib(dir, "bbb"), "x_lib"))
+
+    params = params(dir, %{systems: systems, run_deps_lock: lock_of(~w(decimal ecto))})
+    assert {:ok, out} = WorldTargets.run(params, runners(self(), dir, @with_left))
+
+    assert world_variant(out.systems["nerves_system_rpi4"]).deps_lock ==
+             lock_of(~w(decimal ecto nerves_time))
+
+    assert_received {:compile, "rpi4", _path, rpi4_lib}
+    # ecto may have been built with x_lib: rebuilt in the world.
+    refute "ecto" in rpi4_lib
+    assert "decimal" in rpi4_lib
+
+    assert_received {:compile, "bbb", _path, bbb_lib}
+    # x_lib was never built on bbb, so its ecto cannot have seen it.
+    assert "ecto" in bbb_lib
+  end
+
   test "a published build without is never copied and stays as it was", %{dir: dir} do
     project!(dir, @jason)
 

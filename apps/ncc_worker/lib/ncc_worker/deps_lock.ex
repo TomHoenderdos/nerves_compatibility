@@ -287,6 +287,42 @@ defmodule NccWorker.DepsLock do
     Enum.sort(changed)
   end
 
+  @doc """
+  The entries of `lock` that may have been built with one of `present`, a
+  set of optional dependencies the lock does not resolve, sorted: each
+  entry whose closure, itself included, holds an entry with an optional
+  dependency on one of them.
+
+  A build path a previous pass compiled with those dependencies present
+  (`NccWorker.OptionalDepsTargets`'s build with) keeps these builds as that
+  pass made them once the lock is restored: Mix rebuilds nothing for a
+  dependency that only went away (`changed_closures/2`).
+  """
+  @spec built_with_unresolved(%{String.t() => tuple()}, Enumerable.t()) :: [String.t()]
+  def built_with_unresolved(lock, present) do
+    present = MapSet.new(present)
+
+    direct =
+      for {name, entry} <- lock,
+          {dep, _requirement, opts} <- lock_deps(entry),
+          is_list(opts) and opts[:optional] == true,
+          dep = to_string(dep),
+          not Map.has_key?(lock, dep),
+          MapSet.member?(present, dep),
+          into: MapSet.new(),
+          do: name
+
+    closures = closures(lock)
+
+    lock
+    |> Map.keys()
+    |> Enum.filter(fn name ->
+      MapSet.member?(direct, name) or
+        Enum.any?(Map.keys(closures[name]), &MapSet.member?(direct, &1))
+    end)
+    |> Enum.sort()
+  end
+
   defp locked_version({name, entry})
        when is_tuple(entry) and tuple_size(entry) >= 3 and elem(entry, 0) == :hex and
               is_binary(elem(entry, 2)),

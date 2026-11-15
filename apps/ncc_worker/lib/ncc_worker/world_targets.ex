@@ -42,7 +42,10 @@ defmodule NccWorker.WorldTargets do
        lock entry whose closure the fixpoint changed are removed
        (`DepsLock.changed_closures/2`): Mix does not rebuild ecto because
        jason appeared, and the package would expand ecto's macros as
-       built without it.
+       built without it. So is every dependency the build with may have
+       compiled with an optional dependency the world lacks
+       (`DepsLock.built_with_unresolved/2`): the copy holds the build path
+       as that pass left it, and Mix rebuilds nothing when one goes away.
     6. Serially, per other target: `mix deps.get` into its own deps path,
        the lock policy, and the lock byte-equal to the fixpoint's
        ("world_lock_moved" otherwise).
@@ -317,18 +320,30 @@ defmodule NccWorker.WorldTargets do
 
   defp names(lock), do: lock |> Map.keys() |> Enum.sort()
 
-  # Step 5.
+  # Step 5. Besides the closures the fixpoint changed, every dependency
+  # the optional pass's build with may have compiled with an optional
+  # dependency the world does not add: the copy holds `_build/<t>/lib` as
+  # that build left it, and the restored lock makes Mix rebuild none of
+  # them. Such a dependency was only built with it on a target whose lib
+  # holds its build.
   defp remove_stale(state, params) do
-    apps =
-      [params.package | DepsLock.changed_closures(state.lock_before, state.lock_after)]
-      |> Enum.uniq()
-      |> Enum.filter(&Regex.match?(@app_name, &1))
+    changed = [params.package | DepsLock.changed_closures(state.lock_before, state.lock_after)]
 
     Enum.reduce(live(state), state, fn {_name, %{env: env}} = target, state ->
-      if Enum.all?(apps, &removed?(world_path(env), &1)),
-        do: state,
-        else: drop(state, target, "stale_build_not_removed")
+      with {:ok, built} <- built_with_absent(state.lock_after, world_path(env)),
+           apps = (changed ++ built) |> Enum.uniq() |> Enum.filter(&Regex.match?(@app_name, &1)),
+           true <- Enum.all?(apps, &removed?(world_path(env), &1)) do
+        state
+      else
+        _ -> drop(state, target, "stale_build_not_removed")
+      end
     end)
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp built_with_absent(lock, world) do
+    with {:ok, entries} <- File.ls(Path.join(world, "lib")),
+         do: {:ok, DepsLock.built_with_unresolved(lock, entries)}
   end
 
   # sobelow_skip ["Traversal.FileModule"]

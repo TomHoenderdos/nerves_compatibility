@@ -299,6 +299,24 @@ defmodule NccWorker.DepsLockTest do
     end
   end
 
+  describe "built_with_unresolved/2" do
+    test "names each entry that reaches an unresolved optional dep that was built",
+         %{dir: dir} do
+      lock = lock!(dir, @without_jason)
+
+      # ecto declares jason; belt too, and reaches ecto.
+      assert DepsLock.built_with_unresolved(lock, ~w(jason decimal ecto)) == ~w(belt ecto)
+    end
+
+    test "is empty when no unresolved optional dep was built", %{dir: dir} do
+      assert DepsLock.built_with_unresolved(lock!(dir, @without_jason), ~w(decimal)) == []
+    end
+
+    test "a locked optional dep is not unresolved", %{dir: dir} do
+      assert DepsLock.built_with_unresolved(lock!(dir, with_jason()), ~w(jason)) == []
+    end
+  end
+
   describe "lock_or_empty/1" do
     test "a missing lock is an empty one", %{dir: dir} do
       assert DepsLock.lock_or_empty(dir) == {:ok, %{}}
