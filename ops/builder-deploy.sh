@@ -6,6 +6,10 @@ builder_paused=false
 # the old release running in memory, and docker-ncc's authz policy denies its
 # argv: resuming its queues would only burn every build's retries.
 builder_activating=false
+# Set when this run took over a pause an earlier run left behind while
+# activating (builder_own_pause): the same reason holds until this run
+# activates, so its cleanup must not resume either.
+builder_keep_paused=false
 
 # The host layout (where the checkout, the release and the config files live)
 # comes from the operator's deploy env file, never from this repository: see
@@ -136,13 +140,74 @@ builder_queues='(if Code.ensure_loaded?(Portal.Workers.Ingest) and
   do: Portal.Workers.Ingest.builder_queues(),
   else: [:builds, :ingest])'
 
+# `true` when every builder queue runs, `paused` when every one exists and
+# at least one is paused, anything else (`false`, an error, nothing) when a
+# queue is missing or the release does not answer.
 builder_queues_available() {
-  builder_rpc "IO.puts(Enum.all?($builder_queues, fn queue ->
+  builder_rpc "states = Enum.map($builder_queues, fn queue ->
     case Oban.check_queue(queue: queue) do
-      %{paused: false} -> true
-      _ -> false
+      %{paused: false} -> :running
+      %{paused: true} -> :paused
+      _ -> :missing
     end
-  end))"
+  end)
+  IO.puts(cond do
+    Enum.all?(states, &(&1 == :running)) -> true
+    :missing in states -> false
+    true -> :paused
+  end)"
+}
+
+# The pause marker. A pause is local to the running ncc-portal process
+# (`local_only: true`), so the marker names that process by its systemd
+# InvocationID, which changes on every start. Written before the queues
+# pause and removed once this flow resumes them; its second line says
+# whether the run was draining or activating when it last wrote it.
+#
+# A marker whose InvocationID is the running service's means the pause on
+# that process is this flow's: an earlier run paused it and never resumed
+# it (killed, a lost host, a failed activation). The next run takes it over
+# instead of refusing. An operator's pause leaves no marker, and a marker
+# from before the service last started is about a process that is gone, so
+# a paused queue then still refuses: the operator's decision stands. A
+# marker that cannot be written only costs that convenience; the deploy
+# goes on, and a pause it leaves behind refuses the next run as before.
+builder_pause_marker=$NCC_INSTALL_DIR/builder-paused-by-deploy
+
+builder_portal_invocation() {
+  systemctl show -p InvocationID --value ncc-portal
+}
+
+builder_mark_paused() { # phase
+  local invocation
+  invocation=$(builder_portal_invocation 2>/dev/null) || invocation=''
+  if [[ ! $invocation =~ ^[0-9a-f]{32}$ ]]; then
+    echo 'warning: no ncc-portal InvocationID; a pause this run leaves behind will need an operator' >&2
+    return 0
+  fi
+  if ! { printf '%s\n%s\n' "$invocation" "$1" >"$builder_pause_marker.tmp" &&
+    mv "$builder_pause_marker.tmp" "$builder_pause_marker"; } 2>/dev/null; then
+    echo "warning: could not write $builder_pause_marker; a pause this run leaves behind will need an operator" >&2
+  fi
+}
+
+builder_unmark_paused() {
+  rm -f "$builder_pause_marker" "$builder_pause_marker.tmp" 2>/dev/null || true
+}
+
+# Succeeds when the marker names the running ncc-portal process, and prints
+# the phase the earlier run was in.
+builder_own_pause() {
+  local invocation marked phase
+  [[ -r $builder_pause_marker ]] || return 1
+  invocation=$(builder_portal_invocation 2>/dev/null) || return 1
+  [[ $invocation =~ ^[0-9a-f]{32}$ ]] || return 1
+  { read -r marked && read -r phase; } <"$builder_pause_marker" || return 1
+  [[ $marked == "$invocation" ]] || return 1
+  case $phase in
+    draining | activating) printf '%s\n' "$phase" ;;
+    *) return 1 ;;
+  esac
 }
 
 builder_pause() {
@@ -208,8 +273,18 @@ build until its egress check passes. Fix the cause, then restart ncc-portal
 and run the deploy again. See the operator runbook.
 EOF
     [[ "$result" -ne 0 ]] || result=1
+  elif [[ "$builder_paused" == true && "$builder_keep_paused" == true ]]; then
+    cat >&2 <<'EOF'
+ERROR: the deploy failed before activating the new worker image, and the
+builder queues it took over had been left paused by an earlier deploy that
+failed while activating. They stay paused, for the reason that deploy left
+them so, and so does its marker: the next deploy takes them over again.
+EOF
+    [[ "$result" -ne 0 ]] || result=1
   elif [[ "$builder_paused" == true ]]; then
-    if ! builder_resume; then
+    if builder_resume; then
+      builder_unmark_paused
+    else
       echo 'failed to resume builder queues; operator intervention required' >&2
       result=1
     fi
@@ -236,8 +311,22 @@ builder_prepare() {
   builder_check_runtime || return 1
 
   # Respect an operator's existing pause; never unpause it as a side effect.
-  if [[ $(builder_queues_available) != true ]]; then
-    echo 'builder queues are missing or already paused; refusing deployment' >&2
+  # A pause an earlier run of this flow left on the same ncc-portal process
+  # is taken over instead (builder_own_pause): pausing again changes
+  # nothing, the drain below still waits for every running job, and this
+  # run's cleanup resumes it or leaves it paused by the same rules as a
+  # pause of its own. One left while activating stays paused until this run
+  # has activated (builder_keep_paused).
+  local available phase
+  available=$(builder_queues_available) || available=''
+  if [[ $available == paused ]] && phase=$(builder_own_pause); then
+    echo "builder queues were left paused by an earlier deploy (it was $phase); taking the pause over"
+    [[ $phase != activating ]] || builder_keep_paused=true
+  elif [[ $available == paused ]]; then
+    echo "builder queues are already paused, and not by an earlier deploy on this ncc-portal process (no current $builder_pause_marker); refusing deployment" >&2
+    return 1
+  elif [[ $available != true ]]; then
+    echo 'builder queues are missing or the running release did not answer; refusing deployment' >&2
     return 1
   fi
 
@@ -246,6 +335,11 @@ builder_prepare() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
+  if [[ $builder_keep_paused == true ]]; then
+    builder_mark_paused activating
+  else
+    builder_mark_paused draining
+  fi
   builder_pause
 
   local deadline=$((SECONDS + timeout))
@@ -440,8 +534,18 @@ builder_kill_warm() {
   fi
 }
 
+# Succeeds when both tags name one image, by ID; never for an ID that
+# cannot be read.
+builder_same_image() {
+  local a b
+  a=$(builder_docker image inspect --format '{{.Id}}' "$1" 2>/dev/null) || return 1
+  b=$(builder_docker image inspect --format '{{.Id}}' "$2" 2>/dev/null) || return 1
+  [[ -n $a && $a == "$b" ]]
+}
+
 builder_activate_image() {
   builder_activating=true
+  builder_mark_paused activating
   local tags tag
   tags=$(builder_toolchain_tags)
   # Check every candidate before moving any tag, so a missing one leaves all
@@ -468,12 +572,16 @@ builder_activate_image() {
     fi
   done
   builder_check_egress || return 1
-  if [[ $fresh != *" ncc-worker:local "* ]]; then
+  # A live tag already on the candidate's image is this commit's, activated
+  # by an earlier run of this deploy that failed later on: moving it to
+  # previous would replace the rollback image with the one being deployed.
+  if [[ $fresh != *" ncc-worker:local "* ]] &&
+    ! builder_same_image ncc-worker:local ncc-worker:deploy; then
     builder_docker tag ncc-worker:local ncc-worker:previous
     builder_docker tag ncc-worker:deploy ncc-worker:local
   fi
   for tag in $tags; do
-    if [[ $fresh != *" $tag "* ]]; then
+    if [[ $fresh != *" $tag "* ]] && ! builder_same_image "$tag" "$tag-deploy"; then
       builder_docker tag "$tag" "$tag-previous"
       builder_docker tag "$tag-deploy" "$tag"
     fi
@@ -481,4 +589,6 @@ builder_activate_image() {
   # The live tags have moved; warm the cache on the image builds will now use.
   builder_warm_nerves
   builder_activating=false
+  builder_keep_paused=false
+  builder_mark_paused draining
 }

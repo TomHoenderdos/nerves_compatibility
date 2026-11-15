@@ -15,7 +15,9 @@
 #
 # Per host, in order:
 #   1. preflight: ssh reachable, checkout on main, which commit it runs;
-#      a host already on the commit with ncc-portal active is skipped (-f overrides)
+#      a host already on the commit with ncc-portal active is skipped (-f
+#      overrides), unless its last deploy did not finish (deploy.sh leaves
+#      NCC_INSTALL_DIR/deploy-incomplete), which redeploys it without -f
 #   2. installs that commit's ops/deploy.sh and ops/build-release.sh into the
 #      host's NCC_INSTALL_DIR (hosts run those copies, not the checkout's;
 #      see the operator runbook)
@@ -127,9 +129,10 @@ REMOTE_ENV='f=/etc/ncc-deploy.env; if [ ! -r "$f" ]; then echo "no host layout: 
 on() { ssh "${SSH_OPTS[@]}" "$(host_of "$1")" "$REMOTE_ENV$2"; }
 
 preflight() {
-  local name=$1 state head branch active
+  local name=$1 state head branch active incomplete
+  # The fourth line is deploy.sh's deploy-incomplete marker, empty without one.
   # shellcheck disable=SC2016 # expanded on the host
-  if ! state=$(on "$name" 'cd "$NCC_SRC_DIR" && git rev-parse HEAD && git branch --show-current && systemctl is-active ncc-portal || true' 2>&1); then
+  if ! state=$(on "$name" 'cd "$NCC_SRC_DIR" && git rev-parse HEAD && git branch --show-current && { systemctl is-active ncc-portal || true; } && { cat "$NCC_INSTALL_DIR/deploy-incomplete" 2>/dev/null || echo; }' 2>&1); then
     log "$name" "preflight failed over ssh: $state"
     log "$name" "if this is a new host key, verify it and add it to ~/.ssh/known_hosts first"
     return 1
@@ -137,11 +140,22 @@ preflight() {
   head=$(sed -n 1p <<<"$state")
   branch=$(sed -n 2p <<<"$state")
   active=$(sed -n 3p <<<"$state")
+  incomplete=$(sed -n 4p <<<"$state")
   if [[ $branch != main ]]; then
     log "$name" "checkout is on '$branch', not main; fix by hand"
     return 1
   fi
-  if [[ $head == "$sha" && $active == active && $force == false ]]; then
+  # A deploy that stopped halfway has already moved the checkout, and the
+  # old ncc-portal is often still active, so the host looks deployed. Its
+  # marker says otherwise, and the host is deployed again without -f. That
+  # is as safe as -f always was: deploy.sh repeats every step harmlessly on
+  # a host already on the commit (see its deploy-incomplete comment), and
+  # its flock refuses a second run while the first still goes. A host whose
+  # installed deploy.sh predates the marker never has one, and is skipped
+  # as before.
+  if [[ $head == "$sha" && $active == active && -n $incomplete && $force == false ]]; then
+    log "$name" "on ${sha:0:7}, but its last deploy ($incomplete) did not finish; deploying again"
+  elif [[ $head == "$sha" && $active == active && $force == false ]]; then
     log "$name" "already on ${sha:0:7} and ncc-portal is active; skipping (-f to redeploy)"
     return 3
   fi

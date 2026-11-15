@@ -38,6 +38,7 @@ HARNESS = r'''
 set -euo pipefail
 source "$HELPER"
 builder_queues_available() { echo "$AVAILABLE"; }
+builder_portal_invocation() { echo "$INVOCATION"; }
 # The egress filter is the host configuration's: anything that would install
 # or load a ruleset shows up as an event the expected lists do not have.
 install() { echo "install $*" >> "$EVENTS"; }
@@ -58,9 +59,16 @@ exit "$BUILD_STATUS"
 '''
 
 class BuilderDeploymentTest(unittest.TestCase):
-    def run_deploy(self, drained="true", **overrides):
+    INVOCATION = "0123456789abcdef0123456789abcdef"
+
+    def run_deploy(self, drained="true", marker=None, **overrides):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            install = root / "install"
+            install.mkdir()
+            marker_file = install / "builder-paused-by-deploy"
+            if marker is not None:
+                marker_file.write_text(marker)
             events = root / "events"
             docker_events = root / "docker"
             state = root / "drained"
@@ -72,6 +80,8 @@ class BuilderDeploymentTest(unittest.TestCase):
                 "DOCKER_EVENTS": str(docker_events),
                 "DRAINED_FILE": str(state),
                 "AVAILABLE": "true",
+                "NCC_INSTALL_DIR": str(install),
+                "INVOCATION": self.INVOCATION,
                 "PAUSE_STATUS": "0",
                 "RESUME_STATUS": "0",
                 "BUILD_STATUS": "0",
@@ -86,6 +96,7 @@ class BuilderDeploymentTest(unittest.TestCase):
             self.docker_calls = (
                 docker_events.read_text().splitlines() if docker_events.exists() else []
             )
+            self.marker = marker_file.read_text() if marker_file.exists() else None
             return result, events.read_text().splitlines() if events.exists() else []
 
     # Every build container needs runsc, and the authz policy denies any
@@ -125,6 +136,75 @@ class BuilderDeploymentTest(unittest.TestCase):
         result, events = self.run_deploy(AVAILABLE="false")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(events, [])
+
+    # A pause with no marker, or a marker from an ncc-portal process that
+    # has since restarted, is not this flow's: it is the operator's, and
+    # stands.
+    def test_a_paused_queue_without_a_current_marker_refuses(self):
+        for marker in (None, f"{'f' * 32}\ndraining\n", f"{self.INVOCATION}\nunknown\n", ""):
+            with self.subTest(marker=marker):
+                result, events = self.run_deploy(AVAILABLE="paused", marker=marker)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(events, [])
+                self.assertIn("already paused", result.stderr)
+                self.assertEqual(self.marker, marker)
+
+    # No InvocationID to compare with: nothing can be taken over.
+    def test_a_marker_is_not_trusted_without_the_services_invocation_id(self):
+        result, events = self.run_deploy(AVAILABLE="paused", INVOCATION="",
+                                         marker=f"{self.INVOCATION}\ndraining\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(events, [])
+
+    # An earlier run of this deploy paused the queues of the same process
+    # and never resumed them (killed mid-drain, say): the next run takes the
+    # pause over, drains, and resumes as if the pause were its own.
+    def test_a_pause_an_earlier_deploy_left_on_this_process_is_taken_over(self):
+        result, events = self.run_deploy(AVAILABLE="paused", drained="false",
+                                         marker=f"{self.INVOCATION}\ndraining\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(events, ["pause", "wait", "build", "resume"])
+        self.assertIn("taking the pause over", result.stdout)
+        self.assertIsNone(self.marker)
+
+    def test_a_taken_over_pause_is_resumed_when_this_run_fails_before_activating(self):
+        result, events = self.run_deploy(AVAILABLE="paused", BUILD_STATUS="42",
+                                         marker=f"{self.INVOCATION}\ndraining\n")
+        self.assertEqual(result.returncode, 42)
+        self.assertEqual(events, ["pause", "build", "resume"])
+        self.assertIsNone(self.marker)
+
+    # One left while activating stays paused for that run's reason (the old
+    # release's builds are denied) until this run activates.
+    def test_a_pause_left_while_activating_stays_until_this_run_activates(self):
+        result, events = self.run_deploy(AVAILABLE="paused", BUILD_STATUS="42",
+                                         marker=f"{self.INVOCATION}\nactivating\n")
+        self.assertEqual(result.returncode, 42)
+        self.assertEqual(events, ["pause", "build"])
+        self.assertIn("stay paused", result.stderr)
+        self.assertEqual(self.marker, f"{self.INVOCATION}\nactivating\n")
+
+    # The marker lives from the pause until this flow resumes: a run that
+    # resumes removes it, and one that cannot resume keeps it for the next.
+    def test_the_pause_marker_names_the_process_and_goes_with_the_resume(self):
+        result, events = self.run_deploy(BUILD_STATUS="42")
+        self.assertEqual(result.returncode, 42)
+        self.assertIsNone(self.marker)
+
+        result, events = self.run_deploy(RESUME_STATUS="1")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.marker, f"{self.INVOCATION}\ndraining\n")
+
+    # Without an InvocationID or a writable install directory the deploy
+    # still runs; only a pause it leaves behind will refuse the next run.
+    def test_a_marker_that_cannot_be_written_does_not_stop_the_deploy(self):
+        for overrides in ({"INVOCATION": ""}, {"NCC_INSTALL_DIR": "/nonexistent/install"}):
+            with self.subTest(overrides=overrides):
+                result, events = self.run_deploy(RESUME_STATUS="1", **overrides)
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(events, ["pause", "build", "resume"])
+                self.assertIn("will need an operator", result.stderr)
+                self.assertIsNone(self.marker)
 
     def test_drain_timeout_resumes_without_starting_a_build(self):
         result, events = self.run_deploy(drained="false", NCC_DEPLOY_DRAIN_SECONDS="0")
@@ -336,6 +416,46 @@ builder_activate_image
         self.assertIn("docker tag ncc-worker:deploy ncc-worker:local", lines)
         self.assertIn("docker tag ncc-toolchain:rpi4-deploy ncc-toolchain:rpi4", lines)
         self.assertEqual(lines[-1], "warm")
+
+    # A rerun after a deploy that activated and then failed finds the live
+    # tags already on this commit's images. Moving them to previous would
+    # lose the rollback images; they stay where they are.
+    def test_a_rerun_keeps_the_previous_images_of_an_earlier_activation(self):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_check_egress() { :; }
+builder_warm_nerves() { :; }
+builder_toolchain_tags() { echo ncc-toolchain:rpi4; }
+docker() {
+  echo "docker $*" >> "$EVENTS"
+  if [[ $1 == image && $2 == inspect && $3 == --format ]]; then
+    case $5 in
+      ncc-worker:local | ncc-worker:deploy) echo sha256:new ;;
+      ncc-toolchain:rpi4) echo "sha256:$TOOLCHAIN_LIVE" ;;
+      ncc-toolchain:rpi4-deploy) echo sha256:tc-new ;;
+    esac
+  fi
+}
+builder_activate_image
+'''
+        for live, moved in (("tc-new", False), ("tc-old", True)):
+            with self.subTest(live=live), tempfile.TemporaryDirectory() as directory:
+                events = Path(directory) / "events"
+                result = subprocess.run(
+                    ["bash", "-c", script],
+                    env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
+                         "TOOLCHAIN_LIVE": live},
+                    capture_output=True, text=True, timeout=5,
+                )
+                lines = events.read_text().splitlines()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse([line for line in lines if "ncc-worker:previous" in line], lines)
+                self.assertNotIn("docker tag ncc-worker:deploy ncc-worker:local", lines)
+                self.assertEqual(
+                    "docker tag ncc-toolchain:rpi4 ncc-toolchain:rpi4-previous" in lines, moved)
+                self.assertEqual(
+                    "docker tag ncc-toolchain:rpi4-deploy ncc-toolchain:rpi4" in lines, moved)
 
     def test_activation_without_a_candidate_moves_no_tag(self):
         script = r'''
@@ -714,11 +834,15 @@ builder_activate_image
     # A failed activation leaves the old release running in memory, whose
     # argv the daemon's authz policy denies: resuming its queues would burn
     # every build's retries. So the queues stay paused, and the deploy says so.
-    def run_failed_activation(self, check_status="1", inspect_status="0"):
+    INVOCATION = "0123456789abcdef0123456789abcdef"
+
+    def run_failed_activation(self, check_status="1", inspect_status="0", install=None,
+                              available="true"):
         script = r'''
 set -euo pipefail
 source "$HELPER"
-builder_queues_available() { echo true; }
+builder_queues_available() { echo "$AVAILABLE"; }
+builder_portal_invocation() { echo "$INVOCATION"; }
 builder_pause() { echo pause >> "$EVENTS"; }
 builder_resume() { echo resume >> "$EVENTS"; }
 builder_queues_drained() { echo true; }
@@ -738,10 +862,36 @@ echo activated >> "$EVENTS"
             result = subprocess.run(
                 ["bash", "-c", script],
                 env={**BASE_ENV, "HELPER": str(HELPER), "EVENTS": str(events),
-                     "CHECK_STATUS": check_status, "INSPECT_STATUS": inspect_status},
+                     "CHECK_STATUS": check_status, "INSPECT_STATUS": inspect_status,
+                     "AVAILABLE": available, "INVOCATION": self.INVOCATION,
+                     **({"NCC_INSTALL_DIR": str(install)} if install else {})},
                 capture_output=True, text=True, timeout=5,
             )
             return result, events.read_text().splitlines() if events.exists() else []
+
+    # The failed activation's pause is marked as such, so the next run of
+    # the deploy takes it over (no refusal, no operator) and resumes only
+    # once it has activated itself.
+    def test_the_next_run_takes_over_the_pause_a_failed_activation_left(self):
+        with tempfile.TemporaryDirectory() as directory:
+            install = Path(directory)
+            marker = install / "builder-paused-by-deploy"
+            result, events = self.run_failed_activation(install=install)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(events, ["pause", "check"])
+            self.assertEqual(marker.read_text(), f"{self.INVOCATION}\nactivating\n")
+
+            result, events = self.run_failed_activation(install=install, available="paused")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(events, ["pause", "check"])
+            self.assertIn("taking the pause over", result.stdout)
+            self.assertTrue(marker.exists())
+
+            result, events = self.run_failed_activation(check_status="0", install=install,
+                                                        available="paused")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(events, ["pause", "check", "warm", "activated", "resume"])
+            self.assertFalse(marker.exists())
 
     def test_a_failed_egress_check_keeps_the_queues_paused(self):
         result, events = self.run_failed_activation()

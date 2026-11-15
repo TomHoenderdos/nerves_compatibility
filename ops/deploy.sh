@@ -226,6 +226,24 @@ if ! git diff --quiet; then
   exit 1
 fi
 
+# A builder deploy is marked incomplete from here, before the checkout
+# moves, until its last step passes (the end of this script). A run that
+# stops anywhere in between, for whatever reason, leaves the checkout on
+# the new commit and the old ncc-portal often still active: exactly what a
+# finished deploy looks like to ops/deploy-builders.sh's preflight, which
+# then skipped the host unless given -f. The preflight reads this file and
+# redeploys a host that has it. That is safe because every step below is
+# safe to repeat on a host already on the commit: the checkout merge is a
+# no-op, the drain pauses (or takes over its own earlier pause, see
+# builder-deploy.sh), the image pull and release build produce the same
+# commit's artifacts, migrations already run are skipped, the previous
+# images are re-kept and the egress checks run again. The flock above keeps
+# a redeploy from racing a run that is still going.
+deploy_incomplete=$NCC_INSTALL_DIR/deploy-incomplete
+if [[ $mode == builder ]]; then
+  printf '%s\n' "${1:-head}" >"$deploy_incomplete"
+fi
+
 git fetch origin main
 target=${1:-$(git rev-parse origin/main)}
 if [[ "$target" != "$(git rev-parse origin/main)" ]]; then
@@ -299,6 +317,8 @@ sleep_until_up
 
 if [[ $mode == builder ]]; then
   builder_check_running_egress
+  # Every step passed: the next preflight may skip this host again.
+  rm -f "$deploy_incomplete"
 else
   # Remote builders read the registry digest for this commit from images.json;
   # the images workflow publishes it minutes after this deploy, so a miss here
