@@ -481,8 +481,9 @@ defmodule NccWorker.Portability.BuildRoot do
       dir?.(s)
   end
 
-  # `priv/**` and `test/**` of a dependency (`<root>/deps/<d>/...`) or of a
-  # tree at a root. A path under no root is not a closure path anyway.
+  # `priv/**` and `test/**` of a dependency (`<root>/deps/<d>/...`, or
+  # `<root>/deps_<target>/<d>/...` in a firmware build) or of a tree at a
+  # root. A path under no root is not a closure path anyway.
   defp priv_or_test?(s, roots) do
     parts = Path.split(s)
     Enum.any?(roots, &priv_or_test_under?(parts, Path.split(&1)))
@@ -494,6 +495,7 @@ defmodule NccWorker.Portability.BuildRoot do
   end
 
   defp priv_or_test_rel?(["deps", _dep, top | _]), do: top in ["priv", "test"]
+  defp priv_or_test_rel?(["deps_" <> _target, _dep, top | _]), do: top in ["priv", "test"]
   defp priv_or_test_rel?([top | _]), do: top in ["priv", "test"]
   defp priv_or_test_rel?([]), do: true
 

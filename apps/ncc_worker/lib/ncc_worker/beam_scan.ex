@@ -16,7 +16,7 @@ defmodule NccWorker.BeamScan do
   """
   @spec analyze(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def analyze(build_path, package_name) do
-    with {:ok, package_dir} <- find_build_or_release_dir(build_path, package_name) do
+    with {:ok, package_dir} <- package_dir(build_path, package_name) do
       scan = BeamScanner.analyze(package_dir)
       {:ok, normalize(scan)}
     end
@@ -24,7 +24,12 @@ defmodule NccWorker.BeamScan do
     error -> {:error, {:beam_scan_failed, Exception.message(error)}}
   end
 
-  defp find_build_or_release_dir(build_path, package_name) do
+  @doc """
+  The directory `analyze/2` scans: `_build/<target>/lib/<package>`, else the
+  release copy of the package's application.
+  """
+  @spec package_dir(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def package_dir(build_path, package_name) do
     build_lib = Path.join([build_path, "lib", package_name])
 
     if File.dir?(build_lib),

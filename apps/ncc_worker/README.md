@@ -129,6 +129,19 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
 
    Partial runs (`systems_filter`) run the pass over the targets that were actually built. Toolchain and
    pure-Elixir runs are unaffected by any of this; see above for their own optional-dependency pass.
+
+   Once the pass has settled which builds a target publishes, each passing target's own build and its
+   `published_variants` are judged by the baked build path rule the host judge applies to a toolchain build's own
+   beams (R2, `NccWorker.FirmwareBuildRoot` over `NccWorker.Portability.BuildRoot.program_source_paths/4`), with the
+   project dir (so `deps_<target>` and `_build/<target>`), the OTP and Elixir installs, `HOME`, `MIX_HOME`, the
+   target's `HEX_HOME` and the Nerves artifact and download dirs as roots. A bare source path of a dependency in
+   `deps_<target>` (Ecto query metadata) is observed, unless its module runs programs or the package runs a shell;
+   any other root (a `__DIR__`, a `_build` path, a directory the code reads at runtime) refuses, and an `ebin` the
+   rule cannot read cannot be judged. A refused or unjudged own build loses `beam_scan.footprint.file_manifest`, so
+   nothing of it is archived or published; a refused variant is dropped from `published_variants`. The status, the
+   firmware image and the log tail never change. Each judged system carries `build_root`: `{"status": "pass" |
+   "skipped", "reason", "observations": [{"rule", "path"}], "variants": {"without": {"status", "reason"}}}`
+   (`variants` only when one was judged), and `host.log` gets a line per withheld build.
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never

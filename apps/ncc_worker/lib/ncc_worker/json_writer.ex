@@ -133,13 +133,16 @@ defmodule NccWorker.JsonWriter do
   # (`NccWorker.SystemAbi`), `system_libs` only for a release the portal
   # did not already know. `published_variants` only on a target that kept
   # the optional dependencies and also publishes its first build
-  # (`NccWorker.OptionalDepsTargets`).
+  # (`NccWorker.OptionalDepsTargets`). `build_root` only on a passing
+  # firmware target whose files the baked build path rule judged
+  # (`NccWorker.FirmwareBuildRoot`).
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
     [
       :deps_lock,
       :optional_deps,
       :published_variants,
+      :build_root,
       :compile_env_rule,
       :compile_inputs,
       :toolchain,

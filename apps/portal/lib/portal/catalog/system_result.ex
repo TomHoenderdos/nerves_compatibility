@@ -9,6 +9,7 @@ defmodule Portal.Catalog.SystemResult do
     data_layer: AshPostgres.DataLayer
 
   @rule2_revocation "rule 2 revoked"
+  @baked_build_path "baked build path"
 
   @doc """
   The `unpublished_reason` of a `pure_elixir` result
@@ -17,6 +18,14 @@ defmodule Portal.Catalog.SystemResult do
   """
   @spec rule2_revocation() :: String.t()
   def rule2_revocation, do: @rule2_revocation
+
+  @doc """
+  The `unpublished_reason` of a firmware result
+  `Portal.Precompiled.FirmwareBuildPathWithdrawal` withdrew: its beams hold
+  the builder's build tree.
+  """
+  @spec baked_build_path() :: String.t()
+  def baked_build_path, do: @baked_build_path
 
   postgres do
     table("catalog_system_results")
@@ -229,8 +238,9 @@ defmodule Portal.Catalog.SystemResult do
     end
 
     # Which tool set `unpublished_at`: `rule2_revocation/0` for
-    # `Portal.Precompiled.ToolchainRevocation`, nil for every other way, so
-    # each tool lists and undoes only its own. Carried copies keep it.
+    # `Portal.Precompiled.ToolchainRevocation`, `baked_build_path/0` for
+    # `Portal.Precompiled.FirmwareBuildPathWithdrawal`, nil for every other
+    # way, so each tool lists and undoes only its own. Carried copies keep it.
     attribute :unpublished_reason, :string do
       public?(true)
     end

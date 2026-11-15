@@ -129,7 +129,7 @@ defmodule NccWorker.Portability.Context do
       quiet: report.quiet,
       otp_root: install_root(start["otp_root"]),
       elixir_root: install_root(start["elixir_root"]),
-      roots: roots(project_dir, start),
+      roots: build_roots(project_dir, start),
       hex: hex,
       preloaded: preloaded(start["preloaded"]),
       trees: trees(Keyword.get(opts, :trees)),
@@ -693,7 +693,16 @@ defmodule NccWorker.Portability.Context do
         do: parent
   end
 
-  defp roots(project_dir, start) do
+  @doc """
+  The roots R2 searches a build's beams for (`NccWorker.Portability.BuildRoot`):
+  `project_dir` and the `start` map's `"otp_root"`, `"elixir_root"`,
+  `"home"`, `"mix_home"` and `"hex_home"`, each as given (expanded) and as
+  its real path, without one shorter than 4 bytes. A traced compile takes
+  `start` from the trace; a firmware build (`NccWorker.FirmwareBuildRoot`)
+  from the worker's own VM and the target's env.
+  """
+  @spec build_roots(String.t(), map()) :: [String.t()]
+  def build_roots(project_dir, start) do
     [project_dir | Enum.map(~w(otp_root elixir_root home mix_home hex_home), &start[&1])]
     |> Enum.filter(&is_binary/1)
     |> Enum.flat_map(&[Path.expand(&1), realpath(&1)])

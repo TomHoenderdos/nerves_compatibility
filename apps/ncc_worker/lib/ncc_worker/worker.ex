@@ -12,6 +12,7 @@ defmodule NccWorker.Worker do
     DepsGetClassifier,
     DepsLock,
     EgressProbe,
+    FirmwareBuildRoot,
     Footprint,
     HexCache,
     HexHome,
@@ -401,6 +402,11 @@ defmodule NccWorker.Worker do
               # and `deps_lock` (the run's). Absent otherwise; the system's
               # own keys always describe the build with them.
               optional(:published_variants) => [OptionalDepsTargets.variant()],
+              # Only on a passing firmware system that publishes files: R2 on
+              # them (`NccWorker.FirmwareBuildRoot`). "skipped" removed the
+              # system's `footprint.file_manifest` (or dropped the variant
+              # named under `variants`), so nothing of it is published.
+              optional(:build_root) => FirmwareBuildRoot.outcome(),
               # Only on a firmware system that was passing when the per-target
               # pass ran: what it did on this target. `reason` as for the
               # run's `optional_deps`, `nil` when kept.
@@ -1313,14 +1319,36 @@ defmodule NccWorker.Worker do
 
     with {:ok, out} <- OptionalDepsTargets.run(params) do
       log_target_pass(pass.paths, out.systems)
+      systems = gate_build_root(out.systems, pass, envs)
 
-      {:ok, out.systems, Map.put(out.optional_deps, :skipped, skipped),
+      {:ok, systems, Map.put(out.optional_deps, :skipped, skipped),
        %{
          deps_lock: out.deps_lock,
          package_checksum: out.package_checksum,
          declared: DepsLock.declared(pass.project_dir, pass.package)
        }}
     end
+  end
+
+  # R2 on the files each passing target publishes, once the optional pass
+  # has settled which builds those are (`NccWorker.FirmwareBuildRoot`): a
+  # build that bakes the build tree into what it runs is withheld, its
+  # status kept.
+  defp gate_build_root(systems, pass, envs) do
+    targets =
+      for system <- pass.systems, env = envs[system.name], env != nil, into: %{} do
+        {system.name, {system.target, env}}
+      end
+
+    {systems, lines} =
+      FirmwareBuildRoot.gate(systems, %{
+        project_dir: pass.project_dir,
+        package: pass.package,
+        targets: targets
+      })
+
+    Enum.each(lines, &log_host(pass.paths, &1))
+    systems
   end
 
   # Each passing target's toolchain, OTP and rootfs library table
