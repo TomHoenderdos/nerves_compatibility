@@ -22,6 +22,27 @@ defmodule NccWorker.Tracer.FixturesNativeBeamTest do
   @nat_src "defmodule FxNat do\n  def f(x), do: x + 1\nend\n"
   @nat_os_src "defmodule FxNatOs do\n  @os :os.type()\n  def os, do: @os\nend\n"
 
+  # The 1.20 type checker reads a remote module's beam in the checker
+  # process it spawns for the calling module, and the tracer sees that read
+  # only when two things hold, as they do for bumblebee's read of
+  # Tokenizers.Tokenizer.beam:
+  #
+  #   * the natively built dependency's ebin is a cached code path entry, so
+  #     the checker reads the file itself. Mix leaves a dependency's own
+  #     ebin on the path, uncached, until the next dependency's compile
+  #     prunes it: a user compiled straight after it has its beam read by
+  #     the code server instead, a toolchain process the tracer drops.
+  #     fx_a_pad and fx_pad_os, which depend on nothing, compile in between
+  #     (Mix's topological order; the first test pins it), and the user's
+  #     compile puts the ebin back cached;
+  #   * the checker process is a user process: spawned while a module body
+  #     of the package is on the stack, as for a nested module. A lone
+  #     top-level module's checker is spawned by the compiler alone.
+  #
+  # Without either, the read is not seen at all and the verdicts below are
+  # the same, without the `native_beam_reads` observation.
+  @nested &"defmodule #{&1} do\n  defmodule Run do\n    def g, do: #{&2}\n  end\nend\n"
+
   @deps %{
     "fx_nat" => %{
       mix_exs: TracerFixtures.mix_exs("fx_nat", "") <> @tool,
@@ -32,13 +53,13 @@ defmodule NccWorker.Tracer.FixturesNativeBeamTest do
       files: %{"lib/fx_nat_os.ex" => @nat_os_src}
     },
     "fx_uses_nat" =>
-      lib("fx_uses_nat", "defmodule FxUsesNat do\n  def g, do: FxNat.f(1)\nend\n", %{
-        deps: ["fx_nat"]
-      }),
+      lib("fx_uses_nat", @nested.("FxUsesNat", "FxNat.f(1)"), %{deps: ["fx_nat", "fx_a_pad"]}),
     "fx_uses_nat_os" =>
-      lib("fx_uses_nat_os", "defmodule FxUsesNatOs do\n  def g, do: FxNatOs.os()\nend\n", %{
-        deps: ["fx_nat_os"]
+      lib("fx_uses_nat_os", @nested.("FxUsesNatOs", "FxNatOs.os()"), %{
+        deps: ["fx_nat_os", "fx_pad_os"]
       }),
+    "fx_a_pad" => lib("fx_a_pad", "defmodule FxAPad do\n  def p, do: :ok\nend\n", %{}),
+    "fx_pad_os" => lib("fx_pad_os", "defmodule FxPadOs do\n  def p, do: :ok\nend\n", %{}),
     # A compile-time call into the clean dependency.
     "fx_uses_nat_ct" =>
       lib(
@@ -80,6 +101,15 @@ defmodule NccWorker.Tracer.FixturesNativeBeamTest do
   test "the traced compile finished", %{traced: traced} do
     assert {:ok, 0} = traced.result, traced.log
     assert traced.report.problems == [], inspect(traced.report.problems)
+
+    order = for %{"app" => app} <- traced.report.closure["deps"], do: app
+    at = &Enum.find_index(order, fn app -> app == &1 end)
+
+    assert at.("fx_nat") < at.("fx_a_pad") and at.("fx_a_pad") < at.("fx_uses_nat"),
+           inspect(order)
+
+    assert at.("fx_nat_os") < at.("fx_pad_os") and at.("fx_pad_os") < at.("fx_uses_nat_os"),
+           inspect(order)
   end
 
   test "a runtime-only user of a clean native dependency passes", ctx do
