@@ -146,8 +146,12 @@ defmodule NccWorker.Portability do
   # its native-tool grep and counts its target reads only where they can run
   # at compile time (`NccWorker.TargetScan`), and no longer refuses a
   # mention of Nerves in the sources (bumped by two while `makefile_rule2`
+  # exists). 11: the tracer's final sentinel accepts Mix's reload of a
+  # natively built dependency's consolidated protocol, and toolshed 0.5.0's
+  # reviewed `System.version/0` read is let through
+  # (`ElixirVersion.reviewed_apps/2`) (bumped by two while `makefile_rule2`
   # exists).
-  @judge_revision 9
+  @judge_revision 11
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on

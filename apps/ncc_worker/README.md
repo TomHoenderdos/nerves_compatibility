@@ -372,7 +372,10 @@ lists that module's application (public_key into `asn1rt_nif`), and judges a dep
 what its evaluation read and the `mix.rebar.config` Mix wrote from it. Revision 9 lets quic's reviewed `build_nif.sh`
 compile hook through, records a `platform_define` regex the OTP major does not decide as a compile input instead of
 refusing, and for the package itself leaves its own name out of the native-tool grep and counts a target read only
-where it can run at compile time (elixir_make), and drops rule 2's "nerves-specific source" refusal.
+where it can run at compile time (elixir_make), and drops rule 2's "nerves-specific source" refusal. Revision 11 accepts, at the trace's
+final sentinel only, Mix's reload of a natively built dependency's protocol from the project's consolidated dir (same
+md5 as that file), and lets toolshed 0.5.0's reviewed `System.version/0` read through (only the release with the
+reviewed outer checksum whose tree matched its verified tarball).
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
