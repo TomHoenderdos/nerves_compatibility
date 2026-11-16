@@ -94,6 +94,16 @@ rounds(Root, Self, Kill, Left, Interval, Killed) ->
     end.
 
 %% The live processes that started after Self, but for Self's own helper.
+%%
+%% Strictly after: start times are clock ticks (10 ms; under gVisor counted
+%% from the sandbox's boot, which only ever meets other values of the same
+%% /proc here), and timeout(1) forks the VM within the tick it started in,
+%% fakeroot and faked often too. Counting the VM's own tick as after would
+%% kill its launch chain at the first window. Nothing of the package's can
+%% share that tick: the worker's sweep left nothing but itself running just
+%% before it started the compile, a start time is set at fork and kept
+%% across exec, and the VM runs package code only once Mix is up, many
+%% ticks later.
 strays(Root, Self) ->
     Procs = scan(Root),
     case [P || #{pid := Pid} = P <- Procs, Pid =:= Self] of

@@ -105,6 +105,22 @@ defmodule NccWorker.Tracer.SweepTest do
         do: assert(File.dir?(Path.join(root, Integer.to_string(pid))), "#{pid} was killed")
   end
 
+  # /proc's start times are 10 ms ticks: `timeout` forks the VM within the
+  # tick it started in, and fakeroot and faked often start in it too. Only
+  # a later tick is after the VM.
+  test "keeps the launch chain started in the traced VM's own tick", %{tmp_dir: dir} do
+    root =
+      proc_root(dir, [
+        {200, "timeout", 9, @vm_start},
+        {210, "fakeroot", 200, @vm_start},
+        {220, "faked-sysv", 1, @vm_start},
+        {400, "sleep", 1, @vm_start + 1}
+      ])
+
+    assert {:ok, [%{pid: 400}]} = sweep(root)
+    assert_received {:killed, [400]}
+  end
+
   test "a clean container is :ok with nothing killed", %{tmp_dir: dir} do
     assert {:ok, []} = sweep(proc_root(dir, []))
     refute_received {:killed, _}
