@@ -242,16 +242,27 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
       assert second == lock("2.17.0")
     end
 
-    test "keeps the list as it was when the replaced row serves nothing" do
+    # A row that serves nothing hid its earlier builds with its own: a skip
+    # or a refusal in between is a verdict on them too (a release that does
+    # not know the column leaves them on a skipped row), and a revocation
+    # covered them. A later passing build does not bring them back.
+    test "drops the list when the replaced row serves nothing" do
       earlier = [recorded("2.17.0")]
 
       for replaced <- [
-            passing("2.18.0", status: :skipped, file_manifest: nil),
-            passing("2.18.0", revoked_at: ~U[2026-11-01 00:00:00.000000Z]),
-            nil
+            passing("2.18.0", status: :skipped, file_manifest: nil, earlier_builds: earlier),
+            passing("2.18.0",
+              revoked_at: ~U[2026-11-01 00:00:00.000000Z],
+              earlier_builds: earlier
+            )
           ] do
-        assert EarlierBuilds.push(replaced, earlier, passing("2.19.0")) == earlier
+        assert EarlierBuilds.push(replaced, earlier, passing("2.19.0")) == []
       end
+    end
+
+    test "keeps the list as it was when there was no row" do
+      earlier = [recorded("2.17.0")]
+      assert EarlierBuilds.push(nil, earlier, passing("2.19.0")) == earlier
     end
 
     test "keeps nothing beside a rebuild that does not pass" do

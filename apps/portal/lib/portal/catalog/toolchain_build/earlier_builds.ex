@@ -27,7 +27,8 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   as before; a row that does not pass, or is revoked, serves none of them.
   Only a passing rebuild keeps them: one that does not pass is a verdict on
   the package's build (a refusal, a skip), not on one lock, and the ingest
-  drops them with the row's own build.
+  drops them with the row's own build. Nor does a passing rebuild of a row
+  that served nothing (skipped or revoked) bring that row's entries back.
 
   Revocation is by row (`revoked_at`), and `Portal.Precompiled.ToolchainRevocation`
   picks rows by their verdict: `portability_rule` 2, with or without a
@@ -100,16 +101,21 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
 
   @doc """
   The earlier builds after `replaced` (the row as it was, or nil) gave way to
-  `new`, the row as the rebuild wrote it: none unless `new` passes; else
-  `replaced`'s own build first when it served one, then `earlier`, without
+  `new`, the row as the rebuild wrote it: none unless `new` passes, nor when
+  `replaced` served nothing; else `replaced`'s own build first, then
+  `earlier` (with no `replaced`, `earlier` alone), without
   any entry of `new`'s lock or that `new` does not cover (`covered?/2`), one
   per lock, at most `max/0`.
   """
   @spec push(ToolchainBuild.t() | nil, [map()] | nil, ToolchainBuild.t()) :: [map()]
   def push(replaced, earlier, %ToolchainBuild{status: :pass} = new) do
-    case entry(replaced) do
-      nil -> List.wrap(earlier)
-      entry -> [entry | List.wrap(earlier)]
+    case {replaced, entry(replaced)} do
+      {nil, nil} -> List.wrap(earlier)
+      # A row that served nothing hid its earlier builds with its own: a skip
+      # or a refusal (which a release that does not know the column leaves
+      # them beside) or a revocation. A passing rebuild does not revive them.
+      {_replaced, nil} -> []
+      {_replaced, entry} -> [entry | List.wrap(earlier)]
     end
     |> Enum.reject(&(&1["deps_lock"] == new.deps_lock))
     |> Enum.filter(&covered?(&1, new))
