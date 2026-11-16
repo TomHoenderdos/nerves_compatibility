@@ -119,9 +119,6 @@ defmodule NccWorker.FirmwareInputs do
   @env_read ~r/System\s*\.\s*(get_env|fetch_env!?)\s*\(|:os\s*\.\s*getenv\s*\(/
   # `nerves_toolchain_aarch64_nerves_linux_gnu-15.3.1`, `nerves_system_rpi4-2.2.2`.
   @artifact_name ~r/\A[a-z][a-z0-9_]*-[0-9][0-9A-Za-z.+_-]*\z/
-  # `NccWorker.Tracer`'s errors for a compile that left processes running
-  # it could not kill (`trace_stats["tracer_error"]`).
-  @left_running ["group_survived", "cleanup_unverified", "writers_survived"]
 
   @typedoc """
   What `put/3` needs: `targets` maps a system's name to `{target, env}`
@@ -441,7 +438,7 @@ defmodule NccWorker.FirmwareInputs do
   # (`firmware_command/0`), at its own paths (`in_build_layout/4` has laid
   # them out), with Nerves's variables exported once every dependency is
   # loaded (`late_env:`). The compile writes the build's own dirs, so a
-  # process it left running that the tracer could not kill (`@left_running`,
+  # process it left running that the tracer could not kill (`Tracer.left_running/0`,
   # as `NccWorker.HostTrace` reads them) could go on writing them once they
   # are back: that fails the run, as a dir that cannot be put back does.
   defp trace(target_inputs, {name, target, env}, nerves, roots, ctx, dir) do
@@ -466,11 +463,18 @@ defmodule NccWorker.FirmwareInputs do
 
     HexHome.publish(env_value(env, "HEX_HOME"))
 
-    case get_in(verdict, [:observations, "trace_stats", "tracer_error"]) do
-      error when error in @left_running ->
+    error = get_in(verdict, [:observations, "trace_stats", "tracer_error"])
+
+    cond do
+      error == "presweep_survived" ->
+        raise LayoutNotRestored,
+              "processes left running before the trace of #{target} could not be stopped " <>
+                "(#{error})"
+
+      error in Tracer.left_running() ->
         raise LayoutNotRestored, "the trace of #{target} left processes running (#{error})"
 
-      _ ->
+      true ->
         :ok
     end
 

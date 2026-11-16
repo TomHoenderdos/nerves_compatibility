@@ -95,7 +95,7 @@ defmodule NccWorker.Portability do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.{BuildCache, DepsLock, NativeBuild}
+  alias NccWorker.{BuildCache, DepsLock, NativeBuild, ProcessSweep}
 
   alias NccWorker.Portability.{
     BuildRoot,
@@ -286,12 +286,19 @@ defmodule NccWorker.Portability do
       allowed to be mapped, and R2 on the package's ebin; `host_native:`
       without `target:` is off;
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
-      `timeout_ms:`, `extra_env:`, `reap:`, `cmd:` (tests).
+      `timeout_ms:`, `extra_env:`, `reap:`, `cmd:`, `sweep:` (tests).
+
+  Before anything else it sweeps the container (`NccWorker.Tracer.sweep/2`):
+  every process but the worker's own is killed, so nothing an untraced step
+  before it left running can change what the judge checks or the compile
+  reads; `NccWorker.Tracer.run/3` sweeps again once the compile is over.
 
   Never raises. Adds `observations["trace_stats"]["wall_ms"]` and
   `observations["trace_stats"]["judge_compile"]`, which names the traced
   compile in either mode: `"finished"` when it exited 0, `"not_run"` when it
-  never started for want of `releases:` or for an unknown `mode:` (in
+  never started for want of `releases:`, for an unknown `mode:` or because
+  the sweep before it left survivors or could not run in a portal build
+  (`tracer_error` `"presweep_survived"` or `"presweep_unavailable"`) (in
   `:judge` mode the build is the host compile's, untouched; in `:host` mode
   nothing was built), and
   `"not_finished"` otherwise (a crash, a timeout, a non-zero exit, an
@@ -301,7 +308,8 @@ defmodule NccWorker.Portability do
   Also adds `observations["trace_stats"]["transient"]`: `true` when the
   verdict says nothing about the package, because the judge compile did not
   finish (`judge_compile` other than `"finished"`: a timeout, a kill, an
-  exhausted run budget, processes that survived the cleanup, a crash) or its
+  exhausted run budget, processes that survived the cleanup or a sweep, a
+  crash) or its
   report was over the read budget (`"report_over_budget"`,
   `NccWorker.Tracer.Report`). A later run may judge it, so the portal retries
   such a build. `false` otherwise: a pass, a refusal, or a could-not-judge the
@@ -313,7 +321,8 @@ defmodule NccWorker.Portability do
   compile finished); `tracer_error` names why a compile did not finish (`nil`
   when it exited 0): the error `NccWorker.Tracer.run/3` returned (`"timeout"`,
   `"killed"`, `"run_budget_exhausted"`, `"group_survived"`,
-  `"cleanup_unverified"`, `"writers_survived"`, `"tracer_modified"`,
+  `"cleanup_unverified"`, `"writers_survived"`, `"sweep_survived"`,
+  `"sweep_unavailable"`, `"tracer_modified"`,
   `"exited"`, `"cmd_failed"`, ...) or `"exit_<n>"` for a non-zero exit.
   `trace_mode` (only when the compile finished) is the mode the report's start
   line names (`NccWorker.Tracer.Report.mode/1`, `"judge"` without one): a
@@ -411,7 +420,28 @@ defmodule NccWorker.Portability do
     end
   end
 
+  # The container is swept before anything here reads what the compile will
+  # (the trees, the native split, the hook scripts): whatever an untraced
+  # step before it left running dies first, so nothing but the traced
+  # compile can change those files until `Tracer.run/3` sweeps again after
+  # it. A container that could not be shown clean runs no compile.
   defp traced_run(project_dir, package, opts, releases) do
+    case Tracer.sweep(opts, :before) do
+      :ok ->
+        swept_run(project_dir, package, opts, releases)
+
+      {:error, {_kind, detail}} = error ->
+        detail
+        |> sweep_problem()
+        |> not_run()
+        |> put_stat("tracer_error", tracer_error(error))
+    end
+  end
+
+  defp sweep_problem(procs) when is_list(procs), do: ProcessSweep.describe({:survivors, procs})
+  defp sweep_problem(why), do: ProcessSweep.describe({:unavailable, why})
+
+  defp swept_run(project_dir, package, opts, releases) do
     env = Keyword.fetch!(opts, :env)
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
     home = hex_home(opts, env)
@@ -699,7 +729,7 @@ defmodule NccWorker.Portability do
       extra_env: Keyword.get(opts, :extra_env, []),
       run_started_at: Keyword.get(opts, :run_started_at),
       mode: Keyword.get(opts, :mode, :judge)
-    ] ++ Keyword.take(opts, [:reap, :cmd, :wrapper, :argv, :late_env])
+    ] ++ Keyword.take(opts, [:reap, :cmd, :wrapper, :argv, :late_env, :sweep])
   end
 
   defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
@@ -719,6 +749,12 @@ defmodule NccWorker.Portability do
 
   defp verdict(_project_dir, _package, {:ok, status}, _trace_dir, _native, _ctx_opts),
     do: not_judged("traced compile exited #{inspect(status)}")
+
+  defp verdict(_project_dir, _package, {:error, {:sweep_survived, procs}}, _dir, _native, _ctx),
+    do: not_judged("after the traced compile: " <> sweep_problem(procs))
+
+  defp verdict(_project_dir, _package, {:error, {:sweep_unavailable, why}}, _dir, _native, _ctx),
+    do: not_judged("after the traced compile: " <> sweep_problem(why))
 
   defp verdict(_project_dir, _package, {:error, reason}, _trace_dir, _native, _ctx_opts),
     do: not_judged("tracer: " <> inspect(reason, limit: 20))

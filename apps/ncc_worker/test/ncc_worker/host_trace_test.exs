@@ -158,6 +158,49 @@ defmodule NccWorker.HostTraceTest do
       assert File.exists?(build_dir(proj))
     end
 
+    # What `mix deps.get` left running and the sweep before the traced
+    # compile could not kill may still write `_build/host`.
+    test "survivors of the sweep before it fail the host compile, unrun, with no fallback",
+         %{tmp_dir: dir} do
+      proj = project(dir)
+      cmd = fn _caller, _ref, _command, _argv, _log -> flunk("the compile ran") end
+      sweep = fn -> {:error, {:survivors, [%{pid: 40, comm: "sh"}]}} end
+
+      %{host: host, verdict: verdict} =
+        HostTrace.compile(proj, "pkg", paths(dir), opts(cmd: cmd, sweep: sweep))
+
+      assert %{
+               status: :error,
+               error: "processes left running before the traced host compile could not be stopped"
+             } = host
+
+      assert verdict.status == :skip
+      assert stats(verdict)["tracer_error"] == "presweep_survived"
+      assert stats(verdict)["host_build"] == "none"
+      assert File.exists?(build_dir(proj))
+    end
+
+    test "survivors of the sweep after it fail the host compile, with no fallback",
+         %{tmp_dir: dir} do
+      proj = project(dir)
+      calls = :counters.new(1, [])
+
+      sweep = fn ->
+        :counters.add(calls, 1, 1)
+
+        if :counters.get(calls, 1) == 1,
+          do: :ok,
+          else: {:error, {:survivors, [%{pid: 40, comm: "sh"}]}}
+      end
+
+      %{host: host, verdict: verdict} =
+        HostTrace.compile(proj, "pkg", paths(dir), opts(cmd: finishing("host"), sweep: sweep))
+
+      assert %{status: :error, error: "the traced host compile left processes running"} = host
+      assert stats(verdict)["tracer_error"] == "sweep_survived"
+      assert File.exists?(build_dir(proj))
+    end
+
     test "writers hidden behind a timeout fail the host compile, with no fallback",
          %{tmp_dir: dir} do
       proj = project(dir)

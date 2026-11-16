@@ -17,6 +17,15 @@ defmodule NccWorker.Tracer do
   default, `:judge`, recompiles the closure only. Any other mode raises
   `ArgumentError` before anything runs.
 
+  The container is swept once the compile is over
+  (`NccWorker.ProcessSweep.clear/1`, `sweep/2`), as
+  `NccWorker.Portability.run/3` sweeps it before the judge reads anything:
+  a process alive while a window is open could rewrite what the compile
+  reads and put it back before any check looks, and one alive after it
+  could rewrite what was judged before it is archived. A sweep that leaves
+  survivors, or cannot run in a portal build, fails the trace
+  (`left_running/0`).
+
   `timeout(1)` bounds the compile and kills its whole process group, so no
   orphaned compile goes on rewriting `_build` after this returns. Without
   `timeout` on the PATH nothing is run. Exit 124 (timed out) is
@@ -42,7 +51,7 @@ defmodule NccWorker.Tracer do
   file is unreadable fails.
   """
 
-  alias NccWorker.{OptionalDepsTargets, OsKill}
+  alias NccWorker.{OptionalDepsTargets, OsKill, ProcessSweep}
 
   @modules [
     :ncc_tracer,
@@ -70,6 +79,11 @@ defmodule NccWorker.Tracer do
   # How long leftover processes get to die once signalled.
   @reap_wait_ms 5_000
 
+  # `trace_stats["tracer_error"]` of a trace around which processes were
+  # left running that could not be killed: one may still write the build.
+  @left_running ~w(group_survived cleanup_unverified writers_survived presweep_survived
+                   sweep_survived)
+
   @spec run(String.t(), [String.t()], keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()}
   def run(project_dir, packages, opts) do
@@ -92,12 +106,58 @@ defmodule NccWorker.Tracer do
           wrapper(opts) ++ [elixir, "-pa", ebin, "-S", "mix", "ncc.trace_compile"]
 
       result = exec(timeout, args, project_dir, env, timeout_sec, opts)
+      swept = sweep(opts, :after)
       reaped = reap(env, opts)
       checked = unchanged(ebin, installed)
       :ok = unseal(ebin)
-      Enum.find([result, reaped, checked], result, &match?({:error, _}, &1))
+      Enum.find([swept, result, reaped, checked], result, &match?({:error, _}, &1))
     end
   end
+
+  @doc """
+  The trace errors (`trace_stats["tracer_error"]`) that mean processes were
+  left running around the traced compile that could not be killed, and may
+  still write what it built: `NccWorker.HostTrace` and
+  `NccWorker.FirmwareInputs` neither remove nor publish anything then.
+  """
+  @spec left_running() :: [String.t()]
+  def left_running, do: @left_running
+
+  @doc """
+  Sweeps the container (`NccWorker.ProcessSweep.clear/1`) `:before` or
+  `:after` a traced compile: `:ok`, or `{:error, {:presweep_survived |
+  :sweep_survived, procs}}` / `{:error, {:presweep_unavailable |
+  :sweep_unavailable, why}}`. `sweep:` (tests) replaces `clear/0`; one that
+  raises could not show the container clean either.
+  """
+  @spec sweep(keyword(), :before | :after) ::
+          :ok | {:error, {atom(), [ProcessSweep.proc()] | String.t()}}
+  def sweep(opts, at) when at in [:before, :after] do
+    clear = Keyword.get(opts, :sweep, &ProcessSweep.clear/0)
+
+    case guarded_sweep(clear) do
+      :ok -> :ok
+      {:error, {:survivors, procs}} -> {:error, {sweep_error(at, :survived), procs}}
+      {:error, {:unavailable, why}} -> {:error, {sweep_error(at, :unavailable), why}}
+    end
+  end
+
+  defp guarded_sweep(clear) do
+    case clear.() do
+      :ok -> :ok
+      {:error, {kind, _}} = error when kind in [:survivors, :unavailable] -> error
+      other -> {:error, {:unavailable, "unexpected sweep result #{inspect(other, limit: 5)}"}}
+    end
+  rescue
+    e -> {:error, {:unavailable, "sweep failed: " <> Exception.message(e)}}
+  catch
+    kind, reason -> {:error, {:unavailable, "sweep failed: #{kind} #{inspect(reason, limit: 5)}"}}
+  end
+
+  defp sweep_error(:before, :survived), do: :presweep_survived
+  defp sweep_error(:before, :unavailable), do: :presweep_unavailable
+  defp sweep_error(:after, :survived), do: :sweep_survived
+  defp sweep_error(:after, :unavailable), do: :sweep_unavailable
 
   @doc """
   How much of a run, in seconds from its start, may pass before no compile
@@ -381,8 +441,8 @@ defmodule NccWorker.Tracer do
   # backgrounded job) is killed here, after a normal exit as after a
   # timeout. That reaches only what forked without a port: a port program,
   # or a process that started a session of its own (setsid), has left the
-  # group; reap/2 kills those by build path, and the worker's
-  # `NccWorker.ProcessSweep` stops anything left before the run ends.
+  # group; reap/2 kills those by build path, and `sweep/2` kills whatever
+  # else is left (`NccWorker.ProcessSweep`).
   #
   # The signal does not need kill(1) (`NccWorker.OsKill`). What fails the run
   # is a member that survives, as /proc shows it; without /proc a group that

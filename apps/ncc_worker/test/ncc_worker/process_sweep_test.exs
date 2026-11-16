@@ -17,20 +17,28 @@ defmodule NccWorker.ProcessSweepTest do
     root
   end
 
+  # `threads:` are `{tid, state}` under `<pid>/task/`, as the kernel lists
+  # every thread of a process there, its leader included.
   defp put_proc(root, {pid, comm, ppid, opts}) do
     state = Keyword.get(opts, :state, "S")
     start = Keyword.get(opts, :start, 100)
     dir = Path.join(root, Integer.to_string(pid))
     File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "stat"), stat_line(pid, comm, state, ppid, start))
 
-    File.write!(
-      Path.join(dir, "stat"),
-      "#{pid} (#{comm}) #{state} #{ppid} #{pid} #{pid} 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 " <>
-        "1 0 #{start} 1000000 100 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n"
-    )
+    for {tid, thread_state} <- Keyword.get(opts, :threads, []) do
+      task = Path.join([dir, "task", Integer.to_string(tid)])
+      File.mkdir_p!(task)
+      File.write!(Path.join(task, "stat"), stat_line(tid, comm, thread_state, ppid, start))
+    end
   end
 
   defp put_proc(root, {pid, comm, ppid}), do: put_proc(root, {pid, comm, ppid, []})
+
+  defp stat_line(pid, comm, state, ppid, start) do
+    "#{pid} (#{comm}) #{state} #{ppid} #{pid} #{pid} 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 " <>
+      "1 0 #{start} 1000000 100 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0\n"
+  end
 
   # A kill that ends the process, as SIGKILL would.
   defp killer(root) do
@@ -123,6 +131,41 @@ defmodule NccWorker.ProcessSweepTest do
           {@beam, "beam.smp", 0},
           {9, "erl_child_setup", @beam},
           {60, "defunct", @beam, state: "Z"}
+        ])
+
+      assert :ok = sweep(root)
+      refute_received {:killed, _}
+    end
+
+    # A process whose first thread exits on its own (`pthread_exit/1`, the
+    # `exit` syscall rather than `exit_group`) shows as a zombie while its
+    # other threads go on running code. Killing its pid kills them all.
+    test "kills a zombie whose other threads still run" do
+      root =
+        proc_root([
+          {@beam, "beam.smp", 0},
+          {9, "erl_child_setup", @beam},
+          {60, "evil", @beam, state: "Z", threads: [{60, "Z"}, {61, "R"}]}
+        ])
+
+      test = self()
+
+      kill = fn pids ->
+        send(test, {:killed, pids})
+        # The threads die with the group; the leader stays a zombie.
+        File.rm_rf!(Path.join([root, "60", "task", "61"]))
+      end
+
+      assert :ok = sweep(root, kill: kill)
+      assert_received {:killed, [60]}
+    end
+
+    test "leaves a zombie alone whose every thread is gone" do
+      root =
+        proc_root([
+          {@beam, "beam.smp", 0},
+          {9, "erl_child_setup", @beam},
+          {60, "defunct", @beam, state: "Z", threads: [{60, "Z"}, {61, "X"}]}
         ])
 
       assert :ok = sweep(root)
@@ -344,6 +387,61 @@ defmodule NccWorker.ProcessSweepTest do
         )
 
       assert result.process_sweep == "tainted"
+    end
+  end
+
+  # `clear/1` is the sweep around each traced compile: whatever an untraced
+  # step left running (a `deps.get` hook's daemon, a Makefile's `&`) must be
+  # gone before a window opens, and a window may not open on a container
+  # that could not be shown clean.
+  describe "clear/1" do
+    test "kills every stray and is :ok once they are gone" do
+      root = proc_root([{@beam, "beam.smp", 0}, {9, "erl_child_setup", @beam}, {40, "sh", 9}])
+
+      assert :ok =
+               ProcessSweep.clear(
+                 environment: :ok,
+                 portal_build?: true,
+                 proc_root: root,
+                 self_pid: @beam,
+                 kill: killer(root),
+                 interval_ms: 0
+               )
+
+      assert_received {:killed, [40]}
+    end
+
+    test "names what survived" do
+      root = proc_root([{@beam, "beam.smp", 0}, {9, "erl_child_setup", @beam}, {40, "sh", 9}])
+
+      assert {:error, {:survivors, [%{pid: 40, comm: "sh"}]}} =
+               ProcessSweep.clear(
+                 environment: :ok,
+                 portal_build?: false,
+                 proc_root: root,
+                 self_pid: @beam,
+                 kill: fn _pids -> :ok end,
+                 rounds: 2,
+                 interval_ms: 0
+               )
+    end
+
+    test "a portal build whose sweep cannot run is an error" do
+      assert {:error, {:unavailable, "not Linux"}} =
+               ProcessSweep.clear(environment: {:unavailable, "not Linux"}, portal_build?: true)
+    end
+
+    test "a manual run whose sweep cannot run goes on, as its result's sweep is skipped" do
+      assert :ok =
+               ProcessSweep.clear(environment: {:unavailable, "not Linux"}, portal_build?: false)
+    end
+
+    test "says why in one line" do
+      assert ProcessSweep.describe({:unavailable, "not Linux"}) ==
+               "process sweep could not run: not Linux"
+
+      assert ProcessSweep.describe({:survivors, [%{pid: 40, comm: "sh"}]}) ==
+               "processes survived the sweep and could not be stopped: 40 (sh)"
     end
   end
 

@@ -16,7 +16,10 @@ defmodule NccWorker.ProcessSweep do
 
   Zombies are already dead and run no code: they are neither killed nor
   counted. They do linger, since the BEAM, which inherits orphans as the
-  container's pid 1, does not reap them.
+  container's pid 1, does not reap them. A process whose first thread
+  exited on its own (`pthread_exit/1`) also shows as a zombie while its
+  other threads run on: one with a live thread under `/proc/<pid>/task` is
+  no zombie here, and killing its pid kills those threads.
 
   `erl_child_setup` is recognised as a direct child of the BEAM whose `comm`
   is `erl_child_setup`. A process can rename itself and an orphan is
@@ -42,6 +45,15 @@ defmodule NccWorker.ProcessSweep do
   as the result's top-level `process_sweep`: `"ok"`, `"skipped"` or
   `"tainted"`. That field is the container's own account, for monitoring: the
   portal does not trust it, only the verdicts it reads.
+
+  The same sweep also runs around every traced compile (`clear/1`,
+  `NccWorker.Portability` before it, `NccWorker.Tracer` after it): an
+  untraced step before one (`mix deps.get`, a build, Nerves's env) runs
+  package code that can leave a process behind, and one alive while a
+  window is open could rewrite a dependency's source for the compile to
+  read and put the tarball's bytes back before the window closes, which no
+  check after it would see. Every program the worker launched has returned
+  by then, as at the end of the run.
   """
 
   @allowed_helper "erl_child_setup"
@@ -101,6 +113,40 @@ defmodule NccWorker.ProcessSweep do
     Map.put(result, :process_sweep, status)
   end
 
+  @doc """
+  Sweeps the container between the steps of a run (see the moduledoc), with
+  `enforce_and_report/2`'s rule for where the sweep cannot run.
+
+  `:ok` when nothing but the worker runs any longer, or when the sweep
+  cannot run and this is no portal build (`portal_build?/1`), whose result's
+  sweep is `"skipped"` too. Otherwise `{:error, {:survivors, procs}}`, what
+  still ran after the last round, or `{:error, {:unavailable, why}}`, a
+  portal build whose sweep cannot run. Either error means the container
+  could not be shown clean, so nothing that needed it may be judged.
+
+  Options are `enforce_and_report/2`'s.
+  """
+  @spec clear([option()]) :: :ok | {:error, {:survivors, [proc()]} | {:unavailable, String.t()}}
+  def clear(opts \\ []) do
+    case run(opts) do
+      :ok ->
+        :ok
+
+      {:unavailable, _why} = unavailable ->
+        if Keyword.get_lazy(opts, :portal_build?, fn -> portal_build?() end),
+          do: {:error, unavailable},
+          else: :ok
+
+      {:error, {:survivors, _}} = error ->
+        error
+    end
+  end
+
+  @doc "`clear/1`'s error in one line, as the result's reasons give it."
+  @spec describe({:survivors, [proc()]} | {:unavailable, String.t()}) :: String.t()
+  def describe({:unavailable, why}), do: "process sweep could not run: #{why}"
+  def describe({:survivors, survivors}), do: survivors_reason(survivors)
+
   @spec outcome(map(), [option()]) :: {status(), map()}
   defp outcome(result, opts) do
     case run(opts) do
@@ -109,7 +155,7 @@ defmodule NccWorker.ProcessSweep do
 
       {:unavailable, why} ->
         if Keyword.get_lazy(opts, :portal_build?, fn -> portal_build?() end) do
-          reason = "process sweep could not run: #{why}"
+          reason = describe({:unavailable, why})
           IO.puts(:stderr, "Process sweep: #{reason}")
           {"tainted", taint(result, reason)}
         else
@@ -194,7 +240,8 @@ defmodule NccWorker.ProcessSweep do
 
   @doc """
   The live processes under `proc_root` other than the BEAM `self_pid` and its
-  `erl_child_setup`. Zombies are left out.
+  `erl_child_setup`. Zombies are left out, unless one of their threads is
+  live.
   """
   @spec strays(Path.t(), pos_integer()) :: [proc()]
   def strays(proc_root, self_pid) do
@@ -202,8 +249,32 @@ defmodule NccWorker.ProcessSweep do
     helper = helper_pid(procs, self_pid)
 
     Enum.reject(procs, fn proc ->
-      proc.pid == self_pid or proc.pid == helper or proc.state in ["Z", "X", "x"]
+      proc.pid == self_pid or proc.pid == helper or not live?(proc_root, proc)
     end)
+  end
+
+  @dead ["Z", "X", "x"]
+
+  defp live?(proc_root, %{state: state, pid: pid}) when state in @dead,
+    do: live_thread?(proc_root, pid)
+
+  defp live?(_proc_root, _proc), do: true
+
+  # A zombie leader's threads, each under `task/<tid>/stat`. One that cannot
+  # be listed has gone, threads and all.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp live_thread?(proc_root, pid) do
+    task_root = Path.join([proc_root, Integer.to_string(pid), "task"])
+
+    case File.ls(task_root) do
+      {:ok, tids} ->
+        task_root
+        |> scan_entries(tids)
+        |> Enum.any?(&(&1.state not in @dead))
+
+      {:error, _} ->
+        false
+    end
   end
 
   defp helper_pid(procs, self_pid) do
@@ -220,14 +291,15 @@ defmodule NccWorker.ProcessSweep do
   @spec scan(Path.t()) :: [proc()]
   def scan(proc_root) do
     case File.ls(proc_root) do
-      {:ok, entries} ->
-        entries
-        |> Enum.filter(&(&1 =~ ~r/^\d+$/))
-        |> Enum.flat_map(&read_stat(proc_root, &1))
-
-      {:error, _} ->
-        []
+      {:ok, entries} -> scan_entries(proc_root, entries)
+      {:error, _} -> []
     end
+  end
+
+  defp scan_entries(root, entries) do
+    entries
+    |> Enum.filter(&(&1 =~ ~r/^\d+$/))
+    |> Enum.flat_map(&read_stat(root, &1))
   end
 
   # A process that exits between the listing and the read has no stat left,

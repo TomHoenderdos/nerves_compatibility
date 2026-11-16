@@ -261,7 +261,8 @@ Before the compiled files are archived and `result.json` is written, `NccWorker.
 the container except the worker's own BEAM and that BEAM's `erl_child_setup` helper: every program the worker
 launched has returned by then, so nothing else belongs. It scans `/proc`, sends `SIGKILL` to each other pid by number
 (never to a process group or `-1`), and scans again, for up to 20 rounds. Zombies are already dead and are neither
-killed nor counted. `erl_child_setup` is a direct child of the BEAM named `erl_child_setup`; of several such, only
+killed nor counted, except one with a live thread under `/proc/<pid>/task` (a process whose first thread exited on
+its own runs on as a "zombie"), which is killed like any other. `erl_child_setup` is a direct child of the BEAM named `erl_child_setup`; of several such, only
 the one that started first is kept, since the real helper starts with the BEAM, before any package code runs.
 
 The worker resolves names with Erlang's own resolver (`/etc/hosts`, then DNS as `/etc/resolv.conf` sets it), never
@@ -281,6 +282,23 @@ rather than a verdict on the package. A run without `NCC_INPUT`,
 such as the escript on a developer machine, is not swept and says so on stderr (`Process sweep skipped: …`). The proc
 root, the kill function, the environment check and the portal-build check are options of
 `NccWorker.ProcessSweep.enforce_and_report/2`, for its tests.
+
+The same sweep (`NccWorker.ProcessSweep.clear/1`) runs around every traced compile: a toolchain or host-native
+run's host compile, a full run's judge compile, a firmware target's input trace and `PrivRepro`'s second build.
+`NccWorker.Portability.run/3` sweeps before it reads anything for the judge (the trees, the native split, the hook
+scripts) and `NccWorker.Tracer.run/3` again once the compile is over. The untraced steps before a trace (`mix
+deps.get`, a host or firmware build, `mix ncc.nerves_env`) run package code, and a process one of them leaves behind
+could otherwise rewrite a dependency's source for the traced compile to read and put the tarball's bytes back before
+the window closes, which neither the tree check nor the window-close digest would see. A sweep that leaves survivors,
+or cannot run in a portal build, is never judged: before the compile it runs nothing (`judge_compile: "not_run"`,
+`tracer_error` `"presweep_survived"` or `"presweep_unavailable"`), after it the trace fails (`"sweep_survived"`,
+`"sweep_unavailable"`), and the verdict is the transient "portability could not be judged". Survivors are processes
+left running (`NccWorker.Tracer.left_running/0`): a toolchain or host-native run's host compile is then a worker
+error and a firmware target's trace fails the run, as when the tracer's own cleanup leaves one.
+
+Dependency sources are not made read-only after `mix deps.get`: the compile runs as the same uid as anything that
+would rewrite them, which could make them writable again, and Mix itself writes into a dependency's source dir (leex
+and yecc output in `src/`, rebar3's `_build`, a native build's objects).
 
 `result.json` records how the sweep went as a top-level `"process_sweep"`: `"ok"` (swept, nothing else left),
 `"skipped"` (could not run, and not a portal build) or `"tainted"` (survivors, or a portal build where it could not

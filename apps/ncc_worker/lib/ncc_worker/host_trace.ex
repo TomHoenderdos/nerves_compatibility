@@ -38,17 +38,19 @@ defmodule NccWorker.HostTrace do
 
   The host compile fails without a rebuild when there is no time left in
   the run. It is a worker error (`status: :error`) when processes are left
-  running that cannot be killed (`"group_survived"`, `"cleanup_unverified"`,
-  `"writers_survived"`, or writers the reap above finds), or when
-  `_build/host` cannot be removed: one of those processes may still be
-  writing `_build`, so nothing is removed, rebuilt or judged.
+  running that cannot be killed (`NccWorker.Tracer.left_running/0`: what
+  the sweep before the traced compile could not kill, which then never
+  runs, what the tracer's cleanup or the sweep after it could not, or
+  writers the reap above finds), or when `_build/host` cannot be removed:
+  one of those processes may still be writing `_build`, so nothing is
+  removed, rebuilt or judged.
   """
 
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.{HexHome, LogTail, OptionalDepsTargets, Portability, Tracer, Worker}
 
-  @survived ["group_survived", "cleanup_unverified", "writers_survived"]
   @left_running "the traced host compile left processes running"
+  @left_before "processes left running before the traced host compile could not be stopped"
   @no_time_left "no time left for the host compile"
   @untraced_timeout "the untraced host compile timed out"
 
@@ -64,7 +66,7 @@ defmodule NccWorker.HostTrace do
     * `log_tail_bytes:`;
     * `target:` and `host_native:`, a host-native run's verdict
       (`NccWorker.Portability.run/3`);
-    * `timeout_ms:`, `cmd:`, `reap:`, `portability:`, `fallback:`,
+    * `timeout_ms:`, `cmd:`, `reap:`, `sweep:`, `portability:`, `fallback:`,
       `deps_get:`, `rm_rf:` (tests).
   """
   @spec compile(String.t(), String.t(), map(), keyword()) ::
@@ -121,6 +123,7 @@ defmodule NccWorker.HostTrace do
             :timeout_ms,
             :cmd,
             :reap,
+            :sweep,
             :makefile_rule2,
             :trees,
             :target,
@@ -139,7 +142,10 @@ defmodule NccWorker.HostTrace do
       stats["judge_compile"] == "finished" and stats["trace_mode"] == "host" ->
         {:pass, "traced"}
 
-      stats["tracer_error"] in @survived ->
+      stats["tracer_error"] == "presweep_survived" ->
+        {{:error, @left_before}, "none"}
+
+      stats["tracer_error"] in Tracer.left_running() ->
         {{:error, @left_running}, "none"}
 
       true ->

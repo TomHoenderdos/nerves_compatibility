@@ -546,6 +546,48 @@ defmodule NccWorker.FirmwareInputsTest do
       end
     end
 
+    # What `mix firmware` or Nerves's env left running is swept before the
+    # trace, and the container again after it (`NccWorker.Tracer.sweep/2`):
+    # a survivor of either may write the target's dirs once they are back.
+    test "processes the sweeps around the trace could not kill stop the run", c do
+      toolchain = Path.join([c.tmp_dir, "artifacts", "nerves_toolchain_fx-1.0.0"])
+      File.mkdir_p!(toolchain)
+      nerves_env = fn _proj, _env, _dir -> {:ok, [{"NERVES_TOOLCHAIN", toolchain}]} end
+      ctx = %{ctx(c.proj, []) | work_dir: c.tmp_dir, log_dir: c.tmp_dir}
+      survivors = {:error, {:survivors, [%{pid: 40, comm: "sh"}]}}
+
+      for {answers, message} <- [
+            {[survivors], ~r/processes left running before the trace of rpi4/},
+            {[:ok, survivors], ~r/the trace of rpi4 left processes running \(sweep_survived\)/}
+          ] do
+        calls = :counters.new(1, [])
+
+        sweep = fn ->
+          :counters.add(calls, 1, 1)
+          Enum.at(answers, :counters.get(calls, 1) - 1, List.last(answers))
+        end
+
+        target_inputs = fn proj, package, opts ->
+          NccWorker.Portability.target_inputs(
+            proj,
+            package,
+            opts ++ [cmd: fn _caller, _ref, _timeout, _argv, _log -> {:ok, 0} end, sweep: sweep]
+          )
+        end
+
+        assert_raise FirmwareInputs.LayoutNotRestored, message, fn ->
+          FirmwareInputs.record("rpi4", {"rpi4", c.env}, ctx, pass(),
+            nerves_env: nerves_env,
+            target_inputs: target_inputs
+          )
+        end
+
+        assert which(c.proj, "deps/pkg") == {:ok, "run"}
+        assert which(c.proj, "deps_rpi4/pkg") == {:ok, "target"}
+        assert which(c.proj, "_build/rpi4") == {:ok, "build"}
+      end
+    end
+
     test "a dir that cannot be put back stops the run", c do
       {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
 
