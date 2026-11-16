@@ -173,4 +173,90 @@ defmodule Compatibility.CompileInputsTest do
     assert CompileInputs.validate([%{@define | "regex" => String.duplicate("a", 1024)}]) ==
              {:ok, [%{@define | "regex" => String.duplicate("a", 1024)}]}
   end
+
+  @nerves %{
+    "kind" => "env",
+    "name" => "CROSSCOMPILE",
+    "set_by" => "nerves",
+    "value" => [%{"root" => "NERVES_TOOLCHAIN"}, "/bin/aarch64-nerves-linux-gnu"]
+  }
+
+  test "a nerves env item is accepted in its exact shape and needs a check" do
+    system = %{@nerves | "name" => "CFLAGS", "value" => ["-I", %{"root" => "NERVES_SYSTEM"}]}
+
+    both = %{
+      @nerves
+      | "value" => [%{"root" => "NERVES_SYSTEM"}, ":", %{"root" => "NERVES_TOOLCHAIN"}]
+    }
+
+    assert CompileInputs.validate([@nerves, system, both]) == {:ok, [@nerves, system, both]}
+    assert CompileInputs.needs_check?([@nerves])
+  end
+
+  test "a nerves env item that is not one canonical split is malformed" do
+    for bad <- [
+          Map.put(@nerves, "extra", 1),
+          Map.delete(@nerves, "value"),
+          %{@nerves | "value" => []},
+          %{@nerves | "value" => ["/bin/gcc"]},
+          %{@nerves | "value" => "/opt/toolchain/bin/gcc"},
+          %{@nerves | "value" => [%{"root" => "HOME"}, "/bin"]},
+          %{@nerves | "value" => [%{"root" => "NERVES_TOOLCHAIN", "x" => 1}]},
+          %{@nerves | "value" => [%{"root" => "NERVES_TOOLCHAIN"}, ""]},
+          %{@nerves | "value" => [%{"root" => "NERVES_TOOLCHAIN"}, "/bin", "/gcc"]},
+          %{@nerves | "value" => [%{"root" => "NERVES_TOOLCHAIN"}, <<0xFF>>]},
+          %{@nerves | "value" => [%{"root" => "NERVES_TOOLCHAIN"}, "a" <> <<0>>]},
+          %{@nerves | "value" => [%{"root" => "NERVES_TOOLCHAIN"}, 7]},
+          %{@nerves | "value" => [%{"root" => "NERVES_TOOLCHAIN"}, String.duplicate("a", 4097)]},
+          %{@nerves | "name" => "A=B"}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad)
+    end
+  end
+
+  @target %{"kind" => "mix_target", "value" => "rpi4"}
+
+  test "a mix_target item is accepted in its exact shape and needs a check" do
+    assert CompileInputs.validate([@target]) == {:ok, [@target]}
+    assert CompileInputs.needs_check?([@target])
+  end
+
+  test "a malformed mix_target item is malformed" do
+    for bad <- [
+          Map.put(@target, "extra", 1),
+          Map.delete(@target, "value"),
+          %{@target | "value" => ""},
+          %{@target | "value" => :rpi4},
+          %{@target | "value" => "a=b"},
+          %{@target | "value" => String.duplicate("a", 257)}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad)
+    end
+  end
+
+  test "split/2 cuts a value at every root, leftmost and longest first" do
+    roots = [
+      {"NERVES_TOOLCHAIN", "/n/toolchain-1"},
+      {"NERVES_SYSTEM", "/n/system"}
+    ]
+
+    assert CompileInputs.split("/n/toolchain-1/bin/aarch64-nerves-linux-gnu", roots) ==
+             [%{"root" => "NERVES_TOOLCHAIN"}, "/bin/aarch64-nerves-linux-gnu"]
+
+    assert CompileInputs.split("-I/n/system/usr -L/n/system/lib", roots) ==
+             ["-I", %{"root" => "NERVES_SYSTEM"}, "/usr -L", %{"root" => "NERVES_SYSTEM"}, "/lib"]
+
+    assert CompileInputs.split("/n/system/n/toolchain-1", roots) ==
+             [%{"root" => "NERVES_SYSTEM"}, %{"root" => "NERVES_TOOLCHAIN"}]
+
+    assert CompileInputs.split("/usr/bin", roots) == ["/usr/bin"]
+    assert CompileInputs.split("", roots) == []
+
+    # The longer of two roots that start at the same place wins.
+    nested = [{"NERVES_SYSTEM", "/n"}, {"NERVES_TOOLCHAIN", "/n/t"}]
+    assert CompileInputs.split("/n/t/x", nested) == [%{"root" => "NERVES_TOOLCHAIN"}, "/x"]
+
+    # An empty root cuts nothing.
+    assert CompileInputs.split("/usr/bin", [{"NERVES_SYSTEM", ""}]) == ["/usr/bin"]
+  end
 end

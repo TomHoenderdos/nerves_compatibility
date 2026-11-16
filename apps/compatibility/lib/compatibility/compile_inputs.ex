@@ -37,6 +37,19 @@ defmodule Compatibility.CompileInputs do
       elements. Without `name`, every read was one whose caller uses the
       family alone (Elixir's `File.rm_rf/1`), and a client compares the
       family. Judge revision 17 and later.
+    * `%{"kind" => "env", "name", "value" => segments, "set_by" =>
+      "nerves"}`: a firmware build's read of a variable whose value holds
+      where the Nerves toolchain or system lives on the builder
+      (`CROSSCOMPILE`): `segments` is the value cut at every
+      `NERVES_TOOLCHAIN` and `NERVES_SYSTEM` path (`split/2`), each cut a
+      `%{"root" => name}` and the rest literal strings. A client cuts its
+      own value of the variable at its own two paths the same way and
+      compares the lists: equal means the values differ only in where the
+      Nerves artifacts sit, which the firmware build-root rule keeps out of
+      the published beams. Judge revision 19 and later.
+    * `%{"kind" => "mix_target", "value"}`: a firmware build's compile read
+      `Mix.target/0`; `value` is the target it was built for. A client
+      compares its own. Judge revision 19 and later.
 
   An env item's `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
   of `:error` or `{:ok, binary}`) or `"unrecordable"`, which matches nothing.
@@ -51,6 +64,9 @@ defmodule Compatibility.CompileInputs do
   @os_families ["unix", "win32"]
   # An `:os.type/0` name as it renders: `linux`, `darwin`, `freebsd`, `nt`.
   @os_name ~r/\A[a-z][a-z0-9_]{0,63}\z/
+  @nerves_roots ["NERVES_TOOLCHAIN", "NERVES_SYSTEM"]
+  @max_segment_bytes 4096
+  @max_segments 64
   # The share of `@max_items` the worker gives `config_order` items, next to
   # 128 `env` items and 32 of every other kind.
   @max_config_order_items 96
@@ -135,6 +151,12 @@ defmodule Compatibility.CompileInputs do
   defp item?(%{"kind" => "os_type", "family" => family} = item) when family in @os_families,
     do: map_size(item) == 2
 
+  defp item?(%{"kind" => "env", "name" => name, "value" => value, "set_by" => "nerves"} = item),
+    do: map_size(item) == 4 and name?(name) and segments?(value)
+
+  defp item?(%{"kind" => "mix_target", "value" => value} = item),
+    do: map_size(item) == 2 and name?(value)
+
   defp item?(%{"kind" => "platform_define", "regex" => regex, "matched" => matched} = item)
        when is_boolean(matched),
        do: map_size(item) == 3 and regex?(regex)
@@ -158,6 +180,64 @@ defmodule Compatibility.CompileInputs do
   end
 
   def regex?(_regex), do: false
+
+  @doc "The names whose paths a `set_by: \"nerves\"` item's value is cut at."
+  @spec nerves_roots() :: [String.t()]
+  def nerves_roots, do: @nerves_roots
+
+  @doc """
+  `value` cut at every occurrence of a root's path, leftmost first and, of
+  two that start at the same byte, the longer: each cut is
+  `%{"root" => name}`, the text between cuts a literal string, and no
+  literal is empty. `roots` is `[{name, path}]`; an empty path cuts
+  nothing. The worker and every client cut the same way, so two values
+  that differ only in the roots' paths cut to the same list.
+  """
+  @spec split(String.t(), [{String.t(), String.t()}]) :: [String.t() | map()]
+  def split(value, roots) when is_binary(value) do
+    roots =
+      roots
+      |> Enum.filter(fn {_name, path} -> is_binary(path) and path != "" end)
+      |> Enum.sort_by(fn {_name, path} -> -byte_size(path) end)
+
+    do_split(value, roots, "", [])
+  end
+
+  defp do_split(<<>>, _roots, literal, acc), do: Enum.reverse(push_literal(acc, literal))
+
+  defp do_split(<<byte, rest::binary>> = value, roots, literal, acc) do
+    case Enum.find(roots, fn {_name, path} -> String.starts_with?(value, path) end) do
+      {name, path} ->
+        rest = binary_part(value, byte_size(path), byte_size(value) - byte_size(path))
+        do_split(rest, roots, "", [%{"root" => name} | push_literal(acc, literal)])
+
+      nil ->
+        do_split(rest, roots, literal <> <<byte>>, acc)
+    end
+  end
+
+  defp push_literal(acc, ""), do: acc
+  defp push_literal(acc, literal), do: [literal | acc]
+
+  # One canonical split (`split/2`): at least one root, every literal a
+  # non-empty, NUL-free UTF-8 string, no two literals next to each other.
+  defp segments?(segments) when is_list(segments) and length(segments) in 1..@max_segments do
+    Enum.all?(segments, &segment?/1) and Enum.any?(segments, &is_map/1) and
+      not Enum.any?(Enum.chunk_every(segments, 2, 1, :discard), fn [a, b] ->
+        is_binary(a) and is_binary(b)
+      end)
+  end
+
+  defp segments?(_segments), do: false
+
+  defp segment?(%{"root" => root} = segment), do: map_size(segment) == 1 and root in @nerves_roots
+
+  defp segment?(literal) when is_binary(literal) do
+    byte_size(literal) in 1..@max_segment_bytes and String.valid?(literal) and
+      not String.contains?(literal, <<0>>)
+  end
+
+  defp segment?(_segment), do: false
 
   @doc "Whether `name` may stand as an `env` item's name."
   @spec name?(term()) :: boolean()
