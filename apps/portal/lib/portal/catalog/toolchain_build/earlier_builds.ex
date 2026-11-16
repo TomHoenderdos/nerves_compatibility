@@ -31,10 +31,12 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
 
   Revocation is by row (`revoked_at`), and `Portal.Precompiled.ToolchainRevocation`
   picks rows by their verdict: `portability_rule` 2, with or without a
-  `rule1_reason`. So an entry is kept only beside a row of the same verdict
-  class (`portability_rule` 2 or not, and a `rule1_reason` or not, both
-  recorded on the entry): any revocation that would select the entry's build
-  then selects the row, and the row hides it.
+  `rule1_reason`, the `rule1_reason`'s prefix, and `judge_revision` at or
+  above a revision. So an entry is kept only beside a row that every such
+  revocation of the entry also selects (`covered?/2`, on the verdict columns
+  recorded on the entry): the same `portability_rule` 2 or not, the same
+  `rule1_reason`, and a `judge_revision` no lower than the entry's. The row
+  then hides it.
   The blobs cost nothing extra: the store never deletes one, and a rebuild
   against a patch release of a dependency mostly compiles the same bytes.
   What is new is the entry (a few KB of JSON) and a membership per file that
@@ -69,7 +71,7 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   ]
 
   # Not served, but what a revocation selects a build by (moduledoc).
-  @verdict [:portability_rule, :rule1_reason]
+  @verdict [:portability_rule, :rule1_reason, :judge_revision]
 
   @manifest_keys ["ebin", "priv"]
 
@@ -98,8 +100,8 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   The earlier builds after `replaced` (the row as it was, or nil) gave way to
   `new`, the row as the rebuild wrote it: none unless `new` passes; else
   `replaced`'s own build first when it served one, then `earlier`, without
-  any entry of `new`'s lock or of another verdict class, one per lock, at
-  most `max/0`.
+  any entry of `new`'s lock or that `new` does not cover (`covered?/2`), one
+  per lock, at most `max/0`.
   """
   @spec push(ToolchainBuild.t() | nil, [map()] | nil, ToolchainBuild.t()) :: [map()]
   def push(replaced, earlier, %ToolchainBuild{status: :pass} = new) do
@@ -108,15 +110,35 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
       entry -> [entry | List.wrap(earlier)]
     end
     |> Enum.reject(&(&1["deps_lock"] == new.deps_lock))
-    |> Enum.filter(&(class(&1) == class(new)))
+    |> Enum.filter(&covered?(&1, new))
     |> Enum.uniq_by(& &1["deps_lock"])
     |> Enum.take(@max)
   end
 
   def push(_replaced, _earlier, _new), do: []
 
-  defp class(%ToolchainBuild{} = row), do: {row.portability_rule == 2, row.rule1_reason != nil}
-  defp class(entry), do: {entry["portability_rule"] == 2, entry["rule1_reason"] != nil}
+  @doc """
+  Whether every `Portal.Precompiled.ToolchainRevocation` that would select
+  the build `entry` records also selects `row`: both `portability_rule` 2 or
+  neither, the same `rule1_reason` (a revocation takes it by prefix), and a
+  `judge_revision` on `row` no lower than the entry's (a revocation takes
+  every revision at or above one). An entry without a recorded revision key
+  is not covered: its revision is unknown, not absent.
+  """
+  @spec covered?(map(), ToolchainBuild.t()) :: boolean()
+  def covered?(entry, %ToolchainBuild{} = row) do
+    entry["portability_rule"] == 2 == (row.portability_rule == 2) and
+      entry["rule1_reason"] == row.rule1_reason and
+      revision_covered?(Map.fetch(entry, "judge_revision"), row.judge_revision)
+  end
+
+  defp revision_covered?({:ok, nil}, _row_revision), do: true
+
+  defp revision_covered?({:ok, revision}, row_revision)
+       when is_integer(revision) and is_integer(row_revision),
+       do: row_revision >= revision
+
+  defp revision_covered?(_entry_revision, _row_revision), do: false
 
   @doc """
   The earlier builds of `row` with the build it serves now kept among them,

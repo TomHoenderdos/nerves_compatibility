@@ -14,6 +14,7 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
   alias Portal.Catalog
   alias Portal.Catalog.ToolchainBuild
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
+  alias Portal.Precompiled.ToolchainRevocation
 
   defp name, do: "earlier_#{System.unique_integer([:positive])}"
 
@@ -117,6 +118,44 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     assert served_locks(name) == []
   end
 
+  # `ToolchainRevocation.revoke(judge_revision: n)` takes rows judged at `n`
+  # or later. A rebuild on an image at a lower revision (a rollback, or a
+  # builder not yet updated) must not keep the build that revocation would
+  # take beside a row it leaves alone.
+  test "a judge-revision revocation that would take an earlier build takes its row" do
+    name = name()
+    rule2 = [portability_rule: 2, builder_version: Portal.Toolchains.builder_version()]
+    ingest_toolchain_build(name, "0.4.0", [deps_lock: lock("2.18.0"), judge_revision: 5] ++ rule2)
+    ingest_toolchain_build(name, "0.4.0", [deps_lock: lock("2.19.0"), judge_revision: 4] ++ rule2)
+
+    ToolchainRevocation.revoke(dry_run: false, judge_revision: 5, package: name)
+
+    refute "2.18.0" in served_locks(name)
+  end
+
+  # `ToolchainRevocation.revoke(rule1_prefix: p)` takes rows whose rule-1
+  # reason starts with `p`.
+  test "a rule-1 prefix revocation that would take an earlier build takes its row" do
+    name = name()
+    opts = [portability_rule: 2, builder_version: Portal.Toolchains.builder_version()]
+
+    ingest_toolchain_build(
+      name,
+      "0.4.0",
+      [deps_lock: lock("2.18.0"), rule1_reason: "calls erlang:open_port/2"] ++ opts
+    )
+
+    ingest_toolchain_build(
+      name,
+      "0.4.0",
+      [deps_lock: lock("2.19.0"), rule1_reason: "calls System.cmd/3"] ++ opts
+    )
+
+    ToolchainRevocation.revoke(dry_run: false, rule1_prefix: "calls erlang:open_port/")
+
+    refute "2.18.0" in served_locks(name)
+  end
+
   test "an earlier build whose file the row no longer owns is left out whole" do
     name = name()
     old = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
@@ -145,11 +184,22 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
       )
     end
 
+    # An entry as `EarlierBuilds.entry/1` records one: its verdict keys too.
+    defp recorded(certifi, verdict \\ %{}) do
+      Map.merge(
+        %{
+          "deps_lock" => lock(certifi),
+          "portability_rule" => nil,
+          "rule1_reason" => nil,
+          "judge_revision" => nil
+        },
+        verdict
+      )
+    end
+
     test "puts the replaced build first and drops any of the new lock" do
       replaced =
-        passing("2.18.0",
-          earlier_builds: [%{"deps_lock" => lock("2.19.0")}, %{"deps_lock" => lock("2.17.0")}]
-        )
+        passing("2.18.0", earlier_builds: [recorded("2.19.0"), recorded("2.17.0")])
 
       assert [%{"deps_lock" => first}, %{"deps_lock" => second}] =
                EarlierBuilds.push(replaced, replaced.earlier_builds, passing("2.19.0"))
@@ -159,7 +209,7 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     end
 
     test "keeps the list as it was when the replaced row serves nothing" do
-      earlier = [%{"deps_lock" => lock("2.17.0")}]
+      earlier = [recorded("2.17.0")]
 
       for replaced <- [
             passing("2.18.0", status: :skipped, file_manifest: nil),
@@ -193,6 +243,25 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
 
       assert [_] =
                EarlierBuilds.push(passing("2.18.0"), [], passing("2.19.0", portability_rule: 1))
+
+      other_reason = passing("2.19.0", portability_rule: 2, rule1_reason: "calls System.cmd/3")
+      assert EarlierBuilds.push(rule2, [], other_reason) == []
+    end
+
+    test "keeps a build only beside a row judged at its revision or later" do
+      at = fn certifi, revision ->
+        passing(certifi, portability_rule: 2, judge_revision: revision)
+      end
+
+      assert [_] = EarlierBuilds.push(at.("2.18.0", 4), [], at.("2.19.0", 4))
+      assert [_] = EarlierBuilds.push(at.("2.18.0", 4), [], at.("2.19.0", 5))
+      assert [_] = EarlierBuilds.push(at.("2.18.0", nil), [], at.("2.19.0", 5))
+      assert EarlierBuilds.push(at.("2.18.0", 5), [], at.("2.19.0", 4)) == []
+      assert EarlierBuilds.push(at.("2.18.0", 5), [], at.("2.19.0", nil)) == []
+
+      # An entry recorded without the key has an unknown revision.
+      unknown = Map.delete(recorded("2.17.0", %{"portability_rule" => 2}), "judge_revision")
+      assert EarlierBuilds.push(nil, [unknown], at.("2.19.0", 9)) == []
     end
   end
 
