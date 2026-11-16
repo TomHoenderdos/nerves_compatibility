@@ -285,6 +285,39 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     assert [%{"build" => %{"run_id" => "tc-old-release"}}] = version["builds_with_inputs"]
   end
 
+  # A rebuild un-revokes a row only once `Catalog.mark_withheld_revoked/2`
+  # marked it. This release's ingest of that rebuild drops the earlier
+  # builds the revocation hid with the row (`EarlierBuilds.push/3`), but a
+  # release that does not know the column un-revokes the row and leaves
+  # them: the mark drops them first.
+  test "marking a revoked row for its rebuild drops the earlier builds it hid" do
+    name = name()
+    ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
+    live_view = %{"version" => "1.1.0", "checksum" => "lv"}
+
+    row =
+      ingest_toolchain_build(name, "0.4.0",
+        deps_lock: Map.put(lock("2.19.0"), "phoenix_live_view", live_view)
+      )
+
+    row |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Catalog)
+    assert %{marked: [_]} = Catalog.mark_withheld_revoked([row.id], dry_run: false)
+
+    # What the older release's ingest of the rebuild leaves: config reads
+    # recorded, so `:unrevoke_rebuilt` took the revocation off.
+    Repo.query!(
+      """
+      UPDATE catalog_toolchain_builds
+      SET revoked_at = NULL, revoked_reason = NULL, compile_env_rule = 1,
+          compile_env = ARRAY[]::jsonb[], compile_env_run_id = run_id
+      WHERE id = $1
+      """,
+      [Ecto.UUID.dump!(row.id)]
+    )
+
+    assert served_locks(name) == ["2.19.0"]
+  end
+
   test "an earlier build whose file the row no longer owns is left out whole" do
     name = name()
     old = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))

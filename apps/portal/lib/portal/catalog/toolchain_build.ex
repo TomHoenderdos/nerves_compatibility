@@ -261,8 +261,12 @@ defmodule Portal.Catalog.ToolchainBuild do
     # closure (`Portal.Catalog.mark_withheld_revoked/2`), which the backlog
     # rebuilds once with its config reads recorded. Only a row that is
     # revoked: the reason never stands on a row that is still published.
+    # The earlier builds the revocation hid go (`EarlierBuilds`): the rebuild
+    # un-revokes the row, and a release that does not know the column would
+    # bring them back with it, where this one's ingest drops them.
     update :mark_withheld_revoked do
       change(set_attribute(:revoked_reason, @withheld_revocation))
+      change(set_attribute(:earlier_builds, nil))
       change(filter(expr(not is_nil(revoked_at))))
     end
 
