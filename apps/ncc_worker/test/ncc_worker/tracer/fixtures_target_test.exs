@@ -22,6 +22,14 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
         def compile do
           _ = System.get_env("PATH")
           _ = :os.type()
+
+          # elixir_make's make/2 runs a `make_env` fun from the package's
+          # project config.
+          case Mix.Project.config()[:make_env] do
+            fun when is_function(fun, 0) -> _ = fun.()
+            _ -> :ok
+          end
+
           {:ok, []}
         end
 
@@ -109,8 +117,22 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
         ),
       # The package's own compile reading the host through the tool's code.
       "fx_board_tool_lib" => board("fx_board_tool_lib", "@os ElixirMake.Compiler.os()"),
-      "fx_board_tool_alias" => tool_alias_board()
+      "fx_board_tool_alias" => tool_alias_board(),
+      "fx_board_make_env" =>
+        make_env_board(
+          "fx_board_make_env",
+          ~s|fn -> System.put_env("FX_MAKE_DEV", "normal") end|,
+          "@make System.get_env(\"FX_MAKE_DEV\")\n  def make, do: @make"
+        )
     }
+  end
+
+  # A package whose `make_env` fun the tool runs: a call the fun tail-calls
+  # leaves the tool's frame on top, but it is the package's code.
+  defp make_env_board(app, fun, lib_extra \\ "") do
+    %{files: files, mix_exs: mix_exs} = board(app, lib_extra)
+    mix_exs = String.replace(mix_exs, "compilers: [", "make_env: #{fun},\n          compilers: [")
+    %{files: files, mix_exs: mix_exs, deps: ["elixir_make"]}
   end
 
   # The tool's function as the package's own alias: Mix runs it, but not as
@@ -128,7 +150,8 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
     %{files: files, mix_exs: mix_exs, deps: ["elixir_make"]}
   end
 
-  @apps ~w(elixir_make fx_board fx_board_os fx_board_sneaky fx_board_tool_lib fx_board_tool_alias)
+  @apps ~w(elixir_make fx_board fx_board_os fx_board_sneaky fx_board_tool_lib fx_board_tool_alias
+           fx_board_make_env)
 
   setup_all do
     root =
@@ -209,6 +232,58 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
     for app <- ["fx_board_tool_lib", "fx_board_tool_alias"] do
       assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, app)
       assert v.reason =~ "ElixirMake.Compiler", app
+    end
+  end
+
+  test "a write the package's fun makes from the tool's frame is the package's, not the tool's",
+       ctx do
+    assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, "fx_board_make_env")
+    assert v.reason == "compile-time write from the native build tool's frame: os:putenv/2"
+  end
+
+  # An integrity refusal stands wherever it fell, so this one gets a trace
+  # of its own. `Process.info/1` is no BIF: the fun's tail call to it leaves
+  # the tool's frame first when it calls `:erlang.process_info/1`.
+  describe "the tracer's integrity through the tool's frame" do
+    setup do
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "ncc-fixtures-target-integrity-#{System.pid()}-#{System.unique_integer([:positive])}"
+        )
+
+      on_exit(fn -> File.rm_rf(root) end)
+      apps = ["elixir_make", "fx_board_probe"]
+
+      deps = %{
+        "elixir_make" => @tool,
+        "fx_board_probe" => make_env_board("fx_board_probe", "fn -> Process.info(self()) end")
+      }
+
+      proj = TracerFixtures.project(Path.join(root, "p"), apps, deps)
+
+      traced =
+        TracerFixtures.trace(proj, apps,
+          native: apps,
+          extra_env: [
+            {"MIX_TARGET", "rpi4"},
+            {"CROSSCOMPILE", @toolchain <> "/bin/aarch64-nerves-linux-gnu"},
+            {"NERVES_TOOLCHAIN", @toolchain}
+          ]
+        )
+
+      %{proj: proj, traced: traced, apps: apps}
+    end
+
+    test "is never the tool's own activity", ctx do
+      v =
+        TracerFixtures.judge(ctx.proj, "fx_board_probe", ctx.traced, ctx.apps,
+          target: "rpi4",
+          roots: [{"NERVES_TOOLCHAIN", @toolchain}]
+        )
+
+      assert %{status: :skip, compile_inputs: nil} = v
+      assert v.reason =~ "process_info"
     end
   end
 

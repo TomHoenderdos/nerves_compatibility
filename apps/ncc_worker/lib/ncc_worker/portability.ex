@@ -890,6 +890,8 @@ defmodule NccWorker.Portability do
   # other closure application's.
   @native_tools ["elixir_make"]
 
+  @tool_never_writes ["env_write", "config_write"]
+
   @doc "The native build tools whose activity a firmware target's trace sets apart."
   @spec native_tools() :: [String.t()]
   def native_tools, do: @native_tools
@@ -940,14 +942,27 @@ defmodule NccWorker.Portability do
   # In target mode, what a native tool's own code did is `native_build`
   # (never an input, never a refusal), and a target read is `target_reads`
   # (a `mix_target` input the client compares). An unjudged event stays
-  # unjudged.
+  # unjudged. What the tool's own code never does is not set apart: a
+  # package fun the tool runs (elixir_make's `make_env` and `versions` funs,
+  # a precompiler's callbacks, the `checksum.exs` it evaluates) that
+  # tail-calls a wrapper (`System.put_env/2`, `Process.info/1`) leaves the
+  # tool's frame first, so an integrity call keeps its refusal and a write
+  # to the environment or the application env refuses.
   defp targeted(decision, _event, _vm, nil), do: decision
   defp targeted({:unjudged, _} = decision, _event, _vm, _mode), do: decision
   defp targeted(:ignore, _event, _vm, _mode), do: :ignore
 
   defp targeted(decision, event, vm, %{tool_modules: tools}) do
+    tool? = tool_event?(event, tools)
+
     cond do
-      tool_event?(event, tools) ->
+      tool? and event["channel"] == "integrity" ->
+        decision
+
+      tool? and event["channel"] in @tool_never_writes ->
+        {:refuse, "compile-time write from the native build tool's frame: #{event["mfa"]}"}
+
+      tool? ->
         {:observe, "native_build",
          %{"mfa" => event["mfa"], "module" => user_module(event), "ts" => event["ts"], "vm" => vm}}
 
