@@ -10,7 +10,7 @@
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0, object_verdict/4,
          installed_app/3, cache_hit/2, canary_patterns/0, code_prepared/3, code_finished/2,
-         prepared_ref/2, toolchain_code/2]).
+         prepared_ref/2, on_load_ran/2, toolchain_code/2]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -38,7 +38,10 @@
 %% prepared code's reference) for code_finished/2.
 -define(PREPARE_LOADING, {erts_internal, prepare_loading, 2}).
 %% What makes prepared code current, in any process and at any later time
-%% (code:finish_loading/1 too): traced without a stack, tagged.
+%% (code:finish_loading/1 too): traced without a stack, tagged, with its
+%% return, which names the modules whose code has an on_load function to
+%% run before it is made current (erlang:call_on_load_function/1, which no
+%% pattern can trace).
 -define(FINISH_LOADING, {erlang, finish_loading, 1}).
 %% Prepared code references code_finished/2 waits on at once, either way
 %% round; past that every check fails.
@@ -626,7 +629,8 @@ app_call(M, F, Args) ->
     end.
 
 match_spec(?PREPARE_LOADING, _Role, _Depth) -> [{'_', [], [{message, code_load}, {return_trace}]}];
-match_spec(?FINISH_LOADING, _Role, _Depth) -> [{'_', [], [{message, code_load}]}];
+match_spec(?FINISH_LOADING, _Role, _Depth) ->
+    [{'_', [], [{message, code_load}, {exception_trace}]}];
 match_spec({compile, file, 2}, child, _Depth) -> [{'_', [], [{return_trace}]}];
 match_spec({erlang, process_info, 2}, _Role, Depth) ->
     Msg = {message, {current_stacktrace, Depth}},
@@ -680,8 +684,15 @@ traced({trace_ts, Pid, call, {erts_internal, prepare_loading, [M, Bin]}, code_lo
 traced({trace_ts, Pid, return_from, ?PREPARE_LOADING, Prepared, _Ts}, St) ->
     prepared_ref(erase({preparing, Pid}), Prepared),
     St;
-traced({trace_ts, _Pid, call, {erlang, finish_loading, [Refs]}, code_load, Ts}, St) ->
+traced({trace_ts, Pid, call, {erlang, finish_loading, [Refs]}, code_load, Ts}, St) ->
+    put({finishing, Pid}, Ts),
     code_finished(Refs, Ts),
+    St;
+traced({trace_ts, Pid, return_from, ?FINISH_LOADING, Result, _Ts}, St) ->
+    finish_returned(erase({finishing, Pid}), Result),
+    St;
+traced({trace_ts, Pid, exception_from, ?FINISH_LOADING, _Exception, _Ts}, St) ->
+    _ = erase({finishing, Pid}),
     St;
 traced({trace_ts, Pid, call, {M, F, Args}, Stack, Ts}, St) ->
     call_event(Pid, M, F, Args, Stack, Ts, pending(Pid, M, F, Args, St));
@@ -705,6 +716,9 @@ traced({trace_ts, Child, spawned, Parent, _MFA, _Ts}, St) ->
     end;
 traced({trace_ts, Pid, exit, _Reason, _Ts}, St) ->
     _ = erase({preparing, Pid}),
+    %% Killed inside erlang:finish_loading/1: its code may be in, and what
+    %% it would have returned (finish_returned/2) is not known.
+    _ = is_integer(erase({finishing, Pid})) andalso swapped(finish_loading),
     St#st{procs = maps:remove(Pid, St#st.procs), spawning = maps:remove(Pid, St#st.spawning),
           parents = maps:remove(Pid, St#st.parents), returns = maps:remove(Pid, St#st.returns)};
 traced(_Msg, St) -> St.
@@ -1533,6 +1547,10 @@ object_code_toolchain(M) ->
 %% consolidation loads other code after the toolchain's, never the
 %% toolchain's after, and a package's module of a toolchain name that stays
 %% loaded is never the toolchain's.
+%% An on_load function runs code that is not current yet, and when it does
+%% not return ok that code never is: a module's other code finished with an
+%% on_load function to run fails the checks too once its toolchain code is
+%% known, with no load of the toolchain's after (on_load_ran/2).
 %% Returns what a finish of this prepare is a load of (code_finished/2).
 code_prepared(M, Bin, Ts) when is_atom(M) ->
     case ncc_tracer_stack:compiler_frame({M, none, 0, []}) of
@@ -1578,6 +1596,23 @@ code_finished(Refs, Ts) when is_list(Refs) ->
                   end, Refs);
 code_finished(_Refs, _Ts) -> ok.
 
+%% A finish called at Ts returned {on_load, Ms}: each M's code it finished
+%% has an on_load function, which may run (erlang:call_on_load_function/1)
+%% while the code current for M stays what it was. That is other code than
+%% the toolchain's when any was prepared at or before Ts. Kept as the latest
+%% such time.
+finish_returned(Ts, {on_load, Ms}) when is_integer(Ts), is_list(Ms) ->
+    lists:foreach(fun(M) -> on_load_ran(M, Ts) end, Ms);
+finish_returned(_Ts, _Result) -> ok.
+
+on_load_ran(M, Ts) when is_atom(M) ->
+    put({on_load_ran, M}, case get({on_load_ran, M}) of
+                              Old when is_integer(Old) -> max(Old, Ts);
+                              _ -> Ts
+                          end),
+    restored(M);
+on_load_ran(_M, _Ts) -> ok.
+
 finished({M, Md5}, Ts) -> version(M, Md5, Ts);
 finished(skip, _Ts) -> ok.
 
@@ -1610,16 +1645,21 @@ toolchain_code(M, Md5) ->
     restored(M).
 
 %% The toolchain's code prepared or finished at or after another version's
-%% first prepare.
+%% first prepare, or an on_load run at or after it.
 restored(M) ->
     case {get({toolchain_code, M}), get({prepared, M})} of
         {Known, Prepared} when is_list(Known), is_list(Prepared) ->
+            OnLoad = get({on_load_ran, M}),
             Swap = lists:any(fun({Md5, _First, Last}) ->
                                      lists:member(Md5, Known) andalso
                                          lists:any(fun({Other, First, _}) ->
                                                            Other =/= Md5 andalso First =< Last
                                                    end, Prepared)
-                             end, Prepared),
+                             end, Prepared)
+                orelse (is_integer(OnLoad) andalso
+                        lists:any(fun({Other, First, _}) ->
+                                          not lists:member(Other, Known) andalso First =< OnLoad
+                                  end, Prepared)),
             Swap andalso swapped(M);
         {Known, overflow} when is_list(Known) -> swapped(M);
         _ -> false

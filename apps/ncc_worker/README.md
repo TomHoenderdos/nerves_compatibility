@@ -469,7 +469,9 @@ module when the collector reaches the event, so the tracer also traces every cod
 each module's versions with when each was prepared or finished: a module's toolchain code (an md5 the verdict passed)
 prepared or finished at or after the first load of other code under its name fails every integrity check from then on,
 whichever of the two the collector sees first. Protocol consolidation loads other code after the toolchain's, never
-before it.
+before it. Code with an on_load function runs it before it is made current, and is never made current when it fails,
+so the toolchain's code is not loaded again: other code under a toolchain module's name that a finish returns as
+`{on_load, Modules}` fails the check the same way, and so does a process that dies inside `erlang:finish_loading/1`.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's

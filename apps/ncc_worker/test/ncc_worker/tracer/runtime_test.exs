@@ -972,6 +972,72 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
   end
 
+  # A `URI` whose on_load function makes the read and returns `{read, :nope}`:
+  # not `ok`, so the code is discarded and the toolchain's stays loaded.
+  defp forged_uri_on_load(read) do
+    forms = [
+      {:attribute, 1, :module, URI},
+      {:attribute, 1, :export, [init: 0]},
+      {:attribute, 1, :on_load, {:init, 0}},
+      {:function, 1, :init, 0, [{:clause, 1, [], [], [{:tuple, 1, [read, {:atom, 1, :nope}]}]}]}
+    ]
+
+    {:ok, URI, bin} = :compile.forms(forms, [:binary])
+    Base.encode64(bin)
+  end
+
+  # Code with an on_load function runs it before it is made current, and
+  # when that fails it never is: the toolchain's code is not loaded again,
+  # and a read the forged on_load made is taken for the toolchain's. `run`
+  # loads the forged code and runs its on_load.
+  defp on_load_read(dir, run) do
+    read =
+      {:call, 1, {:remote, 1, {:atom, 1, :application}, {:atom, 1, :get_env}},
+       [{:atom, 1, :kernel}, {:atom, 1, :ncc_swap_probe}]}
+
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      forged = Base.decode64!("#{forged_uri_on_load(read)}")
+      collector = :ncc_tracer.collector()
+      Code.ensure_loaded!(URI)
+      :ok = :ncc_tracer.window_open(tok, "fx")
+      true = :erlang.suspend_process(collector)
+      #{run}
+      false = :erlang.check_old_code(URI)
+      true = :erlang.resume_process(collector)
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    reads = for e <- kind(lines, "event"), e["first"]["module"] == "Elixir.URI", do: e
+    {lines, reads, out}
+  end
+
+  test "a config read from a forged module's on_load run by the package fails the window",
+       %{tmp_dir: dir} do
+    {lines, reads, out} =
+      on_load_read(dir, """
+      {:error, :on_load} = :erlang.load_module(URI, forged)
+      {_, :nope} = :erlang.call_on_load_function(URI)
+      true = :erlang.finish_after_on_load(URI, false)
+      """)
+
+    assert [%{"channel" => "config", "first_kind" => "toolchain"}] = reads, out
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
+  test "a config read from a forged module's on_load run by the code server fails the window",
+       %{tmp_dir: dir} do
+    {lines, _reads, out} =
+      on_load_read(dir, """
+      {:error, :on_load_failure} = :code.load_binary(URI, ~c"nofile", forged)
+      """)
+
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
   # The toolchain's code can be prepared before the forged code and finished
   # after it (erlang:prepare_loading/2 then erlang:finish_loading/1, or
   # code:prepare_loading/1 then code:finish_loading/1): what puts it back is

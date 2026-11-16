@@ -280,6 +280,33 @@ defmodule NccWorker.Tracer.ToolchainTrustTest do
       assert Task.await(task) == nil
     end
 
+    test "other code's on_load run under the name fails, in any order seen; the toolchain's own passes" do
+      on_load = fn -> :ncc_tracer.on_load_ran(:lists, 15) end
+
+      for order <- [[0, 1, 2], [2, 0, 1], [1, 2, 0], [2, 1, 0]] do
+        steps = [fn -> prepared(other(1), 10) end, on_load, &judged/0]
+
+        task =
+          Task.async(fn ->
+            for i <- order, do: Enum.at(steps, i).()
+            Process.get(:code_swap)
+          end)
+
+        assert Task.await(task) == :lists, inspect(order)
+      end
+
+      task =
+        Task.async(fn ->
+          prepared(real(), 10)
+          on_load.()
+          judged()
+          prepared(other(1), 20)
+          Process.get(:code_swap)
+        end)
+
+      assert Task.await(task) == nil
+    end
+
     test "past the kept versions, a module ever taken for the toolchain's fails" do
       task =
         Task.async(fn ->
