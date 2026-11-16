@@ -492,7 +492,10 @@ defmodule NccWorker.FirmwareInputs do
   # The target's build dir and deps dir (its env's `MIX_BUILD_PATH` and
   # `MIX_DEPS_PATH`, `deps/` when it set none) and the run's own `deps/`:
   # real dirs inside the project, none inside another. Its env must be the
-  # target's own.
+  # target's own, and its deps dir not the run's `deps/`: the trace compiles
+  # in that tree, where the published build's `priv` links lead, so what the
+  # compile writes in source would be published (the worker gives every
+  # target its own).
   @spec layout(String.t(), String.t(), [{String.t(), String.t()}]) ::
           {:ok, layout()} | {:error, String.t()}
   def layout(project_dir, target, env) do
@@ -519,17 +522,15 @@ defmodule NccWorker.FirmwareInputs do
       {fn -> build != nil end, "no build path"},
       {fn -> inside?(build, project) and inside?(deps, project) end,
        "the target's build or deps dir is outside the project"},
+      {fn -> deps != host_deps end, "the target's build used the run's deps/"},
       {fn -> not overlapping?(layout) end, "the target's build and deps dirs overlap"},
       {fn -> dir?(build) and dir?(host_deps) end, "no published build or deps dir to trace"},
-      {fn -> deps == host_deps or not lexists?(deps) or dir?(deps) end,
-       "the target's deps dir is no dir"}
+      {fn -> not lexists?(deps) or dir?(deps) end, "the target's deps dir is no dir"}
     ]
   end
 
   defp overlapping?(%{build: build, deps: deps, host_deps: host_deps}),
-    do:
-      nested?(build, deps) or nested?(build, host_deps) or
-        (deps != host_deps and nested?(deps, host_deps))
+    do: nested?(build, deps) or nested?(build, host_deps) or nested?(deps, host_deps)
 
   defp expanded(env, name, project) do
     case env_value(env, name) do
@@ -583,9 +584,6 @@ defmodule NccWorker.FirmwareInputs do
         {:error, why}
     end
   end
-
-  defp moves(%{deps: same, host_deps: same} = layout, dir),
-    do: [{layout.build, Path.join(stash(dir), "build")}]
 
   defp moves(layout, dir) do
     own_deps =

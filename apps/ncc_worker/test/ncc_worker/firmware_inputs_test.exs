@@ -426,15 +426,35 @@ defmodule NccWorker.FirmwareInputsTest do
       assert which(c.proj, "_build/rpi4") == {:ok, "build"}
     end
 
-    test "a target that used deps/ itself moves only its build", c do
-      env = List.keydelete(c.env, "MIX_DEPS_PATH", 0)
-      {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", env)
+    # A target whose build read the run's own `deps/` has its published
+    # `priv` there (Mix links `_build/<target>/lib/<p>/priv` to the source
+    # tree's), and the trace compiles in that very tree: what its compile
+    # writes in source (a NIF made into `$(MIX_APP_PATH)/priv`) would be the
+    # published file once the build is back. The worker gives every target
+    # its own deps dir, so such a target is not traced.
+    test "a target that used the run's deps/ itself is no layout to trace in", c do
+      priv = Path.join(c.proj, "deps/pkg/priv")
+      File.mkdir_p!(priv)
+      File.write!(Path.join(priv, "pkg.so"), "build")
+      File.mkdir_p!(Path.join(c.proj, "_build/rpi4/lib/pkg"))
+      File.ln_s!(priv, Path.join(c.proj, "_build/rpi4/lib/pkg/priv"))
 
-      assert FirmwareInputs.in_build_layout(layout, c.dir, fn ->
-               {which(c.proj, "deps/pkg"), File.exists?(Path.join(c.proj, "_build/rpi4"))}
-             end) == {{:ok, "run"}, false}
+      for env <- [
+            List.keydelete(c.env, "MIX_DEPS_PATH", 0),
+            List.keystore(c.env, "MIX_DEPS_PATH", 0, {"MIX_DEPS_PATH", "deps"})
+          ] do
+        result =
+          with {:ok, layout} <- FirmwareInputs.layout(c.proj, "rpi4", env) do
+            FirmwareInputs.in_build_layout(layout, c.dir, fn ->
+              File.write!(Path.join(c.proj, "deps/pkg/priv/pkg.so"), "trace")
+            end)
+          end
 
-      assert which(c.proj, "_build/rpi4") == {:ok, "build"}
+        assert {:error, _why} = result, inspect(env)
+
+        assert File.read(Path.join(c.proj, "_build/rpi4/lib/pkg/priv/pkg.so")) ==
+                 {:ok, "build"}
+      end
     end
 
     # The trace builds into the published build's own paths, so a process it
