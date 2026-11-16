@@ -49,7 +49,7 @@ defmodule NccWorker.FirmwareInputs do
   """
 
   alias Compatibility.CompileInputs
-  alias NccWorker.{BeamScan, HexHome, Portability, TargetScan}
+  alias NccWorker.{BeamScan, HexHome, Portability, TargetScan, Tracer}
 
   @env_task :"Elixir.Mix.Tasks.Ncc.NervesEnv"
   @env_timeout_sec 300
@@ -97,10 +97,27 @@ defmodule NccWorker.FirmwareInputs do
       {systems, []}
     else
       Enum.reduce(eligible, {systems, []}, fn {name, target_env}, {acc, lines} ->
-        {acc, line} = put_one(acc, name, record.(name, target_env, ctx, acc[name]))
+        {acc, line} = put_one(acc, name, try_one(record, name, target_env, ctx, acc[name]))
         {acc, lines ++ [line]}
       end)
     end
+  end
+
+  defp try_one(record, name, target_env, ctx, result) do
+    if budget_left?(ctx.started_at),
+      do: record.(name, target_env, ctx, result),
+      else: {:error, "run budget exhausted"}
+  end
+
+  # What the tracer would still run (`NccWorker.Tracer.timeout_sec/2`, its
+  # ceiling below the 2 h at which `Portal.Builder` kills the container and
+  # the run is lost): a target whose trace could not start does not start
+  # its Nerves env either.
+  defp budget_left?(nil), do: true
+
+  defp budget_left?(started_at) do
+    elapsed = max(System.monotonic_time(:second) - started_at, 0)
+    Tracer.timeout_sec(@trace_timeout_ms, elapsed) != :exhausted
   end
 
   defp put_one(systems, name, {:ok, %{compile_inputs: inputs, compile_env: env}})

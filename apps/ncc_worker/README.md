@@ -789,7 +789,8 @@ only on a passing target that publishes its own first build (no optional depende
    attributes) of the published ones, module for module, and the `.app` is the published one byte for byte.
 
 The target then carries the trace's `compile_inputs` and its `compile_env`; anything that does not hold leaves it
-without, as before. `NCC_FIRMWARE_INPUTS=0` turns it off.
+without, as before. Past the tracer's run ceiling (105 minutes into the run) no further target is tried, its Nerves env
+included. `NCC_FIRMWARE_INPUTS=0` turns it off.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

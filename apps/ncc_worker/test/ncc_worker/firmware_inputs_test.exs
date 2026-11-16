@@ -115,6 +115,28 @@ defmodule NccWorker.FirmwareInputsTest do
       refute_received {:recorded, _, _}
     end
 
+    # `Portal.Builder` kills the container at 2 h and the whole run is lost:
+    # past the tracer's ceiling no target starts its Nerves env or trace.
+    test "no target is tried once the run's budget is spent", %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @module_read)
+      systems = %{"rpi4" => pass(), "rpi5" => pass()}
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+
+      late = %{
+        ctx(proj, ["rpi4", "rpi5"])
+        | started_at: System.monotonic_time(:second) - 105 * 60
+      }
+
+      assert FirmwareInputs.put(systems, late, record: record) ==
+               {systems,
+                [
+                  "Compile inputs of rpi4 not recorded: run budget exhausted",
+                  "Compile inputs of rpi5 not recorded: run budget exhausted"
+                ]}
+
+      refute_received {:recorded, _, _}
+    end
+
     test "a target whose inputs could not be recorded keeps none, and says why",
          %{tmp_dir: tmp_dir} do
       proj = project(tmp_dir, @module_read)
