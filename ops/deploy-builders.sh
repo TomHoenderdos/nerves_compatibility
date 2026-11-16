@@ -18,13 +18,12 @@
 #      a host already on the commit with ncc-portal active is skipped (-f
 #      overrides), unless its last deploy did not finish (deploy.sh leaves
 #      NCC_INSTALL_DIR/deploy-incomplete), which redeploys it without -f
-#   2. installs that commit's ops/deploy.sh and ops/build-release.sh into the
-#      host's NCC_INSTALL_DIR (hosts run those copies, not the checkout's;
-#      see the operator runbook)
-#   3. starts `deploy.sh <sha> builder` detached on the host (setsid, stdin
-#      closed, own log under the deploying user's home), so a dropped ssh
-#      cannot kill it halfway;
-#      deploy.sh holds its own flock, so a second run refuses rather than races
+#   2. installs that commit's ops/deploy-bootstrap.sh as the host's
+#      NCC_INSTALL_DIR/deploy.sh (see the operator runbook)
+#   3. starts that `deploy.sh <sha> builder` detached on the host (setsid,
+#      stdin closed, own log under the deploying user's home), so a dropped
+#      ssh cannot kill it halfway; it runs the commit's own ops/deploy.sh
+#      under its flock, so a second run refuses rather than races
 #   4. polls the log from here (no loop runs on the host) until deploy.sh exits
 #   5. verifies the host is on the commit and ncc-portal is active
 #
@@ -162,16 +161,17 @@ preflight() {
   log "$name" "on ${head:0:7}, ncc-portal $active"
 }
 
-# The hosts run their own installed copies of deploy.sh/build-release.sh, not
-# the checkout's, so a deploy of a commit that changed them must ship them
-# first. Taken from the commit being deployed, never from this working tree.
-install_scripts() {
-  local name=$1 f
-  for f in deploy.sh build-release.sh; do
-    git -C "$repo" show "$sha:ops/$f" |
-      on "$name" "cat > \"\$NCC_INSTALL_DIR/$f.new\" && chmod 0755 \"\$NCC_INSTALL_DIR/$f.new\" && mv \"\$NCC_INSTALL_DIR/$f.new\" \"\$NCC_INSTALL_DIR/$f\""
-  done
-  log "$name" "installed deploy.sh and build-release.sh from ${sha:0:7}"
+# The hosts run the installed bootstrap, which runs the deployed commit's own
+# deploy.sh and, through it, build-release.sh. The bootstrap itself is the
+# one file no deploy ships, so this installs it on every deploy: a host
+# deployed from here never runs an old one. Taken from the commit being
+# deployed, never from this working tree.
+install_bootstrap() {
+  local name=$1
+  # shellcheck disable=SC2016 # expanded on the host
+  git -C "$repo" show "$sha:ops/deploy-bootstrap.sh" |
+    on "$name" 'cat > "$NCC_INSTALL_DIR/deploy.sh.new" && chmod 0755 "$NCC_INSTALL_DIR/deploy.sh.new" && mv "$NCC_INSTALL_DIR/deploy.sh.new" "$NCC_INSTALL_DIR/deploy.sh"'
+  log "$name" "installed the deploy bootstrap from ${sha:0:7}"
 }
 
 # Prints the remote log path. The trailing DEPLOY_EXIT line is what the poll
@@ -228,10 +228,10 @@ deploy_one() {
   ((rc == 3)) && return 0
   ((rc == 0)) || return 1
   if $dry_run; then
-    log "$name" "dry run: would install deploy.sh/build-release.sh and run deploy.sh ${sha:0:7} builder"
+    log "$name" "dry run: would install the deploy bootstrap and run deploy.sh ${sha:0:7} builder"
     return 0
   fi
-  install_scripts "$name"
+  install_bootstrap "$name"
   logfile=$(start_deploy "$name")
   wait_deploy "$name" "$logfile" || code=$?
   if ((code == 124)); then

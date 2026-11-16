@@ -90,6 +90,19 @@ class PreflightTest(unittest.TestCase):
         self.assertIn("not main", result.stdout)
 
 
+class InstallTest(unittest.TestCase):
+    # The host runs what this installs as $NCC_INSTALL_DIR/deploy.sh: the
+    # deployed commit's bootstrap, which then runs that commit's deploy.sh.
+    # Installing a full deploy.sh there would overwrite the bootstrap the
+    # CI-deployed hosts rely on.
+    def test_the_deploy_installs_the_commits_bootstrap_as_deploy_sh(self):
+        text = SCRIPT.read_text()
+        self.assertIn('git -C "$repo" show "$sha:ops/deploy-bootstrap.sh" |', text)
+        self.assertIn('mv "$NCC_INSTALL_DIR/deploy.sh.new" "$NCC_INSTALL_DIR/deploy.sh"', text)
+        self.assertNotIn(":ops/deploy.sh", text)
+        self.assertNotIn(":ops/build-release.sh", text)
+
+
 class DeployMarkerTest(unittest.TestCase):
     # deploy.sh marks a builder deploy incomplete before the checkout moves
     # and clears the mark only after its last check; a web deploy never

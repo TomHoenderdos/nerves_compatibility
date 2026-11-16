@@ -10,7 +10,8 @@ import tempfile
 import unittest
 
 OPS = Path(__file__).parent
-STANDALONE = ["deploy.sh", "build-release.sh", "images-sync.sh", "portal-rpc.sh"]
+STANDALONE = ["deploy.sh", "deploy-bootstrap.sh", "build-release.sh", "images-sync.sh",
+              "portal-rpc.sh"]
 SCRIPTS = STANDALONE + ["builder-deploy.sh", "deploy-builders.sh", "ssh-deploy.sh", "blue-green.sh"]
 LAYOUT_VARS = [
     "NCC_SRC_DIR", "NCC_INSTALL_DIR", "NCC_PORTAL_ENV", "NCC_PORTAL_WORKDIR",
@@ -64,6 +65,7 @@ class LayoutGuardTest(unittest.TestCase):
     def test_every_script_refuses_to_run_without_the_env_file(self):
         cases = {
             "deploy.sh": ["a" * 40],
+            "deploy-bootstrap.sh": ["a" * 40],
             "build-release.sh": [],
             "images-sync.sh": ["a" * 40],
         }
@@ -172,6 +174,56 @@ class LayoutGuardTest(unittest.TestCase):
             self.assertIn("must be on main", result.stderr)
             self.assertTrue((install / "deploy.lock").exists())
             self.assertEqual(events.read_text().splitlines()[0], str(src.resolve()))
+
+    def run_with_fd_9(self, lock_env, fd_9_open=True):
+        """deploy.sh with fd 9 open on its lock file the way the bootstrap
+        leaves it (already holding "held"), stopped right after the lock by a
+        checkout that is not on main. Returns the lock file's text."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / "install"
+            install.mkdir()
+            (root / "src").mkdir()
+            lock = install / "deploy.lock"
+            lock.write_text("held\n")
+            env_file = root / "deploy.env"
+            env_file.write_text(
+                f"NCC_SRC_DIR={root}/src\nNCC_INSTALL_DIR={install}\n"
+                f"NCC_PORTAL_ENV={root}/portal.env\nNCC_PORTAL_WORKDIR={root}\n"
+                f"NCC_IMAGES_JSON={root}/images.json\n"
+                "DOCKER_HOST=unix:///run/docker-ncc/docker.sock\n")
+            bindir = root / "bin"
+            bindir.mkdir()
+            (bindir / "git").write_text("#!/bin/bash\necho other\n")
+            (bindir / "flock").write_text('#!/bin/bash\necho "flock $*" >> "$EVENTS"\n')
+            for tool in ("git", "flock"):
+                (bindir / tool).chmod(0o755)
+            events = root / "events"
+            env = clean_env(PATH=f"{bindir}:{os.environ['PATH']}", EVENTS=str(events),
+                            NCC_DEPLOY_ENV=str(env_file), LOCK=str(lock),
+                            DEPLOY=str(OPS / "deploy.sh"),
+                            **({"NCC_DEPLOY_LOCKED": lock_env.format(lock=lock)}
+                               if lock_env is not None else {}))
+            opener = 'exec 9>>"$LOCK"; ' if fd_9_open else ""
+            result = subprocess.run(
+                ["bash", "-c", opener + 'exec bash "$DEPLOY" "$1"', "_", "a" * 40],
+                env=env, capture_output=True, text=True, timeout=10)
+            self.assertIn("must be on main", result.stderr)
+            self.assertEqual(events.read_text(), "flock -n 9\n")
+            return lock.read_text()
+
+    # Started by the bootstrap, deploy.sh keeps the fd 9 it inherits:
+    # reopening it would release the bootstrap's lock for a moment (and
+    # truncate the file, which is how this test sees it).
+    def test_deploy_keeps_the_lock_the_bootstrap_hands_it(self):
+        self.assertEqual(self.run_with_fd_9("{lock}"), "held\n")
+
+    def test_deploy_opens_its_own_lock_unless_handed_that_one(self):
+        cases = {"no hand-over": (None, True), "another file": ("/elsewhere/deploy.lock", True),
+                 "fd 9 closed": ("{lock}", False)}
+        for name, (lock_env, fd_9_open) in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.run_with_fd_9(lock_env, fd_9_open), "")
 
     def test_images_sync_defaults_to_the_env_files_destination(self):
         with tempfile.TemporaryDirectory() as directory:

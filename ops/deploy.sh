@@ -1,13 +1,17 @@
 #!/bin/bash
-# Deploys the main branch to this host. Installed at a fixed operator-chosen
-# path; see the operator runbook.
+# Deploys the main branch to this host. Hosts run it through the installed
+# bootstrap (ops/deploy-bootstrap.sh), which checks that the commit is main's
+# head and then runs this file as that commit has it, from a copy outside the
+# checkout; see the operator runbook. Run by hand from the checkout instead,
+# it is the checkout's own copy that runs: the last deployed commit's, not
+# the one it deploys.
 #
-# Both hosts run an identical copy of this script and both follow main. The
-# only per-host difference is the operator's portal.env file, which decides
-# the Oban queues the node runs.
+# Every host runs the same script and follows main. The only per-host
+# difference is the operator's portal.env file, which decides the Oban
+# queues the node runs.
 #
-# GitHub Actions invokes this on the web host with the exact tested main SHA.
-# Operators can still run it by hand (optionally passing a main SHA).
+# GitHub Actions runs the bootstrap with the exact tested main SHA. Operators
+# can still run it by hand (optionally passing a main SHA).
 #
 # Builder mode pauses new work, waits for active jobs and prepares a worker
 # image with the existing Makefile and Docker cache before restarting.
@@ -181,7 +185,14 @@ SRC=$NCC_SRC_DIR
 BIN=$NCC_INSTALL_DIR/portal/bin/portal
 
 # Serialize manual and automated deploys as well as separate Actions runs.
-exec 9>"$NCC_INSTALL_DIR/deploy.lock"
+# Started by the bootstrap, this script inherits fd 9 already holding the
+# lock, and NCC_DEPLOY_LOCKED naming the lock file. Reopening fd 9 would
+# release that lock for a moment, so it is kept as it is.
+lock=$NCC_INSTALL_DIR/deploy.lock
+if [[ ${NCC_DEPLOY_LOCKED:-} != "$lock" ]] || ! { true >&9; } 2>/dev/null; then
+  exec 9>"$lock"
+fi
+unset NCC_DEPLOY_LOCKED
 flock -n 9 || { echo 'another deployment is running' >&2; exit 1; }
 
 if [[ $mode == rollback ]]; then
