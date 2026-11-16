@@ -156,6 +156,40 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     refute "2.18.0" in served_locks(name)
   end
 
+  # `Portal.Workers.ClosureDrift` keeps the build before its rebuild, and a
+  # release that does not know the column ingests that rebuild: its upsert
+  # rewrites the row's verdict and never looks at the entries.
+  test "an earlier build beside a row an older release rewrote is served only if covered" do
+    name = name()
+
+    built =
+      ingest_toolchain_build(name, "0.4.0",
+        deps_lock: lock("2.18.0"),
+        portability_rule: 2,
+        rule1_reason: "calls erlang:open_port/2",
+        builder_version: Portal.Toolchains.builder_version()
+      )
+
+    built
+    |> Ash.Changeset.for_update(:record_earlier_builds, %{
+      earlier_builds: EarlierBuilds.keep(built)
+    })
+    |> Ash.update!(domain: Catalog)
+
+    Repo.query!(
+      """
+      UPDATE catalog_toolchain_builds
+      SET deps_lock = $2, portability_rule = 1, rule1_reason = NULL, run_id = 'tc-old-release'
+      WHERE id = $1
+      """,
+      [Ecto.UUID.dump!(built.id), lock("2.19.0")]
+    )
+
+    ToolchainRevocation.revoke(dry_run: false, everything: true, package: name)
+
+    assert served_locks(name) == ["2.19.0"]
+  end
+
   test "an earlier build whose file the row no longer owns is left out whole" do
     name = name()
     old = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))

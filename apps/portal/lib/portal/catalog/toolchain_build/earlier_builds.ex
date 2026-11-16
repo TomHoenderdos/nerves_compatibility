@@ -36,7 +36,9 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   revocation of the entry also selects (`covered?/2`, on the verdict columns
   recorded on the entry): the same `portability_rule` 2 or not, the same
   `rule1_reason`, and a `judge_revision` no lower than the entry's. The row
-  then hides it.
+  then hides it. The manifest checks this again when it lists an entry
+  (`expand/1`), since a release that does not know the column rewrites the
+  row's verdict without looking at its entries.
   The blobs cost nothing extra: the store never deletes one, and a rebuild
   against a patch release of a dependency mostly compiles the same bytes.
   What is new is the entry (a few KB of JSON) and a membership per file that
@@ -181,11 +183,15 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   `row` followed by one row per earlier build: the row with the entry's
   columns in place of its own, the same id, version, toolchain, variant and
   config variant, and no earlier builds of its own. A manifest lists each as
-  a build, judged by its own lock.
+  a build, judged by its own lock. An entry the row does not cover
+  (`covered?/2`) is left out: a release that does not know the column
+  rewrites the row's verdict on a rebuild and leaves the entries as they
+  were, so the check at ingest alone does not hold. `row` needs its
+  `portability_rule`, `rule1_reason` and `judge_revision` loaded.
   """
   @spec expand(ToolchainBuild.t()) :: [ToolchainBuild.t()]
   def expand(%ToolchainBuild{earlier_builds: [_ | _] = earlier} = row) do
-    [row | Enum.map(earlier, &as_row(row, &1))]
+    [row | for(entry <- earlier, covered?(entry, row), do: as_row(row, entry))]
   end
 
   def expand(row), do: [row]

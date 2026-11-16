@@ -3568,6 +3568,10 @@ defmodule Portal.Catalog do
       :compile_env_run_id,
       :file_manifest,
       :finished_at,
+      # What `EarlierBuilds.expand/1` checks each earlier build against.
+      :portability_rule,
+      :rule1_reason,
+      :judge_revision,
       :earlier_builds
     ])
     |> Ash.read!(domain: __MODULE__)
