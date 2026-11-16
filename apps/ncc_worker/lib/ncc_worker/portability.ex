@@ -1807,7 +1807,8 @@ defmodule NccWorker.Portability do
   # `priv` and above it (`Events`' `priv_writes` and `priv_probes`). `built`
   # is every file a write set the bytes of that is a regular file in that
   # `priv` now, relative to it; `roots` are R2's, which no file there may
-  # hold (`PrivRoots`).
+  # hold (`PrivRoots`); `trees` the snapshot this build was judged on, which
+  # the second build is judged on too.
   defp own_priv(%{ctx: ctx, decided: decided}) do
     items =
       for {owner, {:observe, kind, item}} <- decided,
@@ -1829,7 +1830,8 @@ defmodule NccWorker.Portability do
       dir: dir,
       build: Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build,
       built: Enum.sort(built),
-      roots: Context.roots(ctx)
+      roots: Context.roots(ctx),
+      trees: ctx.trees
     }
   end
 

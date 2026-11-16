@@ -564,7 +564,8 @@ the gzip magic, inflated (`NccWorker.Portability.PrivRoots`): a source path a `_
 `env.file` is in no beam and no read, and is the same in both builds below, so it refuses as `bakes the build path:
 priv/<path>` before any second build. The trace cannot see the clock, a random number or the path it was built at, so
 the package's closure is built a second time, traced, in judge mode, into a fresh build path under the system temp dir (which shares no directory with
-`/work` but `/`), at least a second later (`NccWorker.Portability.PrivRepro`). That trace must pass on its own, so a
+`/work` but `/`), at least a second later (`NccWorker.Portability.PrivRepro`). That trace, judged on the tree snapshot the first one was (a snapshot taken then would refuse the leex and yecc output
+the first compile wrote into `deps/<d>/src`), must pass on its own, so a
 path the package named itself (the first build's `priv`, a directory above it) refuses there; both `priv` trees must
 hold the same paths, only directories and regular files, with the same permission bits and bytes; and the first
 build must be unchanged. One difference is let through: a `.tar` or `.tar.gz` whose two copies differ only in their

@@ -28,7 +28,8 @@ defmodule NccWorker.Portability.PrivReproTest do
       dir: Path.join(build, "priv"),
       build: build,
       built: ["assets/a.txt"],
-      roots: [Path.join(dir, "proj")]
+      roots: [Path.join(dir, "proj")],
+      trees: %{"pkg" => {:ok, %{"lib/pkg.ex" => "sha"}}}
     }
 
     %{dir: dir, build: build, pass: pass, own: own, held: PrivRepro.hold(pass, own)}
@@ -40,7 +41,8 @@ defmodule NccWorker.Portability.PrivReproTest do
     fn _project, "pkg", opts ->
       assert opts[:priv_repro] == false
       assert opts[:mode] == :judge
-      refute Keyword.has_key?(opts, :trees)
+      # The tree snapshot the first build was judged on (`Trees`).
+      assert opts[:trees] == %{"pkg" => {:ok, %{"lib/pkg.ex" => "sha"}}}
       {"MIX_BUILD_PATH", path} = List.keyfind(opts[:env], "MIX_BUILD_PATH", 0)
       send(self(), {:second_build, path})
 

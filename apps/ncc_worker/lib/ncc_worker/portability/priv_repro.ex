@@ -104,7 +104,8 @@ defmodule NccWorker.Portability.PrivRepro do
       compile_inputs: verdict.compile_inputs,
       built_priv: own.built,
       dir: own.dir,
-      build: own.build
+      build: own.build,
+      trees: Map.get(own, :trees)
     }
 
     %{verdict | status: :skip, reason: Reasons.could_not_judge(), compile_env: nil}
@@ -151,7 +152,7 @@ defmodule NccWorker.Portability.PrivRepro do
       # So a clock read to the second differs between the two builds.
       Process.sleep(Keyword.get(opts, :repro_gap_ms, @gap_ms))
       before = digest.(held.build)
-      second = run.(project_dir, package, second_opts(opts, root))
+      second = run.(project_dir, package, second_opts(opts, root, Map.get(held, :trees)))
       later = digest.(held.build)
       app = Path.basename(held.build)
 
@@ -183,10 +184,11 @@ defmodule NccWorker.Portability.PrivRepro do
   defp top(path), do: path |> String.split("/", parts: 2) |> hd()
 
   # The first build's opts with a fresh build path under `root`, its own
-  # trace dir and log there, judge mode, its own tree snapshot (the first
-  # build's is of a build dir that is no longer empty) and no second build
-  # of its own.
-  defp second_opts(opts, root) do
+  # trace dir and log there, judge mode, the tree snapshot the first build
+  # was judged on (`trees`; one taken now would be after the first compile,
+  # which wrote leex and yecc output into `deps/<d>/src`, `Trees`) and no
+  # second build of its own.
+  defp second_opts(opts, root, trees) do
     build_path = Path.join(root, "build")
 
     opts
@@ -195,6 +197,7 @@ defmodule NccWorker.Portability.PrivRepro do
       env: build_path(Keyword.fetch!(opts, :env), build_path, true),
       extra_env: build_path(Keyword.get(opts, :extra_env, []), build_path, false),
       mode: :judge,
+      trees: trees,
       trace_dir: Path.join(root, "trace"),
       log_file: Path.join(root, "compile.log"),
       priv_repro: false
