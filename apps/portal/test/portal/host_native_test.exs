@@ -177,6 +177,23 @@ defmodule Portal.HostNativeTest do
       assert sha(nif()) in shas
     end
 
+    test "a native file outside priv is refused, with no files" do
+      {tarball, origins, blobs} = downloader()
+      name = unique()
+
+      result =
+        update_in(
+          result(name, tarball, origins),
+          ["host_native_build", "file_manifest", "ebin"],
+          &[entry("ebin/libextra.so", nif(), 33_261) | &1]
+        )
+
+      assert {:ok, %{status: :fail, reason: reason, file_manifest: nil}} =
+               Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
+
+      assert reason == "refused at ingest: ships a native file outside priv (ebin/libextra.so)"
+    end
+
     test "a NIF of another machine is refused, with no files" do
       name = unique()
       tarball = hex_tarball(%{})

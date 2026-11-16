@@ -14,7 +14,8 @@ defmodule Portal.HostNative.Ingest do
     2. at least one priv file is ELF, and every ELF file is a 64-bit
        `ET_DYN` object of the triple's machine, at most 64 MiB
        (`Compatibility.Elf`); every other priv file is static data of the
-       tarball (`Compatibility.StaticPriv`);
+       tarball (`Compatibility.StaticPriv`), and no file outside priv is
+       ELF;
     3. the tarball ships checksum files, and every ELF file is, byte for
        byte, a member of an archive the run handed over whose bytes have
        the sum the package's own checksum file lists for its name, and the
@@ -173,6 +174,7 @@ defmodule Portal.HostNative.Ingest do
   # Steps 1 to 4: `{:ok, needs}`, `{:refused, reason}` or `{:error, reason}`.
   defp verify(build, opts) do
     with {:ok, entries} <- entries(build["file_manifest"]),
+         :ok <- outside_priv(entries, opts.files_dir),
          {:ok, priv} <- read_priv(entries, opts.files_dir),
          {elf, static} = Enum.split_with(priv, &elf?(&1.bytes)),
          :ok <- if(elf == [], do: {:refused, "ships no native file"}, else: :ok),
@@ -206,6 +208,42 @@ defmodule Portal.HostNative.Ingest do
     String.valid?(path) and byte_size(path) <= 1024 and String.printable?(path) and
       not String.contains?(path, ["\\", <<0>>]) and
       Enum.all?(String.split(path, "/"), &(&1 not in ["", ".", ".."]))
+  end
+
+  # Every native file is judged in priv (steps 2 and 3): an ELF file under
+  # `ebin`, which a beam can `load_nif` from, would escape both. Only each
+  # blob's first bytes are read; staging verifies its digest.
+  defp outside_priv(entries, files_dir) do
+    entries
+    |> Enum.reject(&String.starts_with?(&1["path"], "priv/"))
+    |> Enum.sort_by(& &1["path"])
+    |> Enum.reduce_while(:ok, fn entry, :ok ->
+      case blob_head(files_dir, entry["sha256"]) do
+        {:ok, <<0x7F, "ELF", _::binary>>} ->
+          {:halt, {:refused, "ships a native file outside priv (#{entry["path"]})"}}
+
+        {:ok, _head} ->
+          {:cont, :ok}
+
+        :missing ->
+          {:halt, {:error, {:artifacts_unstaged, [entry["sha256"]]}}}
+      end
+    end)
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp blob_head(files_dir, sha) do
+    [Path.join(files_dir, sha), ArtifactStore.blob_path(sha)]
+    |> Enum.find_value(:missing, fn path ->
+      with {:ok, %File.Stat{type: :regular}} <- File.lstat(path),
+           {:ok, head} when is_binary(head) <-
+             File.open(path, [:read, :binary], &IO.binread(&1, 4)) do
+        {:ok, head}
+      else
+        {:ok, :eof} -> {:ok, ""}
+        _ -> nil
+      end
+    end)
   end
 
   defp read_priv(entries, files_dir) do

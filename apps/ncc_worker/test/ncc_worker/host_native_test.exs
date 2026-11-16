@@ -163,6 +163,21 @@ defmodule NccWorker.HostNativeTest do
       assert reason == "native file not verified against the package's checksum file: " <> @nif
     end
 
+    # The ELF rules and the origin check read priv; a native file the
+    # build left in ebin escapes both, and a beam can load_nif it from there.
+    test "a native file outside priv is refused", %{tmp_dir: dir} do
+      {_cache, name, archive} = archive(dir)
+      checksum = ~s(%{"#{name}" => "sha256:#{sha(archive)}"}\n)
+      ctx = project(dir, "circuits_gpio-2.1.3", %{"checksum.exs" => checksum})
+      {:ok, nif} = ctx.nif
+      File.write!(Path.join([ctx.project, "_build/host/lib/sample/ebin/libextra.so"]), nif)
+
+      assert %{status: "skipped", reason: reason, file_manifest: nil} =
+               build(ctx, "aarch64-linux-gnu", @pass, cache_dirs: [Path.join(dir, "cache")])
+
+      assert reason == "ships a native file outside priv (ebin/libextra.so)"
+    end
+
     test "an archive whose bytes are not the listed ones verifies nothing", %{tmp_dir: dir} do
       {_cache, name, _archive} = archive(dir)
       checksum = ~s(%{"#{name}" => "sha256:#{sha("other")}"}\n)

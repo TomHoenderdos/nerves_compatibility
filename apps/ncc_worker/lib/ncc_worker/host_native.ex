@@ -18,7 +18,8 @@ defmodule NccWorker.HostNative do
       files and 128 MiB): every file that is not ELF is static data its
       verified Hex tarball carries (`Compatibility.StaticPriv`), and every
       ELF file is a 64-bit `ET_DYN` object of the triple's machine
-      (`Compatibility.Elf`), at most 64 MiB;
+      (`Compatibility.Elf`), at most 64 MiB, and no file it publishes
+      outside priv is ELF;
     * that tarball ships checksum files (a downloader: rustler_precompiled,
       elixir_make's precompilers), and every ELF file is a member of an
       archive in the run's own cache dirs whose bytes have the sum a
@@ -181,6 +182,7 @@ defmodule NccWorker.HostNative do
            {:ok, tarball} <- tarball(project_dir, package, opts[:hex_home]),
            {:ok, manifest, natives} <-
              priv_rules(app_dir, project_dir, package, scan, tarball, build.triple),
+           :ok <- outside_priv(app_dir, manifest),
            {:ok, origins, archives} <- origins(natives, tarball, opts) do
         {:ok, %{manifest: manifest, natives: natives, origins: origins, archives: archives}}
       end
@@ -299,6 +301,30 @@ defmodule NccWorker.HostNative do
          {:ok, natives} <- elf_rules(elf, triple),
          {:ok, manifest} <- manifest(scan, files) do
       {:ok, manifest, natives}
+    end
+  end
+
+  # Every native file the build publishes is judged in priv: an ELF file
+  # under any other key (a Makefile writing into ebin, which a beam can
+  # `load_nif` from) would escape the ELF rules and the origin check.
+  defp outside_priv(app_dir, manifest) do
+    manifest
+    |> Enum.reject(fn {key, _entries} -> key == "priv" end)
+    |> Enum.flat_map(fn {_key, entries} -> List.wrap(entries) end)
+    |> Enum.map(& &1["path"])
+    |> Enum.sort()
+    |> Enum.find(&(not is_binary(&1) or elf_file?(Path.join(app_dir, &1))))
+    |> case do
+      nil -> :ok
+      path -> {:skip, "ships a native file outside priv (#{path})"}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp elf_file?(path) do
+    case File.open(path, [:read, :binary], &IO.binread(&1, 4)) do
+      {:ok, head} -> elf?(head)
+      _ -> true
     end
   end
 
