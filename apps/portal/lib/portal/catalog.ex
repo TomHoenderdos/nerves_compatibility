@@ -3151,15 +3151,20 @@ defmodule Portal.Catalog do
         shas_by_system_result_id =
           results |> Enum.map(& &1.id) |> manifest_shas_for_system_results()
 
-        # A row's earlier builds (`ToolchainBuild.EarlierBuilds`) are builds
-        # of their own, each judged by its own lock, and listed only beside a
-        # row that is not withheld: their files are the row's memberships,
-        # which the files route and the package list publish by the row's
-        # lock (`@withheld_toolchain_clause`).
-        served =
+        rows =
           package.id
           |> published_toolchain_builds()
           |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld, &1))
+
+        # A row's earlier builds (`ToolchainBuild.EarlierBuilds`) are builds
+        # of their own, each judged by its own lock and config reads, and
+        # listed only beside a row that is served itself: their files are
+        # the row's memberships, which the files route and the package list
+        # publish by the row's own lock and config reads
+        # (`@withheld_toolchain_clause`, `@config_variant_served_clause`).
+        served =
+          rows
+          |> Enum.filter(&Withheld.config_variant_served?(&1, rows))
           |> Enum.flat_map(&EarlierBuilds.expand/1)
           |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld, &1))
 

@@ -212,6 +212,47 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     assert served_locks(name) == []
   end
 
+  # The files route and the package list serve a named config variant's
+  # memberships only while the row records its own config reads
+  # (`@config_variant_served_clause`). A release that does not know
+  # `compile_env_run_id` rewrites the row with its own `run_id` and leaves
+  # the mark, which then vouches for nothing, while an earlier build kept on
+  # the row still carries a mark of its own.
+  test "an earlier build of a named config variant is listed only beside a served row" do
+    drop_legacy_identity_index!()
+    name = name()
+
+    ingest_toolchain_build(name, "0.4.0",
+      deps_lock: lock("2.19.0"),
+      compile_env: lv_default_env(),
+      compile_env_rule: 1
+    )
+
+    named = [
+      config_variant: "phx_prod",
+      compile_env: overlay_env("phx_prod"),
+      compile_env_rule: 1
+    ]
+
+    ingest_toolchain_build(name, "0.4.0", [deps_lock: lock("2.18.0")] ++ named)
+    row = ingest_toolchain_build(name, "0.4.0", [deps_lock: lock("2.19.0")] ++ named)
+    assert served_locks(name) == ["2.18.0", "2.19.0", "2.19.0"]
+
+    Repo.query!(
+      "UPDATE catalog_toolchain_builds SET run_id = 'tc-old-release' WHERE id = $1",
+      [Ecto.UUID.dump!(row.id)]
+    )
+
+    listed =
+      for build <- builds(name),
+          key <- ["ebin", "priv"],
+          file <- build[key] || [],
+          do: file["sha256"]
+
+    assert Enum.all?(listed, &Catalog.published_sha256?/1)
+    assert served_locks(name) == ["2.19.0"]
+  end
+
   test "an earlier build whose file the row no longer owns is left out whole" do
     name = name()
     old = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
