@@ -150,6 +150,11 @@ defmodule NccWorker.Portability.Events do
   # the OTP major. Exact atom keys only: `term_bin` renders a tuple key
   # (`{allocator, ...}`) as something never in this list.
   @same_within_major ~w(machine smp_support threads heap_type)
+  # The toolchain functions whose own `:os.type/0` read keeps only the
+  # family (`{major, _} = :os.type()`) and that run no package code: their
+  # read is an `os_type` input without the name. Pinned on the running
+  # toolchain by `NccWorker.Tracer.OsFamilyCallersTest`.
+  @os_family_callers [{"Elixir.File", "rm_rf", 1}]
 
   @type decision ::
           :ignore
@@ -159,6 +164,12 @@ defmodule NccWorker.Portability.Events do
 
   @typedoc "Per `mix.exs` real path, its `MixExsSlice.analyse/1` result."
   @type slices :: %{String.t() => {:ok, MixExsSlice.t()} | {:refuse, String.t()}}
+
+  @doc false
+  # The callers whose `:os.type/0` read is recorded as the family alone, as
+  # `{module, function, arity}` text (`os_type_scope/1`).
+  @spec os_family_callers() :: [{String.t(), String.t(), non_neg_integer()}]
+  def os_family_callers, do: @os_family_callers
 
   @doc """
   Decides one event for `owner` (`Context.owner/2`, or a child VM's app).
@@ -374,7 +385,7 @@ defmodule NccWorker.Portability.Events do
   # stripped, and `caller_kind` the tracer's verdict on its module's loaded
   # code: a package's own `File` is never the toolchain's.
   defp os_type_scope(%{"mfa" => "os:type/0", "caller_kind" => "toolchain"} = e) do
-    if caller?(e, {"Elixir.File", "rm_rf", 1}), do: "family", else: "full"
+    if Enum.any?(@os_family_callers, &caller?(e, &1)), do: "family", else: "full"
   end
 
   defp os_type_scope(%{"mfa" => "erlang:system_info/1", "caller_kind" => "toolchain"} = e) do
