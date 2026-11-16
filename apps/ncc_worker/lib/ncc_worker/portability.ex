@@ -1436,6 +1436,8 @@ defmodule NccWorker.Portability do
     order =
       for %{"app" => app} <- closure_deps(report), app != ctx.package, app in scope, do: app
 
+    decided = if target?, do: Enum.map(decided, &native_file_read/1), else: decided
+
     {decided, results} =
       Enum.reduce(order, {decided, %{}}, fn app, {decided, results} ->
         decided = beam_reads(decided, ctx, report, {results, libs}, &(&1 == app))
@@ -1469,6 +1471,18 @@ defmodule NccWorker.Portability do
         entry
     end)
   end
+
+  # A firmware target's trace sets the native build tool's activity apart,
+  # so a natively built dependency's own compile is clean however its native
+  # build ran (`clean_native?/3`), and `make` is no traced process: a file
+  # other than a beam in its ebin may be one `make` wrote, from inputs
+  # nobody records. A compile reading one, in any window, refuses as it
+  # would on the host.
+  defp native_file_read({owner, {:observe, "native_beam_reads", item}} = entry) do
+    if beam_path?(item), do: entry, else: {owner, {:refuse, item["refusal"]}}
+  end
+
+  defp native_file_read(entry), do: entry
 
   defp beam_path?(%{"arg" => %{"path" => path}}) when is_binary(path),
     do: Path.extname(path) == ".beam"

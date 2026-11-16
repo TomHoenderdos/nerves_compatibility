@@ -158,6 +158,17 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
       "fx_board_gen" => gen_board("fx_board_gen", @gen_source),
       # The native build putting a module of its own in the package's ebin.
       "fx_board_beam" => gen_board("fx_board_beam", @gen_beam),
+      # A natively built dependency whose native build puts a file in its
+      # ebin, and a package whose compile reads it there.
+      "fx_dep_data" => gen_board("fx_dep_data", @gen_data),
+      "fx_board_dep_data" =>
+        gen_board(
+          "fx_board_dep_data",
+          "true",
+          "@mode File.read!(Path.join(:code.lib_dir(:fx_dep_data), \"ebin/mode.txt\"))\n  def mode, do: @mode"
+        )
+        |> Map.update!(:mix_exs, &add_dep(&1, "fx_dep_data"))
+        |> Map.update!(:deps, &["fx_dep_data" | &1]),
       # The package's compile reading a file the native build put in its ebin.
       "fx_board_data" =>
         gen_board(
@@ -197,6 +208,14 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
     %{files: files, mix_exs: mix_exs, deps: ["elixir_make"]}
   end
 
+  defp add_dep(mix_exs, dep),
+    do:
+      String.replace(
+        mix_exs,
+        "deps: [{:elixir_make, path: \"../elixir_make\"}]",
+        "deps: [{:elixir_make, path: \"../elixir_make\"}, {:#{dep}, path: \"../#{dep}\"}]"
+      )
+
   # A package whose native build runs `gen.sh`, a file of its own tarball.
   defp gen_board(app, script, lib_extra \\ "") do
     %{files: files, mix_exs: mix_exs} = board(app, lib_extra)
@@ -208,7 +227,8 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
   end
 
   @apps ~w(elixir_make fx_board fx_board_os fx_board_sneaky fx_board_tool_lib fx_board_tool_alias
-           fx_board_make_env fx_board_gen fx_board_beam fx_board_data)
+           fx_board_make_env fx_board_gen fx_board_beam fx_board_data fx_dep_data
+           fx_board_dep_data)
 
   setup_all do
     root =
@@ -391,6 +411,11 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
 
   test "a file the native build put in the package's ebin is no beam of its own compile", ctx do
     assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, "fx_board_data")
+    assert v.reason =~ "mode.txt"
+  end
+
+  test "a file a dependency's native build put in its ebin is no input it recorded", ctx do
+    assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, "fx_board_dep_data")
     assert v.reason =~ "mode.txt"
   end
 
