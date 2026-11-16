@@ -790,7 +790,8 @@ only on a passing target that publishes its own first build (no optional depende
 
 The target then carries the trace's `compile_inputs` and its `compile_env`; anything that does not hold leaves it
 without, as before. Past the tracer's run ceiling (105 minutes into the run) no further target is tried, its Nerves env
-included. `NCC_FIRMWARE_INPUTS=0` turns it off.
+included. The portal's `NCC_FIRMWARE_INPUTS=0` turns it off with no image change: firmware builds, local and remote,
+get `NCC_INPUT.firmware_inputs: false`; an input without the key (an older portal) is on.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

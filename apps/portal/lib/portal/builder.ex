@@ -204,6 +204,21 @@ defmodule Portal.Builder do
   def judge_input(_mode), do: nil
 
   @doc """
+  The `NCC_INPUT.firmware_inputs` of a build of `mode`: `false` for a
+  firmware build (no mode) while `NCC_FIRMWARE_INPUTS=0`
+  (`:firmware_inputs`), which turns off the worker's traced pass for its
+  firmware targets' compile inputs (`NccWorker.FirmwareInputs`); else nil,
+  no key, which the worker (and every worker before it) reads as on. The
+  builder API sends the same for a remote lease.
+  """
+  @spec firmware_inputs_input(String.t() | nil) :: false | nil
+  def firmware_inputs_input(nil) do
+    if config(:firmware_inputs, true) == false, do: false
+  end
+
+  def firmware_inputs_input(_mode), do: nil
+
+  @doc """
   The memory limit `job`'s container runs with: its own `:memory` when set,
   else `NCC_TOOLCHAIN_MEMORY` (`:toolchain_memory`) for a toolchain run and
   `NCC_WARM_MEMORY` (`:warm_memory`) for a warm run, falling back to
@@ -406,6 +421,7 @@ defmodule Portal.Builder do
       system_abi: Map.get(args, :system_abi),
       egress_probe: Map.get(args, :egress_probe),
       judge: judge_input(mode),
+      firmware_inputs: firmware_inputs_input(mode),
       memory: Map.get(args, :memory),
       build_concurrency: Map.get(args, :build_concurrency)
     }
@@ -1016,6 +1032,7 @@ defmodule Portal.Builder do
     |> maybe_put("known_system_abi", Map.get(job, :known_system_abi))
     |> maybe_put("egress_probe", Map.get(job, :egress_probe))
     |> maybe_put("judge", Map.get(job, :judge))
+    |> maybe_put("firmware_inputs", Map.get(job, :firmware_inputs))
   end
 
   # Only a firmware build (no mode) builds targets to put a world on.

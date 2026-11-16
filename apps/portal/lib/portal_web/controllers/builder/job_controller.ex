@@ -404,7 +404,8 @@ defmodule PortalWeb.Builder.JobController do
         systems_filter: lease.args["systems_filter"],
         mode: lease.args["mode"],
         argus: lease.args["argus"],
-        firmware_world: lease.args["firmware_world"]
+        firmware_world: lease.args["firmware_world"],
+        firmware_inputs: Portal.Builder.firmware_inputs_input(lease.args["mode"])
       })
 
     agent = Images.agent()

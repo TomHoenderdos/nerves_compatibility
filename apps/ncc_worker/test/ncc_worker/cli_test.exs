@@ -13,6 +13,20 @@ defmodule NccWorker.CLITest do
             }} = CLI.parse_input(json)
   end
 
+  # `firmware_inputs: false` is the portal's rollback of the firmware
+  # targets' traced pass (`NccWorker.FirmwareInputs`); an older portal
+  # sends nothing, which is on.
+  test "parse_input/1 reads firmware_inputs, and its absence is on" do
+    assert {:ok, input} = CLI.parse_input(~s({"run_id":"r1","firmware_inputs":false}))
+    assert %{firmware_inputs: false} = input
+    refute NccWorker.FirmwareInputs.enabled?(input)
+
+    for json <- [~s({"run_id":"r1"}), ~s({"run_id":"r1","firmware_inputs":true})] do
+      assert {:ok, input} = CLI.parse_input(json)
+      assert NccWorker.FirmwareInputs.enabled?(input), json
+    end
+  end
+
   # A toolchain build is queued per optional-deps variant: "include" runs the
   # optional dependencies pass, "exclude" builds without it.
   test "parse_input/1 keeps the optional_deps variant" do

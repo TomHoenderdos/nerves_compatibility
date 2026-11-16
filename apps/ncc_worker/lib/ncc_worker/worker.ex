@@ -99,6 +99,11 @@ defmodule NccWorker.Worker do
           # (`NccWorker.WorldDeps.validate/2`) and normalised to atom keys.
           # Any other mode ignores it.
           optional(:firmware_world) => %{name: String.t(), members: [String.t()]},
+          # For a firmware run: `false` skips the firmware targets' traced
+          # pass (`NccWorker.FirmwareInputs`), the portal's
+          # `NCC_FIRMWARE_INPUTS=0` rollback. Absent (an older portal) or
+          # anything else is on.
+          optional(:firmware_inputs) => boolean(),
           # For "toolchain": a `Compatibility.ConfigVariants` name; its overlay
           # is written as `config/config.exs` before the compile
           # (`NccWorker.ConfigOverlay`). Absent is `default`, no overlay.
@@ -1005,6 +1010,7 @@ defmodule NccWorker.Worker do
       started_at: Map.get(input, :started_at, System.monotonic_time(:second)),
       known_system_abi: List.wrap(input[:known_system_abi]),
       firmware_world: input[:firmware_world],
+      firmware_inputs: FirmwareInputs.enabled?(input),
       releases: releases,
       trees: trees
     }
@@ -1411,7 +1417,8 @@ defmodule NccWorker.Worker do
         trees: Map.get(pass, :trees),
         started_at: pass.started_at,
         work_dir: pass.paths.work_dir,
-        log_dir: Path.join(pass.paths.output_dir, "logs")
+        log_dir: Path.join(pass.paths.output_dir, "logs"),
+        enabled: Map.get(pass, :firmware_inputs, true)
       })
 
     Enum.each(lines, &log_host(pass.paths, &1))

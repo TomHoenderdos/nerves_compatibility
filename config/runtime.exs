@@ -219,6 +219,11 @@ if portal_available? do
     # those `skipped` rows against the fleet's newest revision every sweep,
     # rebuilding the same package weekly instead of once.
     judge_makefile_rule2: if(System.get_env("NCC_JUDGE_MAKEFILE_RULE2") == "1", do: true),
+    # `0` turns off the firmware targets' traced compile-input pass
+    # (`NccWorker.FirmwareInputs`, judge revision 19): firmware builds get
+    # `NCC_INPUT.firmware_inputs: false`, local and remote alike, with no
+    # image change. Anything else, or unset, keeps it on.
+    firmware_inputs: if(System.get_env("NCC_FIRMWARE_INPUTS") == "0", do: false),
     build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),

@@ -37,8 +37,10 @@ defmodule NccWorker.FirmwareInputs do
   must be artifact dirs of the one artifacts dir (`NERVES_ARTIFACTS_DIR`),
   which `NccWorker.FirmwareBuildRoot` keeps out of the published files.
 
-  `NCC_FIRMWARE_INPUTS=0` turns it off (the rollback): no target gets
-  inputs, as before.
+  `NCC_INPUT.firmware_inputs: false` turns it off (the rollback, which the
+  portal sends while its own `NCC_FIRMWARE_INPUTS=0`; an older portal sends
+  nothing, which is on), and so does `NCC_FIRMWARE_INPUTS=0` in the
+  worker's own env: no target gets inputs, as before (`enabled?/1`).
 
   Only a target that publishes its own first build is judged: one that kept
   its optional dependencies, or publishes variants, was compiled against
@@ -64,9 +66,11 @@ defmodule NccWorker.FirmwareInputs do
   What `put/3` needs: `targets` maps a system's name to `{target, env}`
   (the target's build env); `releases`, `trees` and `started_at` are the
   run's lock snapshot, tree snapshot and start (monotonic seconds);
-  `work_dir` and `log_dir` where it writes.
+  `work_dir` and `log_dir` where it writes; `enabled` (default true)
+  is `enabled?/1` of the run's input.
   """
   @type ctx :: %{
+          optional(:enabled) => boolean(),
           project_dir: String.t(),
           package: String.t(),
           targets: %{String.t() => {String.t(), [{String.t(), String.t()}]}},
@@ -92,7 +96,7 @@ defmodule NccWorker.FirmwareInputs do
           {:ok, target_env} <- [Map.fetch(ctx.targets, name)],
           do: {name, target_env}
 
-    if eligible == [] or System.get_env("NCC_FIRMWARE_INPUTS") == "0" or
+    if eligible == [] or not enabled?(%{firmware_inputs: Map.get(ctx, :enabled, true)}) or
          not env_reads?(Path.join([ctx.project_dir, "deps", ctx.package])) do
       {systems, []}
     else
@@ -119,6 +123,15 @@ defmodule NccWorker.FirmwareInputs do
     elapsed = max(System.monotonic_time(:second) - started_at, 0)
     Tracer.timeout_sec(@trace_timeout_ms, elapsed) != :exhausted
   end
+
+  @doc """
+  Whether a run with `input` (`NCC_INPUT`, atom keys) records firmware
+  targets' inputs: unless its `firmware_inputs` is `false` or the worker's
+  own `NCC_FIRMWARE_INPUTS` is `"0"`. An input without the key is on.
+  """
+  @spec enabled?(map()) :: boolean()
+  def enabled?(input) when is_map(input),
+    do: Map.get(input, :firmware_inputs) != false and System.get_env("NCC_FIRMWARE_INPUTS") != "0"
 
   defp put_one(systems, name, {:ok, %{compile_inputs: inputs, compile_env: env}})
        when is_list(inputs) do

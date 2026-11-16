@@ -41,6 +41,7 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
     assert body["input"]["run_id"] == body["run_id"]
     assert body["input"]["paths"]["files_dir"] == "/files"
     refute Map.has_key?(body["input"], "firmware_world")
+    refute Map.has_key?(body["input"], "firmware_inputs")
     assert body["timeout_sec"] == 7200
     assert body["upload"]["max_files"] == 20_000
     assert body["egress_required"] == true
@@ -64,6 +65,18 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
 
     body = conn |> with_cert(der) |> post("/builder/v1/jobs/claim", @claim) |> json_response(200)
     assert body["input"]["firmware_world"] == world
+  end
+
+  test "with NCC_FIRMWARE_INPUTS=0 a firmware lease's input turns the traced pass off",
+       %{conn: conn} do
+    previous = Application.get_env(:portal, Portal.Builder, [])
+    on_exit(fn -> Application.put_env(:portal, Portal.Builder, previous) end)
+    Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :firmware_inputs, false))
+    %{cert_der: der} = enrolled_builder!("c-fw-inputs")
+    queued!()
+
+    body = conn |> with_cert(der) |> post("/builder/v1/jobs/claim", @claim) |> json_response(200)
+    assert body["input"]["firmware_inputs"] == false
   end
 
   test "nothing to do is 204 and a short poll returns quickly", %{conn: conn} do

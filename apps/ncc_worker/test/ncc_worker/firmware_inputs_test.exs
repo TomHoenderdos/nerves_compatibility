@@ -106,6 +106,17 @@ defmodule NccWorker.FirmwareInputsTest do
       refute_received {:recorded, _, _}
     end
 
+    test "the portal's rollback (NCC_INPUT firmware_inputs: false) traces nothing",
+         %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @module_read)
+      systems = %{"rpi4" => pass()}
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+      off = Map.put(ctx(proj, ["rpi4"]), :enabled, false)
+
+      assert FirmwareInputs.put(systems, off, record: record) == {systems, []}
+      refute_received {:recorded, _, _}
+    end
+
     test "a package that reads no env at module level is never traced", %{tmp_dir: tmp_dir} do
       proj = project(tmp_dir, "defmodule Pkg do\n  def x, do: System.get_env(\"X\")\nend\n")
       systems = %{"rpi4" => pass()}
