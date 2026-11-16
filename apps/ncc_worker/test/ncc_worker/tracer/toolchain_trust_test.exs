@@ -186,6 +186,71 @@ defmodule NccWorker.Tracer.ToolchainTrustTest do
       assert :ncc_tracer.installed_app(:public_key, path, false) == :null
     end
   end
+
+  describe "code swaps" do
+    # The toolchain's code for :lists, and other code under that name.
+    defp real, do: File.read!(:code.which(:lists))
+
+    defp other(tag) do
+      forms = [
+        {:attribute, 1, :module, :lists},
+        {:attribute, 1, :export, [tag: 0]},
+        {:function, 1, :tag, 0, [{:clause, 1, [], [], [{:integer, 1, tag}]}]}
+      ]
+
+      {:ok, :lists, bin} = :compile.forms(forms, [:binary])
+      bin
+    end
+
+    defp prepared(bin, ts), do: :ncc_tracer.code_prepared(:lists, bin, ts)
+    defp judged, do: :ncc_tracer.toolchain_code(:lists, md5(:lists))
+
+    test "the toolchain's code loaded back after other code fails, in any order seen" do
+      steps = [
+        fn -> prepared(other(1), 10) end,
+        fn -> prepared(real(), 20) end,
+        &judged/0
+      ]
+
+      for order <- [[0, 1, 2], [1, 0, 2], [2, 1, 0], [2, 0, 1], [1, 2, 0], [0, 2, 1]] do
+        task =
+          Task.async(fn ->
+            for i <- order, do: Enum.at(steps, i).()
+            Process.get(:code_swap)
+          end)
+
+        assert Task.await(task) == :lists, inspect(order)
+      end
+    end
+
+    test "other code after the toolchain's (protocol consolidation), or never replaced, passes" do
+      for steps <- [
+            [fn -> prepared(real(), 10) end, fn -> prepared(other(1), 20) end, &judged/0],
+            [&judged/0, fn -> prepared(other(1), 20) end],
+            [fn -> prepared(other(1), 10) end, fn -> prepared(other(2), 20) end]
+          ] do
+        task =
+          Task.async(fn ->
+            Enum.each(steps, & &1.())
+            Process.get(:code_swap)
+          end)
+
+        assert Task.await(task) == nil
+      end
+    end
+
+    test "past the kept versions, a module ever taken for the toolchain's fails" do
+      task =
+        Task.async(fn ->
+          for tag <- 1..17, do: prepared(other(tag), tag)
+          before = Process.get(:code_swap)
+          judged()
+          {before, Process.get(:code_swap)}
+        end)
+
+      assert Task.await(task) == {nil, :lists}
+    end
+  end
 end
 
 defmodule NccWorker.Tracer.ToolchainTrustVmTest do

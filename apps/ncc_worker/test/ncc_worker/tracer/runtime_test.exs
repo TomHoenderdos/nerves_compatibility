@@ -910,6 +910,68 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
   end
 
+  # A `URI` (the toolchain's, patterned by nothing) whose leak/0 returns
+  # `{read, ok}`, not a tail call: its frame is the read's first.
+  defp forged_uri(read) do
+    forms = [
+      {:attribute, 1, :module, URI},
+      {:attribute, 1, :export, [leak: 0]},
+      {:function, 1, :leak, 0, [{:clause, 1, [], [], [{:tuple, 1, [read, {:atom, 1, :ok}]}]}]}
+    ]
+
+    {:ok, URI, bin} = :compile.forms(forms, [:binary])
+    Base.encode64(bin)
+  end
+
+  # Whose code a frame ran is the collector's verdict on the code loaded for
+  # its module, which it takes when it gets to the event. A package can make
+  # a read from a forged module named like a toolchain one and load the
+  # toolchain's back, purged, before then (the collector is held here so the
+  # order is certain): the read is taken for the toolchain's (first_kind),
+  # so the check must fail the window.
+  defp swapped_read(dir, read) do
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      forged = Base.decode64!("#{forged_uri(read)}")
+      collector = :ncc_tracer.collector()
+      :ok = :ncc_tracer.window_open(tok, "fx")
+      true = :erlang.suspend_process(collector)
+      _ = :code.purge(URI)
+      {:module, URI} = :code.load_binary(URI, ~c"nofile", forged)
+      {_, :ok} = URI.leak()
+      _ = :code.purge(URI)
+      {:module, URI} = :code.load_file(URI)
+      true = :code.soft_purge(URI)
+      true = :erlang.resume_process(collector)
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    reads = for e <- kind(lines, "event"), e["first"]["module"] == "Elixir.URI", do: e
+    {lines, reads, out}
+  end
+
+  test "a config read from a forged module restored before the collector looks fails the window",
+       %{tmp_dir: dir} do
+    read =
+      {:call, 1, {:remote, 1, {:atom, 1, :application}, {:atom, 1, :get_env}},
+       [{:atom, 1, :kernel}, {:atom, 1, :ncc_swap_probe}]}
+
+    {lines, reads, out} = swapped_read(dir, read)
+    assert [%{"channel" => "config", "first_kind" => "toolchain"}] = reads, out
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
+  test "an Elixir-version read from a forged module restored before the collector looks fails the window",
+       %{tmp_dir: dir} do
+    read = {:call, 1, {:remote, 1, {:atom, 1, System}, {:atom, 1, :version}}, []}
+    {lines, reads, out} = swapped_read(dir, read)
+    assert [%{"channel" => "elixir_version", "first_kind" => "toolchain"}] = reads, out
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
   test "a traced module deleted and purged without a reload fails the check",
        %{tmp_dir: dir} do
     {0, out} =

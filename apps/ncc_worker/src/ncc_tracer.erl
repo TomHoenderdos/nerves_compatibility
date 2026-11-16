@@ -9,7 +9,7 @@
          collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0, object_verdict/4,
-         installed_app/3, cache_hit/2, canary_patterns/0]).
+         installed_app/3, cache_hit/2, canary_patterns/0, code_prepared/3, toolchain_code/2]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -31,6 +31,14 @@
 -define(INTROSPECTION, ['__info__', module_info, behaviour_info]).
 %% A match spec that never matches: the pattern is set, no call is traced.
 -define(NEVER, [{'_', [false], []}]).
+%% Every load of Erlang code passes here (erlang:prepare_loading/2,
+%% erlang:load_module/2, the code server, or a package calling it itself):
+%% traced without a stack, tagged, for code_prepared/3.
+-define(PREPARE_LOADING, {erts_internal, prepare_loading, 2}).
+%% The distinct versions of one module's code code_prepared/3 keeps; past
+%% that the module's history is only `overflow`, which fails the check once
+%% the module is ever taken for the toolchain's.
+-define(MAX_PREPARED, 16).
 -define(SPAWNS, [spawn, spawn_link, spawn_monitor, spawn_opt, spawn_request]).
 
 %% set_depth: the backtrace_depth the tracer set and read back at start.
@@ -289,7 +297,8 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     Unloaded = load_uses(),
     put(preloaded_md5, preloaded_md5s()),
     put(owned_md5, owned_md5s()),
-    Patterns = ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role),
+    Patterns = ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)
+        ++ [?PREPARE_LOADING],
     Canaries = canary_patterns(),
     _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns ++ Canaries],
     Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
@@ -608,6 +617,7 @@ app_call(M, F, Args) ->
         _ -> false
     end.
 
+match_spec(?PREPARE_LOADING, _Role, _Depth) -> [{'_', [], [{message, code_load}]}];
 match_spec({compile, file, 2}, child, _Depth) -> [{'_', [], [{return_trace}]}];
 match_spec({erlang, process_info, 2}, _Role, Depth) ->
     Msg = {message, {current_stacktrace, Depth}},
@@ -655,6 +665,9 @@ loop(St) ->
             loop(St)
     end.
 
+traced({trace_ts, _Pid, call, {erts_internal, prepare_loading, [M, Bin]}, code_load, Ts}, St) ->
+    code_prepared(M, Bin, Ts),
+    St;
 traced({trace_ts, Pid, call, {M, F, Args}, Stack, Ts}, St) ->
     call_event(Pid, M, F, Args, Stack, Ts, pending(Pid, M, F, Args, St));
 traced({trace_ts, Pid, call, {compile, file, [Src | _]}, _Ts}, St) ->
@@ -1049,7 +1062,9 @@ sentinel_app(App, _Pid, _St) -> {App, false}.
 checks(St0, When) ->
     {DepthOk, St1} = depth_check(St0, When),
     {PatternsOk, St} = patterns_check(St1, When),
-    {#{depth_ok => DepthOk, integrity_ok => PatternsOk andalso not St#st.tampered}, St}.
+    {#{depth_ok => DepthOk,
+       integrity_ok => PatternsOk andalso not St#st.tampered andalso get(code_swap) =:= undefined},
+     St}.
 
 %% A close or finish also needs every trace message delivered first.
 closing_checks(St0, Delivered) ->
@@ -1479,8 +1494,80 @@ object_code_toolchain(M) ->
             V = object_verdict(M, (try code:which(M) catch _:_ -> undefined end), Md5,
                                verdict_env()),
             put({tc, M}, {Md5, V}),
+            V andalso toolchain_code(M, Md5),
             V
     end.
+
+%% --- code swaps --------------------------------------------------------------
+
+%% A frame's kind is the verdict on the code loaded for its module when the
+%% collector gets to the event, not when the call was made: a package can
+%% call a forged module named like a toolchain one and load the toolchain's
+%% code back before then, and the frame is taken for the toolchain's. Every
+%% load is traced (PREPARE_LOADING), and each module's versions kept with
+%% the first and last time each was prepared. The toolchain's code for a
+%% module (the md5s the verdict passed, toolchain_code/2) prepared again
+%% after other code of that name fails every check from then on (code_swap):
+%% only then can a verdict on the current code differ from the code a call
+%% ran. Either fact may come first, in any order the messages arrive: each
+%% checks the other, and a window's close sees every load made before it.
+%% Mix's protocol consolidation loads other code after the toolchain's, never
+%% the toolchain's after, and a package's module of a toolchain name that
+%% stays loaded is never the toolchain's.
+code_prepared(M, Bin, Ts) when is_atom(M) ->
+    case ncc_tracer_stack:compiler_frame({M, none, 0, []}) of
+        true -> ok;
+        false ->
+            Md5 = case (try beam_lib:md5(Bin) catch _:_ -> error end) of
+                      {ok, {M, Sum}} -> Sum;
+                      _ -> bad
+                  end,
+            Prepared = prepared(Md5, Ts, get({prepared, M})),
+            put({prepared, M}, case is_list(Prepared) andalso length(Prepared) > ?MAX_PREPARED of
+                                   true -> overflow;
+                                   false -> Prepared
+                               end),
+            restored(M)
+    end;
+code_prepared(_M, _Bin, _Ts) -> ok.
+
+prepared(_Md5, _Ts, overflow) -> overflow;
+prepared(Md5, Ts, undefined) -> [{Md5, Ts, Ts}];
+prepared(Md5, Ts, Prepared) ->
+    case lists:keyfind(Md5, 1, Prepared) of
+        {Md5, First, Last} -> lists:keyreplace(Md5, 1, Prepared, {Md5, min(First, Ts), max(Last, Ts)});
+        false -> [{Md5, Ts, Ts} | Prepared]
+    end.
+
+toolchain_code(M, Md5) ->
+    case get({toolchain_code, M}) of
+        Known when is_list(Known) ->
+            lists:member(Md5, Known) orelse put({toolchain_code, M}, [Md5 | Known]);
+        _ -> put({toolchain_code, M}, [Md5])
+    end,
+    restored(M).
+
+%% The toolchain's code prepared at or after another version's first load.
+restored(M) ->
+    case {get({toolchain_code, M}), get({prepared, M})} of
+        {Known, Prepared} when is_list(Known), is_list(Prepared) ->
+            Swap = lists:any(fun({Md5, _First, Last}) ->
+                                     lists:member(Md5, Known) andalso
+                                         lists:any(fun({Other, First, _}) ->
+                                                           Other =/= Md5 andalso First =< Last
+                                                   end, Prepared)
+                             end, Prepared),
+            Swap andalso swapped(M);
+        {Known, overflow} when is_list(Known) -> swapped(M);
+        _ -> false
+    end.
+
+swapped(M) ->
+    case get(code_swap) of
+        undefined -> put(code_swap, M);
+        _ -> ok
+    end,
+    true.
 
 %% A kept verdict holds only for the code it was taken for.
 cache_hit({Md5, V}, Md5) when is_binary(Md5), is_boolean(V) -> {ok, V};

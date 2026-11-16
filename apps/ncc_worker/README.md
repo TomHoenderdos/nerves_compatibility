@@ -463,6 +463,11 @@ Every module whose frames are trusted by name (the path internals' `Path`, `file
 the stack wrappers, the code-loading shapes' modules, `epp`, `erlang`) carries a trace pattern on `module_info/0`
 that never fires: loading other code under such a name during the trace, even with the toolchain's put back before
 the collector looks (`erlang:load_module/2` passes a sticky directory), drops it and fails the integrity check.
+Every other frame's kind (toolchain or package, `first_kind`, the extent) is the verdict on the code loaded for its
+module when the collector reaches the event, so the tracer also traces every code load (`erts_internal:prepare_loading/2`)
+and keeps each module's versions with when each was prepared: a module's toolchain code (an md5 the verdict passed)
+prepared at or after the first load of other code under its name fails every integrity check from then on, whichever
+of the two the collector sees first. Protocol consolidation loads other code after the toolchain's, never before it.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
