@@ -437,6 +437,55 @@ defmodule NccWorker.FirmwareInputsTest do
       assert which(c.proj, "_build/rpi4") == {:ok, "build"}
     end
 
+    # The trace builds into the published build's own paths, so a process it
+    # left running that the tracer could not kill (a writer on
+    # `_build/<target>` or `deps_<target>`) would write into the published
+    # files once they are back. Such a trace fails the run, as a traced host
+    # compile that leaves one does (`NccWorker.HostTrace`).
+    test "a trace that leaves processes running stops the run", c do
+      toolchain = Path.join([c.tmp_dir, "artifacts", "nerves_toolchain_fx-1.0.0"])
+      File.mkdir_p!(toolchain)
+      nerves_env = fn _proj, _env, _dir -> {:ok, [{"NERVES_TOOLCHAIN", toolchain}]} end
+      ctx = %{ctx(c.proj, []) | work_dir: c.tmp_dir, log_dir: c.tmp_dir}
+
+      for {error, left_running?} <- [
+            {{:writers_survived, ["4242"]}, true},
+            {{:group_survived, ["4242"]}, true},
+            {:cleanup_unverified, true},
+            {:timeout, false}
+          ] do
+        # The real judge, with a compile that ends and a reap that reports.
+        target_inputs = fn proj, package, opts ->
+          NccWorker.Portability.target_inputs(
+            proj,
+            package,
+            opts ++
+              [
+                cmd: fn _caller, _ref, _timeout, _argv, _log -> {:ok, 0} end,
+                reap: fn _build -> {:error, error} end
+              ]
+          )
+        end
+
+        record = fn ->
+          FirmwareInputs.record("rpi4", {"rpi4", c.env}, ctx, pass(),
+            nerves_env: nerves_env,
+            target_inputs: target_inputs
+          )
+        end
+
+        if left_running? do
+          assert_raise FirmwareInputs.LayoutNotRestored, ~r/left processes running/, record
+        else
+          assert {:error, _why} = record.()
+        end
+
+        assert which(c.proj, "deps/pkg") == {:ok, "run"}, inspect(error)
+        assert which(c.proj, "deps_rpi4/pkg") == {:ok, "target"}
+        assert which(c.proj, "_build/rpi4") == {:ok, "build"}
+      end
+    end
+
     test "a dir that cannot be put back stops the run", c do
       {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
 

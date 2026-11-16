@@ -116,6 +116,9 @@ defmodule NccWorker.FirmwareInputs do
   @env_read ~r/System\s*\.\s*(get_env|fetch_env!?)\s*\(|:os\s*\.\s*getenv\s*\(/
   # `nerves_toolchain_aarch64_nerves_linux_gnu-15.3.1`, `nerves_system_rpi4-2.2.2`.
   @artifact_name ~r/\A[a-z][a-z0-9_]*-[0-9][0-9A-Za-z.+_-]*\z/
+  # `NccWorker.Tracer`'s errors for a compile that left processes running
+  # it could not kill (`trace_stats["tracer_error"]`).
+  @left_running ["group_survived", "cleanup_unverified", "writers_survived"]
 
   @typedoc """
   What `put/3` needs: `targets` maps a system's name to `{target, env}`
@@ -143,9 +146,9 @@ defmodule NccWorker.FirmwareInputs do
   could be recorded for. Returns the systems and one line per target tried,
   for the run's log, or `{:error, {:firmware_inputs_layout_not_restored,
   why}}` when a target's dirs could not be put back after its trace
-  (`in_build_layout/3`): the run fails (exit 10) rather than publish from a
-  project its build did not leave. `record` (default `record/4`) is for
-  tests.
+  (`in_build_layout/3`) or its trace left processes running that may still
+  write them: the run fails (exit 10) rather than publish from a project its
+  build did not leave. `record` (default `record/4`) is for tests.
   """
   @spec put(%{String.t() => map()}, ctx(), keyword()) ::
           {%{String.t() => map()}, [String.t()]}
@@ -247,9 +250,10 @@ defmodule NccWorker.FirmwareInputs do
   @doc """
   Records one target's inputs: `{:ok, %{compile_inputs, compile_env}}`, or
   `{:error, why}` when any step does not hold. `result` is the target's
-  system result. Raises only `LayoutNotRestored` (`in_build_layout/3`),
-  which `put/3` returns as the run's error.
-  `nerves_env:` (tests) replaces step 1.
+  system result. Raises only `LayoutNotRestored` (`in_build_layout/3`, or a
+  trace that left processes running), which `put/3` returns as the run's
+  error. `nerves_env:` and `target_inputs:` (tests) replace step 1 and
+  `NccWorker.Portability.target_inputs/3`.
   """
   @spec record(String.t(), {String.t(), list()}, ctx(), map(), keyword()) ::
           {:ok, %{compile_inputs: [map()], compile_env: [map()]}} | {:error, String.t()}
@@ -260,6 +264,7 @@ defmodule NccWorker.FirmwareInputs do
   def record(name, {target, env}, ctx, _result, opts) do
     dir = Path.join(ctx.work_dir, "fw-inputs-#{target}")
     nerves_env = Keyword.get(opts, :nerves_env, &nerves_env/3)
+    target_inputs = Keyword.get(opts, :target_inputs, &Portability.target_inputs/3)
     _ = File.rm_rf(dir)
     File.mkdir_p!(dir)
 
@@ -270,7 +275,7 @@ defmodule NccWorker.FirmwareInputs do
            {:ok, moved, roots} <- move(nerves, artifacts, roots, dir),
            {:ok, verdict} <-
              in_build_layout(layout, dir, fn ->
-               trace(name, target, env, moved, roots, ctx, dir)
+               trace(target_inputs, {name, target, env}, moved, roots, ctx, dir)
              end),
            :ok <- bound(dir, layout.build, ctx.package) do
         {:ok, %{compile_inputs: verdict.compile_inputs, compile_env: verdict.compile_env}}
@@ -429,12 +434,15 @@ defmodule NccWorker.FirmwareInputs do
   # build compiled it: in its build env as it is, under the same command
   # (`firmware_command/0`), at its own paths (`in_build_layout/3` has laid
   # them out), with Nerves's variables exported once every dependency is
-  # loaded (`late_env:`).
-  defp trace(name, target, env, nerves, roots, ctx, dir) do
+  # loaded (`late_env:`). The compile writes the build's own dirs, so a
+  # process it left running that the tracer could not kill (`@left_running`,
+  # as `NccWorker.HostTrace` reads them) could go on writing them once they
+  # are back: that fails the run, as a dir that cannot be put back does.
+  defp trace(target_inputs, {name, target, env}, nerves, roots, ctx, dir) do
     {wrapper, argv} = firmware_command()
 
     verdict =
-      Portability.target_inputs(ctx.project_dir, ctx.package,
+      target_inputs.(ctx.project_dir, ctx.package,
         env: env,
         late_env: Enum.reject(nerves, fn {var, _} -> Regex.match?(@own_env, var) end),
         wrapper: wrapper,
@@ -451,6 +459,14 @@ defmodule NccWorker.FirmwareInputs do
       )
 
     HexHome.publish(env_value(env, "HEX_HOME"))
+
+    case get_in(verdict, [:observations, "trace_stats", "tracer_error"]) do
+      error when error in @left_running ->
+        raise LayoutNotRestored, "the trace of #{target} left processes running (#{error})"
+
+      _ ->
+        :ok
+    end
 
     case verdict do
       %{status: :pass, compile_inputs: inputs, compile_env: env} when is_list(inputs) ->
@@ -674,7 +690,8 @@ end
 defmodule NccWorker.FirmwareInputs.LayoutNotRestored do
   @moduledoc """
   A firmware target's dirs could not be put back after its trace
-  (`NccWorker.FirmwareInputs.in_build_layout/3`): the run must stop rather
+  (`NccWorker.FirmwareInputs.in_build_layout/3`), or the trace left
+  processes running that may still write them: the run must stop rather
   than publish from them.
   """
   defexception [:message]
