@@ -62,6 +62,8 @@ defmodule NccWorker.HostTrace do
     * `run_started_at:` (required), the run's start in monotonic seconds,
       which bounds both compiles by what is left of the run;
     * `log_tail_bytes:`;
+    * `target:` and `host_native:`, a host-native run's verdict
+      (`NccWorker.Portability.run/3`);
     * `timeout_ms:`, `cmd:`, `reap:`, `portability:`, `fallback:`,
       `deps_get:`, `rm_rf:` (tests).
   """
@@ -114,7 +116,16 @@ defmodule NccWorker.HostTrace do
           run_started_at: Keyword.fetch!(opts, :run_started_at),
           trace_dir: Path.join(paths.work_dir, "trace"),
           log_file: log_file
-        ] ++ Keyword.take(opts, [:timeout_ms, :cmd, :reap, :makefile_rule2, :trees])
+        ] ++
+          Keyword.take(opts, [
+            :timeout_ms,
+            :cmd,
+            :reap,
+            :makefile_rule2,
+            :trees,
+            :target,
+            :host_native
+          ])
       )
 
     {outcome, host_build} = outcome(verdict, project_dir, env, log_file, opts)

@@ -178,6 +178,26 @@ defmodule Compatibility.StaticPriv do
   @spec too_large() :: refusal()
   def too_large, do: {:error, "ships more than 10 MiB of priv files", []}
 
+  @doc """
+  The inflated `contents.tar.gz` of a Hex `tarball` (a tar binary), under
+  the bounds this module reads a tarball with: at most `max_tarball_bytes/0`
+  as served, 64 MiB inflated and 20,000 entries. `:error` for anything else.
+  """
+  @spec contents(term()) :: {:ok, binary()} | :error
+  def contents(tarball) when is_binary(tarball) and byte_size(tarball) <= @max_tarball_bytes do
+    with {:ok, gz} <- contents_tar(tarball),
+         {:ok, tar} <- inflate(gz, @max_contents_bytes),
+         :ok <- count_entries(tar) do
+      {:ok, tar}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  def contents(_tarball), do: :error
+
   @doc "Whether a priv path names native code (`.so`, `.dylib`, ...)."
   @spec native_name?(String.t()) :: boolean()
   def native_name?(path) do

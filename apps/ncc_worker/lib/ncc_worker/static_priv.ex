@@ -23,6 +23,9 @@ defmodule NccWorker.StaticPriv do
 
   alias Compatibility.StaticPriv, as: Rules
 
+  # `check/3`'s walk: executables refused, `Rules`' file cap.
+  @static %{exec: false, max_files: Rules.max_files(), max_bytes: Rules.max_bytes()}
+
   @doc """
   `:ok` when every file under `priv_dir` (the built package's `priv`) is
   static data its Hex `tarball` carries, `{:skip, reason}` otherwise.
@@ -39,11 +42,42 @@ defmodule NccWorker.StaticPriv do
           :ok | {:skip, String.t()}
   def check(priv_dir, source_priv, tarball, built \\ []) do
     with {:ok, root} <- priv_root(priv_dir, source_priv),
-         {:ok, files} <- built_files(root),
+         {:ok, files} <- built_files(root, @static),
          :ok <- rules(Rules.within_caps(Enum.map(files, &{&1.path, &1.size}))),
          {:ok, files} <- read_files(root, files) do
       if files == [], do: :ok, else: rules(Rules.check(files, tarball_bytes(tarball), built))
     end
+  end
+
+  @doc """
+  Every file under `priv_dir` as `%{path, mode, bytes}`, walked and read as
+  `check/3` walks and reads them (one link to `source_priv`, `lstat`, one
+  link per file, each read no further than its size), for a caller that
+  judges them itself (`NccWorker.HostNative`): an executable file is read
+  rather than refused, and the caps are `max_files:` and `max_bytes:` (all
+  files together). `{:skip, reason}` for anything that cannot be read.
+  """
+  @spec read(Path.t(), Path.t(), keyword()) ::
+          {:ok, [%{path: String.t(), mode: non_neg_integer(), bytes: binary()}]}
+          | {:skip, String.t()}
+  def read(priv_dir, source_priv, opts) do
+    caps = %{
+      exec: true,
+      max_files: Keyword.fetch!(opts, :max_files),
+      max_bytes: Keyword.fetch!(opts, :max_bytes)
+    }
+
+    with {:ok, root} <- priv_root(priv_dir, source_priv),
+         {:ok, files} <- built_files(root, caps),
+         :ok <- within(files, caps) do
+      read_files(root, files)
+    end
+  end
+
+  defp within(files, caps) do
+    if files |> Enum.map(& &1.size) |> Enum.sum() > caps.max_bytes,
+      do: {:skip, "ships more than #{div(caps.max_bytes, 1024 * 1024)} MiB of priv files"},
+      else: :ok
   end
 
   defp rules(:ok), do: :ok
@@ -83,16 +117,16 @@ defmodule NccWorker.StaticPriv do
 
   # `%{path, size, mode}` of every file under `root`, read with `lstat` so a
   # link is seen as one.
-  defp built_files(nil), do: {:ok, []}
-  defp built_files(root), do: walk(root, "", [])
+  defp built_files(nil, _caps), do: {:ok, []}
+  defp built_files(root, caps), do: walk(root, "", [], caps)
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp walk(root, relative, acc) do
+  defp walk(root, relative, acc, caps) do
     case File.ls(Path.join(root, relative)) do
       {:ok, names} ->
         names
         |> Enum.sort()
-        |> Enum.reduce_while({:ok, acc}, &walk_entry(root, join(relative, &1), &2))
+        |> Enum.reduce_while({:ok, acc}, &walk_entry(root, join(relative, &1), &2, caps))
 
       {:error, _reason} ->
         {:skip, "priv could not be read"}
@@ -100,24 +134,22 @@ defmodule NccWorker.StaticPriv do
   end
 
   # Stops at the first file over the cap, so a huge priv is not walked whole.
-  defp walk_entry(root, relative, {:ok, acc}) do
-    max_files = Rules.max_files()
-
-    case entry(root, relative, acc) do
-      {:ok, acc} when length(acc) > max_files -> {:halt, too_many()}
+  defp walk_entry(root, relative, {:ok, acc}, caps) do
+    case entry(root, relative, acc, caps) do
+      {:ok, acc} when length(acc) > caps.max_files -> {:halt, too_many(caps)}
       {:ok, acc} -> {:cont, {:ok, acc}}
       skip -> {:halt, skip}
     end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp entry(root, relative, acc) do
+  defp entry(root, relative, acc, caps) do
     case File.lstat(Path.join(root, relative)) do
       {:ok, %File.Stat{type: :directory}} ->
-        walk(root, relative, acc)
+        walk(root, relative, acc, caps)
 
       {:ok, %File.Stat{type: :regular, links: 1, mode: mode, size: size}} ->
-        if executable?(mode),
+        if executable?(mode) and not caps.exec,
           do: {:skip, "ships an executable priv file (priv/#{relative})"},
           else: {:ok, [%{path: relative, size: size, mode: mode} | acc]}
 
@@ -137,7 +169,8 @@ defmodule NccWorker.StaticPriv do
 
   defp executable?(mode), do: Rules.executable?(mode)
 
-  defp too_many, do: rules(Rules.too_many())
+  defp too_many(%{exec: false}), do: rules(Rules.too_many())
+  defp too_many(caps), do: {:skip, "ships more than #{caps.max_files} priv files"}
 
   # Each file once, no more than its `lstat` size: one that grew since is not
   # the file that was walked.

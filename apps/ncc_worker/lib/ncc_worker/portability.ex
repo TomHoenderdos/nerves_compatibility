@@ -264,6 +264,12 @@ defmodule NccWorker.Portability do
       holds them to the trace's manager (`judge/5`'s `declassified:`); a
       `deps/` that cannot be listed is then could-not-judge. Anything but
       `true` is off;
+    * `target:` and `host_native: true`, a host-native build's verdict
+      (`NccWorker.HostNative`, `target: "host"`): judged as a firmware
+      target's inputs are (`target_inputs/3`), with rustler_precompiled set
+      apart too (`host_native_tools/0`), the package's own priv libraries
+      allowed to be mapped, and R2 on the package's ebin; `host_native:`
+      without `target:` is off;
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
       `timeout_ms:`, `extra_env:`, `reap:`, `cmd:` (tests).
 
@@ -421,7 +427,7 @@ defmodule NccWorker.Portability do
         trees: trees,
         hook_scripts: hooks,
         deps_path: deps
-      ] ++ Keyword.take(opts, [:target, :roots])
+      ] ++ Keyword.take(opts, [:target, :roots, :host_native])
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
@@ -774,11 +780,18 @@ defmodule NccWorker.Portability do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
     decided = decide_all(report, ctx, scope, target_mode(opts, ctx, scope, native))
+    host_native = host_native?(opts)
     unjudged = for {_owner, {:unjudged, why}} <- decided, do: why
     decided = for {owner, decision} <- decided, in_scope?(owner, scope), do: {owner, decision}
 
     libs =
-      mapped_libs(report, ctx, scope, Keyword.get_lazy(opts, :nif_waiver, &MappedLibs.waived?/0))
+      mapped_libs(
+        report,
+        ctx,
+        scope,
+        Keyword.get_lazy(opts, :nif_waiver, &MappedLibs.waived?/0),
+        host_native
+      )
 
     decided = decided ++ libs.decided
     elixir = elixir_of(report)
@@ -837,7 +850,8 @@ defmodule NccWorker.Portability do
       deps: deps,
       manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{})),
       tree_refusal: tree_refusal(ctx, scope),
-      native_output: if(target(opts), do: native_output(ctx, scope))
+      native_output: if(target(opts), do: native_output(ctx, scope)),
+      host_native: host_native
     }
   end
 
@@ -1027,13 +1041,50 @@ defmodule NccWorker.Portability do
   # other closure application's.
   @native_tools ["elixir_make"]
 
+  # A host-native build (`host_native: true`, design addendum for #85) also
+  # sets apart rustler_precompiled: its own code reads the target triple and
+  # the NIF version, downloads the archive its package's checksum file pins
+  # and writes the NIF into the package's priv, all of which the build's
+  # triple, NIF version and `Compatibility.NifOrigin` check cover. A package
+  # fun it runs (a variant's CPU probe) is the package's and is not set apart.
+  @host_native_tools ["rustler_precompiled"]
+
+  # The tool's entry points a host-native package's own code calls: `use
+  # RustlerPrecompiled` expands the macro and calls `__using__/2` from the
+  # package's module body. A call into any other of the tool's functions
+  # stays the `native_closure` refusal it is everywhere else.
+  @host_native_entries MapSet.new([
+                         "RustlerPrecompiled.MACRO-__using__/2",
+                         "RustlerPrecompiled.__using__/2"
+                       ])
+
+  # What a host-native tool's own frame may read of the machine and still be
+  # set apart: the target triple, the NIF version and the OTP release it
+  # picks the archive by, and the OS type. Any other OS identity read or a
+  # program run from its frame keeps its refusal: a package fun the tool
+  # runs that tail-calls one (a variant's CPU probe ending in
+  # `:os.version/0`) leaves the tool's frame on top, and what it reads would
+  # pick a NIF the triple does not cover.
+  @host_tool_reads ~w(system_architecture nif_version otp_release version wordsize os_type)
+
   @tool_never_writes ["env_write", "config_write"]
 
   @doc "The native build tools whose activity a firmware target's trace sets apart."
   @spec native_tools() :: [String.t()]
   def native_tools, do: @native_tools
 
+  @doc "The native build tools a host-native build's trace also sets apart."
+  @spec host_native_tools() :: [String.t()]
+  def host_native_tools, do: @host_native_tools
+
   defp target(opts), do: Keyword.get(opts, :target)
+
+  # Only in target mode: a host-native build is a target build for the
+  # host's own triple.
+  defp host_native?(opts), do: target(opts) != nil and Keyword.get(opts, :host_native) == true
+
+  defp tools(opts),
+    do: if(host_native?(opts), do: @native_tools ++ @host_native_tools, else: @native_tools)
 
   # nil outside target mode; else the native tools' modules (strings, as
   # the tracer names them). A tool is set apart only when the tracer put call
@@ -1041,19 +1092,30 @@ defmodule NccWorker.Portability do
   # package's own code makes into it is an event of its own, which refuses.
   # A tool in the closure that is not traced so sets nothing apart.
   defp target_mode(opts, ctx, scope, native) do
-    if target(opts), do: %{tool_modules: tool_modules(ctx, scope, native)}
+    if target(opts) do
+      tools = tool_modules(ctx, scope, native, tools(opts))
+      host_native = host_native?(opts)
+      entries = if host_native, do: @host_native_entries, else: MapSet.new()
+
+      host_tools =
+        if host_native and MapSet.size(tools) > 0,
+          do: traced_tool_modules(ctx, scope, @host_native_tools),
+          else: MapSet.new()
+
+      %{tool_modules: tools, entries: entries, host_tools: host_tools}
+    end
   end
 
-  defp tool_modules(ctx, scope, native) do
-    if Enum.any?(@native_tools, &(MapSet.member?(scope, &1) and &1 not in native)),
+  defp tool_modules(ctx, scope, native, tools) do
+    if Enum.any?(tools, &(MapSet.member?(scope, &1) and &1 not in native)),
       do: MapSet.new(),
-      else: traced_tool_modules(ctx, scope)
+      else: traced_tool_modules(ctx, scope, tools)
   end
 
-  defp traced_tool_modules(ctx, scope) do
+  defp traced_tool_modules(ctx, scope, tool_apps) do
     listed = for app <- scope, Context.dep?(ctx, app), into: %{}, do: {app, app_modules(ctx, app)}
 
-    {tools, others} = Enum.split_with(listed, fn {app, _mods} -> app in @native_tools end)
+    {tools, others} = Enum.split_with(listed, fn {app, _mods} -> app in tool_apps end)
     other = others |> Enum.map(&elem(&1, 1)) |> Enum.reduce(MapSet.new(), &MapSet.union/2)
 
     tools
@@ -1089,33 +1151,22 @@ defmodule NccWorker.Portability do
   defp targeted({:unjudged, _} = decision, _event, _vm, _mode), do: decision
   defp targeted(:ignore, _event, _vm, _mode), do: :ignore
 
-  defp targeted(decision, event, vm, %{tool_modules: tools}) do
+  defp targeted(decision, event, vm, %{tool_modules: tools} = mode) do
     if tool_event?(event, tools),
-      do: tool_decision(decision, event, vm),
-      else: package_decision(decision, event, vm)
+      do: tool_decision(decision, event, vm, mode),
+      else: package_decision(decision, event, vm, mode)
   end
 
-  defp tool_decision(decision, event, vm) do
-    cond do
-      event["channel"] == "integrity" ->
-        decision
-
-      event["channel"] in @tool_never_writes ->
-        {:refuse, "compile-time write from the native build tool's frame: #{event["mfa"]}"}
-
-      true ->
-        {:observe, "native_build",
-         %{"mfa" => event["mfa"], "module" => user_module(event), "ts" => event["ts"], "vm" => vm}}
-    end
-  end
-
-  defp package_decision(decision, event, vm) do
+  defp package_decision(decision, event, vm, mode) do
     cond do
       target_read?(event) and match?({:refuse, _}, decision) ->
         {:observe, "target_reads", %{"mfa" => event["mfa"], "ts" => event["ts"], "vm" => vm}}
 
       own_priv?(decision) ->
         {:refuse, elem(decision, 2)["refusal"]}
+
+      tool_entry?(event, mode) ->
+        native_build(event, vm)
 
       true ->
         decision
@@ -1130,6 +1181,28 @@ defmodule NccWorker.Portability do
        do: true
 
   defp own_priv?(_decision), do: false
+
+  # An event of a native tool's own code.
+  defp tool_decision(decision, event, vm, mode) do
+    cond do
+      event["channel"] == "integrity" ->
+        decision
+
+      event["channel"] in @tool_never_writes ->
+        {:refuse, "compile-time write from the native build tool's frame: #{event["mfa"]}"}
+
+      unreviewed_host_read?(event, mode) ->
+        decision
+
+      true ->
+        native_build(event, vm)
+    end
+  end
+
+  defp native_build(event, vm),
+    do:
+      {:observe, "native_build",
+       %{"mfa" => event["mfa"], "module" => user_module(event), "ts" => event["ts"], "vm" => vm}}
 
   # The tool's own code (its frame is the topmost one that is not the
   # toolchain's), or Mix's task runner calling into it with no package frame
@@ -1147,6 +1220,29 @@ defmodule NccWorker.Portability do
        do: String.starts_with?(fun, "-run_task/")
 
   defp run_by_mix?(_event), do: false
+
+  # A host-native package's own call into a reviewed tool's entry point
+  # (`@host_native_entries`), when the tool's modules are set apart.
+  defp tool_entry?(%{"channel" => "native_closure", "mfa" => mfa}, %{entries: entries} = mode)
+       when is_binary(mfa),
+       do: MapSet.member?(entries, mfa) and MapSet.member?(mode.tool_modules, mfa_module(mfa))
+
+  defp tool_entry?(_event, _mode), do: false
+
+  defp unreviewed_host_read?(event, %{host_tools: host_tools}) do
+    module = user_module(event) || mfa_module(event["mfa"])
+
+    MapSet.member?(host_tools, module || "") and
+      (event["channel"] == "programs" or
+         (event["channel"] == "os_identity" and not reviewed_host_read?(event)))
+  end
+
+  defp reviewed_host_read?(%{"mfa" => "os:type/0"}), do: true
+
+  defp reviewed_host_read?(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => key}}),
+    do: key in @host_tool_reads
+
+  defp reviewed_host_read?(_event), do: false
 
   defp user_module(%{"user" => %{"module" => module}}) when is_binary(module), do: module
   defp user_module(_event), do: nil
@@ -1204,8 +1300,9 @@ defmodule NccWorker.Portability do
   # for events. Allowed: the OTP root, the Elixir install, and a native
   # closure dependency's own dirs (never the package's) (its NIF, loaded when the tracer sets its
   # patterns; calls into it are the native_closure channel).
-  defp mapped_libs(report, ctx, scope, waiver) do
-    allowed? = &lib_allowed?(ctx, scope, &1)
+  defp mapped_libs(report, ctx, scope, waiver, host_native) do
+    own = if host_native, do: own_priv_dirs(ctx), else: []
+    allowed? = &lib_allowed?(ctx, scope, own, &1)
 
     children =
       for {app, child} <- Enum.sort(report.children), Context.dep?(ctx, app) do
@@ -1253,11 +1350,11 @@ defmodule NccWorker.Portability do
     Enum.reverse(results)
   end
 
-  defp lib_allowed?(ctx, scope, path) do
+  defp lib_allowed?(ctx, scope, own, path) do
     real = Context.realpath(path) || path
 
     dirs =
-      [ctx.otp_root, ctx.elixir_root] ++
+      [ctx.otp_root, ctx.elixir_root | own] ++
         for app <- scope,
             app != ctx.package,
             Context.dep?(ctx, app),
@@ -1265,6 +1362,24 @@ defmodule NccWorker.Portability do
             do: [ctx.deps[app].build, ctx.deps[app].dest]
 
     dirs |> List.flatten() |> Enum.any?(&(is_binary(&1) and String.starts_with?(real, &1 <> "/")))
+  end
+
+  # A host-native build publishes the package's own priv libraries, and
+  # loading one is what its compile does (rustler's `@on_load` runs in the
+  # compiler VM once the module is compiled): its build's and its source's
+  # `priv`, each as it resolves, may be mapped. Nothing else of the package's.
+  defp own_priv_dirs(ctx) do
+    if Context.dep?(ctx, ctx.package) do
+      dep = ctx.deps[ctx.package]
+
+      for dir <- [dep.build, dep.dest],
+          is_binary(dir),
+          priv = Path.join(dir, "priv"),
+          path <- Enum.uniq([priv, Context.realpath(priv) || priv]),
+          do: path
+    else
+      []
+    end
   end
 
   # What the trace itself says about whether it can be used at all. The
@@ -1848,7 +1963,9 @@ defmodule NccWorker.Portability do
   # reads are no refusals here (`targeted/4`), and every other host read is
   # an input no client could check. Nor may anything the native build wrote
   # reach the package's beams (`native_output/2`). R2 is the firmware
-  # build's own (`NccWorker.FirmwareBuildRoot`), on the files it publishes.
+  # build's own (`NccWorker.FirmwareBuildRoot`), on the files it publishes;
+  # a host-native build (`host_native: true`) has no such pass, so R2 on the
+  # package's ebin is part of its verdict, as on the toolchain judge.
   defp target_verdict_of(facts) do
     problems = problems(facts)
 
@@ -1860,6 +1977,7 @@ defmodule NccWorker.Portability do
           fn -> facts.tree_refusal end,
           fn -> any_refusal(facts.decided) end,
           fn -> if facts.package_window, do: Reasons.could_not_judge() end,
+          fn -> if facts.host_native, do: package_r2(facts.package_r2) end,
           fn -> package_rebar(facts.package_rebar) end,
           fn -> closure(facts.deps) end,
           fn -> facts.native_output end

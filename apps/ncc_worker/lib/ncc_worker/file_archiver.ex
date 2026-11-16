@@ -48,6 +48,7 @@ defmodule NccWorker.FileArchiver do
           collect_manifests_from_system(system_result, project_dir, system_name, package_name)
       end)
       |> Kernel.++(collect_toolchain_manifest(result, project_dir, package_name))
+      |> Kernel.++(collect_host_native(result, project_dir, package_name))
 
     # Archive each file
     final_stats =
@@ -195,6 +196,36 @@ defmodule NccWorker.FileArchiver do
   end
 
   defp collect_toolchain_manifest(_result, _project_dir, _package_name), do: []
+
+  # A host-native run's files: the package's host build, listed in
+  # `host_native_build.file_manifest` when the build passed, and the
+  # downloaded archives its native files were verified against
+  # (`NccWorker.HostNative`), each `{path, %{"sha256", "size"}}`, so the
+  # portal can verify them again. Only read for a "host_native" scope.
+  defp collect_host_native(%{scope: "host_native"} = result, project_dir, package_name)
+       when is_binary(package_name) do
+    files =
+      case get_in(result, [:host_native_build, :file_manifest]) do
+        nil ->
+          []
+
+        manifest ->
+          collect_pure_elixir_manifest(
+            %{beam_scan: %{file_manifest: manifest}},
+            project_dir,
+            package_name
+          )
+      end
+
+    archives =
+      for {path, %{"sha256" => _} = entry} <- Map.get(result, :host_native_archives) || [],
+          is_binary(path),
+          do: {path, entry}
+
+    files ++ archives
+  end
+
+  defp collect_host_native(_result, _project_dir, _package_name), do: []
 
   @spec package_index(String.t(), String.t() | nil, %{String.t() => String.t()}) ::
           %{String.t() => String.t()}

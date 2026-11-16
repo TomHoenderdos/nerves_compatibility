@@ -18,6 +18,7 @@ defmodule NccWorker.Worker do
     HexCache,
     HexHome,
     HexMetadata,
+    HostNative,
     HostTrace,
     LockPolicy,
     LogTail,
@@ -56,9 +57,13 @@ defmodule NccWorker.Worker do
             optional(:requirement) => String.t(),
             optional(:version) => String.t()
           },
-          # "argus_only", "toolchain", "warm_nerves" or "system_abi"
-          # (`NccWorker.RunScope`).
+          # "argus_only", "toolchain", "host_native", "warm_nerves" or
+          # "system_abi" (`NccWorker.RunScope`).
           optional(:mode) => String.t(),
+          # For "host_native": the triple the job asks for
+          # (`Compatibility.HostTriple`); a builder of another triple fails
+          # the run (exit 10). Absent builds for the builder's own.
+          optional(:triple) => String.t(),
           # For "warm_nerves": `%{"name", "version"}` pairs to warm, string-keyed
           # (`NccWorker.WarmNerves.plan/2`); `[]` warms what the template resolves.
           optional(:nerves_packages) => [%{String.t() => String.t()}],
@@ -254,12 +259,25 @@ defmodule NccWorker.Worker do
         }
 
   @type result :: %{
-          # "full", "targets", "argus_only", "toolchain", "warm_nerves" or
-          # "system_abi".
+          # "full", "targets", "argus_only", "toolchain", "host_native",
+          # "warm_nerves" or "system_abi".
           optional(:scope) => String.t(),
           # Only for a "toolchain" run, whose `systems` is `%{}`: no firmware,
           # no argus (`argus.status` "skipped"), no Nerves systems.
           optional(:toolchain_build) => toolchain_build(),
+          # Only for a "host_native" run, whose `systems` is `%{}`
+          # (`NccWorker.HostNative.build/6`): a toolchain build's fields
+          # but `config_variant`, `rule1_reason` and `world`, plus `triple`,
+          # `libc` ("glibc"), `glibc` (the builder's), `otp_full`,
+          # `nif_version`, `native_files` (each priv ELF file's `path`,
+          # `sha256`, `size`, `class`, `machine`, `soname`, `needed`,
+          # `needs`) and `origins` (each downloaded native file's `path`,
+          # `checksum_file`, `archive`, `archive_sha256`; `[]` for a
+          # package that compiled its own), the last three nil unless it
+          # passed. `host_native_archives`, the archives' local paths for
+          # `NccWorker.FileArchiver`, is never written.
+          optional(:host_native_build) => map(),
+          optional(:host_native_archives) => [{String.t(), map()}],
           # Only for a run whose selection was `pure_elixir`: whether its host
           # files were published (rule 2, as for a toolchain build: the
           # static rules on the beams that would be published and the
@@ -584,6 +602,9 @@ defmodule NccWorker.Worker do
 
   defp run_scope(:toolchain, input, paths, toolchain, _nerves),
     do: toolchain_run(input, paths, toolchain)
+
+  defp run_scope(:host_native, input, paths, toolchain, _nerves),
+    do: host_native_run(input, paths, toolchain)
 
   defp run_scope(:warm_nerves, input, paths, toolchain, nerves),
     do: WarmNerves.run(input, paths, toolchain, nerves)
@@ -1871,6 +1892,83 @@ defmodule NccWorker.Worker do
     end
   end
 
+  # A host-native run (`mode: "host_native"`, `NccWorker.HostNative`): the
+  # toolchain run's project and its one traced host compile, judged as a
+  # build for this builder's own glibc Linux triple (`target: "host"`,
+  # `host_native: true`), the package's unresolved optional dependencies
+  # added as a toolchain run's default build adds them. A builder whose
+  # triple is not the one the job names fails before anything runs (exit
+  # 10), so the job is retried on another builder.
+  defp host_native_run(input, paths, toolchain) do
+    with {:ok, triple} <- HostNative.own_triple(input),
+         {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
+         {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
+         :ok <- LockPolicy.validate(project_dir) do
+      host_native_project(project_dir, input, paths, toolchain, triple, [])
+    end
+  end
+
+  @doc false
+  # The host-native run once its project has the package and passed the
+  # lock policy. Public for tests, whose `opts` reach `toolchain_compile/5`
+  # and `HostNative.build/6` (`facts:`, `hex_home:`, `cache_dirs:`).
+  @spec host_native_project(String.t(), map(), map(), map(), String.t(), keyword()) ::
+          {:ok, result()} | {:error, term()}
+  def host_native_project(project_dir, input, paths, toolchain, triple, opts) do
+    package_name = input.package.name
+    releases = Portability.lock_snapshot(project_dir)
+    facts = Keyword.get_lazy(opts, :facts, &HostNative.facts/0)
+
+    compile_opts =
+      [
+        releases: releases,
+        trees:
+          Portability.tree_snapshot(project_dir,
+            releases: releases,
+            hex_home: System.get_env("HEX_HOME")
+          ),
+        run_started_at: input[:started_at],
+        log_tail_bytes: get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes,
+        target: "host",
+        host_native: true
+      ] ++ Keyword.drop(opts, [:facts, :hex_home, :cache_dirs])
+
+    with {:ok, compiled} <-
+           toolchain_compile(project_dir, "include", package_name, paths, compile_opts) do
+      build_opts =
+        [triple: triple] ++ Map.to_list(facts) ++ Keyword.take(opts, [:hex_home, :cache_dirs])
+
+      {archives, build} =
+        project_dir
+        |> HostNative.build(package_name, compiled.host, toolchain, compiled.verdict, build_opts)
+        |> Map.pop(:archives, [])
+
+      result =
+        %{
+          run_id: input.run_id,
+          package: %{
+            name: package_name,
+            version: get_package_version(project_dir, input.package),
+            dependencies: [],
+            footprint: empty_footprint()
+          },
+          image: input.image,
+          toolchain: toolchain,
+          systems: %{},
+          argus: Argus.skipped(),
+          finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+          scope: RunScope.to_string(:host_native),
+          host_native_build: build,
+          host_native_archives: archives
+        }
+        |> put_optional_deps(compiled.optional_deps)
+        |> put_run_deps_lock(compiled, project_dir, package_name)
+        |> put_requested_toolchain(input[:toolchain])
+
+      {:ok, result}
+    end
+  end
+
   # What `toolchain_compile/5` is asked for: a world build's world, or the
   # input's `optional_deps` as given.
   defp compile_request(%{optional_deps: "world", world: name, world_members: members}),
@@ -2706,7 +2804,7 @@ defmodule NccWorker.Worker do
       end
 
     nerves_bootstrap_version =
-      if scope == :toolchain, do: "absent", else: nerves_bootstrap_version()
+      if scope in [:toolchain, :host_native], do: "absent", else: nerves_bootstrap_version()
 
     {:ok,
      %{

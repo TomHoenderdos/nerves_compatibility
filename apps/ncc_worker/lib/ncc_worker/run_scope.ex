@@ -3,7 +3,9 @@ defmodule NccWorker.RunScope do
   What a run rebuilds: every target (`:full`), the targets in
   `systems_filter` (`:targets`), nothing but the host compile and argus
   (`:argus_only`), or one host build in a plain, non-Nerves project on a
-  toolchain image, judged for portability (`:toolchain`), or nothing at all
+  toolchain image, judged for portability (`:toolchain`), or the same for a
+  NIF package built for this builder's own glibc Linux triple
+  (`:host_native`, `NccWorker.HostNative`), or nothing at all
   but fill the shared Nerves cache (`:warm_nerves`, `NccWorker.WarmNerves`), or
   nothing but read given Nerves system releases' toolchain, OTP and libraries
   (`:system_abi`, `NccWorker.SystemAbiRun`).
@@ -14,11 +16,13 @@ defmodule NccWorker.RunScope do
   systems simply were not built.
   """
 
-  @type t :: :full | :targets | :argus_only | :toolchain | :warm_nerves | :system_abi
+  @type t ::
+          :full | :targets | :argus_only | :toolchain | :host_native | :warm_nerves | :system_abi
 
   @spec from_input(map()) :: t()
   def from_input(%{mode: "argus_only"}), do: :argus_only
   def from_input(%{mode: "toolchain"}), do: :toolchain
+  def from_input(%{mode: "host_native"}), do: :host_native
   def from_input(%{mode: "warm_nerves"}), do: :warm_nerves
   def from_input(%{mode: "system_abi"}), do: :system_abi
   def from_input(%{systems_filter: [_ | _]}), do: :targets

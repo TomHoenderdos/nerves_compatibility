@@ -853,6 +853,39 @@ get `NCC_INPUT.firmware_inputs: false`; an input without the key (an older porta
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
+## Host-native mode
+
+With `"mode": "host_native"` (and optionally `"triple": "x86_64-linux-gnu"`, the triple the job asks for) the worker
+builds a NIF package on a toolchain image for its own glibc Linux triple (`Compatibility.HostTriple`: x86_64 or
+aarch64, `-linux-gnu` only), so a client on the same triple that opted in can install its beams and priv native files
+(design addendum for board #85). A builder of another triple, or of none (musl, darwin), fails the run before any
+`mix` (exit 10). The run is the toolchain run's (plain project, lock policy, optional dependencies added, one traced
+host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2:
+
+- the trace in target mode (`target: "host"`, `host_native: true`, `NccWorker.Portability`): every compile-time read
+  must be a recorded input (env, config, `mix_target` "host", byte order, OS type), as for a firmware target. The
+  reviewed native tools' own activity is set apart: elixir_make, and rustler_precompiled (its target triple, NIF
+  version, OTP release and OS type reads, its download and its writes into the package's priv; any other OS identity
+  read or program run from its frame still refuses, and so does the package's own code, `use RustlerPrecompiled` and
+  its `__using__/2` call excepted). The package's own priv libraries may be mapped (rustler's `@on_load` runs in the
+  compiler VM). R2 (a baked build path) applies to the package's ebin, as do the tree, rebar3, closure-taint and
+  built checks;
+- the beams: at least one, Elixir or Erlang;
+- the priv (at most 500 files and 128 MiB, one link to the package's own source priv): every non-ELF file is static
+  data its verified Hex tarball carries; every ELF file a 64-bit `ET_DYN` object of the triple's machine, at most
+  64 MiB; at least one ELF file;
+- a downloader (its tarball ships `checksum-*.exs` or `checksum.exs`, read as data, never evaluated,
+  `Compatibility.NifOrigin`): every ELF file must be, byte for byte, a member of an archive in the run's cache dirs
+  (`HostNative.cache_dirs/0`) whose bytes have the sum a checksum file lists for its name, else
+  `native file not verified against the package's checksum file: <path>`. The archive is archived by SHA-256 too.
+
+`result.json` carries `host_native_build`: a toolchain build's fields (status, reason, elixir, otp, `deps_lock`,
+`package_checksum`, `declared`, `compile_env`, `compile_env_rule`, `compile_inputs`, `portability_rule`,
+`judge_revision`, `manager`, `compile_observations`, `file_manifest`) plus `triple`, `libc` ("glibc"), `glibc` (the
+builder's, informational), `otp_full`, `nif_version`, `native_files` (each ELF file's `path`, `sha256`, `size`,
+`class`, `machine`, `soname`, `needed`, `needs`) and `origins` (`path`, `checksum_file`, `archive`,
+`archive_sha256`; `[]` for a package that compiled its own). `scope` is `host_native` and `systems` is empty.
+
 ## Egress probe
 
 With `"egress_probe": [{"address": "192.0.2.1", "port": 1234}, {"address": "2001:db8::1", "port": 1234}]`

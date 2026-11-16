@@ -21,6 +21,12 @@ defmodule NccWorker.RunScopeTest do
       assert RunScope.from_input(%{mode: "toolchain", systems_filter: ["x"]}) == :toolchain
     end
 
+    test "host_native mode wins over a filter" do
+      assert RunScope.from_input(%{mode: "host_native"}) == :host_native
+      assert RunScope.from_input(%{mode: "host_native", systems_filter: ["x"]}) == :host_native
+      assert RunScope.to_string(:host_native) == "host_native"
+    end
+
     test "an unknown mode is a full run, not a crash" do
       assert RunScope.from_input(%{mode: "bogus"}) == :full
     end
