@@ -52,8 +52,11 @@ defmodule NccWorker.FirmwareInputs do
     * with Nerves's variables put in the env only once every dependency's
       `mix.exs` has been evaluated (`NccWorker.Tracer`'s `late_env:`), as
       `mix firmware`'s `nerves_bootstrap.init` loads the deps and then
-      exports them: a `mix.exs` sees them unset at load, set when its
-      project is pushed to compile;
+      exports them, and the deps then loaded again, as the compile's own
+      `deps.loadpaths` loads them: a `mix.exs`'s module body sees them
+      unset, its `project/0` set at that second load and when its project
+      is pushed to compile, and a rebar3 dependency is compiled with its
+      `rebar.config.script` evaluated with them set;
     * no node name in either, and each dependency compiled by Mix's own
       `Mix.Tasks.Deps.Compile.compile_single/3`.
 

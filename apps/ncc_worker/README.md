@@ -781,7 +781,8 @@ only on a passing target that publishes its own first build (no optional depende
    moved aside meanwhile, then put back; one that cannot be put back stops the run), so `__DIR__` and every Mix path
    are the build's; the target's build env as it is, its `HEX_HOME` included; the build's own command
    (`FirmwareInputs.firmware_command/0`: `fakeroot` when present, `System.argv/0` `["firmware"]`); and Nerves's
-   variables exported only once every dependency's `mix.exs` is evaluated, as `nerves_bootstrap.init` does. The
+   variables exported only once every dependency's `mix.exs` is evaluated, as `nerves_bootstrap.init` does, and the
+   dependencies loaded again after it, as the compile's own `deps.loadpaths` does. The
    moduledoc lists what still differs (the tracer's own variables, which no client matches; a few VM signals the
    tracer does not pattern). The toolchain and system dirs are moved to links whose paths share nothing with theirs,
    their names and versions included (`FirmwareInputs.move/4`; `NccWorker.Portability.target_inputs/3`): it passes only when the trace is whole, the trees

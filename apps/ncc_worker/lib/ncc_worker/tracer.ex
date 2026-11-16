@@ -32,7 +32,11 @@ defmodule NccWorker.Tracer do
   `System.argv/0` returns (`["firmware"]`, not `["ncc.trace_compile"]`); and
   `late_env:` (`[{name, value}]`) is put in the compile's environment only
   once `Mix.Dep.load_and_cache/0` has evaluated every dependency's `mix.exs`,
-  where Nerves's own `nerves_bootstrap.init` exports its env. Neither of the
+  where Nerves's own `nerves_bootstrap.init` exports its env, and the
+  dependencies are then loaded again, as the compile's own `deps.loadpaths`
+  loads them after it: what they are compiled with (a dependency's `deps:`,
+  a rebar3 dependency's evaluated `rebar.config.script`) comes from that
+  second load. Neither of the
   last two reaches the VM through its env: the driver reads them from
   `driver.etf` in `trace_dir` before the tracer starts, and a trace whose
   file is unreadable fails.

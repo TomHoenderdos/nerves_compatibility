@@ -64,7 +64,8 @@ set_argv(_Input) -> ok.
 
 %% Nerves's own env: under `mix firmware`, nerves_bootstrap.init loads every
 %% dependency (evaluating its mix.exs) before nerves.init exports it, and the
-%% compile that follows sees it. A write from this module's frame is the
+%% compile that follows, its own loading of the dependencies included
+%% (load_deps/1), sees it. A write from this module's frame is the
 %% toolchain's, never an event of the trace.
 late_env(Pairs) ->
     lists:foreach(fun({N, V}) ->
@@ -141,8 +142,7 @@ consolidated(_Token, _Mode, _Config) -> skip.
 %% it to work that would run package code outside every window.
 compile(Token, Packages, Native, Late) ->
     try
-        Deps = 'Elixir.Mix.Dep':load_and_cache(),
-        ok = late_env(Late),
+        Deps = load_deps(Late),
         case resolve(Packages, Deps) of
             {ok, Apps} -> compile_closure(Token, Apps, Deps, Native);
             {error, Missing} -> {not_in_closure, Missing}
@@ -156,6 +156,22 @@ compile_closure(Token, Apps, Deps, Native) ->
     _ = ncc_tracer:closure(Token, Apps, [dep_info(D) || D <- Ordered]),
     DepConfig = 'Elixir.Mix.Project':deps_config(),
     lists:foreach(fun(D) -> compile_dep(Token, D, Native, DepConfig) end, Ordered).
+
+%% The dependencies as the compile loads them. With a late env (a firmware
+%% target's trace) they are loaded twice, as `mix firmware` loads them:
+%% once by nerves_bootstrap.init's deps.loadpaths before Nerves exports its
+%% env, and again by the compile's own deps.loadpaths after it
+%% (Mix.Dep.load_and_cache/0 converges anew at the top each time). Each
+%% mix.exs is evaluated once, at the first load, so its module attributes
+%% see the env unset; what the dependencies are compiled with comes from
+%% the second, with the env set: a Mix dependency's `deps:` (its
+%% project/0, called again) and a rebar3 dependency's rebar.config.script
+%% (evaluated again, and written out as the mix.rebar.config rebar3 reads).
+load_deps([]) -> 'Elixir.Mix.Dep':load_and_cache();
+load_deps(Late) ->
+    _ = 'Elixir.Mix.Dep':load_and_cache(),
+    ok = late_env(Late),
+    'Elixir.Mix.Dep':load_and_cache().
 
 %% Each requested package as the OTP app of one of the project's
 %% dependencies: by app name, else by the Hex package name in the

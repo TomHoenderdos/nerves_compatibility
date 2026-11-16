@@ -214,6 +214,81 @@ defmodule NccWorker.Tracer.FixturesBuildLayoutTest do
   end
   """
 
+  # `mix firmware` loads the dependencies twice: `nerves_bootstrap.init`'s
+  # `deps.loadpaths` before Nerves exports its env, and the compile's own
+  # `deps.loadpaths` after it (`Mix.Dep.load_and_cache/0` converges anew at
+  # the top every time). What a dependency is compiled with comes from that
+  # second load: a rebar3 dependency's `rebar.config.script`, which Mix
+  # evaluates as it loads and writes out as the `mix.rebar.config` rebar3
+  # reads, and a Mix dependency's own `deps:`, from its `project/0`.
+  @late_script """
+  case os:getenv("FX_LATE") of
+      false -> CONFIG;
+      Late -> lists:keystore(erl_opts, 1, CONFIG, {erl_opts, [{d, 'LATE', Late}]})
+  end.
+  """
+
+  @late_erl """
+  -module(fx_rebar).
+  -ifdef(LATE).
+  -export([late/0]).
+  late() -> ?LATE.
+  -endif.
+  """
+
+  @late_deps_mix_exs """
+  defmodule FxTop.MixProject do
+    use Mix.Project
+    def project, do: [app: :fx_top, version: "0.1.0", deps: deps(System.get_env("FX_LATE"))]
+    def application, do: [extra_applications: [:logger]]
+    defp deps(nil), do: []
+    defp deps(_late), do: [{:fx_child, path: "../fx_child"}]
+  end
+  """
+
+  @late_deps_lib """
+  defmodule FxTop do
+    Module.register_attribute(__MODULE__, :child, persist: true)
+    @child Code.ensure_loaded?(FxChild)
+  end
+  """
+
+  @tag :tmp_dir
+  test "what the dependencies are compiled with is loaded once the late env is set",
+       %{tmp_dir: dir} do
+    deps = %{
+      "fx_rebar" => %{
+        manager: :rebar3,
+        files: %{"rebar.config.script" => @late_script, "src/fx_rebar.erl" => @late_erl}
+      },
+      "fx_top" => %{mix_exs: @late_deps_mix_exs, files: %{"lib/fx_top.ex" => @late_deps_lib}},
+      "fx_child" => lib("fx_child", "defmodule FxChild do\n  def x, do: 1\nend\n", %{})
+    }
+
+    proj = TracerFixtures.project(dir, ["fx_rebar", "fx_top"], deps)
+
+    assert {:ok, 0} =
+             Tracer.run(proj, ["fx_rebar", "fx_top"],
+               trace_dir: Path.join(dir, "trace"),
+               env: TracerFixtures.env(proj),
+               argv: ["firmware"],
+               late_env: [{"FX_LATE", "late"}],
+               log_file: Path.join(dir, "trace.log"),
+               timeout_ms: 240_000
+             )
+
+    ebin = &Path.join([proj, "_build/host/lib", &1, "ebin"])
+
+    {:ok, {:fx_rebar, [exports: exports]}} =
+      :beam_lib.chunks(~c"#{ebin.("fx_rebar")}/fx_rebar.beam", [:exports])
+
+    {:ok, {FxTop, [attributes: attrs]}} =
+      :beam_lib.chunks(~c"#{ebin.("fx_top")}/Elixir.FxTop.beam", [:attributes])
+
+    assert {{:late, 0} in exports, attrs[:child]} == {true, [true]},
+           File.read!(Path.join(dir, "trace.log"))
+  end
+
   @tag :tmp_dir
   test "the driver sets argv first, and the late env once every mix.exs is loaded",
        %{tmp_dir: dir} do
