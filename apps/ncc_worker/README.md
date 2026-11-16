@@ -451,7 +451,14 @@ taint stays per dependency, not per module. Revision 15 also leaves out of rule 
 itself a tool its `mix.exs` names only as an optional dependency (`{:rustler, "~> 0.28", optional: true}` in
 rustler_precompiled), counted on the parsed file; any other mention still counts. A closure dependency whose compile
 calls a natively built dependency (a `native_calls` observation in its window) is tainted from revision 15 on: the
-callee's NIF returns what the trace cannot see, and the caller's beams may carry it into the package.
+callee's NIF returns what the trace cannot see, and the caller's beams may carry it into the package. Revision 17
+records a compile-time read of the OS type (`:os.type/0`, `system_info(os_type)`, outside the path internals that read
+it themselves: kino's `File.rm_rf!/1` in `Kino.JS.__before_compile__/1`, and every package whose compile runs that
+hook) as an `os_type` compile input valued from the tracer's start line (`os_type`, `[family, name]`), instead of
+refusing it as a host read. It names `family` alone only when every read was the toolchain's own `File.rm_rf/1`
+(`{major, _} = :os.type()`, by the event's `caller` and the tracer's `caller_kind` verdict on that module's loaded
+code), or OTP's `os:type/0` reading `system_info(os_type)` for such a call; any other read keeps `name` as well. A
+read whose OS type the trace does not record is "portability could not be judged". `os:version/0` still refuses.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
@@ -727,17 +734,19 @@ environment reads of the package's closure, which no longer refuse a build (`Ncc
 `default` is the app's `.app` env default at the locked version, `seen` what the read returned, and
 `{"kind": "platform_define", "regex", "matched"}`: a rebar3 `platform_define` regex in the closure that the OTP major
 does not decide, with whether it matched the builder's `rebar_utils:get_arch/0` string (`Rebar.arch/0`; one `re`
-cannot compile, or not ASCII, records `config_unrecorded`), and `{"kind": "endian", "value": "little" | "big"}`: the
+cannot compile, or not ASCII, records `config_unrecorded`), `{"kind": "endian", "value": "little" | "big"}`: the
 closure read the byte order at compile time, with the byte order the traced compile ran with (judge revision 13; the
-client compares its own `System.endianness/0`). A value the trace could not
+client compares its own `System.endianness/0`), and `{"kind": "os_type", "family": "unix" | "win32", "name"}`: the
+closure read the OS type at compile time, with the traced compile's `:os.type/0` (judge revision 17; `name` left out
+only when no read could reach it; the client compares its own). A value the trace could not
 capture, over 64 KiB, under a private-looking name (`NCC_*`, `*TOKEN*`, `*SECRET*`, `*_KEY`, `*_PASS`, `*_PROXY`,
 ...) or holding a URL with userinfo (`scheme://user:pass@`) is `"unrecordable"`.
 Each kind has its own cap inside the list's 256 items: more than 128 `env` items record `env_all` instead, more
 than 96 `config_order` items or 32 of any other kind record `config_unrecorded`; a cap never drops the build. A
 `config_order` item whose app, key or reader no item may name (an empty atom, one with `=` or NUL, or over 256 bytes)
 records `config_unrecorded` too.
-Other host reads (`os:type`, `system_info` keys other than `endian` and the ones constant within an OTP major,
-files, the network, programs, init arguments) still refuse.
+Other host reads (`os:version`, `system_info` keys other than `endian`, `os_type` and the ones constant within an OTP
+major, files, the network, programs, init arguments) still refuse.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 

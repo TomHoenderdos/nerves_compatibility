@@ -115,6 +115,37 @@ defmodule Compatibility.CompileInputsTest do
     end
   end
 
+  @os_full %{"kind" => "os_type", "family" => "unix", "name" => "linux"}
+  @os_family %{"kind" => "os_type", "family" => "unix"}
+
+  test "an os_type item is accepted with its family, with or without the name" do
+    win = %{@os_full | "family" => "win32", "name" => "nt"}
+    items = [@os_full, @os_family, win, %{@os_full | "name" => "darwin"}]
+    assert CompileInputs.validate(items) == {:ok, items}
+    assert CompileInputs.needs_check?([@os_full])
+    assert CompileInputs.needs_check?([@os_family])
+  end
+
+  test "a malformed os_type item is malformed" do
+    for bad <- [
+          Map.put(@os_full, "extra", 1),
+          Map.delete(@os_family, "family"),
+          %{@os_full | "family" => "Unix"},
+          %{@os_full | "family" => "vxworks"},
+          %{@os_full | "family" => :unix},
+          %{@os_full | "name" => "Linux"},
+          %{@os_full | "name" => ""},
+          %{@os_full | "name" => nil},
+          %{@os_full | "name" => :linux},
+          %{@os_full | "name" => "linux\n"},
+          %{@os_full | "name" => "1linux"},
+          %{@os_full | "name" => String.duplicate("a", 65)},
+          %{"kind" => "os_type", "value" => "unix/linux"}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad)
+    end
+  end
+
   @define %{"kind" => "platform_define", "regex" => "R14", "matched" => false}
 
   test "a platform_define item is accepted in its exact shape and needs a check" do

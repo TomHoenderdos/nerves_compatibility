@@ -20,7 +20,7 @@ defmodule NccWorker.Tracer.FixturesNativeBeamTest do
   @tool "# built with :elixir_make\n"
 
   @nat_src "defmodule FxNat do\n  def f(x), do: x + 1\nend\n"
-  @nat_os_src "defmodule FxNatOs do\n  @os :os.type()\n  def os, do: @os\nend\n"
+  @nat_os_src "defmodule FxNatOs do\n  @os :os.version()\n  def os, do: @os\nend\n"
 
   # The 1.20 type checker reads a remote module's beam in the checker
   # process it spawns for the calling module, and the tracer sees that read

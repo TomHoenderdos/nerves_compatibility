@@ -68,6 +68,9 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"role" => "main", "depth" => 64} = start] = kind(lines, "start")
     # The byte order the compile ran with, for an endianness read's input.
     assert start["endian"] == Atom.to_string(:erlang.system_info(:endian))
+    # And the OS type, for an os:type/0 read's input.
+    {family, name} = :os.type()
+    assert start["os_type"] == [Atom.to_string(family), Atom.to_string(name)]
     [open] = kind(lines, "window_open")
     [%{"app" => "fx_attr", "depth_ok" => true} = close] = kind(lines, "window_close")
 
@@ -85,6 +88,8 @@ defmodule NccWorker.Tracer.RuntimeTest do
       )
 
     assert %{"channel" => "os_identity", "extent" => "frame", "first_kind" => "user"} = event
+    # The module body called it itself: no toolchain caller.
+    assert event["caller_kind"] == "user"
     assert event["user"]["line"] == 2
     # The stack was seen whole, so its bottom frame (where the process
     # started) is recorded too.
@@ -444,6 +449,7 @@ defmodule NccWorker.Tracer.RuntimeTest do
     lines = lines(file)
     assert [%{"role" => "child", "app" => "r3"} = start] = kind(lines, "start")
     assert start["endian"] == Atom.to_string(:erlang.system_info(:endian))
+    assert [_family, _name] = start["os_type"]
     assert [%{"app" => "r3"}] = kind(lines, "sentinel")
     assert [%{"result" => "ok", "module" => "r3", "source" => source}] = kind(lines, "compile")
     assert source =~ "r3.erl"

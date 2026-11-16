@@ -27,7 +27,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
         def port, do: Port.open({:spawn, "true"}, [])
         def os_cmd, do: :os.cmd(~c"true")
         def lookup, do: System.find_executable("sh")
-        def os, do: :os.type()
+        def os, do: :os.version()
       end
       """),
     # A package fun that tail-calls the read from a callback leaves the
@@ -35,7 +35,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     "fx_diag_tail" =>
       lib("fx_diag_tail", """
       defmodule FxDiagTail do
-        {os, _diagnostics} = Code.with_diagnostics(fn -> :os.type() end)
+        {os, _diagnostics} = Code.with_diagnostics(fn -> :os.version() end)
         @os os
         def os, do: @os
       end
@@ -47,7 +47,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
               Path.join(:code.lib_dir(:elixir), "ebin"),
               "^Elixir\\\\.Path\\\\.beam$",
               false,
-              fn _file, _acc -> :os.type() end,
+              fn _file, _acc -> :os.version() end,
               nil
             )
         def os, do: @os
@@ -56,7 +56,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     "fx_attr" =>
       lib("fx_attr", """
       defmodule FxAttr do
-        @os :os.type()
+        @os :os.version()
         @arch :erlang.system_info(:system_architecture)
         def os, do: {@os, @arch}
       end
@@ -64,7 +64,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     "fx_helper" =>
       lib("fx_helper", """
       defmodule FxHelper.H do
-        def os, do: :os.type()
+        def os, do: :os.version()
       end
 
       defmodule FxHelper do
@@ -75,7 +75,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     "fx_macro" =>
       lib("fx_macro", """
       defmodule FxMacro.M do
-        defmacro m, do: Macro.escape(:os.type())
+        defmacro m, do: Macro.escape(:os.version())
       end
 
       defmodule FxMacro do
@@ -86,7 +86,9 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     "fx_macro_tail" =>
       lib("fx_macro_tail", """
       defmodule FxMacroTail.M do
-        defmacro m, do: :os.type()
+        # A list of charlists, a valid quoted expression (os:version/0's
+        # tuple is not), from a function rather than a BIF: a real tail call.
+        defmacro m, do: :init.get_plain_arguments()
       end
 
       defmodule FxMacroTail do
@@ -98,13 +100,13 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
       lib("fx_after_compile", """
       defmodule FxAfterCompile do
         @after_compile __MODULE__
-        def __after_compile__(_env, _bytecode), do: :os.type()
+        def __after_compile__(_env, _bytecode), do: :os.version()
       end
       """),
     "fx_task" =>
       lib("fx_task", """
       defmodule FxTask do
-        @os Task.async(fn -> :os.type() end) |> Task.await()
+        @os Task.async(fn -> :os.version() end) |> Task.await()
         def os, do: @os
       end
       """),
@@ -120,7 +122,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
       lib("fx_depth", """
       defmodule FxDepth do
         :erlang.system_flag(:backtrace_depth, 1)
-        @os :os.type()
+        @os :os.version()
         def os, do: @os
       end
       """),
@@ -129,7 +131,7 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
       defmodule FxIntegrity do
         _ = :trace.session_info(:all)
         _ = :dbg.stop()
-        @os :os.type()
+        @os :os.version()
         def os, do: @os
       end
       """),
@@ -138,7 +140,10 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
       defmodule FxTruncated do
         deep = Enum.reduce(1..70, {:leaf, [], nil}, fn _, acc -> {:node, [], [acc]} end)
         @os Macro.prewalk(deep, fn
-              {:leaf, _, _} -> :os.type()
+              # A list of charlists, which the walk takes as a leaf
+              # (os:version/0's integer tuple is no AST node), from a
+              # function rather than a BIF so the tail call drops this fun.
+              {:leaf, _, _} -> :init.get_plain_arguments()
               node -> node
             end)
         def os, do: @os
@@ -290,24 +295,25 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
 
   test "module attributes reading the OS refuse with file and line", ctx do
     reason = refused(ctx, "fx_attr")
-    assert reason =~ "compile-time host read: os:type/0"
+    assert reason =~ "compile-time host read: os:version/0"
     assert reason =~ "fx_attr.ex:2"
   end
 
   test "a helper tail-calling the read is attributed to the module body", ctx do
-    assert "compile-time host read: os:type/0" <> _ = refused(ctx, "fx_helper")
+    assert "compile-time host read: os:version/0" <> _ = refused(ctx, "fx_helper")
   end
 
   test "a macro reading the host refuses with its MACRO frame", ctx do
     reason = refused(ctx, "fx_macro")
-    assert reason =~ "compile-time host read: os:type/0"
+    assert reason =~ "compile-time host read: os:version/0"
     assert reason =~ "MACRO-m"
   end
 
   test "tail calls from a macro and an @after_compile callback leave the dispatcher", ctx do
-    for app <- ["fx_macro_tail", "fx_after_compile"] do
-      assert "compile-time host read: os:type/0" <> _ = refused(ctx, app), app
-    end
+    assert "compile-time host read: init:get_plain_arguments/0" <> _ =
+             refused(ctx, "fx_macro_tail")
+
+    assert "compile-time host read: os:version/0" <> _ = refused(ctx, "fx_after_compile")
   end
 
   test "a callback tail-calling the read under Code or filelib refuses", ctx do
@@ -316,14 +322,14 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
 
       assert Enum.any?(
                refusals,
-               &(&1["owner"] == app and &1["reason"] =~ "compile-time host read: os:type/0")
+               &(&1["owner"] == app and &1["reason"] =~ "compile-time host read: os:version/0")
              ),
              "#{app}: #{inspect(v, pretty: true)}"
     end
   end
 
   test "a task spawned by a module body is user extent", ctx do
-    assert "compile-time host read: os:type/0" <> _ = refused(ctx, "fx_task")
+    assert "compile-time host read: os:version/0" <> _ = refused(ctx, "fx_task")
   end
 
   test "an environment read deciding a definition is a compile input", ctx do
@@ -342,19 +348,24 @@ defmodule NccWorker.Tracer.FixturesReadsTest do
     assert [%{"owner" => "fx_depth", "reason" => @flag <> "erlang:system_flag/2"} | _] =
              obs["refusals"]
 
-    assert [_ | _] = events(ctx, "fx_depth", "os:type/0")
+    assert [_ | _] = events(ctx, "fx_depth", "os:version/0")
   end
 
   test "reaching for the trace refuses, and tracing goes on", ctx do
     assert "compile-time tracing or system flag: trace:session_info/1" =
              refused(ctx, "fx_integrity")
 
-    assert [_ | _] = events(ctx, "fx_integrity", "os:type/0")
+    assert [_ | _] = events(ctx, "fx_integrity", "os:version/0")
   end
 
   test "a stack truncated with no user frame left counts as user extent", ctx do
-    assert "compile-time host read: os:type/0" <> _ = refused(ctx, "fx_truncated")
-    assert Enum.any?(events(ctx, "fx_truncated", "os:type/0"), &(&1["extent"] == "truncated"))
+    assert "compile-time host read: init:get_plain_arguments/0" <> _ =
+             refused(ctx, "fx_truncated")
+
+    assert Enum.any?(
+             events(ctx, "fx_truncated", "init:get_plain_arguments/0"),
+             &(&1["extent"] == "truncated")
+           )
   end
 
   test "IO.warn, config and Elixir-version reads pass; config reads are recorded", ctx do

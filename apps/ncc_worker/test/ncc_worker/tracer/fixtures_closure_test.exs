@@ -28,7 +28,8 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
   @taint "closure dependency observed the host: "
 
   @deps %{
-    "fx_d_os" => lib("fx_d_os", "defmodule FxDOs do\n  @os :os.type()\n  def os, do: @os\nend\n"),
+    "fx_d_os" =>
+      lib("fx_d_os", "defmodule FxDOs do\n  @os :os.version()\n  def os, do: @os\nend\n"),
     "fx_uses_d" =>
       lib("fx_uses_d", "defmodule FxUsesD do\n  @os FxDOs.os()\n  def os, do: @os\nend\n", %{
         deps: ["fx_d_os"]
@@ -40,7 +41,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
         %{deps: ["fx_d_os"]}
       ),
     "fx_d_pt" =>
-      lib("fx_d_pt", "defmodule FxDPt do\n  :persistent_term.put(:fx_os, :os.type())\nend\n"),
+      lib("fx_d_pt", "defmodule FxDPt do\n  :persistent_term.put(:fx_os, :os.version())\nend\n"),
     "fx_uses_pt" =>
       lib(
         "fx_uses_pt",
@@ -191,7 +192,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
         "fx_cap",
         """
         defmodule FxCap do
-          @n Enum.count(1..100_000, fn _ -> :os.type() end)
+          @n Enum.count(1..100_000, fn _ -> :os.version() end)
           def n, do: @n
         end
         """,
@@ -308,7 +309,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
 
   test "a dependency that observed the host refuses every package that has it (R3)",
        ctx do
-    assert "compile-time host read: os:type/0" <> _ = taint = refused(ctx, "fx_d_os")
+    assert "compile-time host read: os:version/0" <> _ = taint = refused(ctx, "fx_d_os")
 
     for app <- ["fx_uses_d", "fx_uses_d_runtime"] do
       v = verdict(ctx, app)
@@ -321,7 +322,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
   end
 
   test "a host value passed through persistent_term refuses through taint", ctx do
-    assert "compile-time host read: os:type/0" <> _ = refused(ctx, "fx_d_pt")
+    assert "compile-time host read: os:version/0" <> _ = refused(ctx, "fx_d_pt")
     assert %{status: :skip, reason: @taint <> "fx_d_pt (" <> _} = verdict(ctx, "fx_uses_pt")
   end
 

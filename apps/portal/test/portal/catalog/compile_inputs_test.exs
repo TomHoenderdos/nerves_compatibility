@@ -87,6 +87,21 @@ defmodule Portal.Catalog.CompileInputsTest do
     assert_api_schema(manifest, "ManifestV2")
   end
 
+  test "a build with an os_type item, with or without the name, is published under builds_with_inputs" do
+    for {version, os_type} <- [
+          {"0.3.0", %{"kind" => "os_type", "family" => "unix", "name" => "linux"}},
+          {"0.3.1", %{"kind" => "os_type", "family" => "unix"}}
+        ] do
+      name = name()
+      tb = ingest_toolchain_build(name, version, compile_inputs: [os_type])
+      assert tb.compile_inputs == [os_type]
+      manifest = Catalog.precompiled_manifest_v2(name)
+      assert %{"builds" => [], "builds_with_inputs" => [build]} = manifest["versions"][version]
+      assert build["build"]["compile_inputs"] == [os_type]
+      assert_api_schema(manifest, "ManifestV2")
+    end
+  end
+
   test "a build whose inputs need no check stays under builds, with the field" do
     name = name()
     ingest_toolchain_build(name, "0.3.0", compile_inputs: @own)

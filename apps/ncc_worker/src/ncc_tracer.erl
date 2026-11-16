@@ -999,7 +999,8 @@ user_line({Channel, Arg0}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, E
     Line0 = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
               mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
               arg => enrich(Channel, Arg), extent => Kind, first => First, user => User,
-              caller => Caller, bottom => Bottom, first_kind => first_kind(First0)},
+              caller => Caller, caller_kind => caller_kind(Ends),
+              bottom => Bottom, first_kind => first_kind(First0)},
     {Line, St} = hold(Pid, M, F, Args, Id, Line0, St1),
     user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St).
 
@@ -1034,6 +1035,18 @@ first_kind(First) ->
     try ncc_tracer_stack:first_kind(First, fun toolchain/1)
     catch _:_ -> <<"none">>
     end.
+
+%% Whether the frame right below the traced call is the toolchain's loaded
+%% code (`toolchain`), anything else (`user`), or no frame (`none`): the
+%% judge narrows an os:type/0 read to the family only when the toolchain's
+%% own File.rm_rf/1 made it, never a package's module of that name.
+caller_kind({{M, _F, _A, _Location}, _Bottom}) when is_atom(M) ->
+    try toolchain(M) of
+        true -> <<"toolchain">>;
+        false -> <<"user">>
+    catch _:_ -> <<"none">>
+    end;
+caller_kind(_Ends) -> <<"none">>.
 
 %% The frame right below the traced call, before any wrapper is stripped:
 %% the judge exempts one OTP-internal caller (erlang:big_binary_to_int/2).
@@ -1517,6 +1530,10 @@ norm_part(Part, Acc) -> [Part | Acc].
 
 %% --- helpers ---------------------------------------------------------------
 
+os_type_bin() ->
+    {Family, Name} = os:type(),
+    [atom_to_binary(Family), atom_to_binary(Name)].
+
 start_line(Role, App, Depth) ->
     {ok, Cwd} = file:get_cwd(),
     #{kind => start, role => Role, app => bin(App), ts => now_ns(),
@@ -1525,6 +1542,9 @@ start_line(Role, App, Depth) ->
       %% The byte order a compile-time endianness read returns here: the
       %% judge records it as a compile input a client compares.
       endian => atom_to_binary(erlang:system_info(endian)),
+      %% The OS type a compile-time os:type/0 read returns here, as
+      %% [Family, Name]: the judge records it as a compile input too.
+      os_type => os_type_bin(),
       roots => [ncc_tracer_channels:chars(R) || R <- get(roots)],
       otp_root => ncc_tracer_channels:chars(code:root_dir()), elixir_root => elixir_root(),
       home => env_bin("HOME"), mix_home => ncc_tracer_channels:chars(mix_home()),

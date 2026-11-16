@@ -118,6 +118,7 @@ defmodule NccWorker.Portability do
     "mix_project_paths" => 50,
     "env_reads" => 50,
     "endian_reads" => 50,
+    "os_type_reads" => 50,
     "env_writes" => 50,
     "config_writes" => 50
   }
@@ -171,8 +172,13 @@ defmodule NccWorker.Portability do
   # dependency (rustler_precompiled's `{:rustler, ..., optional: true}`,
   # `NccWorker.BuildCache.dep_target_agnostic_rule2?/4`), and a dependency
   # whose compile calls a natively built dependency (`native_calls`) is
-  # tainted (bumped by two while `makefile_rule2` exists).
-  @judge_revision 15
+  # tainted (bumped by two while `makefile_rule2` exists). 17: a
+  # compile-time read of the OS type (`:os.type/0`,
+  # `system_info(os_type)`; kino's `Kino.JS.__before_compile__/1` through
+  # `File.rm_rf!/1`) is an `os_type` compile input the client compares,
+  # valued from the tracer's start line, instead of a host read (bumped by
+  # two while `makefile_rule2` exists).
+  @judge_revision 17
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -686,6 +692,7 @@ defmodule NccWorker.Portability do
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
     rebar_inputs = Enum.uniq(package_inputs ++ Enum.flat_map(deps, &elem(&1, 1).inputs))
     endian = endian_of(report)
+    os_type = os_type_of(report)
 
     %{
       ctx: ctx,
@@ -693,12 +700,15 @@ defmodule NccWorker.Portability do
       report: report,
       decided: decided,
       config: config,
-      inputs: CompileInputs.build(decided, config.inputs ++ rebar_inputs, endian),
+      inputs: CompileInputs.build(decided, config.inputs ++ rebar_inputs, endian, os_type),
       trace_problems:
         trace_problems(report, ctx) ++
           built_problems(ctx, report, opts) ++
           unjudged ++
-          libs.problems ++ config.problems ++ version.problems ++ endian_problems(decided, endian),
+          libs.problems ++
+          config.problems ++
+          version.problems ++
+          endian_problems(decided, endian) ++ os_type_problems(decided, os_type),
       libs: libs,
       package_window: window_problem(report, ctx.package),
       package_r2: package_r2,
@@ -763,6 +773,31 @@ defmodule NccWorker.Portability do
   defp endian_problems(decided, endian) do
     read? = Enum.any?(decided, &match?({_owner, {:observe, "endian_reads", _}}, &1))
     if read? and endian == nil, do: ["byte order read but not recorded by the tracer"], else: []
+  end
+
+  # The OS type the traced compile ran with, `[family, name]`: the one every
+  # VM's start line names, else nil, as for the byte order.
+  defp os_type_of(%Report{start: start, children: children}) do
+    values = [start | Enum.map(children || %{}, fn {_app, child} -> child.start end)]
+
+    case values |> Enum.map(&os_type_value/1) |> Enum.uniq() do
+      [[family, name] = os_type] ->
+        if family in Compatibility.CompileInputs.os_families() and
+             Compatibility.CompileInputs.os_name?(name),
+           do: os_type,
+           else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp os_type_value(%{"os_type" => os_type}), do: os_type
+  defp os_type_value(_start), do: nil
+
+  defp os_type_problems(decided, os_type) do
+    read? = Enum.any?(decided, &match?({_owner, {:observe, "os_type_reads", _}}, &1))
+    if read? and os_type == nil, do: ["OS type read but not recorded by the tracer"], else: []
   end
 
   defp elixir_of(%Report{start: %{"elixir" => elixir}}) when is_binary(elixir), do: elixir

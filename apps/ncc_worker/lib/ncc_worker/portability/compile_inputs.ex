@@ -52,6 +52,15 @@ defmodule NccWorker.Portability.CompileInputs do
   `endian` item, valued with the byte order `build/3` is given (the traced
   compile's, from the tracer's start line); without a known one it is
   `config_unrecorded`.
+
+  A compile-time read of the OS type (`os_type_reads`, `Events`) is one
+  `os_type` item, valued with the `[family, name]` `build/4` is given (the
+  traced compile's, from the tracer's start line). It carries `name` unless
+  every read is one whose caller keeps only the family (`"scope"`
+  `"family"`, Elixir's `File.rm_rf/1`, or `"covered"`, OTP's `os:type/0`
+  reading `system_info(os_type)` for a caller its own read names) and at
+  least one is `"family"`. Without a known OS type it is
+  `config_unrecorded`.
   """
 
   alias Compatibility.{CompileInputs, RecordedValue}
@@ -67,8 +76,8 @@ defmodule NccWorker.Portability.CompileInputs do
   # anywhere in the decoded value.
   @userinfo_url ~r{[a-z][a-z0-9+.-]*://[^/?#@\s]*@}i
 
-  @spec build([{term(), term()}], [map()], term()) :: [map()]
-  def build(decided, config_inputs, endian \\ nil) do
+  @spec build([{term(), term()}], [map()], term(), term()) :: [map()]
+  def build(decided, config_inputs, endian \\ nil, os_type \\ nil) do
     reads = for {_owner, {:observe, "env_reads", item}} <- decided, do: item
 
     writes =
@@ -95,7 +104,8 @@ defmodule NccWorker.Portability.CompileInputs do
 
     env ++
       cap_config(
-        if(all?, do: [@env_all], else: []) ++ endian_inputs(decided, endian) ++ config_inputs
+        if(all?, do: [@env_all], else: []) ++
+          endian_inputs(decided, endian) ++ os_type_inputs(decided, os_type) ++ config_inputs
       )
   end
 
@@ -109,6 +119,32 @@ defmodule NccWorker.Portability.CompileInputs do
       endian in ["little", "big"] -> [%{"kind" => "endian", "value" => endian}]
       true -> [@unrecorded]
     end
+  end
+
+  # Any OS-type read in the closure is one `os_type` item with the OS type
+  # the traced compile ran with. The name is left out only when every read
+  # provably reaches the family alone; a read whose scope is missing or
+  # unknown reaches the whole tuple. Without a known OS type the item is
+  # `config_unrecorded`, which no client matches: never nothing.
+  defp os_type_inputs(decided, os_type) do
+    case for({_owner, {:observe, "os_type_reads", read}} <- decided, do: read["scope"]) do
+      [] -> []
+      scopes -> [os_type_item(os_type, scopes)]
+    end
+  end
+
+  defp os_type_item([family, name], scopes) do
+    if family in CompileInputs.os_families() and CompileInputs.os_name?(name),
+      do: os_type_item(family, name, scopes),
+      else: @unrecorded
+  end
+
+  defp os_type_item(_os_type, _scopes), do: @unrecorded
+
+  defp os_type_item(family, name, scopes) do
+    if "family" in scopes and Enum.all?(scopes, &(&1 in ["family", "covered"])),
+      do: %{"kind" => "os_type", "family" => family},
+      else: %{"kind" => "os_type", "family" => family, "name" => name}
   end
 
   defp cap_config(inputs) do

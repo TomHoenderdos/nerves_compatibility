@@ -71,6 +71,81 @@ defmodule NccWorker.Portability.CompileInputsTest do
     end
   end
 
+  defp os_read(scope, owner \\ "pkg"),
+    do: {owner, {:observe, "os_type_reads", %{"mfa" => "os:type/0", "scope" => scope}}}
+
+  describe "the OS type" do
+    @linux ["unix", "linux"]
+
+    test "a read records one os_type item with the builder's whole OS type" do
+      decided = [os_read("full"), os_read("full", "dep"), os_read("family", :outside)]
+
+      for [family, name] = os_type <- [@linux, ["unix", "darwin"], ["win32", "nt"]] do
+        assert CompileInputs.build(decided, [], nil, os_type) == [
+                 %{"kind" => "os_type", "family" => family, "name" => name}
+               ]
+      end
+    end
+
+    test "only reads that reach the family alone record the family" do
+      for scopes <- [["family"], ["family", "covered"], ["covered", "family", "family"]] do
+        decided = Enum.map(scopes, &os_read/1)
+
+        assert CompileInputs.build(decided, [], nil, @linux) == [
+                 %{"kind" => "os_type", "family" => "unix"}
+               ],
+               inspect(scopes)
+      end
+    end
+
+    # Fail closed: one read that may reach the name, or a scope this build
+    # does not know, keeps the name.
+    test "any other read keeps the name" do
+      for scopes <- [["covered"], ["family", "full"], ["family", nil], ["family", "Family"]] do
+        decided = Enum.map(scopes, &os_read/1)
+
+        assert CompileInputs.build(decided, [], nil, @linux) == [
+                 %{"kind" => "os_type", "family" => "unix", "name" => "linux"}
+               ],
+               inspect(scopes)
+      end
+    end
+
+    test "no read, no item, whatever the OS type" do
+      assert CompileInputs.build([], [], nil, @linux) == []
+    end
+
+    test "a read without a known OS type records config_unrecorded, never nothing" do
+      for os_type <- [
+            nil,
+            [],
+            ["unix"],
+            ["vxworks", "x"],
+            ["unix", "Linux"],
+            ["unix", ""],
+            "unix"
+          ] do
+        assert CompileInputs.build([os_read("family")], [], nil, os_type) == [
+                 %{"kind" => "config_unrecorded"}
+               ],
+               inspect(os_type)
+      end
+    end
+
+    test "next to an endian read, both items, each validating as the shared shape" do
+      decided = [os_read("full"), endian_read()]
+      items = CompileInputs.build(decided, [], "little", @linux)
+
+      assert items == [
+               %{"kind" => "endian", "value" => "little"},
+               %{"kind" => "os_type", "family" => "unix", "name" => "linux"}
+             ]
+
+      assert {:ok, ^items} = Compatibility.CompileInputs.validate(items)
+      assert Compatibility.CompileInputs.needs_check?(items)
+    end
+  end
+
   test "a host read records its value, deduplicated and sorted" do
     decided = [read("B", rec(:error)), read("A", rec({:ok, "1"})), read("B", rec(:error))]
 

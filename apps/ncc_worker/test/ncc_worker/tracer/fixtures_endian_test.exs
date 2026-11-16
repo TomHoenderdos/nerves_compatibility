@@ -50,7 +50,7 @@ defmodule NccWorker.Tracer.FixturesEndianTest do
       lib("fx_endian_os", """
       defmodule FxEndianOs do
         @e System.endianness()
-        @os :os.type()
+        @os :os.version()
         def v, do: {@e, @os}
       end
       """),
@@ -104,7 +104,11 @@ defmodule NccWorker.Tracer.FixturesEndianTest do
   end
 
   test "another host read next to it still refuses", ctx do
-    assert %{status: :skip, reason: "compile-time host read: os:type/0" <> _, compile_inputs: nil} =
+    assert %{
+             status: :skip,
+             reason: "compile-time host read: os:version/0" <> _,
+             compile_inputs: nil
+           } =
              verdict(ctx, "fx_endian_os")
   end
 

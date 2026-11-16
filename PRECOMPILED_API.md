@@ -620,6 +620,11 @@ What it lists:
     read the byte order at compile time (`:erlang.system_info(:endian)`, `System.endianness/0`),
     such as nx choosing its float layouts. `value` is the byte order the build's compile ran with.
     Listed once, however many reads there were.
+  - `{"kind": "os_type", "family": "unix" | "win32", "name": "linux" | ...}` (judge revision 17
+    and later): the closure read the OS type at compile time (`:os.type/0`), such as kino's
+    `Kino.JS` hook clearing its asset dir with `File.rm_rf!/1`. `family` and `name` are the
+    build's `:os.type/0`. `name` is left out when every read was one only the family can reach
+    (Elixir's own `File.rm_rf/1`). Listed once, however many reads there were.
 
   A `compile_env` value may also be `"unrecordable"`, which matches no config. A list the portal
   rejects as malformed is stored as `[{"kind": "config_unrecorded"}]` with the build's `compile_env`
@@ -712,13 +717,18 @@ build fails as the reason it was not used:
       cannot compute the arch string treats the item as differing;
     - an `endian` item holds when `value` is the client's own `System.endianness/0`, else
       `endian_differs`, with the build's and the client's byte order as its arguments. A client
-      that does not know the kind treats the item as malformed: a miss.
+      that does not know the kind treats the item as malformed: a miss;
+    - an `os_type` item holds when `family` is the first element of the client's own
+      `:os.type/0` and, when the item has `name`, `name` is the second. Else `os_type_differs`,
+      with the build's and the client's OS type (`unix:linux`, or the family alone for an item
+      without `name`) as its arguments. A client that does not know the kind treats the item as
+      malformed: a miss.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
     being installed, `default` is `:error`, and the device's value for the key equals `seen`.
     On a device, an `env` item recorded unset holds, one recorded set is `env_set_at_build`, and
-    an `endian` item is `endian_differs` (the device cannot check the machine its firmware was
-    compiled on). A
+    an `endian` item is `endian_differs` and an `os_type` item `os_type_differs` (the device
+    cannot check the machine its firmware was compiled on). A
     client never prints the project's value. A build that carries `compile_inputs` is exempt
     from the source scan's environment-variable rule (`rule8_env`).
 
@@ -821,8 +831,8 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `needed_lib_missing`, `symbol_version_missing`, `system_unknown`,
 `system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
 `config_unrecorded`, `config_order_differs`, `rebar3_global_config`,
-`erl_compiler_options`, `platform_define_differs`, `endian_differs`. Another code is stored as
-`unknown`.
+`erl_compiler_options`, `platform_define_differs`, `endian_differs`, `os_type_differs`. Another
+code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300

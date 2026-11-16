@@ -12,7 +12,8 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
           "`set_by` is `build`); `env_all` and `config_unrecorded` carry `kind` alone; " <>
           "`config_order` items carry `app`, `path`, `reader`, `default` and `seen`; " <>
           "`platform_define` items carry `regex` and `matched`; `endian` items carry `value`, " <>
-          "the build's byte order (`little` or `big`).",
+          "the build's byte order (`little` or `big`); `os_type` items carry `family` and, " <>
+          "unless only the family can reach the build, `name`: the build's `:os.type/0`.",
       type: :object,
       properties: %{
         kind: %Schema{
@@ -23,7 +24,8 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
             "config_unrecorded",
             "config_order",
             "platform_define",
-            "endian"
+            "endian",
+            "os_type"
           ]
         },
         regex: %Schema{
@@ -38,7 +40,19 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
             "Whether `regex` matched the `rebar_utils:get_arch/0` string of the build " <>
               "(`<OTP version>-<system_architecture>-<wordsize>`)."
         },
-        name: %Schema{type: :string},
+        name: %Schema{
+          type: :string,
+          description:
+            "For `env`: the variable. For `os_type`: the second element of the build's " <>
+              "`:os.type/0` (`linux`, `darwin`, `nt`); a client compares its own."
+        },
+        family: %Schema{
+          type: :string,
+          enum: ["unix", "win32"],
+          description:
+            "For `os_type`: the first element of the build's `:os.type/0`, which a client " <>
+              "compares with its own."
+        },
         app: %Schema{type: :string},
         path: %Schema{type: :array, items: %Schema{type: :string}, minItems: 1, maxItems: 1},
         reader: %Schema{

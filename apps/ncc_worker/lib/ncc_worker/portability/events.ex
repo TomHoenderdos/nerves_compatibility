@@ -26,7 +26,10 @@ defmodule NccWorker.Portability.Events do
       (constant within an OTP major); `endian` is observed as
       `endian_reads`, a compile input `CompileInputs` records with the
       builder's byte order for the client to compare, wherever it is read
-      (judge revision 13); every other key refuses, and the
+      (judge revision 13); `os:type/0` and `system_info(os_type)` outside
+      those path internals are observed as `os_type_reads`, a compile input
+      `CompileInputs` records with the builder's OS type (judge revision
+      17); every other key refuses, and the
       reason names the key and, when another function than the package's
       made the call, that function (`via`). The tracer
       writes no line for those path-handling reads (it counts them as
@@ -335,20 +338,55 @@ defmodule NccWorker.Portability.Events do
     do: :ignore
 
   defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => "os_type"}} = e),
-    do: path_handling(e)
+    do: path_handling(e, &os_type_read/1)
 
   defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => key}})
        when key in @same_within_major,
        do: :ignore
 
   defp os_identity(%{"mfa" => "erlang:system_info/1"} = e), do: {:refuse, host_read(e)}
-  defp os_identity(e), do: path_handling(e)
+  defp os_identity(%{"mfa" => "os:type/0"} = e), do: path_handling(e, &os_type_read/1)
+  defp os_identity(e), do: path_handling(e, &{:refuse, host_read(&1)})
 
-  defp path_handling(%{"first" => %{"module" => m, "function" => f, "arity" => a}} = e) do
-    if {m, f, a} in @path_frames, do: :ignore, else: {:refuse, host_read(e)}
+  # A path internal's own read (the tracer's `path_os_frames/0`) is ignored;
+  # any other is `otherwise`'s to decide.
+  defp path_handling(%{"first" => %{"module" => m, "function" => f, "arity" => a}} = e, otherwise) do
+    if {m, f, a} in @path_frames, do: :ignore, else: otherwise.(e)
   end
 
-  defp path_handling(e), do: {:refuse, host_read(e)}
+  defp path_handling(e, otherwise), do: otherwise.(e)
+
+  # The OS type (`:os.type/0`, `system_info(os_type)`; kino's `File.rm_rf!/1`
+  # in `Kino.JS.__before_compile__/1`): a compile input, never a refusal,
+  # whoever reads it and from wherever (judge revision 17). The tracer's
+  # start line records the value and `CompileInputs` turns the reads into
+  # one `os_type` item the client compares with its own. `scope` says what
+  # of the value the read can reach (`os_type_scope/1`).
+  defp os_type_read(e),
+    do: {:observe, "os_type_reads", Map.put(summary(e), "scope", os_type_scope(e))}
+
+  # `family`: the toolchain's `File.rm_rf/1` called `:os.type/0` itself, and
+  # it keeps only the family (`{major, _} = :os.type()`, Elixir 1.17 to
+  # 1.20), to pick how it lists and deletes. `covered`: OTP's `os:type/0`
+  # reading `system_info(os_type)`, whose own `os:type/0` event (always
+  # traced) says who got the value. Anything else can reach the whole tuple.
+  # The caller is the frame right below the read, before any wrapper is
+  # stripped, and `caller_kind` the tracer's verdict on its module's loaded
+  # code: a package's own `File` is never the toolchain's.
+  defp os_type_scope(%{"mfa" => "os:type/0", "caller_kind" => "toolchain"} = e) do
+    if caller?(e, {"Elixir.File", "rm_rf", 1}), do: "family", else: "full"
+  end
+
+  defp os_type_scope(%{"mfa" => "erlang:system_info/1", "caller_kind" => "toolchain"} = e) do
+    if caller?(e, {"os", "type", 0}), do: "covered", else: "full"
+  end
+
+  defp os_type_scope(_e), do: "full"
+
+  defp caller?(%{"caller" => %{"module" => m, "function" => f, "arity" => a}}, {m, f, a}),
+    do: true
+
+  defp caller?(_e, _mfa), do: false
 
   defp install(%{"arg" => %{"what" => what, "app" => app} = arg} = e, ctx)
        when what in ["lib_dir", "priv_dir"] and is_binary(app) do

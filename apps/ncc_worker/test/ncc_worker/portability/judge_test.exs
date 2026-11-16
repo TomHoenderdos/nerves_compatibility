@@ -286,27 +286,31 @@ defmodule NccWorker.Portability.JudgeTest do
     end
 
     test "a refusal in the package's window is the reason", %{proj: proj} do
-      r = report(proj, %{events: [event(35, "os:type/0", "lib/pkg.ex")]})
+      r = report(proj, %{events: [event(35, "os:version/0", "lib/pkg.ex")]})
 
-      assert %{status: :skip, reason: "compile-time host read: os:type/0" <> _, observations: obs} =
+      assert %{
+               status: :skip,
+               reason: "compile-time host read: os:version/0" <> _,
+               observations: obs
+             } =
                judge(proj, r)
 
-      assert [%{"owner" => "pkg", "reason" => "compile-time host read: os:type/0" <> _}] =
+      assert [%{"owner" => "pkg", "reason" => "compile-time host read: os:version/0" <> _}] =
                obs["refusals"]
     end
 
     test "a refusal in a dependency's window taints it and refuses the package", %{proj: proj} do
-      r = report(proj, %{events: [event(15, "os:type/0", "lib/dep.ex")]})
+      r = report(proj, %{events: [event(15, "os:version/0", "lib/dep.ex")]})
 
       assert %{
                status: :skip,
                reason:
-                 "closure dependency observed the host: dep (compile-time host read: os:type/0" <>
+                 "closure dependency observed the host: dep (compile-time host read: os:version/0" <>
                    _,
                observations: obs
              } = judge(proj, r)
 
-      assert %{"dep" => "compile-time host read: os:type/0" <> _} = obs["taint"]
+      assert %{"dep" => "compile-time host read: os:version/0" <> _} = obs["taint"]
     end
 
     test "a compile-time call into a natively built dependency taints the caller", %{
@@ -342,7 +346,10 @@ defmodule NccWorker.Portability.JudgeTest do
     test "a refusal in the package's window comes before taint", %{proj: proj} do
       r =
         report(proj, %{
-          events: [event(15, "os:type/0", "lib/dep.ex"), event(35, "os:version/0", "lib/pkg.ex")]
+          events: [
+            %{event(15, "erlang:system_info/1", "lib/dep.ex") | "arg" => %{"key" => "version"}},
+            event(35, "os:version/0", "lib/pkg.ex")
+          ]
         })
 
       assert %{reason: "compile-time host read: os:version/0" <> _} = judge(proj, r)
@@ -414,7 +421,7 @@ defmodule NccWorker.Portability.JudgeTest do
         r
         | closure: %{r.closure | "deps" => deps},
           events: [
-            event(25, "os:type/0", "lib/other.ex"),
+            event(25, "os:version/0", "lib/other.ex"),
             event(15, "os:version/0", "lib/dep.ex")
           ]
       }
@@ -549,7 +556,11 @@ defmodule NccWorker.Portability.JudgeTest do
       dir: dir
     } do
       %{beam: beam, opts: opts} = nat_setup(proj, dir)
-      taint = %{event(15, "erlang:system_info/1", "lib/dep.ex") | "arg" => %{"key" => "os_type"}}
+
+      taint = %{
+        event(15, "erlang:system_info/1", "lib/dep.ex")
+        | "arg" => %{"key" => "system_architecture"}
+      }
 
       # tokenizers: RustlerPrecompiled read the target in its window.
       r = report(proj, %{events: [taint, beam_read(35, beam)]})
@@ -698,6 +709,127 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert %{status: :skip, reason: @cnj} = njudge(proj, r, opts)
       assert %{status: :pass} = njudge(proj, r, Keyword.put(opts, :nif_waiver, true))
+    end
+  end
+
+  describe "the OS type (judge revision 17)" do
+    @linux ["unix", "linux"]
+    @rm_rf_caller %{"module" => "Elixir.File", "function" => "rm_rf", "arity" => 1}
+
+    defp os_type_event(ts, file, opts \\ []) do
+      e = event(ts, "os:type/0", file)
+
+      case Keyword.get(opts, :caller) do
+        nil -> e
+        caller -> Map.merge(e, %{"caller" => caller, "caller_kind" => "toolchain"})
+      end
+    end
+
+    defp with_os_type(report, os_type),
+      do: %{report | start: Map.put(report.start, "os_type", os_type)}
+
+    test "the package's own read is a compared input with the whole tuple", %{proj: proj} do
+      for os_type <- [@linux, ["unix", "darwin"], ["win32", "nt"]] do
+        r = proj |> report(%{events: [os_type_event(35, "lib/pkg.ex")]}) |> with_os_type(os_type)
+        [family, name] = os_type
+
+        assert %{status: :pass, reason: nil, compile_inputs: inputs} = judge(proj, r)
+        assert inputs == [%{"kind" => "os_type", "family" => family, "name" => name}]
+      end
+    end
+
+    # kino: File.rm_rf!/1 in Kino.JS.__before_compile__/1 keeps the family alone.
+    test "a read only the toolchain's File.rm_rf/1 made records the family", %{proj: proj} do
+      r =
+        proj
+        |> report(%{events: [os_type_event(35, "lib/pkg.ex", caller: @rm_rf_caller)]})
+        |> with_os_type(@linux)
+
+      assert %{status: :pass, compile_inputs: [%{"kind" => "os_type", "family" => "unix"}]} =
+               judge(proj, r)
+    end
+
+    test "one read that reaches the whole tuple records the name", %{proj: proj} do
+      r =
+        proj
+        |> report(%{
+          events: [
+            os_type_event(15, "lib/dep.ex", caller: @rm_rf_caller),
+            os_type_event(35, "lib/pkg.ex")
+          ]
+        })
+        |> with_os_type(@linux)
+
+      assert %{
+               status: :pass,
+               compile_inputs: [%{"kind" => "os_type", "family" => "unix", "name" => "linux"}]
+             } = judge(proj, r)
+    end
+
+    test "a dependency's read no longer taints: the package records it", %{proj: proj} do
+      r = proj |> report(%{events: [os_type_event(15, "lib/dep.ex")]}) |> with_os_type(@linux)
+
+      assert %{status: :pass, compile_inputs: [%{"kind" => "os_type", "name" => "linux"}]} =
+               v = judge(proj, r)
+
+      assert v.observations["taint"] == %{}
+    end
+
+    test "a read outside the package's closure records nothing", %{proj: proj} do
+      r = proj |> report(%{events: [os_type_event(25, "lib/other.ex")]}) |> with_os_type(@linux)
+      assert %{status: :pass, compile_inputs: []} = judge(proj, r)
+    end
+
+    test "a read with no OS type on the start line could not be judged", %{proj: proj} do
+      for os_type <- [:absent, nil, "unix", ["unix"], ["Unix", "linux"], ["unix", "Linux"], []] do
+        r = report(proj, %{events: [os_type_event(35, "lib/pkg.ex")]})
+        r = if os_type == :absent, do: r, else: with_os_type(r, os_type)
+
+        assert %{status: :skip, reason: @cnj, compile_inputs: nil, observations: obs} =
+                 judge(proj, r),
+               inspect(os_type)
+
+        assert "OS type read but not recorded by the tracer" in obs["problems"]
+      end
+    end
+
+    test "a child VM that ran on another OS type could not be judged", %{proj: proj} do
+      kid =
+        child([], %{
+          start: @libs |> Map.put("app", "dep") |> Map.put("os_type", ["unix", "darwin"])
+        })
+
+      r =
+        proj
+        |> report(%{events: [os_type_event(35, "lib/pkg.ex")], children: %{"dep" => kid}})
+        |> with_os_type(@linux)
+
+      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r)
+      assert "OS type read but not recorded by the tracer" in obs["problems"]
+    end
+
+    test "without a read, the start line's OS type changes nothing", %{proj: proj} do
+      assert %{status: :pass, compile_inputs: []} =
+               judge(proj, with_os_type(report(proj), @linux))
+    end
+
+    test "os:version/0 next to it still refuses", %{proj: proj} do
+      r =
+        proj
+        |> report(%{
+          events: [os_type_event(30, "lib/pkg.ex"), event(35, "os:version/0", "lib/pkg.ex")]
+        })
+        |> with_os_type(@linux)
+
+      assert %{status: :skip, reason: "compile-time host read: os:version/0" <> _} =
+               judge(proj, r)
+    end
+
+    test "the read is observed for the admin", %{proj: proj} do
+      r = proj |> report(%{events: [os_type_event(35, "lib/pkg.ex")]}) |> with_os_type(@linux)
+
+      assert %{observations: %{"os_type_reads" => [%{"owner" => "pkg", "scope" => "full"}]}} =
+               judge(proj, r)
     end
   end
 
@@ -851,9 +983,9 @@ defmodule NccWorker.Portability.JudgeTest do
 
   describe "fail closed" do
     test "an event Events could not judge makes the verdict could-not-judge", %{proj: proj} do
-      unjudged = %{event(35, "os:type/0", "lib/pkg.ex") | "extent" => "unjudged"}
+      unjudged = %{event(35, "os:version/0", "lib/pkg.ex") | "extent" => "unjudged"}
       unknown = event(35, "x:y/0", "lib/pkg.ex", "no_such_channel")
-      malformed = %{"ts" => 35, "mfa" => "os:type/0"}
+      malformed = %{"ts" => 35, "mfa" => "os:version/0"}
       # Even attributed to our own wrapper mix.exs, to a dependency outside the
       # package's closure, or to a native-pattern quiet interval.
       wrapper = put_in(unjudged, ["user", "file"], Path.join(proj, "mix.exs"))
@@ -876,7 +1008,7 @@ defmodule NccWorker.Portability.JudgeTest do
     end
 
     test "an unjudged event in a closure child VM could not be judged", %{proj: proj} do
-      e = %{event(1, "os:type/0", "src/dep.erl") | "extent" => "unjudged"}
+      e = %{event(1, "os:version/0", "src/dep.erl") | "extent" => "unjudged"}
       r = report(proj, %{children: %{"dep" => child([e])}})
       assert %{status: :skip, reason: @cnj} = judge(proj, r)
     end
@@ -918,7 +1050,7 @@ defmodule NccWorker.Portability.JudgeTest do
     test "other events in a quiet interval are the tracer's own and dropped", %{proj: proj} do
       r =
         report(proj, %{
-          events: [event(55, "os:type/0", "x.erl")],
+          events: [event(55, "os:version/0", "x.erl")],
           quiet: [%{app: "dep", open: 50, close: 60, delivered: true}]
         })
 
@@ -928,7 +1060,7 @@ defmodule NccWorker.Portability.JudgeTest do
     test "a stray child trace with no closure owner is ignored", %{proj: proj} do
       stray =
         child([
-          event(1, "os:type/0", "x.erl"),
+          event(1, "os:version/0", "x.erl"),
           %{event(2, "os:getenv/1", "x.erl", "env") | "extent" => "unjudged"},
           event(3, "erlang:process_info/2", "x.erl", "integrity")
         ])
@@ -940,7 +1072,7 @@ defmodule NccWorker.Portability.JudgeTest do
 
     test "child VM events count against their app, not the Mix VM's window", %{proj: proj} do
       # ts 35 is inside pkg's window in the Mix VM clock; it belongs to dep.
-      r = report(proj, %{children: %{"dep" => child([event(35, "os:type/0", "src/dep.erl")])}})
+      r = report(proj, %{children: %{"dep" => child([event(35, "os:version/0", "src/dep.erl")])}})
 
       assert %{reason: "closure dependency observed the host: dep (compile-time host read" <> _} =
                judge(proj, r)
@@ -954,7 +1086,7 @@ defmodule NccWorker.Portability.JudgeTest do
 
       r =
         report(proj, %{
-          events: [event(25, "os:type/0", "lib/other.ex"), config],
+          events: [event(25, "os:version/0", "lib/other.ex"), config],
           children: %{"other" => child([event(1, "os:version/0", "src/other.erl")])}
         })
 
@@ -997,7 +1129,7 @@ defmodule NccWorker.Portability.JudgeTest do
       r = %{
         r
         | closure: %{r.closure | "deps" => deps},
-          events: [event(15, "os:type/0", "lib/dep.ex")]
+          events: [event(15, "os:version/0", "lib/dep.ex")]
       }
 
       assert %{
@@ -2305,7 +2437,7 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["trace_stats"]["transient"] == false
 
       leaf = Path.join([proj, "deps", "fx_judge_leaf", "lib", "fx_judge_leaf.ex"])
-      File.write!(leaf, TracerFixtures.attr_module("FxJudgeLeaf", ":os.type()") <> "\n")
+      File.write!(leaf, TracerFixtures.attr_module("FxJudgeLeaf", ":os.version()") <> "\n")
 
       File.write!(
         leaf,
@@ -2314,14 +2446,14 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert %{
                reason:
-                 "closure dependency observed the host: fx_judge_leaf (compile-time host read: os:type/0" <>
+                 "closure dependency observed the host: fx_judge_leaf (compile-time host read: os:version/0" <>
                    _
              } =
                Portability.run(proj, "fx_judge_top", opts)
 
       traced = TracerFixtures.trace(proj, ["fx_judge_leaf"])
 
-      assert %{reason: "compile-time host read: os:type/0" <> _} =
+      assert %{reason: "compile-time host read: os:version/0" <> _} =
                TracerFixtures.judge(proj, "fx_judge_leaf", traced)
     end
   end
@@ -2402,9 +2534,9 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
     end
 
-    test "the judge revision is 15, 16 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 15
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 16
+    test "the judge revision is 17, 18 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 17
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 18
 
       # The portal withdraws only on refusals of a judge at least this new.
       # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4

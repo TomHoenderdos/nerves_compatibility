@@ -146,7 +146,8 @@ defmodule NccWorker.Portability.EventsTest do
 
   # A package fun that tail-calls the read leaves the frame that called the
   # fun first: the module alone (Code, filelib, filename) says nothing.
-  test "an OS-family read under any other frame of a path module refuses", %{ctx: ctx} do
+  test "an OS-family read under any other frame of a path module is not path handling",
+       %{ctx: ctx} do
     others = [
       {"Elixir.Code", "with_diagnostics", 2},
       {"Elixir.Code", "eval_string", 3},
@@ -166,16 +167,27 @@ defmodule NccWorker.Portability.EventsTest do
       "filename"
     ]
 
+    # os:version/0 refuses; the OS type is a compile input (revision 17).
     for {mfa, _m, _f, arg} <- @os_reads, frame <- others do
-      assert {:refuse, "compile-time host read: " <> _} =
-               Events.decide(ev("os_identity", mfa, arg, first: frame), ctx, "pkg"),
+      expected =
+        if mfa == "os:version/0",
+          do: {:refuse, "compile-time host read: "},
+          else: {:observe, "os_type_reads"}
+
+      assert Events.decide(ev("os_identity", mfa, arg, first: frame), ctx, "pkg")
+             |> then(fn
+               {:refuse, "compile-time host read: " <> _} -> {:refuse, "compile-time host read: "}
+               {:observe, "os_type_reads", %{"scope" => "full"}} -> {:observe, "os_type_reads"}
+               other -> other
+             end) == expected,
              inspect({mfa, frame})
     end
   end
 
   defp atom_keys(arg), do: Map.new(arg, fn {k, v} -> {String.to_atom(k), v} end)
 
-  test "OS identity: path handling and the OTP release pass, a direct read refuses", %{ctx: ctx} do
+  test "OS identity: path handling and the OTP release pass, a direct read is decided",
+       %{ctx: ctx} do
     assert :ignore =
              Events.decide(
                ev("os_identity", "os:type/0", %{}, first: {"Elixir.Path", "major_os_type", 0}),
@@ -197,7 +209,11 @@ defmodule NccWorker.Portability.EventsTest do
                "pkg"
              )
 
-    assert {:refuse, "compile-time host read: os:type/0 in Pkg.f/0 (lib/pkg.ex:3)"} =
+    assert {:refuse, "compile-time host read: os:version/0 in Pkg.f/0 (lib/pkg.ex:3)"} =
+             Events.decide(ev("os_identity", "os:version/0", %{}), ctx, "pkg")
+
+    assert {:observe, "os_type_reads",
+            %{"mfa" => "os:type/0", "file" => "lib/pkg.ex", "line" => 3, "scope" => "full"}} =
              Events.decide(ev("os_identity", "os:type/0", %{}), ctx, "pkg")
 
     assert {:refuse, _} =
@@ -238,16 +254,18 @@ defmodule NccWorker.Portability.EventsTest do
 
     # Not an epp server: a user process, a cut stack, another bottom frame.
     # (`system_info(machine)` and `otp_release` are allowed everywhere since
-    # item 5d, so `os:type/0` stands for the predefined-macro reads here.)
+    # item 5d, so `os:type/0` stands for the predefined-macro reads here: outside the
+    # epp server it is a compile input, judge revision 17, never ignored.)
     for bottom <- [
           nil,
           %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0},
           %{"module" => "epp"}
         ] do
-      assert {:refuse, _} = Events.decide(epp("os:type/0", %{}, bottom), ctx, "pkg")
+      assert {:observe, "os_type_reads", _} =
+               Events.decide(epp("os:type/0", %{}, bottom), ctx, "pkg")
     end
 
-    assert {:refuse, _} =
+    assert {:observe, "os_type_reads", _} =
              Events.decide(Map.delete(epp("os:type/0", %{}), "bottom"), ctx, "pkg")
 
     # A user frame on the stack is not the epp server's own work.
@@ -257,7 +275,7 @@ defmodule NccWorker.Portability.EventsTest do
         "user" => @user
     }
 
-    assert {:refuse, _} = Events.decide(framed, ctx, "pkg")
+    assert {:observe, "os_type_reads", _} = Events.decide(framed, ctx, "pkg")
 
     # Every other read in that process stays user.
     assert {:refuse, _} =
@@ -293,14 +311,17 @@ defmodule NccWorker.Portability.EventsTest do
              inspect(caller)
     end
 
-    for key <- ["version", "system_architecture", "os_type"] do
+    for key <- ["version", "system_architecture"] do
       assert {:refuse, _} = Events.decide(wordsize(key, @big_int), ctx, "pkg"), key
     end
+
+    assert {:observe, "os_type_reads", %{"scope" => "full"}} =
+             Events.decide(wordsize("os_type", @big_int), ctx, "pkg")
 
     assert {:observe, "endian_reads", _} =
              Events.decide(wordsize("endian", @big_int), ctx, "pkg")
 
-    other = %{wordsize("wordsize", @big_int) | "mfa" => "os:type/0", "arg" => %{}}
+    other = %{wordsize("wordsize", @big_int) | "mfa" => "os:version/0", "arg" => %{}}
     assert {:refuse, _} = Events.decide(other, ctx, "pkg")
   end
 
@@ -903,7 +924,7 @@ defmodule NccWorker.Portability.EventsTest do
               "key" => "nif_version",
               "code_loading" => true
             }),
-            ev("os_identity", "os:type/0", %{"code_loading" => true}),
+            ev("os_identity", "os:version/0", %{"code_loading" => true}),
             # A flag that is not exactly `true` is no flag.
             ev("file_read", "prim_file:read_link/1", %{"path" => "/usr", "code_loading" => "true"})
           ] do
@@ -940,8 +961,116 @@ defmodule NccWorker.Portability.EventsTest do
             {{"erl_prim_loader", "pathtype", 1}, "nif_version"}
           ] do
         event = ev("os_identity", "erlang:system_info/1", %{"key" => key}, first: first)
-        assert {:refuse, _} = Events.decide(event, ctx, "pkg"), inspect(first)
+        refute Events.decide(event, ctx, "pkg") == :ignore, inspect(first)
       end
+
+      # The OS type itself, flagged or not, outside a path helper: a compile input.
+      for event <- [
+            ev("os_identity", "os:type/0", %{"code_loading" => true}),
+            ev("os_identity", "erlang:system_info/1", %{"key" => "os_type"},
+              first: {"erl_prim_loader", "read_file", 1}
+            )
+          ] do
+        assert {:observe, "os_type_reads", %{"scope" => "full"}} =
+                 Events.decide(event, ctx, "pkg")
+      end
+    end
+  end
+
+  describe "the OS type (judge revision 17)" do
+    defp os_read(mfa, arg, caller, kind) do
+      ev("os_identity", mfa, arg)
+      |> Map.put("caller", caller)
+      |> then(&if(kind == :absent, do: &1, else: Map.put(&1, "caller_kind", kind)))
+    end
+
+    @rm_rf %{
+      "module" => "Elixir.File",
+      "function" => "rm_rf",
+      "arity" => 1,
+      "file" => "lib/file.ex"
+    }
+    @os_type %{"module" => "os", "function" => "type", "arity" => 0, "file" => "os.erl"}
+
+    test "a read is a compile input wherever and by whoever it is made", %{ctx: ctx} do
+      for {mfa, arg} <- [{"os:type/0", %{}}, {"erlang:system_info/1", %{"key" => "os_type"}}],
+          extent <- ~w(frame dispatcher truncated lineage),
+          owner <- ["pkg", "dep", :outside] do
+        event = ev("os_identity", mfa, arg, extent: extent)
+
+        assert {:observe, "os_type_reads", %{"mfa" => ^mfa, "scope" => "full"}} =
+                 Events.decide(event, ctx, owner),
+               inspect({mfa, extent, owner})
+      end
+    end
+
+    # kino: `File.rm_rf!/1` in `Kino.JS.__before_compile__/1`, whose
+    # `{major, _} = :os.type()` keeps only the family.
+    test "the toolchain's File.rm_rf/1 reaches the family alone", %{ctx: ctx} do
+      assert {:observe, "os_type_reads", %{"scope" => "family"}} =
+               Events.decide(os_read("os:type/0", %{}, @rm_rf, "toolchain"), ctx, "pkg")
+    end
+
+    test "OTP's os:type/0 reading system_info is covered by its own read", %{ctx: ctx} do
+      assert {:observe, "os_type_reads", %{"scope" => "covered"}} =
+               Events.decide(
+                 os_read("erlang:system_info/1", %{"key" => "os_type"}, @os_type, "toolchain"),
+                 ctx,
+                 "pkg"
+               )
+    end
+
+    # Fail closed: anything short of exactly those callers reaches the whole tuple.
+    test "any other caller, or one not the toolchain's, reaches the whole tuple", %{ctx: ctx} do
+      for {mfa, arg, caller} <- [
+            {"os:type/0", %{}, @rm_rf},
+            {"erlang:system_info/1", %{"key" => "os_type"}, @os_type}
+          ],
+          kind <- ["user", "none", "glue", nil, :absent] do
+        assert {:observe, "os_type_reads", %{"scope" => "full"}} =
+                 Events.decide(os_read(mfa, arg, caller, kind), ctx, "pkg"),
+               inspect({mfa, kind})
+      end
+
+      for caller <- [
+            %{@rm_rf | "function" => "rm_rf!"},
+            %{@rm_rf | "arity" => 2},
+            %{@rm_rf | "module" => "Elixir.Pkg.File"},
+            %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0},
+            @os_type,
+            nil
+          ] do
+        assert {:observe, "os_type_reads", %{"scope" => "full"}} =
+                 Events.decide(os_read("os:type/0", %{}, caller, "toolchain"), ctx, "pkg"),
+               inspect(caller)
+      end
+
+      # The system_info read covered only below os:type/0 itself.
+      for caller <- [@rm_rf, %{@os_type | "function" => "version"}, nil] do
+        assert {:observe, "os_type_reads", %{"scope" => "full"}} =
+                 Events.decide(
+                   os_read("erlang:system_info/1", %{"key" => "os_type"}, caller, "toolchain"),
+                   ctx,
+                   "pkg"
+                 ),
+               inspect(caller)
+      end
+    end
+
+    test "os:version/0 still refuses, wherever it is read", %{ctx: ctx} do
+      assert {:refuse, "compile-time host read: os:version/0" <> _} =
+               Events.decide(os_read("os:version/0", %{}, @rm_rf, "toolchain"), ctx, "pkg")
+    end
+
+    test "an epp server's own read and a path helper's are still ignored", %{ctx: ctx} do
+      assert :ignore = Events.decide(epp("os:type/0", %{}), ctx, "pkg")
+
+      assert :ignore =
+               Events.decide(
+                 ev("os_identity", "os:type/0", %{}, first: {"Elixir.Path", "major_os_type", 0}),
+                 ctx,
+                 "pkg"
+               )
     end
   end
 

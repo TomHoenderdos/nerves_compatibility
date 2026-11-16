@@ -31,6 +31,12 @@ defmodule Compatibility.CompileInputs do
       the byte order at compile time (`System.endianness/0`,
       `:erlang.system_info(:endian)`); `value` is the builder's. A client
       compares its own `System.endianness/0`. Judge revision 13 and later.
+    * `%{"kind" => "os_type", "family" => "unix" | "win32", "name"}`: the
+      closure read the OS type at compile time (`:os.type/0`); `family` and
+      `name` are the builder's. A client compares its own `:os.type/0`, both
+      elements. Without `name`, every read was one whose caller uses the
+      family alone (Elixir's `File.rm_rf/1`), and a client compares the
+      family. Judge revision 17 and later.
 
   An env item's `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
   of `:error` or `{:ok, binary}`) or `"unrecordable"`, which matches nothing.
@@ -42,6 +48,9 @@ defmodule Compatibility.CompileInputs do
   @max_items 256
   @max_name_bytes 256
   @max_regex_bytes 1024
+  @os_families ["unix", "win32"]
+  # An `:os.type/0` name as it renders: `linux`, `darwin`, `freebsd`, `nt`.
+  @os_name ~r/\A[a-z][a-z0-9_]{0,63}\z/
   # The share of `@max_items` the worker gives `config_order` items, next to
   # 128 `env` items and 32 of every other kind.
   @max_config_order_items 96
@@ -119,11 +128,27 @@ defmodule Compatibility.CompileInputs do
   defp item?(%{"kind" => "endian", "value" => value} = item) when value in ["little", "big"],
     do: map_size(item) == 2
 
+  defp item?(%{"kind" => "os_type", "family" => family, "name" => name} = item)
+       when family in @os_families,
+       do: map_size(item) == 3 and os_name?(name)
+
+  defp item?(%{"kind" => "os_type", "family" => family} = item) when family in @os_families,
+    do: map_size(item) == 2
+
   defp item?(%{"kind" => "platform_define", "regex" => regex, "matched" => matched} = item)
        when is_boolean(matched),
        do: map_size(item) == 3 and regex?(regex)
 
   defp item?(_item), do: false
+
+  @doc "The `:os.type/0` families an `os_type` item may carry."
+  @spec os_families() :: [String.t()]
+  def os_families, do: @os_families
+
+  @doc "Whether `name` may stand as an `os_type` item's name (`:os.type/0`'s second element)."
+  @spec os_name?(term()) :: boolean()
+  def os_name?(name) when is_binary(name), do: Regex.match?(@os_name, name)
+  def os_name?(_name), do: false
 
   @doc "Whether `regex` may stand as a `platform_define` item's regex."
   @spec regex?(term()) :: boolean()

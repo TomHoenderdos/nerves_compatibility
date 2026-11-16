@@ -173,8 +173,15 @@ defmodule NccWorker.Tracer.FixturesCodeLoadingTest do
              "#{app}: #{inspect(reasons)}"
     end
 
-    assert Enum.any?(refusals(ctx, "fx_r3_same"), &(&1 =~ @host_read <> "erlang:system_info/1")),
-           inspect(refusals(ctx, "fx_r3_same"))
+    # Its own os_type read is never taken for code loading: since judge
+    # revision 17 it is an OS-type compile input reaching the whole tuple.
+    v = TracerFixtures.judge(ctx.proj, "fx_r3_same", ctx.traced, [], ctx.opts)
+
+    assert Enum.any?(
+             v.observations["os_type_reads"],
+             &match?(%{"mfa" => "erlang:system_info/1", "scope" => "full"}, &1)
+           ),
+           inspect(v.observations["os_type_reads"])
   end
 
   test "an on_load of a package module that reads the host still refuses", ctx do
