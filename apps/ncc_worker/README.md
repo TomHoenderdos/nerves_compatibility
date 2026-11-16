@@ -776,7 +776,8 @@ only on a passing target that publishes its own first build (no optional depende
 1. `mix ncc.nerves_env` in the target's deps and build dirs: the variables Nerves's Mix integration sets up before
    a compile (`CROSSCOMPILE`, `NERVES_TOOLCHAIN`, `NERVES_SYSTEM`, ...);
 2. the traced judge compile of the package's closure for the target under that env, from the run's `deps/` into a
-   build dir of its own (`NccWorker.Portability.target_inputs/3`): it passes only when the trace is whole, the trees
+   build dir of its own, with the toolchain and system dirs moved to links whose paths share nothing with theirs,
+   their names and versions included (`FirmwareInputs.move/4`; `NccWorker.Portability.target_inputs/3`): it passes only when the trace is whole, the trees
    are their tarballs' and nothing in it refuses, except what the reviewed native build tool's own code did
    (elixir_make, `Portability.native_tools/0`: `native_build`, never an input) and `Mix.target/0` reads, which record
    `{"kind": "mix_target", "value"}`. A host read whose value holds the builder's `NERVES_TOOLCHAIN` or

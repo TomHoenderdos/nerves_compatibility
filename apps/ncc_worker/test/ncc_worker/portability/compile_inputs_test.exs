@@ -551,7 +551,9 @@ defmodule NccWorker.Portability.CompileInputsTest do
     end
 
     test "a target read records the target the build was made for" do
-      assert CompileInputs.build([target_read(), target_read(:outside)], [], nil, nil, target: "rpi4") ==
+      assert CompileInputs.build([target_read(), target_read(:outside)], [], nil, nil,
+               target: "rpi4"
+             ) ==
                [%{"kind" => "mix_target", "value" => "rpi4"}]
 
       for target <- [nil, "", "a=b", :rpi4] do

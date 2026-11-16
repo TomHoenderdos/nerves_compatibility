@@ -193,7 +193,11 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
   end
 
   test "any other host read in the package's compile records nothing", ctx do
-    assert %{status: :skip, compile_inputs: nil, reason: "compile-time host read: os:version/0" <> _} =
+    assert %{
+             status: :skip,
+             compile_inputs: nil,
+             reason: "compile-time host read: os:version/0" <> _
+           } =
              target_verdict(ctx, "fx_board_os")
   end
 

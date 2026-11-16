@@ -26,11 +26,13 @@ defmodule NccWorker.FirmwareInputs do
        and its `.app` is the published one byte for byte, so what the trace
        recorded is what the published files were compiled from.
 
-  The trace runs with the Nerves artifacts at another path than the firmware
-  build had them (a link to the same dir, every Nerves variable rewritten to
-  it), so the binding also proves the package's code does not depend on
-  where they sit: a client then compares a variable that names them
-  (`CROSSCOMPILE`) with those paths cut out (`set_by: "nerves"`). The paths
+  The trace runs with the toolchain and system dirs at other paths than the
+  firmware build had them, their artifact names (and so their versions)
+  included (`move/4`: a link per dir, every Nerves variable rewritten to
+  them), so the binding also proves the package's code does not depend on
+  those paths: a client then compares a variable that names them
+  (`CROSSCOMPILE`) with those paths cut out (`set_by: "nerves"`), and may
+  do so on another release of its system. The paths
   must be artifact dirs of the one artifacts dir (`NERVES_ARTIFACTS_DIR`),
   which `NccWorker.FirmwareBuildRoot` keeps out of the published files.
 
@@ -164,7 +166,7 @@ defmodule NccWorker.FirmwareInputs do
     try do
       with {:ok, nerves} <- nerves_env(ctx.project_dir, env, dir),
            {:ok, artifacts, roots} <- roots(nerves),
-           {:ok, moved, roots} <- moved(nerves, artifacts, roots, dir),
+           {:ok, moved, roots} <- move(nerves, artifacts, roots, dir),
            {:ok, verdict} <- trace(name, target, moved, roots, ctx, dir),
            :ok <- bound(dir, build_path, ctx.package) do
         {:ok, %{compile_inputs: verdict.compile_inputs, compile_env: verdict.compile_env}}
@@ -270,21 +272,50 @@ defmodule NccWorker.FirmwareInputs do
       File.dir?(path)
   end
 
-  # The proof that the package's compile does not depend on where the
-  # artifacts sit: the traced compile runs with them at another path (a link
-  # to the same dir), and `bound/3` then requires its beams to be the
-  # published ones, compiled with them where they were. Every Nerves
-  # variable is rewritten to the new path; none may still name the old one.
+  @doc false
+  # The proof that the package's compile does not depend on the roots'
+  # paths, the artifact names in them included: a client cuts the whole
+  # path away, and takes a build made on another release of its system,
+  # whose toolchain and system dirs carry other versions in their names.
+  # So the traced compile runs with each root at a link of its own whose
+  # path shares nothing with the root's (`<dir>/nerves-moved/<n>`), and
+  # `bound/3` then requires its beams to be the published ones, compiled
+  # with the roots where and as they were. Every Nerves variable is
+  # rewritten root by root, cut as a client cuts it
+  # (`Compatibility.CompileInputs.split/2`); none may still name the
+  # artifacts dir.
+  @spec move([{String.t(), String.t()}], String.t(), [{String.t(), String.t()}], String.t()) ::
+          {:ok, [{String.t(), String.t()}], [{String.t(), String.t()}]} | {:error, String.t()}
   # sobelow_skip ["Traversal.FileModule"]
-  defp moved(nerves, artifacts, roots, dir) do
-    link = Path.join(dir, "nerves-artifacts-moved")
-    :ok = File.ln_s(artifacts, link)
-    move = &String.replace(&1, artifacts, link)
-    nerves = Enum.map(nerves, fn {name, value} -> {name, move.(value)} end)
+  def move(nerves, artifacts, roots, dir) do
+    base = Path.join(dir, "nerves-moved")
+    File.mkdir_p!(base)
+
+    moved_roots =
+      roots
+      |> Enum.with_index()
+      |> Enum.map(fn {{name, path}, index} ->
+        link = Path.join(base, Integer.to_string(index))
+        :ok = File.ln_s(path, link)
+        {name, link}
+      end)
+
+    links = Map.new(moved_roots)
+
+    rewrite = fn value ->
+      value
+      |> CompileInputs.split(roots)
+      |> Enum.map_join(fn
+        %{"root" => name} -> Map.fetch!(links, name)
+        literal -> literal
+      end)
+    end
+
+    nerves = Enum.map(nerves, fn {name, value} -> {name, rewrite.(value)} end)
 
     if Enum.any?(nerves, fn {_name, value} -> String.contains?(value, artifacts) end),
-      do: {:error, "a Nerves variable names the artifacts dir twice over"},
-      else: {:ok, nerves, Enum.map(roots, fn {name, path} -> {name, move.(path)} end)}
+      do: {:error, "a Nerves variable names the artifacts dir outside its toolchain and system"},
+      else: {:ok, nerves, moved_roots}
   end
 
   # Step 2: the closure from the run's own `deps/`, which the run's lock

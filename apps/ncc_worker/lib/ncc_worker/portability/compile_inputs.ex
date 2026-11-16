@@ -132,7 +132,8 @@ defmodule NccWorker.Portability.CompileInputs do
     env ++
       cap_config(
         if(all?, do: [@env_all], else: []) ++
-          endian_inputs(decided, endian) ++ os_type_inputs(decided, os_type) ++
+          endian_inputs(decided, endian) ++
+          os_type_inputs(decided, os_type) ++
           target_inputs(decided, Keyword.get(opts, :target)) ++ config_inputs
       )
   end

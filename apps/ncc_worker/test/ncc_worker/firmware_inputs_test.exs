@@ -177,6 +177,62 @@ defmodule NccWorker.FirmwareInputsTest do
     end
   end
 
+  describe "move/4" do
+    setup %{tmp_dir: tmp_dir} do
+      artifacts = Path.join(tmp_dir, "artifacts")
+      tc = Path.join(artifacts, "nerves_toolchain_aarch64_nerves_linux_gnu-15.3.1")
+      sys = Path.join(artifacts, "nerves_system_rpi4-2.2.2")
+      work = Path.join(tmp_dir, "work")
+      Enum.each([tc, sys, work], &File.mkdir_p!/1)
+
+      %{
+        artifacts: artifacts,
+        roots: [{"NERVES_TOOLCHAIN", tc}, {"NERVES_SYSTEM", sys}],
+        work: work
+      }
+    end
+
+    # A client takes a build made on another release of its system (another
+    # system version, a toolchain of the same series), whose roots are named
+    # for it: the trace must not have them under their builder names, or a
+    # beam that keeps a root's name (its version) binds as well.
+    test "moves each root whole, its name included, and every variable with it", c do
+      [{_, tc}, {_, sys}] = c.roots
+
+      nerves = [
+        {"CROSSCOMPILE", tc <> "/bin/aarch64-nerves-linux-gnu"},
+        {"NERVES_TOOLCHAIN", tc},
+        {"NERVES_SYSTEM", sys},
+        {"CFLAGS", "--sysroot=#{sys}/staging -O2"},
+        {"OTHER", "plain"}
+      ]
+
+      assert {:ok, moved, moved_roots} = FirmwareInputs.move(nerves, c.artifacts, c.roots, c.work)
+      assert Enum.map(moved_roots, &elem(&1, 0)) == ["NERVES_TOOLCHAIN", "NERVES_SYSTEM"]
+
+      for {{_name, root}, {_moved_name, link}} <- Enum.zip(c.roots, moved_roots) do
+        refute String.contains?(link, Path.basename(root)), link
+        refute String.contains?(link, c.artifacts)
+        assert File.read_link!(link) == root
+      end
+
+      for {{name, value}, {moved_name, moved_value}} <- Enum.zip(nerves, moved) do
+        assert moved_name == name
+        refute String.contains?(moved_value, c.artifacts)
+
+        assert Compatibility.CompileInputs.split(moved_value, moved_roots) ==
+                 Compatibility.CompileInputs.split(value, c.roots)
+      end
+    end
+
+    test "a variable naming the artifacts dir anywhere but at a root is not moved", c do
+      other = Path.join(c.artifacts, "nerves_toolchain_other-1.0")
+      nerves = [{"NERVES_TOOLCHAIN", elem(hd(c.roots), 1)}, {"OTHER_TOOLCHAIN", other}]
+
+      assert {:error, _} = FirmwareInputs.move(nerves, c.artifacts, c.roots, c.work)
+    end
+  end
+
   test "md5s/1 reads each beam's code md5, and nothing when one is unreadable",
        %{tmp_dir: tmp_dir} do
     [{mod, bin}] =
