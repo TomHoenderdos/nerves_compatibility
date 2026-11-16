@@ -784,8 +784,8 @@ only on a passing target that publishes its own first build (no optional depende
    `NERVES_SYSTEM` is `{"kind": "env", "name", "set_by": "nerves", "value": [segments]}`: the value cut at those
    paths (`Compatibility.CompileInputs.split/2`), which a client compares with its own value cut at its own paths;
    the published files never hold such a path (`NccWorker.FirmwareBuildRoot`);
-3. the binding: the traced beams of the package carry the code (`beam_lib:md5/1`) of the published ones, module
-   for module.
+3. the binding: the traced beams of the package carry the code (`beam_lib:md5/1`) and the attributes chunk (persisted
+   attributes) of the published ones, module for module, and the `.app` is the published one byte for byte.
 
 The target then carries the trace's `compile_inputs` and its `compile_env`; anything that does not hold leaves it
 without, as before. `NCC_FIRMWARE_INPUTS=0` turns it off.

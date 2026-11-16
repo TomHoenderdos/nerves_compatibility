@@ -233,7 +233,37 @@ defmodule NccWorker.FirmwareInputsTest do
     end
   end
 
-  test "md5s/1 reads each beam's code md5, and nothing when one is unreadable",
+  # A persisted attribute is in the beam's attributes chunk, which
+  # `:beam_lib.md5/1` leaves out, and a running system reads it
+  # (`module_info(:attributes)`): a value the compile took from a root's path
+  # would bind otherwise.
+  test "fingerprints/1 tells apart beams whose code is the same and persisted attributes differ",
+       %{tmp_dir: tmp_dir} do
+    ebins =
+      for value <- ["/a/nerves_system_rpi4-2.2.2", "/b/nerves_system_rpi4-2.3.0"] do
+        source = """
+        defmodule FirmwareInputsAttrProbe do
+          Module.register_attribute(__MODULE__, :system, persist: true)
+          @system #{inspect(value)}
+          def x, do: 1
+        end
+        """
+
+        [{mod, bin}] = Code.compile_string(source, "probe.ex")
+        :code.purge(mod)
+        :code.delete(mod)
+        ebin = Path.join([tmp_dir, Base.encode16(value), "ebin"])
+        File.mkdir_p!(ebin)
+        File.write!(Path.join(ebin, "#{mod}.beam"), bin)
+        ebin
+      end
+
+    [a, b] = Enum.map(ebins, &FirmwareInputs.fingerprints/1)
+    assert map_size(a) == 1
+    assert a != b
+  end
+
+  test "fingerprints/1 reads each beam's code md5 and attributes, and nothing when one is unreadable",
        %{tmp_dir: tmp_dir} do
     [{mod, bin}] =
       Code.compile_string("defmodule FirmwareInputsMd5Probe, do: def(x, do: 1)", "probe.ex")
@@ -242,10 +272,11 @@ defmodule NccWorker.FirmwareInputsTest do
     File.mkdir_p!(ebin)
     File.write!(Path.join(ebin, "#{mod}.beam"), bin)
     {:ok, {^mod, md5}} = :beam_lib.md5(bin)
+    {:ok, {^mod, [{~c"Attr", attrs}]}} = :beam_lib.chunks(bin, [~c"Attr"])
 
-    assert FirmwareInputs.md5s(ebin) == %{mod => md5}
+    assert FirmwareInputs.fingerprints(ebin) == %{mod => {md5, attrs}}
     File.write!(Path.join(ebin, "broken.beam"), "not a beam")
-    assert FirmwareInputs.md5s(ebin) == %{}
-    assert FirmwareInputs.md5s(Path.join(tmp_dir, "none")) == %{}
+    assert FirmwareInputs.fingerprints(ebin) == %{}
+    assert FirmwareInputs.fingerprints(Path.join(tmp_dir, "none")) == %{}
   end
 end

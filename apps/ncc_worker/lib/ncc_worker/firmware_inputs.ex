@@ -22,7 +22,8 @@ defmodule NccWorker.FirmwareInputs do
        (`NccWorker.Portability.target_inputs/3`), which records every read
        a client must check and passes only when nothing else was read;
     3. the binding: the beams that compile wrote for the package carry the
-       code (`:beam_lib.md5/1`) of the published ones, module for module,
+       code (`:beam_lib.md5/1`) and the attributes chunk of the published
+       ones, module for module,
        and its `.app` is the published one byte for byte, so what the trace
        recorded is what the published files were compiled from.
 
@@ -358,7 +359,7 @@ defmodule NccWorker.FirmwareInputs do
   end
 
   # Step 3: the traced compile's beams for the package against the
-  # published build's, by the code each holds.
+  # published build's, by the code and the attributes each holds.
   defp bound(dir, build_path, package) when is_binary(build_path) do
     traced = Path.join([dir, "_build", "lib", package, "ebin"])
 
@@ -368,7 +369,8 @@ defmodule NccWorker.FirmwareInputs do
         _ -> nil
       end
 
-    if (published && md5s(traced) != %{}) and md5s(traced) == md5s(published) and
+    if (published && fingerprints(traced) != %{}) and
+         fingerprints(traced) == fingerprints(published) and
          app_file(traced, package) == app_file(published, package),
        do: :ok,
        else: {:error, "the traced compile's beams differ from the published ones"}
@@ -377,17 +379,25 @@ defmodule NccWorker.FirmwareInputs do
   defp bound(_dir, _build_path, _package), do: {:error, "no build path"}
 
   @doc false
-  # Every beam in `ebin` by module, with the md5 of its code; `%{}` when any
-  # cannot be read.
-  @spec md5s(String.t()) :: %{atom() => binary()}
-  def md5s(ebin) do
+  # Every beam in `ebin` by module, with the md5 of its code and its
+  # attributes chunk as it is (`module_info(:attributes)`: persisted
+  # attributes, which the md5 leaves out); `%{}` when any cannot be read.
+  # The other chunks the md5 leaves out hold the source path (`CInf`,
+  # `Dbgi`, `Docs`), which is `deps/` here and `deps_<target>/` there.
+  @spec fingerprints(String.t()) :: %{atom() => {binary(), binary() | :missing_chunk}}
+  def fingerprints(ebin) do
     ebin
     |> Path.join("*.beam")
     |> Path.wildcard()
     |> Enum.reduce_while(%{}, fn path, acc ->
-      case :beam_lib.md5(String.to_charlist(path)) do
-        {:ok, {module, md5}} -> {:cont, Map.put(acc, module, md5)}
-        {:error, _, _} -> {:halt, %{}}
+      file = String.to_charlist(path)
+
+      with {:ok, {module, md5}} <- :beam_lib.md5(file),
+           {:ok, {^module, [{~c"Attr", attrs}]}} <-
+             :beam_lib.chunks(file, [~c"Attr"], [:allow_missing_chunks]) do
+        {:cont, Map.put(acc, module, {md5, attrs})}
+      else
+        _ -> {:halt, %{}}
       end
     end)
   end
