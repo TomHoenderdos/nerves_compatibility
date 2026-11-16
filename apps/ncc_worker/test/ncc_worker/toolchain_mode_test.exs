@@ -562,6 +562,7 @@ defmodule NccWorker.ToolchainModeTest do
              "deps_lock" => %{"dep" => _},
              "compile_env" => _,
              "file_manifest" => %{"ebin" => [_ | _], "priv" => []},
+             "built_priv" => [],
              "portability_rule" => 2,
              "rule1_reason" => nil,
              "compile_observations" => %{
@@ -1260,6 +1261,162 @@ defmodule NccWorker.ToolchainModeTest do
       :ok = JsonWriter.write_result(out, Map.put(run, :systems, %{"pure_elixir" => withheld}))
       json = out |> Path.join("result.json") |> File.read!() |> JSON.decode!()
       refute Map.has_key?(json["systems"]["pure_elixir"], "compile_env_rule")
+    end
+  end
+
+  # kino's compile writes asset archives into its own build priv. Its Hex
+  # tarball never carries them, so a passing trace that saw the package's own
+  # compile write them, twice and byte for byte the same, lists them
+  # (`built_priv`), and the static rules take that list. The build names the
+  # ones its manifest ships, so the portal can check them against it.
+  describe "priv files the package's own compile wrote" do
+    @archive "assets/Kino_Tree/abc.tar.gz"
+    @gz <<0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 3, "kino assets">>
+
+    # The project with `built_files` in the host build's priv and a verified
+    # Hex tarball of `tarball_files` (`priv/...` paths) in a Hex cache whose
+    # lock names it. Returns the project and the Hex home.
+    defp own_priv_project(work_dir, built_files, tarball_files) do
+      {project, built} = project(work_dir, "circular_buffer-1.0.0")
+
+      for {path, content} <- built_files do
+        full = Path.join([built, "priv", path])
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, content)
+        File.chmod!(full, 0o644)
+      end
+
+      home = Path.join(work_dir, "hex")
+      tar = Path.join(home, "packages/hexpm/sample-1.0.0.tar")
+      File.mkdir_p!(Path.dirname(tar))
+      File.write!(tar, own_priv_tarball(work_dir, tarball_files))
+
+      File.write!(
+        Path.join(project, "mix.lock"),
+        ~s(%{"sample": {:hex, :sample, "1.0.0", "i", [:mix], [], "hexpm", "#{sha256(tar)}"}}\n)
+      )
+
+      {project, home}
+    end
+
+    defp own_priv_tarball(work_dir, files) do
+      staging = Path.join(work_dir, "tarball-staging")
+
+      entries =
+        for {path, content} <- Map.put(files, "lib/sample.ex", "defmodule Sample do end") do
+          full = Path.join(staging, path)
+          File.mkdir_p!(Path.dirname(full))
+          File.write!(full, content)
+          File.chmod!(full, 0o644)
+          {String.to_charlist(path), String.to_charlist(full)}
+        end
+
+      contents = Path.join(work_dir, "contents.tar.gz")
+      :ok = :erl_tar.create(String.to_charlist(contents), entries, [:compressed])
+      outer = Path.join(work_dir, "outer.tar")
+
+      :ok =
+        :erl_tar.create(String.to_charlist(outer), [
+          {~c"VERSION", "3"},
+          {~c"CHECKSUM", String.duplicate("0", 64)},
+          {~c"metadata.config", ~s({<<"name">>,<<"sample">>}.\n)},
+          {~c"contents.tar.gz", File.read!(contents)}
+        ])
+
+      File.read!(outer)
+    end
+
+    defp own_priv_build(project, home, verdict) do
+      Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict,
+        hex_home: home
+      )
+    end
+
+    test "a pass publishes them and names them by their manifest paths",
+         %{tmp_dir: work_dir} do
+      {project, home} =
+        own_priv_project(work_dir, %{@archive => @gz, "data.json" => "{}"}, %{
+          "priv/data.json" => "{}"
+        })
+
+      build = own_priv_build(project, home, Map.put(@traced_pass, :built_priv, [@archive]))
+
+      assert %{status: "pass", reason: nil, built_priv: ["priv/" <> @archive]} = build
+      paths = Enum.map(build.file_manifest["priv"], & &1["path"])
+      assert Enum.sort(paths) == ["priv/" <> @archive, "priv/data.json"]
+    end
+
+    # The list is the trace's; the build names only what it ships.
+    test "a listed file the manifest does not ship is not named", %{tmp_dir: work_dir} do
+      {project, home} = own_priv_project(work_dir, %{@archive => @gz}, %{})
+      listed = ["assets/z.tar.gz", @archive, "assets/gone.tar.gz"]
+      build = own_priv_build(project, home, Map.put(@traced_pass, :built_priv, listed))
+
+      assert %{status: "pass", built_priv: ["priv/" <> @archive]} = build
+    end
+
+    # A verdict from before the trace listed them: the tarball is the only
+    # reference, and it does not carry the file.
+    test "a pass without the list skips the build", %{tmp_dir: work_dir} do
+      {project, home} = own_priv_project(work_dir, %{@archive => @gz}, %{})
+      build = own_priv_build(project, home, @traced_pass)
+
+      assert %{status: "skipped", built_priv: nil, file_manifest: nil} = build
+
+      assert build.reason ==
+               "ships a priv file its Hex tarball does not carry (priv/#{@archive})"
+    end
+
+    # A trace that could not judge keeps the static reason, which shows the
+    # list was not taken.
+    test "only a pass's list counts", %{tmp_dir: work_dir} do
+      {project, home} = own_priv_project(work_dir, %{@archive => @gz}, %{})
+      build = own_priv_build(project, home, Map.put(@not_judged, :built_priv, [@archive]))
+
+      assert %{status: "skipped", built_priv: nil} = build
+
+      assert build.reason ==
+               "ships a priv file its Hex tarball does not carry (priv/#{@archive})"
+    end
+
+    test "one the tarball carries skips the build", %{tmp_dir: work_dir} do
+      {project, home} =
+        own_priv_project(work_dir, %{@archive => @gz}, %{("priv/" <> @archive) => @gz})
+
+      build = own_priv_build(project, home, Map.put(@traced_pass, :built_priv, [@archive]))
+
+      assert %{status: "skipped", built_priv: nil} = build
+
+      assert build.reason ==
+               "ships a priv file its compile wrote over one its Hex tarball carries " <>
+                 "(priv/#{@archive})"
+    end
+
+    test "every build that is not a pass names none", %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+      host = passing_host()
+
+      assert %{built_priv: []} =
+               Worker.toolchain_build(project, "sample", host, @toolchain, @traced_pass)
+
+      assert %{built_priv: nil} =
+               Worker.toolchain_build(project, "sample", host, @toolchain, @unfinished)
+
+      assert %{status: "error", built_priv: nil} =
+               Worker.toolchain_build(project, "sample", %{status: :fail}, @toolchain, nil)
+
+      assert %{built_priv: nil} = Worker.world_skipped_build(@toolchain, "x")
+    end
+
+    test "result.json carries the names", %{tmp_dir: work_dir} do
+      {project, home} = own_priv_project(work_dir, %{@archive => @gz}, %{})
+      build = own_priv_build(project, home, Map.put(@traced_pass, :built_priv, [@archive]))
+      out = Path.join(work_dir, "out")
+      File.mkdir_p!(out)
+
+      assert :ok = JsonWriter.write_result(out, result(build))
+      decoded = out |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+      assert decoded["toolchain_build"]["built_priv"] == ["priv/" <> @archive]
     end
   end
 end

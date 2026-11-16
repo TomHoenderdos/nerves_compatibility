@@ -642,4 +642,110 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     assert reason =~ "under \"ebin\""
     assert {false, []} = published?(name)
   end
+
+  # kino's compile writes asset archives into its own build priv, which its
+  # Hex tarball never carries. The worker lists the ones a passing trace says
+  # the package's own compile wrote (`built_priv`, their manifest paths), and
+  # the host takes that list instead of a tarball entry, for those files
+  # only: the tarball must not carry them, and every other rule holds.
+  describe "priv files the package's own compile wrote" do
+    @archive "priv/assets/Kino_Tree/abc.tar.gz"
+
+    defp own_priv_ingest(name, built_priv, priv_built, tarball_files) do
+      beam = "beam-#{name}"
+      tarball = hex_tarball(tarball_files)
+      checksum = sha(tarball)
+      files_dir = files_dir_with([beam | Enum.map(priv_built, &elem(&1, 1))])
+
+      result =
+        name
+        |> result(beam, priv_built, checksum)
+        |> put_in(["toolchain_build", "built_priv"], built_priv)
+
+      ingest_identified(result, opts(files_dir, {:ok, tarball}, {:ok, checksum}))
+    end
+
+    test "one the build lists and the tarball does not carry is published" do
+      name = unique()
+      gz = "gz-#{name}"
+      js = "js-#{name}"
+
+      assert {:ok, %{status: :pass}} =
+               own_priv_ingest(name, [@archive], [{@archive, gz}, {"priv/app.js", js}], %{
+                 "priv/app.js" => js
+               })
+
+      assert {true, shas} = published?(name)
+      assert Enum.sort(shas) == Enum.sort([sha("beam-#{name}"), sha(gz), sha(js)])
+    end
+
+    # A worker from before the list, or one that did not list it.
+    test "unlisted, it is a file the tarball does not carry" do
+      for built <- [nil, [], ["priv/assets/other.tar.gz"]] do
+        name = unique()
+
+        assert {:ok, %{status: :fail, reason: reason}} =
+                 own_priv_ingest(name, built, [{@archive, "gz-#{name}"}], %{})
+
+        assert reason ==
+                 "priv refused on the host: ships a priv file its Hex tarball does not " <>
+                   "carry (#{@archive})"
+
+        assert {false, []} = published?(name)
+      end
+    end
+
+    test "one written over a file the tarball carries is refused" do
+      name = unique()
+      gz = "gz-#{name}"
+
+      assert {:ok, %{status: :fail, reason: reason}} =
+               own_priv_ingest(name, [@archive], [{@archive, gz}], %{@archive => gz})
+
+      assert reason ==
+               "priv refused on the host: ships a priv file its compile wrote over one its " <>
+                 "Hex tarball carries (#{@archive})"
+
+      assert {false, []} = published?(name)
+    end
+
+    test "native code it wrote is refused" do
+      name = unique()
+      elf = <<0x7F, "ELF", 2, 1, 1, 0>> <> name
+
+      outcome = own_priv_ingest(name, ["priv/tool.bin"], [{"priv/tool.bin", elf}], %{})
+
+      assert {:ok, %{status: :fail, reason: "priv refused on the host: ships native code" <> _}} =
+               outcome
+
+      assert {false, []} = published?(name)
+    end
+
+    # The list is the container's word, like the manifest: each entry must
+    # be a plain path under `priv/` before it names anything.
+    test "a list that is not one of plain priv paths is refused" do
+      for built <- [
+            "priv/x",
+            %{"priv/x" => true},
+            [1],
+            ["assets/Kino_Tree/abc.tar.gz"],
+            ["priv/"],
+            ["priv//x"],
+            ["priv/../ebin/x.beam"],
+            ["priv/./x"]
+          ] do
+        name = unique()
+
+        assert {:ok, %{status: :fail, reason: reason}} =
+                 own_priv_ingest(name, built, [{@archive, "gz-#{name}"}], %{}),
+               inspect(built)
+
+        assert reason ==
+                 "priv refused on the host: ships priv files whose compile-written list " <>
+                   "is malformed"
+
+        assert {false, []} = published?(name)
+      end
+    end
+  end
 end

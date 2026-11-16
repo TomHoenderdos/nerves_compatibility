@@ -60,7 +60,7 @@ defmodule NccWorker.BuildSelection do
     source = Path.join(deps, package)
 
     with :ok <- portable_scan(scan),
-         :ok <- portable_priv(project, package, scan, opts),
+         :ok <- portable_priv(project, package, scan, opts, []),
          :ok <- nerves_check(source),
          :ok <-
            check(
@@ -108,12 +108,19 @@ defmodule NccWorker.BuildSelection do
   Options: `tarball:` as for `portable?/4`; `makefile_rule2: true` and
   `manager:` (the trace's manager for the package) let a native build file
   Mix never runs pass (item 1, `NccWorker.NativeBuild`), judged by the
-  `build_tools` in `tarball:`, never by `mix.lock`.
+  `build_tools` in `tarball:`, never by `mix.lock`. `built_priv:` (default
+  `[]`) lists the paths below `priv` that a passing trace says the package's
+  own compile wrote and a second traced build wrote byte for byte the same
+  (judge revision 21): such a file is static when the tarball does not carry
+  it at all, and is held to every other priv rule
+  (`Compatibility.StaticPriv.check/3`). Rule 1 never takes it.
   """
   @spec static_rules(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
   def static_rules(project, package, scan, opts \\ []) do
+    built = Keyword.get(opts, :built_priv, [])
+
     with :ok <- static_scan(scan),
-         :ok <- portable_priv(project, package, scan, opts) do
+         :ok <- portable_priv(project, package, scan, opts, built) do
       check(target_agnostic(project, package, opts), "reads the target or ships native code")
     end
   rescue
@@ -161,15 +168,19 @@ defmodule NccWorker.BuildSelection do
     end
   end
 
-  defp portable_priv(_project, _package, %{footprint: %{priv: %{file_count: 0}}}, _opts), do: :ok
+  # `built` is `static_rules/4`'s `built_priv:`; `portable?/4` (rule 1)
+  # always passes `[]`.
+  defp portable_priv(_project, _package, %{footprint: %{priv: %{file_count: 0}}}, _opts, _built),
+    do: :ok
 
-  defp portable_priv(project, package, _scan, opts) do
+  defp portable_priv(project, package, _scan, opts, built) do
     case Keyword.fetch(opts, :tarball) do
       {:ok, tarball} ->
         StaticPriv.check(
           Path.join([project, "_build", "host", "lib", package, "priv"]),
           Path.join([project, "deps", package, "priv"]),
-          tarball
+          tarball,
+          built
         )
 
       :error ->

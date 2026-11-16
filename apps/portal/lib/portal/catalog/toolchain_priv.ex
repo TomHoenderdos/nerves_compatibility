@@ -23,6 +23,18 @@ defmodule Portal.Catalog.ToolchainPriv do
 
   A priv file is an entry whose path is under `priv/`, whichever key of the
   manifest lists it; the key is the container's word as much as the path is.
+
+  A file the package's own compile wrote into its own build priv (kino's
+  asset archives) is not in the tarball. The worker publishes one only when
+  its trace showed the package's own compile alone wrote it and a second
+  traced build wrote it byte for byte the same (judge revision 21), and lists
+  it in the build's `built_priv`, by its manifest path. Those files, and only
+  those, are judged against that list rather than the tarball: the tarball
+  must not carry them at all, and the caps, the native name and magic and the
+  execute bit hold for them as for any other (`Compatibility.StaticPriv.check/3`).
+  A missing or nil `built_priv` lists none, as a build from before the list
+  does; anything but a list of plain paths under `priv/` refuses the build
+  before any file is read.
   A build without priv files fetches nothing. A failed rule, a checksum that
   is not the registry's, or a release the registry does not list is a
   refusal: `{:refused, reason}`, logged as a security event with the package,
@@ -83,12 +95,13 @@ defmodule Portal.Catalog.ToolchainPriv do
 
   defp verify_release({:ok, {name, version}}, entries, build, opts) do
     checked =
-      with {:ok, files} <- read_files(entries, opts.files_dir),
+      with {:ok, built} <- built_priv(build),
+           {:ok, files} <- read_files(entries, opts.files_dir),
            {:ok, checksum} <- registry_checksum(name, version, opts),
            :ok <- same_as_lock(build["package_checksum"], checksum),
            {:ok, tarball} <- tarball(name, version, opts),
            :ok <- served_is_signed(tarball, checksum) do
-        StaticPriv.check(files, tarball)
+        StaticPriv.check(files, tarball, built)
       end
 
     outcome(checked, name, version)
@@ -156,6 +169,29 @@ defmodule Portal.Catalog.ToolchainPriv do
   defp entry_shape(_entry), do: malformed()
 
   defp malformed, do: {:error, "ships a priv manifest entry that names no plain file", []}
+
+  # The priv files the build says the package's own compile wrote, as the
+  # rules take them: their paths below `priv`. A build from a worker before
+  # the list, or with none, says nil or nothing, which is none. The list is
+  # the container's word as much as the manifest is, so every entry must be
+  # a plain path under `priv/` before it names anything; it is checked
+  # before any file is read or Hex is asked.
+  defp built_priv(%{"built_priv" => nil}), do: {:ok, []}
+
+  defp built_priv(%{"built_priv" => built}) when is_list(built) do
+    Enum.reduce_while(built, {:ok, []}, fn
+      "priv/" <> path, {:ok, acc} ->
+        if plain_path?(path),
+          do: {:cont, {:ok, [path | acc]}},
+          else: {:halt, StaticPriv.malformed_built()}
+
+      _other, _acc ->
+        {:halt, StaticPriv.malformed_built()}
+    end)
+  end
+
+  defp built_priv(%{"built_priv" => _malformed}), do: StaticPriv.malformed_built()
+  defp built_priv(_build), do: {:ok, []}
 
   # A relative path of printable segments, none of them `.` or `..`.
   defp plain_path?(path) do

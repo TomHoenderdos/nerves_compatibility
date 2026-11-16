@@ -283,6 +283,84 @@ defmodule NccWorker.BuildSelectionPrivTest do
     end
   end
 
+  # A file the package's own compile wrote into its own build priv (kino's
+  # asset archives) is never in the tarball. The trace vouches for it
+  # (`built_priv:`, from a passing verdict), and only the static rules, the
+  # precompiled verdict, take its word: rule 1 judges priv as it always did.
+  describe "priv files the package's own compile wrote" do
+    @archive "assets/Kino_Tree/abc.tar.gz"
+    @gz <<0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 3, "kino assets">>
+
+    defp static(root, built_files, tarball_files, opts) do
+      built = project(root)
+      built_priv(built, built_files)
+      tarball = hex_tarball(root, Map.new(tarball_files, &prefix/1))
+      scan = scan(map_size(built_files))
+      BuildSelection.static_rules(root, "sample", scan, [tarball: tarball] ++ opts)
+    end
+
+    test "one the tarball does not carry passes when the trace lists it", %{tmp_dir: root} do
+      files = %{@archive => @gz, "data.json" => "{}"}
+      tarball = %{"data.json" => "{}"}
+
+      assert static(root, files, tarball, built_priv: [@archive]) == :ok
+    end
+
+    test "unlisted, it is a file the tarball does not carry", %{tmp_dir: root} do
+      files = %{@archive => @gz}
+
+      assert static(root, files, %{}, []) ==
+               {:skip, "ships a priv file its Hex tarball does not carry (priv/#{@archive})"}
+
+      assert static(Path.join(root, "other"), files, %{}, built_priv: ["assets/other.tar.gz"]) ==
+               {:skip, "ships a priv file its Hex tarball does not carry (priv/#{@archive})"}
+    end
+
+    test "rule 1 does not take the list", %{tmp_dir: root} do
+      built = project(root)
+      built_priv(built, %{@archive => @gz})
+      tarball = hex_tarball(root, %{})
+
+      assert {:skip, "ships a priv file its Hex tarball does not carry" <> _} =
+               BuildSelection.portable?(root, "sample", scan(1),
+                 tarball: tarball,
+                 built_priv: [@archive]
+               )
+    end
+
+    test "one written over a file the tarball carries does not pass", %{tmp_dir: root} do
+      assert static(root, %{@archive => @gz}, %{@archive => @gz}, built_priv: [@archive]) ==
+               {:skip,
+                "ships a priv file its compile wrote over one its Hex tarball carries " <>
+                  "(priv/#{@archive})"}
+    end
+
+    test "native code it wrote does not pass", %{tmp_dir: root} do
+      files = %{"assets/x.bin" => <<0x7F, "ELF", 2, 1, 1, 0, 0::64>>}
+
+      assert static(root, files, %{}, built_priv: ["assets/x.bin"]) ==
+               {:skip, "ships native code in priv (priv/assets/x.bin)"}
+    end
+
+    test "an executable file it wrote does not pass", %{tmp_dir: root} do
+      files = %{"assets/run.sh" => {"echo hi", 0o755}}
+
+      assert static(root, files, %{}, built_priv: ["assets/run.sh"]) ==
+               {:skip, "ships an executable priv file (priv/assets/run.sh)"}
+    end
+
+    test "without the tarball nothing passes", %{tmp_dir: root} do
+      built = project(root)
+      built_priv(built, %{@archive => @gz})
+
+      assert {:skip, "ships priv files that could not be checked against its Hex tarball"} ==
+               BuildSelection.static_rules(root, "sample", scan(1),
+                 tarball: nil,
+                 built_priv: [@archive]
+               )
+    end
+  end
+
   # How Mix really lays it out: the built `priv` is a symlink into the
   # package's source dir, `deps/<package>/priv`. Judged through the link, file
   # by file, against the tarball all the same.

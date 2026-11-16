@@ -24,6 +24,21 @@ defmodule Compatibility.StaticPriv do
   and the files hold at most 500 files and 10 MiB together, which bounds what
   is read and what a client downloads.
 
+  One kind of file is static without being in the tarball: one the package's
+  own compile wrote into its own build `priv`, such as the asset archives
+  kino writes under `priv/assets`. The caller names those (`built`, their
+  paths below `priv`) only when the compile-time trace showed the writes came
+  from the package's own compile and a second traced build wrote them byte for
+  byte the same (`NccWorker.Portability`, judge revision 21). Such a file has
+  no tarball entry to compare against, so the rule for it is the other way
+  round: it must not be in the tarball at all, since a compile that wrote over
+  a file the release ships has made the release's word about that file
+  meaningless, whatever the bytes. Everything else still holds for it: the
+  caps, the native name, the execute bit and the native magic on its own
+  bytes. Being listed says nothing about a file that is not, and a list that
+  is not one of paths refuses every file. The tarball is still needed, since
+  only the tarball can say a file is not in it.
+
   The tarball is bounded before it is unpacked, since anyone can publish one:
   at most 8 MiB as served, a `contents.tar.gz` that inflates to at most
   64 MiB, counted on the bytes actually inflated (`inflate/2`) and not on what
@@ -86,22 +101,60 @@ defmodule Compatibility.StaticPriv do
 
   @doc """
   `:ok` when every one of `files` is static data the Hex `tarball` (its
-  bytes) carries; a `t:refusal/0` otherwise. A `nil` tarball is one the
-  caller could not find or trust, and refuses any file. No files need no
-  tarball.
+  bytes) carries, or is on `built` and the tarball does not carry; a
+  `t:refusal/0` otherwise. `built` lists the paths below `priv` the
+  package's own compile wrote (see the moduledoc); anything but a list of
+  binaries refuses. A `nil` tarball is one the caller could not find or
+  trust, and refuses any file. No files need no tarball.
   """
-  @spec check([file()], binary() | nil) :: :ok | refusal()
-  def check(files, tarball) do
-    with :ok <- within_caps(Enum.map(files, &{&1.path, byte_size(&1.bytes)})),
+  @spec check([file()], binary() | nil, [String.t()]) :: :ok | refusal()
+  def check(files, tarball, built \\ []) do
+    with {:ok, built} <- built_paths(built),
+         :ok <- within_caps(Enum.map(files, &{&1.path, byte_size(&1.bytes)})),
          :ok <- no_native_names(Enum.map(files, & &1.path)),
          :ok <- not_executable(files),
          {:ok, entries} <- tarball_entries(tarball, Enum.map(files, & &1.path)) do
-      Enum.find_value(files, :ok, &refused(same_as_tarball(&1, entries)))
+      Enum.find_value(files, :ok, &refused(judge(&1, entries, built)))
     end
   end
 
   defp refused(:ok), do: nil
   defp refused(refusal), do: refusal
+
+  defp built_paths(built) when is_list(built) do
+    if Enum.all?(built, &is_binary/1),
+      do: {:ok, MapSet.new(built)},
+      else: malformed_built()
+  end
+
+  defp built_paths(_built), do: malformed_built()
+
+  @doc """
+  The refusal for a list of compile-written priv files (`check/3`'s
+  `built`) that is not one of paths, for a caller that checks the list's
+  shape before it gets here.
+  """
+  @spec malformed_built() :: refusal()
+  def malformed_built,
+    do: {:error, "ships priv files whose compile-written list is malformed", []}
+
+  defp judge(%{path: path} = file, entries, built) do
+    if MapSet.member?(built, path),
+      do: written_by_compile(file, entries),
+      else: same_as_tarball(file, entries)
+  end
+
+  # A file the package's own compile wrote: the tarball, which was asked for
+  # its path like any other's, must not have it at all.
+  defp written_by_compile(%{path: path, bytes: bytes}, entries) do
+    if Map.has_key?(entries, "priv/" <> path) do
+      {:error,
+       "ships a priv file its compile wrote over one its Hex tarball carries (priv/#{path})",
+       path: path}
+    else
+      native_magic(bytes, path)
+    end
+  end
 
   @doc """
   The file-count and size caps on `{path, size}` pairs, for a caller that

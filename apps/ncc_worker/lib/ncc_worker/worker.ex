@@ -203,7 +203,18 @@ defmodule NccWorker.Worker do
                 %{String.t() => String.t() | non_neg_integer()}
               ]
             }
-            | nil
+            | nil,
+          # The priv files the package's own compile wrote into its own build
+          # priv, which its Hex tarball does not carry: on a "pass", the
+          # `file_manifest` paths ("priv/<path>", sorted) of the files a
+          # passing trace listed (`built_priv` of `NccWorker.Portability`'s
+          # verdict: written by the package's own compile alone, and byte for
+          # byte the same in a second traced build, judge revision 21) that
+          # the manifest ships; `[]` for none. The static rules took them
+          # without a tarball entry (`Compatibility.StaticPriv.check/3`), and
+          # the portal checks them against this list at ingest. nil on every
+          # other status.
+          built_priv: [String.t()] | nil
         }
 
   # What `toolchain_build/5` itself returns: every `t:toolchain_build/0`
@@ -238,7 +249,8 @@ defmodule NccWorker.Worker do
                 %{String.t() => String.t() | non_neg_integer()}
               ]
             }
-            | nil
+            | nil,
+          built_priv: [String.t()] | nil
         }
 
   @type result :: %{
@@ -1904,6 +1916,7 @@ defmodule NccWorker.Worker do
       compile_env_rule: nil,
       compile_inputs: nil,
       file_manifest: nil,
+      built_priv: nil,
       portability_rule: nil,
       rule1_reason: nil,
       judge_revision: Portability.judge_revision(opts),
@@ -2344,6 +2357,7 @@ defmodule NccWorker.Worker do
       compile_env_rule: nil,
       compile_inputs: nil,
       file_manifest: nil,
+      built_priv: nil,
       portability_rule: nil,
       rule1_reason: nil,
       judge_revision: nil,
@@ -2404,12 +2418,14 @@ defmodule NccWorker.Worker do
     app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
     scan = scan_host_app(app_dir)
     tarball = package_tarball(project_dir, package_name, Keyword.get(opts, :hex_home))
+    built_priv = trace_built_priv(portability)
 
     static =
       BuildSelection.static_rules(project_dir, package_name, scan,
         tarball: tarball,
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
-        manager: portability[:manager]
+        manager: portability[:manager],
+        built_priv: built_priv
       )
 
     rule1 = BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball)
@@ -2437,6 +2453,7 @@ defmodule NccWorker.Worker do
           build
           | status: "pass",
             file_manifest: manifest,
+            built_priv: shipped_built_priv(manifest, built_priv),
             compile_inputs: portability[:compile_inputs]
         }
 
@@ -2444,6 +2461,35 @@ defmodule NccWorker.Worker do
         %{build | status: "skipped", reason: reason}
     end
   end
+
+  # The priv files a passing trace says the package's own compile wrote
+  # (paths below `priv`), which the static rules then take without a
+  # tarball entry. Only a pass vouches for them; a verdict from before the
+  # trace listed them (or one made by hand) lists none. Whatever else the
+  # pass carries there goes to the rules as it is, which refuse a list that
+  # is not one of paths.
+  defp trace_built_priv(%{status: :pass} = verdict) do
+    case Map.get(verdict, :built_priv) do
+      nil -> []
+      built -> built
+    end
+  end
+
+  defp trace_built_priv(_verdict), do: []
+
+  # The listed files the manifest ships, by their manifest paths, so the
+  # build never names a file it does not publish.
+  defp shipped_built_priv(%{"priv" => entries}, built) when is_list(entries) and is_list(built) do
+    shipped = MapSet.new(entries, & &1["path"])
+
+    built
+    |> Enum.filter(&(is_binary(&1) and MapSet.member?(shipped, "priv/" <> &1)))
+    |> Enum.map(&("priv/" <> &1))
+    |> Enum.uniq()
+    |> Enum.sort()
+  end
+
+  defp shipped_built_priv(_manifest, _built), do: []
 
   defp not_traced do
     %{

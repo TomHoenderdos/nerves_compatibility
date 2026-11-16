@@ -29,16 +29,20 @@ defmodule NccWorker.StaticPriv do
   `source_priv` is `deps/<package>/priv`, the one directory `priv_dir` may be
   a link to. `tarball` is the tarball's path, or `{:binary, bytes}` for one
   already read (and checked against the lock, `NccWorker.HexCache.package_tarball/4`);
-  `nil` is one the worker could not find or trust.
+  `nil` is one the worker could not find or trust. `built` lists the paths
+  below `priv` the package's own compile wrote, which the trace vouched for
+  and the tarball must then not carry at all
+  (`Compatibility.StaticPriv.check/3`); every other file is judged against
+  the tarball as before.
   """
-  @spec check(Path.t(), Path.t(), Path.t() | {:binary, binary()} | nil) ::
+  @spec check(Path.t(), Path.t(), Path.t() | {:binary, binary()} | nil, [String.t()]) ::
           :ok | {:skip, String.t()}
-  def check(priv_dir, source_priv, tarball) do
+  def check(priv_dir, source_priv, tarball, built \\ []) do
     with {:ok, root} <- priv_root(priv_dir, source_priv),
          {:ok, files} <- built_files(root),
          :ok <- rules(Rules.within_caps(Enum.map(files, &{&1.path, &1.size}))),
          {:ok, files} <- read_files(root, files) do
-      if files == [], do: :ok, else: rules(Rules.check(files, tarball_bytes(tarball)))
+      if files == [], do: :ok, else: rules(Rules.check(files, tarball_bytes(tarball), built))
     end
   end
 
