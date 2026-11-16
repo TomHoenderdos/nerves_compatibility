@@ -1013,20 +1013,29 @@ class BuildTest(unittest.TestCase):
 
     def test_the_template_copy_survives_the_build(self):
         with tempfile.TemporaryDirectory() as directory:
-            install = Path(directory)
-            build = install / "build-release.sh"
-            build.write_text('#!/bin/bash\nrm -rf "$1"; mkdir -p "$1"\n')
-            build.chmod(0o755)
+            install = Path(directory) / "install"
+            src = Path(directory) / "src"
+            (src / "ops").mkdir(parents=True)
+            template = (SRC / "ops" / "ncc-upstream.conf.template").read_text()
+            (src / "ops" / "ncc-upstream.conf.template").write_text(template)
+            # The checkout's copy, which is the deployed commit's; a copy
+            # installed beside the releases is never run.
+            (src / "ops" / "build-release.sh").write_text(
+                '#!/bin/bash\nrm -rf "$1"; mkdir -p "$1"; echo checkout > "$1/built-by"\n')
             (install / "releases" / "green").mkdir(parents=True)
-            env = {**os.environ, "NCC_INSTALL_DIR": str(install), "NCC_SRC_DIR": str(SRC),
+            installed = install / "build-release.sh"
+            installed.write_text('#!/bin/bash\nmkdir -p "$1"; echo installed > "$1/built-by"\n')
+            installed.chmod(0o755)
+            env = {**os.environ, "NCC_INSTALL_DIR": str(install), "NCC_SRC_DIR": str(src),
                    "HELPER": str(OPS / "blue-green.sh")}
             result = subprocess.run(["bash", "-c", 'source "$HELPER"; bg_build green'],
                                     env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            copy = install / "releases" / "green" / "ncc-upstream.conf.template"
+            release = install / "releases" / "green"
+            self.assertEqual((release / "built-by").read_text(), "checkout\n")
+            copy = release / "ncc-upstream.conf.template"
             self.assertTrue(copy.exists(), "bg_build left no template copy in the release")
-            self.assertEqual(copy.read_text(),
-                             (SRC / "ops" / "ncc-upstream.conf.template").read_text())
+            self.assertEqual(copy.read_text(), template)
 
 
 class CarryAssetsTest(unittest.TestCase):

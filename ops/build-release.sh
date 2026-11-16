@@ -6,8 +6,8 @@
 # built it, and both hosts are Ubuntu 24.04. Anything else produces a release
 # that will not start here.
 #
-# Installed at a fixed operator-chosen path on each host. See the operator
-# runbook.
+# Run from the checkout, once it is on the commit being deployed, by
+# ops/deploy.sh and ops/blue-green.sh. See the operator runbook.
 set -euo pipefail
 
 # The host layout (where the checkout, the release and the config files live)

@@ -401,11 +401,13 @@ class LayoutGuardTest(unittest.TestCase):
             (install / "portal-previous.tar.gz.tmp").write_text("")
             for color in ("blue", "green"):
                 (install / f"served-{color}").write_text("b" * 40 + "\n")
-            build = install / "build-release.sh"
-            build.write_text('#!/bin/bash\necho "build-release $*" >> "$EVENTS"\n')
-            build.chmod(0o755)
             src = root / "src"
             (src / "ops").mkdir(parents=True)
+            (src / "ops" / "build-release.sh").write_text('echo "build-release $*" >> "$EVENTS"\n')
+            # The copy an older deploy left beside the release is never run.
+            installed = install / "build-release.sh"
+            installed.write_text('#!/bin/bash\necho "installed build-release" >> "$EVENTS"\n')
+            installed.chmod(0o755)
             (src / "ops" / "images-sync.sh").write_text('echo "images-sync $*" >> "$EVENTS"\n')
             text = (f"NCC_SRC_DIR={src}\nNCC_INSTALL_DIR={install}\n"
                     f"NCC_PORTAL_ENV={root}/portal.env\nNCC_PORTAL_WORKDIR={root}\n"
@@ -426,6 +428,8 @@ class LayoutGuardTest(unittest.TestCase):
             self.assertIn("served-blue", result.stdout)
             self.assertIn("served-green", result.stdout)
             self.assertIn("systemctl restart ncc-portal", events)
+            self.assertIn("build-release ", events)
+            self.assertNotIn("installed build-release", events)
 
     def test_the_restart_path_is_quiet_without_served_records(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -435,11 +439,9 @@ class LayoutGuardTest(unittest.TestCase):
             (install / "portal").mkdir()
             # The tar stub writes nothing; deploy.sh moves its output.
             (install / "portal-previous.tar.gz.tmp").write_text("")
-            build = install / "build-release.sh"
-            build.write_text("#!/bin/bash\n")
-            build.chmod(0o755)
             src = root / "src"
             (src / "ops").mkdir(parents=True)
+            (src / "ops" / "build-release.sh").write_text("")
             (src / "ops" / "images-sync.sh").write_text("")
             text = (f"NCC_SRC_DIR={src}\nNCC_INSTALL_DIR={install}\n"
                     f"NCC_PORTAL_ENV={root}/portal.env\nNCC_PORTAL_WORKDIR={root}\n"

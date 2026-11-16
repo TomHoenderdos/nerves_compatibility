@@ -287,7 +287,10 @@ if [[ $mode == builder ]]; then
   builder_build_image
 fi
 
-"$NCC_INSTALL_DIR/build-release.sh"
+# The commit's own build-release.sh: the checkout is on it by now. A copy
+# installed beside the release would stay at whatever commit someone last
+# copied it from.
+bash "$SRC/ops/build-release.sh"
 
 # Migrations run through `eval`, which starts the repo but no applications.
 # That is enough for Ecto.Migrator and keeps the deploy independent of

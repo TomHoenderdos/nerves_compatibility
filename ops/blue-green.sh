@@ -239,10 +239,10 @@ BG_RUNNING_IDS_EXPR='IO.puts(inspect(Oban.check_all_queues(Oban) |> Enum.flat_ma
 
 bg_release() { printf '%s\n' "$NCC_INSTALL_DIR/releases/$1"; }
 
-# build-release.sh starts with rm -rf of the release, so the template is
-# copied in after it.
+# The checkout's build-release.sh, on the commit being deployed. It starts
+# with rm -rf of the release, so the template is copied in after it.
 bg_build() {
-  "$NCC_INSTALL_DIR/build-release.sh" "$(bg_release "$1")" && bg_keep_template "$1"
+  bash "$NCC_SRC_DIR/ops/build-release.sh" "$(bg_release "$1")" && bg_keep_template "$1"
 }
 
 # rpc/eval as the service user, in the colour's own node name and tmp dir.
