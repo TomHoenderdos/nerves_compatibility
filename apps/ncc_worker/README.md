@@ -775,8 +775,15 @@ only on a passing target that publishes its own first build (no optional depende
 
 1. `mix ncc.nerves_env` in the target's deps and build dirs: the variables Nerves's Mix integration sets up before
    a compile (`CROSSCOMPILE`, `NERVES_TOOLCHAIN`, `NERVES_SYSTEM`, ...);
-2. the traced judge compile of the package's closure for the target under that env, from the run's `deps/` into a
-   build dir of its own, with the toolchain and system dirs moved to links whose paths share nothing with theirs,
+2. the traced judge compile of the package's closure for the target as the firmware build compiled it, so a package
+   cannot tell the two apart and read otherwise only in the build (`FirmwareInputs.in_build_layout/3`): the run's
+   `deps/` renamed to the target's `deps_<target>` and the trace built into `_build/<target>` (the build's own dirs
+   moved aside meanwhile, then put back; one that cannot be put back stops the run), so `__DIR__` and every Mix path
+   are the build's; the target's build env as it is, its `HEX_HOME` included; the build's own command
+   (`FirmwareInputs.firmware_command/0`: `fakeroot` when present, `System.argv/0` `["firmware"]`); and Nerves's
+   variables exported only once every dependency's `mix.exs` is evaluated, as `nerves_bootstrap.init` does. The
+   moduledoc lists what still differs (the tracer's own variables, which no client matches; a few VM signals the
+   tracer does not pattern). The toolchain and system dirs are moved to links whose paths share nothing with theirs,
    their names and versions included (`FirmwareInputs.move/4`; `NccWorker.Portability.target_inputs/3`): it passes only when the trace is whole, the trees
    are their tarballs' and nothing in it refuses, except what the reviewed native build tool's own code did
    (elixir_make, `Portability.native_tools/0`: `native_build`, never an input; a tracer integrity call or a write to the

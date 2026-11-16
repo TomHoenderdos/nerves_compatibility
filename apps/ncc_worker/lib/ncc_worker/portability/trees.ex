@@ -57,7 +57,9 @@ defmodule NccWorker.Portability.Trees do
   Each locked app's tree, checked against its verified tarball (see the
   moduledoc). `releases` is `%{app => %{name, version, checksum}}`, the
   lock snapshot; `hex_home` the run's Hex cache; `native` the apps that
-  build native code. Options (tests): `budget_ms:`, `max_tree_bytes:`.
+  build native code. `deps_path:` is the dir the compile reads them from
+  (default `<project_dir>/deps`; a firmware target's `deps_<target>`).
+  Options (tests): `budget_ms:`, `max_tree_bytes:`.
   """
   @spec snapshot(String.t(), map(), String.t() | nil, [String.t()], keyword()) ::
           %{String.t() => tree()}
@@ -67,11 +69,12 @@ defmodule NccWorker.Portability.Trees do
       when is_binary(project_dir) and is_map(releases) and is_list(native) do
     deadline = now() + Keyword.get(opts, :budget_ms, @budget_ms)
     limits = %{bytes: Keyword.get(opts, :max_tree_bytes, @max_tree_bytes), deadline: deadline}
+    deps = Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")
 
     releases
     |> Enum.sort()
     |> Map.new(fn {app, release} ->
-      dest = Path.join([project_dir, "deps", app])
+      dest = Path.join(deps, app)
 
       tree =
         cond do

@@ -18,14 +18,68 @@ defmodule NccWorker.FirmwareInputs do
        up before it compiled anything, its `NERVES_TOOLCHAIN` and
        `NERVES_SYSTEM` among them;
     2. the traced judge compile of the package's closure for the target
-       under that env, into a build dir of its own
-       (`NccWorker.Portability.target_inputs/3`), which records every read
-       a client must check and passes only when nothing else was read;
+       as its firmware build compiled it (below), from the run's own
+       `deps/` (`NccWorker.Portability.target_inputs/3`), which records
+       every read a client must check and passes only when nothing else
+       was read;
     3. the binding: the beams that compile wrote for the package carry the
        code (`:beam_lib.md5/1`) and the attributes chunk of the published
        ones, module for module,
        and its `.app` is the published one byte for byte, so what the trace
        recorded is what the published files were compiled from.
+
+  The binding cannot tell a compile that read otherwise and wrote the same
+  beams: a package that can tell the trace from the firmware build could
+  read an env variable only in the build, bake the same value in the trace
+  without reading it, and leave that read out of what the trace records.
+  So the trace runs as the build ran, wherever a package can look without
+  the trace seeing it:
+
+    * at the build's paths (`in_build_layout/3`): the project dir (also
+      the cwd), the target's build dir (`MIX_BUILD_PATH`, `_build/<target>`,
+      the published build moved aside for the trace's) and deps dir
+      (`MIX_DEPS_PATH`, `deps_<target>`, holding the run's `deps/` for the
+      trace, the target's own moved aside): `__DIR__`,
+      `Mix.Project.build_path/0`, `deps_path/0`, `app_path/0` and the
+      source paths in the beams are the build's;
+    * in the target's build env as it is (`MIX_TARGET`, `MIX_ENV`,
+      `MIX_BUILD_PATH`, `MIX_DEPS_PATH`, its own `HEX_HOME`), under the
+      build's own command (`firmware_command/0`: `fakeroot`, with its
+      `FAKEROOTKEY` and `LD_PRELOAD`, and `System.argv/0` `["firmware"]`),
+      `MIX_OS_DEPS_COMPILE_PARTITION_COUNT` unset in both (the worker never
+      sets it, nerves_bootstrap clears it, the tracer will not start with
+      it);
+    * with Nerves's variables put in the env only once every dependency's
+      `mix.exs` has been evaluated (`NccWorker.Tracer`'s `late_env:`), as
+      `mix firmware`'s `nerves_bootstrap.init` loads the deps and then
+      exports them: a `mix.exs` sees them unset at load, set when its
+      project is pushed to compile;
+    * no node name in either, and each dependency compiled by Mix's own
+      `Mix.Tasks.Deps.Compile.compile_single/3`.
+
+  What still differs, and why it records no other inputs than the build
+  read:
+
+    * the Nerves roots, at links of their own, and the variables that name
+      them: what the binding proves (above);
+    * the tracer's variables (`NCC_TRACE_*`), the `-pa`/`-s` it adds to
+      `ERL_AFLAGS` for child VMs, and `fakeroot`'s session key: reading a
+      `NCC_*` name records an unrecordable value, any other of them a value
+      naming the trace dir or the session, and the whole environment
+      `env_all`, so a client never matches a package that looked;
+    * the tracer itself, where a package's look is judged and refuses:
+      probing a module it loaded or listing the loaded modules (`Probes`),
+      reading the code path, another process's dictionary, backtrace or
+      mailbox, or touching tracing or the system flags;
+    * not traced, and so not closed here: `:persistent_term` (the tracer's
+      collector, where `mix firmware` holds Nerves's build plan), the
+      process list, the clock and file times (the trace runs later), and
+      the stacks: the tracer's backtrace depth of 64 frames (8 in the
+      build), and a stack the compile takes of itself (`__STACKTRACE__`)
+      or of the Mix process (`Process.info/2`'s `current_stacktrace`), in
+      which the trace's driver stands in for `mix firmware`'s tasks. A
+      package has to look for these on purpose; closing them needs
+      patterns the tracer does not have.
 
   The trace runs with the toolchain and system dirs at other paths than the
   firmware build had them, their artifact names (and so their versions)
@@ -52,6 +106,7 @@ defmodule NccWorker.FirmwareInputs do
 
   alias Compatibility.CompileInputs
   alias NccWorker.{BeamScan, HexHome, Portability, TargetScan, Tracer}
+  alias NccWorker.FirmwareInputs.LayoutNotRestored
 
   @env_task :"Elixir.Mix.Tasks.Ncc.NervesEnv"
   @env_timeout_sec 300
@@ -67,10 +122,12 @@ defmodule NccWorker.FirmwareInputs do
   (the target's build env); `releases`, `trees` and `started_at` are the
   run's lock snapshot, tree snapshot and start (monotonic seconds);
   `work_dir` and `log_dir` where it writes; `enabled` (default true)
-  is `enabled?/1` of the run's input.
+  is `enabled?/1` of the run's input; `hex_home` (default this VM's
+  `HEX_HOME`) the Hex cache holding the run's tarballs.
   """
   @type ctx :: %{
           optional(:enabled) => boolean(),
+          optional(:hex_home) => String.t() | nil,
           project_dir: String.t(),
           package: String.t(),
           targets: %{String.t() => {String.t(), [{String.t(), String.t()}]}},
@@ -84,9 +141,15 @@ defmodule NccWorker.FirmwareInputs do
   @doc """
   Puts `compile_inputs` and `compile_env` on every target of `systems` they
   could be recorded for. Returns the systems and one line per target tried,
-  for the run's log. `record` (default `record/4`) is for tests.
+  for the run's log, or `{:error, {:firmware_inputs_layout_not_restored,
+  why}}` when a target's dirs could not be put back after its trace
+  (`in_build_layout/3`): the run fails (exit 10) rather than publish from a
+  project its build did not leave. `record` (default `record/4`) is for
+  tests.
   """
-  @spec put(%{String.t() => map()}, ctx(), keyword()) :: {%{String.t() => map()}, [String.t()]}
+  @spec put(%{String.t() => map()}, ctx(), keyword()) ::
+          {%{String.t() => map()}, [String.t()]}
+          | {:error, {:firmware_inputs_layout_not_restored, String.t()}}
   def put(systems, ctx, opts \\ []) do
     record = Keyword.get(opts, :record, &record/4)
 
@@ -105,6 +168,8 @@ defmodule NccWorker.FirmwareInputs do
         {acc, lines ++ [line]}
       end)
     end
+  rescue
+    e in LayoutNotRestored -> {:error, {:firmware_inputs_layout_not_restored, e.message}}
   end
 
   defp try_one(record, name, target_env, ctx, result) do
@@ -182,30 +247,40 @@ defmodule NccWorker.FirmwareInputs do
   @doc """
   Records one target's inputs: `{:ok, %{compile_inputs, compile_env}}`, or
   `{:error, why}` when any step does not hold. `result` is the target's
-  system result. Never raises.
+  system result. Raises only `LayoutNotRestored` (`in_build_layout/3`),
+  which `put/3` returns as the run's error.
+  `nerves_env:` (tests) replaces step 1.
   """
-  @spec record(String.t(), {String.t(), list()}, ctx(), map()) ::
+  @spec record(String.t(), {String.t(), list()}, ctx(), map(), keyword()) ::
           {:ok, %{compile_inputs: [map()], compile_env: [map()]}} | {:error, String.t()}
+  def record(name, target_env, ctx, result, opts \\ [])
+
   # The run's own work dir.
   # sobelow_skip ["Traversal.FileModule"]
-  def record(name, {target, env}, ctx, _result) do
+  def record(name, {target, env}, ctx, _result, opts) do
     dir = Path.join(ctx.work_dir, "fw-inputs-#{target}")
-    build_path = env_value(env, "MIX_BUILD_PATH")
+    nerves_env = Keyword.get(opts, :nerves_env, &nerves_env/3)
     _ = File.rm_rf(dir)
     File.mkdir_p!(dir)
 
     try do
-      with {:ok, nerves} <- nerves_env(ctx.project_dir, env, dir),
+      with {:ok, layout} <- layout(ctx.project_dir, target, env),
+           {:ok, nerves} <- nerves_env.(ctx.project_dir, env, dir),
            {:ok, artifacts, roots} <- roots(nerves),
            {:ok, moved, roots} <- move(nerves, artifacts, roots, dir),
-           {:ok, verdict} <- trace(name, target, moved, roots, ctx, dir),
-           :ok <- bound(dir, build_path, ctx.package) do
+           {:ok, verdict} <-
+             in_build_layout(layout, dir, fn ->
+               trace(name, target, env, moved, roots, ctx, dir)
+             end),
+           :ok <- bound(dir, layout.build, ctx.package) do
         {:ok, %{compile_inputs: verdict.compile_inputs, compile_env: verdict.compile_env}}
       end
     rescue
+      e in LayoutNotRestored -> reraise e, __STACKTRACE__
       e -> {:error, "firmware inputs: " <> Exception.message(e)}
     after
-      _ = File.rm_rf(dir)
+      # A published build that could not be put back stays where it is.
+      unless lexists?(stash(dir)), do: File.rm_rf(dir)
     end
   end
 
@@ -350,25 +425,23 @@ defmodule NccWorker.FirmwareInputs do
   end
 
   # Step 2: the closure from the run's own `deps/`, which the run's lock
-  # and tree snapshots describe, compiled for the target into a build dir of
-  # its own.
-  defp trace(name, target, nerves, roots, ctx, dir) do
-    hex_home = HexHome.prepare(ctx.project_dir, "host")
-
-    env =
-      [
-        {"MIX_TARGET", target},
-        {"MIX_ENV", "prod"},
-        {"MIX_BUILD_PATH", Path.join(dir, "_build")}
-      ] ++ if(hex_home, do: [{"HEX_HOME", hex_home}], else: [])
+  # and tree snapshots describe, compiled for the target as its firmware
+  # build compiled it: in its build env as it is, under the same command
+  # (`firmware_command/0`), at its own paths (`in_build_layout/3` has laid
+  # them out), with Nerves's variables exported once every dependency is
+  # loaded (`late_env:`).
+  defp trace(name, target, env, nerves, roots, ctx, dir) do
+    {wrapper, argv} = firmware_command()
 
     verdict =
       Portability.target_inputs(ctx.project_dir, ctx.package,
         env: env,
-        extra_env: Enum.reject(nerves, fn {var, _} -> Regex.match?(@own_env, var) end),
+        late_env: Enum.reject(nerves, fn {var, _} -> Regex.match?(@own_env, var) end),
+        wrapper: wrapper,
+        argv: argv,
         releases: ctx.releases,
         trees: ctx.trees,
-        hex_home: System.get_env("HEX_HOME"),
+        hex_home: Map.get_lazy(ctx, :hex_home, fn -> System.get_env("HEX_HOME") end),
         run_started_at: ctx.started_at,
         timeout_ms: @trace_timeout_ms,
         trace_dir: Path.join(dir, "trace"),
@@ -377,7 +450,7 @@ defmodule NccWorker.FirmwareInputs do
         roots: roots
       )
 
-    HexHome.publish(hex_home)
+    HexHome.publish(env_value(env, "HEX_HOME"))
 
     case verdict do
       %{status: :pass, compile_inputs: inputs, compile_env: env} when is_list(inputs) ->
@@ -388,9 +461,160 @@ defmodule NccWorker.FirmwareInputs do
     end
   end
 
-  # Step 3: the traced compile's beams for the package against the
-  # published build's, by the code and the attributes each holds.
-  defp bound(dir, build_path, package) when is_binary(build_path) do
+  @doc """
+  How the worker runs a target's firmware build (`NccWorker.Worker`):
+  `mix` with `argv`, under `wrapper` (`fakeroot`, when the image has one)
+  or on its own. A target's trace runs its compile the same way.
+  """
+  @spec firmware_command() :: {String.t() | nil, [String.t()]}
+  def firmware_command, do: {System.find_executable("fakeroot"), ["firmware"]}
+
+  @typedoc "Where a target's firmware build had its dirs, and the run's own `deps/`."
+  @type layout :: %{build: String.t(), deps: String.t(), host_deps: String.t()}
+
+  @doc false
+  # The target's build dir and deps dir (its env's `MIX_BUILD_PATH` and
+  # `MIX_DEPS_PATH`, `deps/` when it set none) and the run's own `deps/`:
+  # real dirs inside the project, none inside another. Its env must be the
+  # target's own.
+  @spec layout(String.t(), String.t(), [{String.t(), String.t()}]) ::
+          {:ok, layout()} | {:error, String.t()}
+  def layout(project_dir, target, env) do
+    project = Path.expand(project_dir)
+    host_deps = Path.join(project, "deps")
+    build = expanded(env, "MIX_BUILD_PATH", project)
+    deps = expanded(env, "MIX_DEPS_PATH", project) || host_deps
+    layout = %{build: build, deps: deps, host_deps: host_deps}
+
+    case Enum.find(layout_checks(layout, project, target, env), fn {holds?, _} ->
+           not holds?.()
+         end) do
+      nil -> {:ok, layout}
+      {_check, why} -> {:error, why}
+    end
+  end
+
+  # In order: each check may count on the ones before it.
+  defp layout_checks(layout, project, target, env) do
+    %{build: build, deps: deps, host_deps: host_deps} = layout
+
+    [
+      {fn -> env_value(env, "MIX_TARGET") == target end, "the build env is not the target's"},
+      {fn -> build != nil end, "no build path"},
+      {fn -> inside?(build, project) and inside?(deps, project) end,
+       "the target's build or deps dir is outside the project"},
+      {fn -> not overlapping?(layout) end, "the target's build and deps dirs overlap"},
+      {fn -> dir?(build) and dir?(host_deps) end, "no published build or deps dir to trace"},
+      {fn -> deps == host_deps or not lexists?(deps) or dir?(deps) end,
+       "the target's deps dir is no dir"}
+    ]
+  end
+
+  defp overlapping?(%{build: build, deps: deps, host_deps: host_deps}),
+    do:
+      nested?(build, deps) or nested?(build, host_deps) or
+        (deps != host_deps and nested?(deps, host_deps))
+
+  defp expanded(env, name, project) do
+    case env_value(env, name) do
+      nil -> nil
+      path -> Path.expand(path, project)
+    end
+  end
+
+  defp inside?(path, dir), do: String.starts_with?(path, dir <> "/")
+  defp nested?(a, b), do: a == b or inside?(a, b) or inside?(b, a)
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp dir?(path), do: match?({:ok, %File.Stat{type: :directory}}, File.lstat(path))
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp lexists?(path), do: match?({:ok, _}, File.lstat(path))
+
+  defp stash(dir), do: Path.join(dir, "published")
+
+  @doc false
+  # Runs `fun` (the trace) in the project laid out at the paths the
+  # target's firmware build used, so whatever path its compile can see
+  # (`__DIR__`, `Mix.Project.build_path/0`, `deps_path/0`, a source path in
+  # a beam) is the build's: the published build moved aside
+  # (`<dir>/published`), leaving its path for the trace to build into, and
+  # the run's own `deps/` at the target's deps dir, whose own tree is moved
+  # aside too. Renames only, within the run's work dir. Afterwards the
+  # trace's build is at `<dir>/_build` (removed if it cannot be moved
+  # there) and every dir is back; whatever the trace left at a path one was
+  # moved from is removed first. A move that cannot be undone raises
+  # `LayoutNotRestored`: nothing may go on to publish files from a project
+  # laid out otherwise than the build left it.
+  @spec in_build_layout(layout(), String.t(), (-> result)) :: result | {:error, String.t()}
+        when result: term()
+  # sobelow_skip ["Traversal.FileModule"]
+  def in_build_layout(layout, dir, fun) do
+    File.mkdir_p!(stash(dir))
+
+    case move_all(moves(layout, dir), []) do
+      {:ok, done} ->
+        try do
+          fun.()
+        after
+          keep_trace_build(layout.build, Path.join(dir, "_build"))
+          undo!(done)
+          File.rmdir(stash(dir))
+        end
+
+      {:error, why} ->
+        File.rmdir(stash(dir))
+        {:error, why}
+    end
+  end
+
+  defp moves(%{deps: same, host_deps: same} = layout, dir),
+    do: [{layout.build, Path.join(stash(dir), "build")}]
+
+  defp moves(layout, dir) do
+    own_deps =
+      if lexists?(layout.deps), do: [{layout.deps, Path.join(stash(dir), "deps")}], else: []
+
+    [{layout.build, Path.join(stash(dir), "build")}] ++
+      own_deps ++ [{layout.host_deps, layout.deps}]
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp move_all([], done), do: {:ok, done}
+
+  defp move_all([{from, to} | rest], done) do
+    case File.rename(from, to) do
+      :ok ->
+        move_all(rest, [{from, to} | done])
+
+      {:error, why} ->
+        undo!(done)
+        {:error, "could not lay out the build's dirs: #{from}: #{inspect(why)}"}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp keep_trace_build(build, kept) do
+    if lexists?(build) and File.rename(build, kept) != :ok, do: File.rm_rf(build)
+  end
+
+  # Most recent move first.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp undo!(done) do
+    Enum.each(done, fn {from, to} ->
+      _ = if lexists?(from), do: File.rm_rf(from)
+
+      case File.rename(to, from) do
+        :ok -> :ok
+        {:error, why} -> raise LayoutNotRestored, "#{to} -> #{from}: #{inspect(why)}"
+      end
+    end)
+  end
+
+  # Step 3: the traced compile's beams for the package (`<dir>/_build`,
+  # where `in_build_layout/3` left them) against the published build's, by
+  # the code and the attributes each holds.
+  defp bound(dir, build_path, package) do
     traced = Path.join([dir, "_build", "lib", package, "ebin"])
 
     published =
@@ -406,14 +630,12 @@ defmodule NccWorker.FirmwareInputs do
        else: {:error, "the traced compile's beams differ from the published ones"}
   end
 
-  defp bound(_dir, _build_path, _package), do: {:error, "no build path"}
-
   @doc false
   # Every beam in `ebin` by module, with the md5 of its code and its
   # attributes chunk as it is (`module_info(:attributes)`: persisted
   # attributes, which the md5 leaves out); `%{}` when any cannot be read.
-  # The other chunks the md5 leaves out hold the source path (`CInf`,
-  # `Dbgi`, `Docs`), which is `deps/` here and `deps_<target>/` there.
+  # The other chunks the md5 leaves out (`CInf`, `Dbgi`, `Docs`) hold the
+  # source path and compile options, which nothing running reads.
   @spec fingerprints(String.t()) :: %{atom() => {binary(), binary() | :missing_chunk}}
   def fingerprints(ebin) do
     ebin
@@ -447,4 +669,13 @@ defmodule NccWorker.FirmwareInputs do
       _ -> nil
     end
   end
+end
+
+defmodule NccWorker.FirmwareInputs.LayoutNotRestored do
+  @moduledoc """
+  A firmware target's dirs could not be put back after its trace
+  (`NccWorker.FirmwareInputs.in_build_layout/3`): the run must stop rather
+  than publish from them.
+  """
+  defexception [:message]
 end

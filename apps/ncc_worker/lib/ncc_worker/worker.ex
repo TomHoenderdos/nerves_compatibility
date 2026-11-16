@@ -1360,10 +1360,10 @@ defmodule NccWorker.Worker do
     }
 
     with {:ok, out} <- OptionalDepsTargets.run(params),
-         {:ok, systems, world} <- firmware_world(params, out, pass) do
-      log_target_pass(pass.paths, out.systems)
-      systems = systems |> gate_build_root(pass, envs) |> put_firmware_inputs(pass, envs)
-
+         {:ok, systems, world} <- firmware_world(params, out, pass),
+         :ok <- log_target_pass(pass.paths, out.systems),
+         {:ok, systems} <-
+           systems |> gate_build_root(pass, envs) |> put_firmware_inputs(pass, envs) do
       optional_deps =
         out.optional_deps
         |> Map.put(:skipped, skipped)
@@ -1401,28 +1401,34 @@ defmodule NccWorker.Worker do
 
   # The compile-time inputs of each passing target whose package reads the
   # environment at compile time (`NccWorker.FirmwareInputs`), once R2 has
-  # settled which files each target publishes.
+  # settled which files each target publishes. A target's dirs left
+  # otherwise than its build left them fail the run.
   defp put_firmware_inputs(systems, pass, envs) do
     targets =
       for system <- pass.systems, env = envs[system.name], env != nil, into: %{} do
         {system.name, {system.target, env}}
       end
 
-    {systems, lines} =
-      FirmwareInputs.put(systems, %{
-        project_dir: pass.project_dir,
-        package: pass.package,
-        targets: targets,
-        releases: Map.get(pass, :releases),
-        trees: Map.get(pass, :trees),
-        started_at: pass.started_at,
-        work_dir: pass.paths.work_dir,
-        log_dir: Path.join(pass.paths.output_dir, "logs"),
-        enabled: Map.get(pass, :firmware_inputs, true)
-      })
-
-    Enum.each(lines, &log_host(pass.paths, &1))
     systems
+    |> FirmwareInputs.put(%{
+      project_dir: pass.project_dir,
+      package: pass.package,
+      targets: targets,
+      releases: Map.get(pass, :releases),
+      trees: Map.get(pass, :trees),
+      started_at: pass.started_at,
+      work_dir: pass.paths.work_dir,
+      log_dir: Path.join(pass.paths.output_dir, "logs"),
+      enabled: Map.get(pass, :firmware_inputs, true)
+    })
+    |> case do
+      {:error, _} = error ->
+        error
+
+      {systems, lines} ->
+        Enum.each(lines, &log_host(pass.paths, &1))
+        {:ok, systems}
+    end
   end
 
   # The firmware world sub-pass (`NccWorker.WorldTargets`), when the input
@@ -3098,10 +3104,11 @@ defmodule NccWorker.Worker do
   #
   # Absent fakeroot the plain command still runs, so an older image keeps its
   # current behaviour rather than failing to start.
+  # The command a target's trace repeats (`FirmwareInputs.firmware_command/0`).
   defp run_firmware_mix(project_dir, env, log_file) do
-    case System.find_executable("fakeroot") do
-      nil -> run_cmd("mix", ["firmware"], project_dir, env, log_file)
-      fakeroot -> run_cmd(fakeroot, ["mix", "firmware"], project_dir, env, log_file)
+    case FirmwareInputs.firmware_command() do
+      {nil, args} -> run_cmd("mix", args, project_dir, env, log_file)
+      {fakeroot, args} -> run_cmd(fakeroot, ["mix" | args], project_dir, env, log_file)
     end
   end
 

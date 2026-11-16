@@ -1842,6 +1842,19 @@ defmodule NccWorker.Portability.JudgeTest do
 
       assert Portability.hook_scripts(proj, []) == %{}
     end
+
+    test "run/3's disk digest reads the deps dir the compile's env names", %{proj: proj} do
+      target_deps = Path.join(proj, "deps_rpi4")
+      File.rename!(Path.join(proj, "deps"), target_deps)
+
+      assert Portability.hook_scripts(proj, []) == %{}
+
+      assert Portability.hook_scripts(proj, [{"MIX_DEPS_PATH", target_deps}]) ==
+               %{"quic" => @quic_sha}
+
+      assert Portability.hook_scripts(proj, [{"MIX_DEPS_PATH", "deps_rpi4"}]) ==
+               %{"quic" => @quic_sha}
+    end
   end
 
   describe "Rebar" do

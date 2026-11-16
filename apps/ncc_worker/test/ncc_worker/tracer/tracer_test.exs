@@ -276,6 +276,75 @@ defmodule NccWorker.TracerTest do
     assert status != 0, "the compile VM #{os_pid} outlived its timeout"
   end
 
+  # A firmware target's trace runs as its firmware build ran
+  # (`NccWorker.FirmwareInputs`).
+  describe "as a firmware build ran" do
+    defp capture(test_pid) do
+      fn _caller, _ref, command, [args, project_dir, env], _log ->
+        send(test_pid, {:ran, command, args, project_dir, env})
+        {:ok, 1}
+      end
+    end
+
+    test "a wrapper runs the compile, between timeout and elixir", %{tmp_dir: dir} do
+      trace_dir = Path.join(dir, "trace")
+      opts = [trace_dir: trace_dir, cmd: capture(self()), timeout_ms: 60_000]
+      fakeroot = "/usr/bin/fakeroot"
+
+      Tracer.run(dir, ["x"], [wrapper: fakeroot] ++ opts)
+      assert_received {:ran, timeout, args, ^dir, _env}
+      assert Path.basename(timeout) == "timeout"
+      elixir = System.find_executable("elixir")
+      ebin = Path.join(trace_dir, "ebin")
+
+      assert args ==
+               ["--kill-after=10", "60", fakeroot, elixir] ++
+                 ["-pa", ebin, "-S", "mix", "ncc.trace_compile"]
+
+      Tracer.run(dir, ["x"], opts)
+      assert_received {:ran, _timeout, ["--kill-after=10", "60", ^elixir | _], ^dir, _env}
+    end
+
+    test "argv and the late env reach the driver through the trace dir, never the env",
+         %{tmp_dir: dir} do
+      trace_dir = Path.join(dir, "trace")
+      late = [{"NERVES_SYSTEM", "/n/1"}, {"CROSSCOMPILE", "/n/0/bin/x"}]
+
+      Tracer.run(dir, ["x"],
+        trace_dir: trace_dir,
+        cmd: capture(self()),
+        argv: ["firmware"],
+        late_env: late
+      )
+
+      assert_received {:ran, _timeout, _args, ^dir, env}
+      refute Enum.any?(env, fn {name, _} -> name in ["NERVES_SYSTEM", "CROSSCOMPILE"] end)
+
+      assert trace_dir |> Tracer.driver_input_file() |> File.read!() |> :erlang.binary_to_term() ==
+               %{argv: ["firmware"], late_env: late}
+    end
+
+    test "without either the driver gets no file", %{tmp_dir: dir} do
+      trace_dir = Path.join(dir, "trace")
+      Tracer.run(dir, ["x"], trace_dir: trace_dir, cmd: capture(self()))
+      assert_received {:ran, _timeout, _args, ^dir, _env}
+      refute File.exists?(Tracer.driver_input_file(trace_dir))
+    end
+
+    test "a late variable no environment can hold runs nothing", %{tmp_dir: dir} do
+      for late <- [[{"A=B", "1"}], [{"", "1"}], [{"A", "x" <> <<0>>}], [{"A", nil}]] do
+        assert {:error, :bad_driver_input} =
+                 Tracer.run(dir, ["x"],
+                   trace_dir: Path.join(dir, "trace"),
+                   cmd: capture(self()),
+                   late_env: late
+                 )
+
+        refute_received {:ran, _, _, _, _}
+      end
+    end
+  end
+
   test "the timeout is bounded by what is left of the run" do
     assert Tracer.timeout_sec(30 * 60 * 1000, nil) == 1800
     assert Tracer.timeout_sec(1500, nil) == 2

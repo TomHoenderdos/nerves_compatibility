@@ -39,6 +39,19 @@ defmodule NccWorker.Portability.TreesTest do
     assert Map.keys(members) |> Enum.sort() == ["lib/a/b.js", "lib/x.ex", "mix.exs"]
   end
 
+  test "deps_path: checks the trees where a firmware target's compile reads them",
+       %{tmp_dir: dir} do
+    f = fetched(dir)
+    target_deps = Path.join(f.proj, "deps_rpi4")
+    File.rename!(Path.join(f.proj, "deps"), target_deps)
+
+    assert {:unverified, "no source dir"} = snap(f)
+    assert {:ok, _members} = snap(f, [], deps_path: target_deps)
+
+    File.write!(Path.join(target_deps, "x/lib/extra.ex"), "1\n")
+    assert {:differs, "extra file lib/extra.ex"} = snap(f, [], deps_path: target_deps)
+  end
+
   test "rebar3's own _build at the root is not the tree's", %{tmp_dir: dir} do
     f = fetched(dir)
     dag = Path.join(f.dest, "_build/prod/lib/.rebar3/rebar_compiler_erl/source.dag")

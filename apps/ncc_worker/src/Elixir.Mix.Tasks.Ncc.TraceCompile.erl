@@ -26,12 +26,51 @@
 '__info__'(_Kind) -> [].
 
 run(_Args) ->
+    Input = driver_input(),
+    ok = set_argv(Input),
     Packages = names("NCC_TRACE_PACKAGE"),
     Native = names("NCC_TRACE_NATIVE"),
     case ncc_tracer:start_main() of
-        {ok, Token} -> traced(Token, Packages, Native, mode());
+        {ok, Token} -> traced(Token, Packages, Native, mode(), maps:get(late_env, Input, []));
         {error, _Why} -> erlang:exit({shutdown, 1})
     end.
+
+%% What a firmware target's trace asks for beyond its env (NccWorker.Tracer's
+%% driver.etf in NCC_TRACE_DIR), read before the tracer starts: `argv`, what
+%% System.argv/0 returns to the compile, and `late_env`, put in the env only
+%% once every dependency's mix.exs is evaluated (compile/4). No file is
+%% nothing asked; any other failure to read it fails the trace.
+driver_input() ->
+    case os:getenv("NCC_TRACE_DIR") of
+        false -> #{};
+        Dir ->
+            case file:read_file(filename:join(Dir, "driver.etf")) of
+                {ok, Bin} -> input(binary_to_term(Bin, [safe]));
+                {error, enoent} -> #{};
+                {error, _Why} -> erlang:exit({shutdown, 1})
+            end
+    end.
+
+input(#{argv := Argv, late_env := Late} = Input) when is_list(Late) ->
+    true = Argv =:= nil orelse lists:all(fun erlang:is_binary/1, Argv),
+    true = lists:all(fun({N, V}) -> is_binary(N) andalso is_binary(V) end, Late),
+    Input;
+input(_Other) -> erlang:exit({shutdown, 1}).
+
+%% Under `mix firmware` System.argv/0 is ["firmware"]; here it would be
+%% ["ncc.trace_compile"].
+set_argv(#{argv := Argv}) when is_list(Argv) -> 'Elixir.System':argv(Argv);
+set_argv(_Input) -> ok.
+
+%% Nerves's own env: under `mix firmware`, nerves_bootstrap.init loads every
+%% dependency (evaluating its mix.exs) before nerves.init exports it, and the
+%% compile that follows sees it. A write from this module's frame is the
+%% toolchain's, never an event of the trace.
+late_env(Pairs) ->
+    lists:foreach(fun({N, V}) ->
+                          true = os:putenv(unicode:characters_to_list(N),
+                                           unicode:characters_to_list(V))
+                  end, Pairs).
 
 %% judge: recompile the closure only (a full run's dedicated judge compile).
 %% host: the run's own host compile: the closure as in judge mode, then
@@ -42,7 +81,7 @@ mode() ->
         _ -> judge
     end.
 
-traced(Token, Packages, Native, Mode) ->
+traced(Token, Packages, Native, Mode, Late) ->
     %% First, before Mix.Dep.load_and_cache/0 evaluates any dependency's
     %% mix.exs and before anything compiles: no package code has run in this
     %% VM yet, so the env is the one the project's config left (spec R5,
@@ -50,7 +89,7 @@ traced(Token, Packages, Native, Mode) ->
     %% or with one written after the closure line.
     _ = ncc_tracer:config_env(Token, ncc_tracer_config:snapshot()),
     Config = 'Elixir.Mix.Project':config(),
-    Closure = with_build_lock(Config, fun() -> compile(Token, Packages, Native) end),
+    Closure = with_build_lock(Config, fun() -> compile(Token, Packages, Native, Late) end),
     case project(Mode, Closure) of
         ok ->
             _ = consolidated(Token, Mode, Config),
@@ -100,9 +139,10 @@ consolidated(_Token, _Mode, _Config) -> skip.
 %% Unlike `mix deps.compile`, no `deps.precompile`: it is a hook, a no-op in a
 %% plain project, and in a full run's Nerves project nerves_bootstrap aliases
 %% it to work that would run package code outside every window.
-compile(Token, Packages, Native) ->
+compile(Token, Packages, Native, Late) ->
     try
         Deps = 'Elixir.Mix.Dep':load_and_cache(),
+        ok = late_env(Late),
         case resolve(Packages, Deps) of
             {ok, Apps} -> compile_closure(Token, Apps, Deps, Native);
             {error, Missing} -> {not_in_closure, Missing}

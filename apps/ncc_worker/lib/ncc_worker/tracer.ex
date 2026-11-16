@@ -25,6 +25,17 @@ defmodule NccWorker.Tracer do
   error as "portability could not be judged". The timeout is the smaller of
   `timeout_ms` and what is left of the run (`timeout_sec/2`, from
   `run_started_at:`, the run's start in monotonic seconds).
+
+  A firmware target's trace (`NccWorker.FirmwareInputs`) runs the compile as
+  that target's firmware build ran: `wrapper:` (an executable, `fakeroot`)
+  goes between `timeout` and `elixir`; `argv:` is what the compile's
+  `System.argv/0` returns (`["firmware"]`, not `["ncc.trace_compile"]`); and
+  `late_env:` (`[{name, value}]`) is put in the compile's environment only
+  once `Mix.Dep.load_and_cache/0` has evaluated every dependency's `mix.exs`,
+  where Nerves's own `nerves_bootstrap.init` exports its env. Neither of the
+  last two reaches the VM through its env: the driver reads them from
+  `driver.etf` in `trace_dir` before the tracer starts, and a trace whose
+  file is unreadable fails.
   """
 
   alias NccWorker.{OptionalDepsTargets, OsKill}
@@ -65,6 +76,7 @@ defmodule NccWorker.Tracer do
          {:ok, timeout} <- executable("timeout"),
          {:ok, elixir} <- executable("elixir"),
          :ok <- reset(trace_dir),
+         :ok <- driver_input(trace_dir, opts),
          {:ok, ebin} <- install(Path.join(trace_dir, "ebin")),
          {:ok, installed} <- digests(ebin) do
       env =
@@ -72,8 +84,8 @@ defmodule NccWorker.Tracer do
           trace_env(trace_dir, packages, mode, opts) ++ Keyword.get(opts, :extra_env, [])
 
       args =
-        ["--kill-after=10", "#{timeout_sec}", elixir] ++
-          ["-pa", ebin, "-S", "mix", "ncc.trace_compile"]
+        ["--kill-after=10", "#{timeout_sec}"] ++
+          wrapper(opts) ++ [elixir, "-pa", ebin, "-S", "mix", "ncc.trace_compile"]
 
       result = exec(timeout, args, project_dir, env, timeout_sec, opts)
       reaped = reap(env, opts)
@@ -218,6 +230,50 @@ defmodule NccWorker.Tracer do
       other -> raise ArgumentError, "unknown tracer mode: #{inspect(other)}"
     end
   end
+
+  defp wrapper(opts) do
+    case Keyword.get(opts, :wrapper) do
+      nil -> []
+      path when is_binary(path) -> [path]
+    end
+  end
+
+  @driver_input "driver.etf"
+
+  @doc "The file in `trace_dir` the driver reads `argv:` and `late_env:` from."
+  @spec driver_input_file(String.t()) :: String.t()
+  def driver_input_file(trace_dir), do: Path.join(trace_dir, @driver_input)
+
+  # Written only for a trace that asks for either, as an ETF map the driver
+  # reads with `binary_to_term/2`'s `safe`.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp driver_input(trace_dir, opts) do
+    argv = Keyword.get(opts, :argv)
+    late = Keyword.get(opts, :late_env, [])
+
+    cond do
+      argv == nil and late == [] ->
+        :ok
+
+      not strings?(List.wrap(argv)) or not Enum.all?(late, &env_pair?/1) ->
+        {:error, :bad_driver_input}
+
+      true ->
+        input = :erlang.term_to_binary(%{argv: argv, late_env: late})
+
+        case File.write(driver_input_file(trace_dir), input) do
+          :ok -> :ok
+          {:error, why} -> {:error, {:driver_input, why}}
+        end
+    end
+  end
+
+  defp strings?(list), do: Enum.all?(list, &is_binary/1)
+
+  defp env_pair?({name, value}),
+    do: Compatibility.CompileInputs.name?(name) and is_binary(value) and not (value =~ <<0>>)
+
+  defp env_pair?(_pair), do: false
 
   defp trace_env(trace_dir, packages, mode, opts) do
     [

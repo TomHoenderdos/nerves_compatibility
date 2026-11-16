@@ -160,6 +160,26 @@ defmodule NccWorker.FirmwareInputsTest do
     end
   end
 
+  test "a target whose dirs could not be put back fails the run", %{tmp_dir: tmp_dir} do
+    proj = project(tmp_dir, @module_read)
+    systems = %{"rpi3" => pass(), "rpi4" => pass()}
+
+    record = fn name, _target_env, _ctx, _result ->
+      send(self(), {:recorded, name})
+      raise FirmwareInputs.LayoutNotRestored, "stash -> deps: :eacces"
+    end
+
+    assert FirmwareInputs.put(systems, ctx(proj, ["rpi3", "rpi4"]), record: record) ==
+             {:error, {:firmware_inputs_layout_not_restored, "stash -> deps: :eacces"}}
+
+    assert_received {:recorded, "rpi3"}
+    refute_received {:recorded, "rpi4"}
+
+    assert NccWorker.CLI.exit_code(
+             {:error, {:firmware_inputs_layout_not_restored, "stash -> deps: :eacces"}}
+           ) == 10
+  end
+
   test "pairs/1 reads name NUL value NUL, and nothing else" do
     assert FirmwareInputs.pairs("") == {:ok, []}
     assert FirmwareInputs.pairs("A\0one\0B\0\0") == {:ok, [{"A", "one"}, {"B", ""}]}
@@ -311,5 +331,122 @@ defmodule NccWorker.FirmwareInputsTest do
     File.write!(Path.join(ebin, "broken.beam"), "not a beam")
     assert FirmwareInputs.fingerprints(ebin) == %{}
     assert FirmwareInputs.fingerprints(Path.join(tmp_dir, "none")) == %{}
+  end
+
+  describe "the build's layout" do
+    # A project after a target's firmware build: the run's own `deps/`, and
+    # the target's deps and build dirs, each with a file naming it.
+    setup %{tmp_dir: tmp_dir} do
+      proj = Path.join(tmp_dir, "proj")
+
+      for {rel, name} <- [
+            {"deps/pkg", "run"},
+            {"deps_rpi4/pkg", "target"},
+            {"_build/rpi4", "build"}
+          ] do
+        File.mkdir_p!(Path.join(proj, rel))
+        File.write!(Path.join([proj, rel, "which"]), name)
+      end
+
+      env = [
+        {"MIX_TARGET", "rpi4"},
+        {"MIX_BUILD_PATH", Path.join(proj, "_build/rpi4")},
+        {"MIX_DEPS_PATH", Path.join(proj, "deps_rpi4")},
+        {"MIX_ENV", "prod"}
+      ]
+
+      %{proj: proj, env: env, dir: Path.join(tmp_dir, "fw-inputs-rpi4")}
+    end
+
+    defp which(proj, rel), do: File.read(Path.join([proj, rel, "which"]))
+
+    test "is the target's own build and deps dirs, and the run's deps/", c do
+      assert {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
+
+      assert layout == %{
+               build: Path.join(c.proj, "_build/rpi4"),
+               deps: Path.join(c.proj, "deps_rpi4"),
+               host_deps: Path.join(c.proj, "deps")
+             }
+
+      relative = List.keyreplace(c.env, "MIX_DEPS_PATH", 0, {"MIX_DEPS_PATH", "deps_rpi4"})
+      assert {:ok, ^layout} = FirmwareInputs.layout(c.proj, "rpi4", relative)
+    end
+
+    test "anything else is no layout to trace in", c do
+      put = fn name, value -> List.keystore(c.env, name, 0, {name, value}) end
+      outside = Path.join(Path.dirname(c.proj), "elsewhere")
+
+      for env <- [
+            put.("MIX_TARGET", "rpi3"),
+            List.keydelete(c.env, "MIX_BUILD_PATH", 0),
+            put.("MIX_BUILD_PATH", outside),
+            put.("MIX_DEPS_PATH", outside),
+            put.("MIX_BUILD_PATH", Path.join(c.proj, "deps_rpi4/_build")),
+            put.("MIX_DEPS_PATH", Path.join(c.proj, "deps/rpi4")),
+            put.("MIX_BUILD_PATH", Path.join(c.proj, "_build/none"))
+          ] do
+        assert {:error, _why} = FirmwareInputs.layout(c.proj, "rpi4", env), inspect(env)
+      end
+    end
+
+    test "the trace sees the run's deps at the target's paths, and the project is put back",
+         c do
+      {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
+
+      seen =
+        FirmwareInputs.in_build_layout(layout, c.dir, fn ->
+          # The trace builds where the build did, and leaves a deps/ behind.
+          File.mkdir_p!(Path.join(c.proj, "_build/rpi4/lib"))
+          File.write!(Path.join(c.proj, "_build/rpi4/which"), "trace")
+          File.mkdir_p!(Path.join(c.proj, "deps"))
+
+          {:seen, which(c.proj, "deps_rpi4/pkg"),
+           File.exists?(Path.join(c.proj, "_build/rpi4/lib")) and
+             not File.exists?(Path.join(c.proj, "deps/pkg"))}
+        end)
+
+      assert seen == {:seen, {:ok, "run"}, true}
+      assert which(c.proj, "deps/pkg") == {:ok, "run"}
+      assert which(c.proj, "deps_rpi4/pkg") == {:ok, "target"}
+      assert which(c.proj, "_build/rpi4") == {:ok, "build"}
+      assert which(c.dir, "_build") == {:ok, "trace"}
+      refute File.exists?(Path.join(c.dir, "published"))
+    end
+
+    test "a trace that raises leaves the project as it was", c do
+      {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
+
+      assert_raise RuntimeError, fn ->
+        FirmwareInputs.in_build_layout(layout, c.dir, fn -> raise "boom" end)
+      end
+
+      assert which(c.proj, "deps/pkg") == {:ok, "run"}
+      assert which(c.proj, "deps_rpi4/pkg") == {:ok, "target"}
+      assert which(c.proj, "_build/rpi4") == {:ok, "build"}
+    end
+
+    test "a target that used deps/ itself moves only its build", c do
+      env = List.keydelete(c.env, "MIX_DEPS_PATH", 0)
+      {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", env)
+
+      assert FirmwareInputs.in_build_layout(layout, c.dir, fn ->
+               {which(c.proj, "deps/pkg"), File.exists?(Path.join(c.proj, "_build/rpi4"))}
+             end) == {{:ok, "run"}, false}
+
+      assert which(c.proj, "_build/rpi4") == {:ok, "build"}
+    end
+
+    test "a dir that cannot be put back stops the run", c do
+      {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
+
+      try do
+        assert_raise FirmwareInputs.LayoutNotRestored, fn ->
+          FirmwareInputs.in_build_layout(layout, c.dir, fn -> File.chmod!(c.proj, 0o555) end)
+        end
+      after
+        File.chmod!(c.proj, 0o755)
+      end
+    end
   end
 end

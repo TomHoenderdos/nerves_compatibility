@@ -95,14 +95,16 @@ defmodule NccWorker.NativeBuild do
   for exactly the ones that exception turned non-native. `tarball_of`
   gives a dependency's verified Hex tarball bytes, or `nil` (it then stays
   native). A `deps/` that cannot be listed gives `{[], %{}}`: callers that
-  must tell that from no dependencies list it themselves.
+  must tell that from no dependencies list it themselves. `deps` is the
+  dir the compile reads them from instead of `deps/` (a firmware target's
+  `deps_<target>`).
   """
-  @spec split(String.t(), (String.t() -> binary() | nil)) ::
+  @spec split(String.t(), (String.t() -> binary() | nil), String.t() | nil) ::
           {[String.t()], %{String.t() => String.t()}}
   # The run's own project dir.
   # sobelow_skip ["Traversal.FileModule"]
-  def split(project_dir, tarball_of) do
-    deps = Path.join(project_dir, "deps")
+  def split(project_dir, tarball_of, deps \\ nil) do
+    deps = deps || Path.join(project_dir, "deps")
 
     case File.ls(deps) do
       {:ok, names} ->

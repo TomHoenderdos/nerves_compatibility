@@ -290,7 +290,10 @@ defmodule NccWorker.Portability do
   check rather than by R1 to R4. `target:` (required) is the `MIX_TARGET`
   it compiled for, recorded for every `Mix.target/0` read; `roots:` the
   builder's `NERVES_TOOLCHAIN` and `NERVES_SYSTEM`
-  (`NccWorker.Portability.CompileInputs`). The reviewed native build tool's
+  (`NccWorker.Portability.CompileInputs`). `wrapper:`, `argv:` and
+  `late_env:` go to `NccWorker.Tracer.run/3`, and the env's `MIX_DEPS_PATH`
+  names the dir whose trees, native build files and hook scripts are
+  checked. The reviewed native build tool's
   own activity (`native_tools/0`) is set apart, never an input. Passing
   means every other compile-time read was recorded: the verdict then
   carries `compile_inputs` and `compile_env`. Anything else is `:skip`,
@@ -350,12 +353,17 @@ defmodule NccWorker.Portability do
     env = Keyword.fetch!(opts, :env)
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
     home = hex_home(opts, env)
-    {native, declassified, split_problem} = native_split(project_dir, opts, releases, home)
+    deps = deps_path(project_dir, env)
+    {native, declassified, split_problem} = native_split(project_dir, deps, opts, releases, home)
 
     {trees_ms, {trees, tree_problem}} =
-      timed(fn -> trees(project_dir, opts, env, releases, home, native) end)
+      timed(fn -> trees(project_dir, deps, opts, env, releases, home, native) end)
 
-    hooks = hook_scripts(project_dir, env ++ Keyword.get(opts, :extra_env, []))
+    hooks =
+      hook_scripts(
+        project_dir,
+        env ++ Keyword.get(opts, :extra_env, []) ++ Keyword.get(opts, :late_env, [])
+      )
 
     {compile_ms, traced} =
       timed(fn ->
@@ -368,7 +376,8 @@ defmodule NccWorker.Portability do
         hex_home: home,
         declassified: declassified,
         trees: trees,
-        hook_scripts: hooks
+        hook_scripts: hooks,
+        deps_path: deps
       ] ++ Keyword.take(opts, [:target, :roots])
 
     project_dir
@@ -387,18 +396,19 @@ defmodule NccWorker.Portability do
   # then holds to the manager the trace recorded (`declassified:`). The
   # `build_tools` come from each dependency's tarball verified against the
   # lock snapshot, never from `mix.lock` itself.
-  # `NativeBuild.split/2` reads an unlistable `deps/` as no dependencies at
+  # `NativeBuild.split/3` reads an unlistable `deps/` as no dependencies at
   # all; with the flag on that is a problem instead (fail closed), which
-  # `unsplit/2` turns into could-not-judge once the compile is over.
+  # `unsplit/2` turns into could-not-judge once the compile is over. `deps`
+  # is the dir the compile reads the dependencies from (`deps_path/2`).
   # sobelow_skip ["Traversal.FileModule"]
-  defp native_split(project_dir, opts, releases, home) do
+  defp native_split(project_dir, deps, opts, releases, home) do
     cond do
       not makefile_rule2?(opts) ->
-        {native_deps(project_dir), %{}, nil}
+        {native_deps(project_dir, deps), %{}, nil}
 
-      match?({:ok, _}, File.ls(Path.join(project_dir, "deps"))) ->
+      match?({:ok, _}, File.ls(deps)) ->
         {native, declassified} =
-          NativeBuild.split(project_dir, &Context.release_tarball(home, releases, &1))
+          NativeBuild.split(project_dir, &Context.release_tarball(home, releases, &1), deps)
 
         {native, declassified, nil}
 
@@ -411,17 +421,19 @@ defmodule NccWorker.Portability do
 
   @doc false
   # Public for tests. The sha256 of each reviewed rebar3 hook script
-  # (`Rebar.reviewed_hooks/0`) under `deps/`, taken before the compile, for
-  # the apps whose variable the compile's `env` and this VM's environment
-  # (which the compile inherits) both leave unset. A script that is not a
-  # regular file, or any set value, even an empty one, leaves the app out:
-  # its hook then counts.
+  # (`Rebar.reviewed_hooks/0`) under the compile's deps dir (`deps_path/2`
+  # of `env`), taken before the compile, for the apps whose variable the
+  # compile's `env` and this VM's environment (which the compile inherits)
+  # both leave unset. A script that is not a regular file, or any set value,
+  # even an empty one, leaves the app out: its hook then counts.
   @spec hook_scripts(String.t(), [{String.t(), String.t() | nil}]) :: %{String.t() => String.t()}
   def hook_scripts(project_dir, env) do
+    deps = deps_path(project_dir, env)
+
     for {app, {file, var}} <- Rebar.reviewed_hooks(),
         System.get_env(var) == nil,
         not Enum.any?(env, &match?({^var, value} when is_binary(value), &1)),
-        sha = regular_sha256(Path.join([project_dir, "deps", app, file])),
+        sha = regular_sha256(Path.join([deps, app, file])),
         sha != nil,
         into: %{},
         do: {app, sha}
@@ -444,7 +456,8 @@ defmodule NccWorker.Portability do
   Item 5e's tree snapshot (`NccWorker.Portability.Trees.snapshot/5`) of
   `project_dir` for `run/3`'s `trees:`, with the native list `run/3` would
   use for the same `opts` (`releases:`, `hex_home:` (default `HEX_HOME`),
-  `makefile_rule2:`). Take it before the first compile of the closure,
+  `makefile_rule2:`, `deps_path:`, the dependencies' dir, default
+  `<project_dir>/deps`). Take it before the first compile of the closure,
   right after the `deps.get` that fetched it: a compile writes into a
   dependency's own source dir (Mix's leex and yecc compilers put the `.erl`
   they generate in `src/`). Never raises; `%{}` (nothing checked) when it
@@ -455,8 +468,9 @@ defmodule NccWorker.Portability do
     case releases(opts) do
       {:ok, releases} ->
         home = Keyword.get_lazy(opts, :hex_home, fn -> System.get_env("HEX_HOME") end)
-        {native, _declassified, _problem} = native_split(project_dir, opts, releases, home)
-        Trees.snapshot(project_dir, releases, home, native)
+        deps = Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")
+        {native, _declassified, _problem} = native_split(project_dir, deps, opts, releases, home)
+        Trees.snapshot(project_dir, releases, home, native, deps_path: deps)
 
       _ ->
         %{}
@@ -473,11 +487,14 @@ defmodule NccWorker.Portability do
   nerves_bootstrap), so the trees may already hold what that compile wrote
   (leex and yecc output in `src/`). `nil` passed on as `run/3`'s `trees:`
   is could-not-judge, as no `trees:` at all is once the closure is
-  compiled, never a refusal. Never raises.
+  compiled, never a refusal. The trees are the ones under the dir `env`
+  names for the dependencies (`MIX_DEPS_PATH`, else `deps/`). Never raises.
   """
   @spec first_tree_snapshot(String.t(), [{String.t(), String.t()}], keyword()) ::
           %{String.t() => Trees.tree()} | nil
   def first_tree_snapshot(project_dir, env, opts) do
+    opts = Keyword.put(opts, :deps_path, deps_path(project_dir, env))
+
     case releases(opts) do
       {:ok, releases} ->
         if compiled_apps(project_dir, env, releases) == [],
@@ -497,7 +514,7 @@ defmodule NccWorker.Portability do
   # is could-not-judge (a snapshot after a compile would refuse what the
   # compile itself wrote). An app native now is never checked, whatever the
   # snapshot said.
-  defp trees(project_dir, opts, env, releases, home, native) do
+  defp trees(project_dir, deps, opts, env, releases, home, native) do
     case Keyword.get(opts, :trees) do
       trees when is_map(trees) ->
         {Map.new(trees, fn {app, tree} -> {app, unless_native(app, tree, native)} end), nil}
@@ -508,7 +525,7 @@ defmodule NccWorker.Portability do
       _none ->
         case compiled_apps(project_dir, env, releases) do
           [] ->
-            {Trees.snapshot(project_dir, releases, home, native), nil}
+            {Trees.snapshot(project_dir, releases, home, native, deps_path: deps), nil}
 
           apps ->
             {%{},
@@ -520,6 +537,17 @@ defmodule NccWorker.Portability do
 
   defp unless_native(app, tree, native),
     do: if(app in native, do: {:unverified, "native build"}, else: tree)
+
+  # The dir the compile's env names for the dependencies (`MIX_DEPS_PATH`,
+  # which a firmware target's build sets to `deps_<target>`), else the
+  # project's `deps/`: where its trees, native build files and hook scripts
+  # are read, as Mix reads them.
+  defp deps_path(project_dir, env) do
+    case env_value(env, "MIX_DEPS_PATH") do
+      nil -> Path.join(project_dir, "deps")
+      path -> Path.expand(path, project_dir)
+    end
+  end
 
   # The locked apps the build dir the compile writes already holds an ebin of.
   # sobelow_skip ["Traversal.FileModule"]
@@ -536,7 +564,7 @@ defmodule NccWorker.Portability do
 
   @doc false
   # Public for tests: a finished compile's verdict is not passed when
-  # `native_split/4` could not list `deps/`.
+  # `native_split/5` could not list `deps/`.
   @spec unsplit(verdict(), String.t() | nil) :: verdict()
   def unsplit(verdict, nil), do: verdict
 
@@ -598,7 +626,7 @@ defmodule NccWorker.Portability do
       extra_env: Keyword.get(opts, :extra_env, []),
       run_started_at: Keyword.get(opts, :run_started_at),
       mode: Keyword.get(opts, :mode, :judge)
-    ] ++ Keyword.take(opts, [:reap, :cmd])
+    ] ++ Keyword.take(opts, [:reap, :cmd, :wrapper, :argv, :late_env])
   end
 
   defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
@@ -633,12 +661,15 @@ defmodule NccWorker.Portability do
     %{verdict | observations: Map.put(obs, "trace_stats", Map.put(stats, key, value))}
   end
 
-  @doc "The dependencies under `deps/` that build native code or read the target (spec R3 native taint)."
-  @spec native_deps(String.t()) :: [String.t()]
+  @doc """
+  The dependencies under `deps/` (or `deps`, the dir the compile reads them
+  from) that build native code or read the target (spec R3 native taint).
+  """
+  @spec native_deps(String.t(), String.t() | nil) :: [String.t()]
   # The run's own project dir.
   # sobelow_skip ["Traversal.FileModule"]
-  def native_deps(project_dir) do
-    deps = Path.join(project_dir, "deps")
+  def native_deps(project_dir, deps \\ nil) do
+    deps = deps || Path.join(project_dir, "deps")
 
     case File.ls(deps) do
       {:ok, names} ->
@@ -1578,13 +1609,16 @@ defmodule NccWorker.Portability do
   # The tree on disk now, after the compile, against the dependency's
   # verified tarball (`Trees.snapshot/5`, the one before the compile skips
   # natively built dependencies): nothing a build generated, nothing
-  # changed. No verified tarball, no source dir at `deps/<app>` or no time
-  # left is not clean.
+  # changed. No verified tarball, no source dir at `<deps>/<app>` (the
+  # compile's deps dir, `Context.deps_path/1`) or no time left is not clean.
   defp tree_clean?(%Context{project_dir: project, hex: {home, releases}} = ctx, app)
        when is_binary(project) do
+    deps = Context.deps_path(ctx)
+
     with %{} = release <- Map.get(releases, app),
-         true <- Context.dest(ctx, app) == Path.join([project, "deps", app]),
-         %{^app => {:ok, _members}} <- Trees.snapshot(project, %{app => release}, home, []) do
+         true <- is_binary(deps) and Context.dest(ctx, app) == Path.join(deps, app),
+         %{^app => {:ok, _members}} <-
+           Trees.snapshot(project, %{app => release}, home, [], deps_path: deps) do
       true
     else
       _ -> false

@@ -51,6 +51,7 @@ defmodule NccWorker.Portability.Context do
 
   defstruct [
     :project_dir,
+    :deps_path,
     :package,
     :otp_root,
     :elixir_root,
@@ -91,7 +92,8 @@ defmodule NccWorker.Portability.Context do
           nested: %{(String.t() | atom()) => String.t()},
           ensured: %{{term(), String.t(), String.t()} => integer()},
           trees: %{String.t() => Trees.tree()},
-          hook_scripts: %{String.t() => String.t()}
+          hook_scripts: %{String.t() => String.t()},
+          deps_path: String.t() | nil
         }
 
   @max_hops 40
@@ -110,7 +112,9 @@ defmodule NccWorker.Portability.Context do
     * `:hook_scripts`, `%{app => sha256}` of each reviewed rebar3 hook
       script on disk before the compile (`NccWorker.Portability.Rebar.reviewed_hooks/0`),
       taken only when the build env left its variable unset; without it no
-      reviewed hook is let through.
+      reviewed hook is let through;
+    * `:deps_path`, the dir the compile read the dependencies from (default
+      `<project_dir>/deps`; a firmware target's `deps_<target>`).
 
   A dependency whose tarball is missing or does not match its lock entry has
   no file list, so none of its source files is readable.
@@ -134,7 +138,8 @@ defmodule NccWorker.Portability.Context do
       hex: hex,
       preloaded: preloaded(start["preloaded"]),
       trees: trees(Keyword.get(opts, :trees)),
-      hook_scripts: trees(Keyword.get(opts, :hook_scripts))
+      hook_scripts: trees(Keyword.get(opts, :hook_scripts)),
+      deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps"))
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
@@ -222,6 +227,13 @@ defmodule NccWorker.Portability.Context do
   @doc "A closure dependency's source dir (`deps/<d>`), real path."
   @spec dest(t(), term()) :: String.t() | nil
   def dest(ctx, app), do: if(dep?(ctx, app), do: ctx.deps[app].dest)
+
+  @doc """
+  The real path of the dir the compile read the dependencies from
+  (`:deps_path`, default `deps/`), `nil` when there is none.
+  """
+  @spec deps_path(t()) :: String.t() | nil
+  def deps_path(%__MODULE__{deps_path: deps}), do: deps
 
   @doc "A closure dependency's `_build/<env>/lib/<d>/ebin`, real path."
   @spec ebin(t(), term()) :: String.t() | nil
