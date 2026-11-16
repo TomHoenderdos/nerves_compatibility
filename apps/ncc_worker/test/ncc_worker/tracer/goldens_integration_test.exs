@@ -61,18 +61,20 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     # (R2 taint); lazy_html's elixir_make precompiled-NIF download reads the
     # host (open_port, system_info, its download cache).
     {"phoenix_live_view", "include"} => "refused",
-    # `embed_templates` reads `:phoenix_view, :template_engines`, which now
-    # records a config_order input instead of failing the judge, so the
-    # package's own R2 (`embed_templates "layouts/*"` keeps the template
-    # directory in LayoutView) refuses it. The include variant adds exqlite
-    # and decimal host reads.
-    {"phoenix_live_dashboard", "exclude"} => "refused",
+    # `embed_templates` reads `:phoenix_view, :template_engines`, which
+    # records a config_order input. The template directory LayoutView keeps
+    # (`embed_templates "layouts/*"`) is held only by __mix_recompile__?/0,
+    # which Mix never calls on a served build: observed, not an R2 refusal
+    # (c35aede2). The include variant refuses on exqlite's host reads.
+    {"phoenix_live_dashboard", "exclude"} => "pass",
     {"phoenix_live_dashboard", "include"} => "refused",
     {"swoosh", "exclude"} => "pass",
-    # quic's and hackney's rebar.config run pre_hooks (R3 taint). The reads
-    # certifi_pt and parse_trans made through OTP's own code loading
-    # (erl_prim_loader) no longer refuse (judge refinements, item 5a).
-    {"swoosh", "include"} => "refused",
+    # quic's reviewed build_nif.sh compile hook is let through (6cc2fd1e),
+    # and hackney's clean hooks never run under `rebar3 bare compile`
+    # (1c270cc5), so neither taints the closure. The reads certifi_pt and
+    # parse_trans made through OTP's own code loading (erl_prim_loader) no
+    # longer refuse (judge refinements, item 5a).
+    {"swoosh", "include"} => "pass",
     # sentry's mix.exs reads SENTRY_INTEGRATION for `test_paths` (line 17),
     # but project/0 ends `++ xref_options()`, an `if` on System.version(),
     # so it is not a keyword list literal (mix.exs rule); and
