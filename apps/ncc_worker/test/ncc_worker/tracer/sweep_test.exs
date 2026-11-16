@@ -187,6 +187,62 @@ defmodule NccWorker.Tracer.SweepTest do
     end
   end
 
+  # The collector runs kill(1) after a window's compile and before the digest
+  # that closes it. Package code can change the traced VM's environment
+  # (`os:putenv/2` is observed, never refused), so nothing in it may pick
+  # what runs then: neither a `PATH` naming a `kill` of its own nor
+  # `LD_PRELOAD` or the like loaded into the real one.
+  describe "kill/1,2" do
+    defp fake_programs(dir, marker) do
+      bin = Path.join(dir, "bin")
+      File.mkdir_p!(bin)
+
+      for name <- ~w(kill sh) do
+        path = Path.join(bin, name)
+        File.write!(path, "#!/bin/sh\nexport -p > '#{marker}'\n")
+        File.chmod!(path, 0o755)
+      end
+
+      bin
+    end
+
+    test "runs a kill(1) at a fixed path, whatever PATH the VM has", %{tmp_dir: dir} do
+      marker = Path.join(dir, "ran")
+      bin = fake_programs(dir, marker)
+      sleeper = Port.open({:spawn_executable, "/bin/sleep"}, [:exit_status, args: ["60"]])
+      {:os_pid, os_pid} = Port.info(sleeper, :os_pid)
+
+      erl = Path.join([:code.root_dir(), "bin", "erl"])
+      ebin = :ncc_tracer_sweep |> :code.which() |> List.to_string() |> Path.dirname()
+      eval = "ok = ncc_tracer_sweep:kill([#{os_pid}]), halt()."
+
+      assert {_, 0} =
+               System.cmd(erl, ["-noshell", "-pa", ebin, "-eval", eval],
+                 env: [{"PATH", bin <> ":" <> System.get_env("PATH")}],
+                 stderr_to_stdout: true
+               )
+
+      refute File.exists?(marker), "the VM's PATH chose the kill program"
+      assert_receive {^sleeper, {:exit_status, _}}, 5_000
+    end
+
+    test "runs it with an empty environment", %{tmp_dir: dir} do
+      marker = Path.join(dir, "env")
+      bin = fake_programs(dir, marker)
+
+      for programs <- [{[Path.join(bin, "kill")], []}, {[], [Path.join(bin, "sh")]}] do
+        File.rm_rf!(marker)
+        assert :ok = :ncc_tracer_sweep.kill([999_999], programs)
+        exported = File.read!(marker)
+        refute exported =~ "HOME", exported
+      end
+    end
+
+    test "is an error without a program to run" do
+      assert {:error, :no_kill} = :ncc_tracer_sweep.kill([999_999], {[], ["/nonexistent/sh"]})
+    end
+  end
+
   test "parse_stat/1 reads a command name holding blanks and parentheses" do
     assert {:ok, %{pid: 7, comm: "a) (b", state: "R", ppid: 1, start_time: 42}} =
              :ncc_tracer_sweep.parse_stat(stat_line(7, "a) (b", "R", 1, 42))

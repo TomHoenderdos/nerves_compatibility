@@ -23,13 +23,19 @@
 %% (NCC_TRACE_SWEEP), and the sweep runs only on Linux with a /proc whose pid
 %% 1 started then. Anywhere else (a developer's machine, CI) it is
 %% `unavailable` and kills nothing; a trace asked to sweep fails then.
--export([sweep/1, sweep/2, parse_stat/1]).
+-export([sweep/1, sweep/2, parse_stat/1, kill/1, kill/2]).
+
+-include_lib("kernel/include/file.hrl").
 
 -define(ROUNDS, 20).
 -define(INTERVAL_MS, 100).
 -define(KILL_TIMEOUT_MS, 2000).
 -define(HELPER, <<"erl_child_setup">>).
 -define(DEAD, [<<"Z">>, <<"X">>, <<"x">>]).
+%% Where kill(1) and a POSIX shell are looked for: fixed paths, never the
+%% traced VM's PATH (kill/2).
+-define(KILLS, ["/bin/kill", "/usr/bin/kill"]).
+-define(SHELLS, ["/bin/sh", "/usr/bin/sh"]).
 %% What a sweep line lists of the processes it killed or that survived.
 -define(MAX_LISTED, 20).
 
@@ -152,17 +158,50 @@ parse_stat(_Other) -> error.
 
 %% SIGKILL by pid, through kill(1) or, without one, the POSIX shell's
 %% builtin (dash's rejects `--`). Whether they died is for the next scan.
-kill(Pids) ->
+%%
+%% The program runs after a window's compile and before the digest that
+%% closes it, so nothing package code can set may choose what runs then. It
+%% can set the traced VM's environment (os:putenv/2 is observed, never
+%% refused): the program is found at a fixed path, never by PATH, and runs
+%% with every name in that environment unset, so no LD_PRELOAD, LD_AUDIT or
+%% exported shell function of the package's is loaded into it.
+-spec kill([pos_integer()]) -> ok | {error, no_kill | timeout}.
+kill(Pids) -> kill(Pids, {?KILLS, ?SHELLS}).
+
+%% Programs (tests): {kill(1)s, shells}, the first executable of each.
+-spec kill([pos_integer()], {[file:filename()], [file:filename()]}) ->
+          ok | {error, no_kill | timeout}.
+kill(Pids, {Kills, Shells}) ->
     Args = [integer_to_list(Pid) || Pid <- Pids],
-    case {os:find_executable("kill"), os:find_executable("sh")} of
+    case {executable(Kills), executable(Shells)} of
         {false, false} -> {error, no_kill};
         {false, Sh} -> run(Sh, ["-c", "kill -KILL \"$@\"", "sh" | Args]);
         {Kill, _} -> run(Kill, ["-KILL", "--" | Args])
     end.
 
+executable(Paths) ->
+    case [Path || Path <- Paths, executable_file(Path)] of
+        [Path | _] -> Path;
+        [] -> false
+    end.
+
+executable_file(Path) ->
+    case file:read_file_info(Path) of
+        {ok, #file_info{type = regular, mode = Mode}} -> Mode band 8#111 =/= 0;
+        _ -> false
+    end.
+
+%% open_port/2 starts from the VM's environment and can only change names in
+%% it: each one is unset.
+cleared_env() ->
+    [{Name, false} || Var <- os:getenv(), Name <- [env_name(Var)], Name =/= []].
+
+env_name(Var) -> lists:takewhile(fun(C) -> C =/= $= end, Var).
+
 run(Program, Args) ->
     try open_port({spawn_executable, Program},
-                  [{args, Args}, exit_status, stderr_to_stdout, binary, hide]) of
+                  [{args, Args}, {env, cleared_env()}, exit_status, stderr_to_stdout,
+                   binary, hide]) of
         Port -> wait(Port, erlang:monotonic_time(millisecond) + ?KILL_TIMEOUT_MS)
     catch
         _:_ -> {error, no_kill}

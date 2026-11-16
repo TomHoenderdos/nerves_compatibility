@@ -302,7 +302,10 @@ compiler is not traced, and a process it leaves behind must not live on into a l
 that started after the traced VM except that VM's own `erl_child_setup`; everything older is the launch chain (the
 worker, `timeout`, `fakeroot` and its `faked`). The worker asks for it with its own start time as pid 1
 (`NCC_TRACE_SWEEP`), and only where its own sweep runs: the driver sweeps only on Linux, where `/proc/1` started then
-and the traced VM after it, so a trace elsewhere never kills anything. Each sweep writes a `sweep` line to the trace;
+and the traced VM after it, so a trace elsewhere never kills anything. It kills through `/bin/kill` or
+`/usr/bin/kill` (else `/bin/sh`'s builtin) with an empty environment, never by `PATH`: package code can set the traced
+VM's environment (`os:putenv/2` is observed, not refused), and a `kill` or `LD_PRELOAD` of its choosing would
+otherwise run untraced between a window's compile and its digest. Each sweep writes a `sweep` line to the trace;
 one that leaves survivors or cannot run ends the compile with exit 87 (`tracer_error` `"window_sweep_failed"`), and
 the report reader refuses a `sweep` line that is not `"ok"` and, when the start line says sweeps were asked for
 (`window_sweep: true`), a window without one. A collector that died has already cost the trace its judgement, so the
