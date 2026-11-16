@@ -30,7 +30,12 @@ defmodule NccWorker.Portability.PrivRepro do
     * the two `priv` trees must be the same: the same relative paths, only
       directories and regular files, the same permission bits and the same
       bytes. A file that holds the time, a random value or the build path
-      differs;
+      differs. One exception: a `.tar` or `.tar.gz` whose two copies differ
+      in their members' times and the gzip header's `MTIME` and `OS` alone
+      (`TarTimes`: `:erl_tar` stamps members with the wall clock, as kino's
+      asset archives are), which `priv_tar_times` names and
+      `trace_stats["priv_repro"]` marks `"same_but_tar_times"`; the first
+      build's bytes are published;
     * the first build's package dir must hash the same before and after
       the second build ran.
 
@@ -49,7 +54,7 @@ defmodule NccWorker.Portability.PrivRepro do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.Portability.Context
+  alias NccWorker.Portability.{Context, TarTimes}
 
   @gap_ms 1_100
   @hold_problem "own priv writes wait for a second build"
@@ -222,23 +227,67 @@ defmodule NccWorker.Portability.PrivRepro do
   defp same_digest?({{:ok, digest}, {:ok, digest}}), do: true
   defp same_digest?(_digests), do: false
 
+  # Every difference must be a `.tar` or `.tar.gz` file whose times alone
+  # differ (`TarTimes`); those are named in `priv_tar_times`.
   defp compare(verdict, held, first_priv, second_priv) do
     with {:ok, first} <- tree(first_priv),
          {:ok, second} <- tree(second_priv) do
-      case first_difference(first, second) do
-        nil -> pass(verdict, held)
-        rel -> refuse(verdict, "priv/#{rel} differs between two builds")
+      {times, other} =
+        first
+        |> differences(second)
+        |> Enum.split_with(&times_only?(&1, first, second, first_priv, second_priv))
+
+      case other do
+        [] -> verdict |> pass(held) |> put_tar_times(times)
+        [rel | _] -> refuse(verdict, "priv/#{rel} differs between two builds")
       end
     else
       {:error, why} -> could_not_judge(verdict, "priv could not be compared: #{why}", false)
     end
   end
 
-  defp first_difference(first, second) do
+  defp differences(first, second) do
     (Map.keys(first) ++ Map.keys(second))
     |> Enum.uniq()
     |> Enum.sort()
-    |> Enum.find(&(Map.get(first, &1) != Map.get(second, &1)))
+    |> Enum.filter(&(Map.get(first, &1) != Map.get(second, &1)))
+  end
+
+  # Both regular files with the same permission bits, each still the bytes
+  # the walk hashed, that differ in their tar times alone.
+  defp times_only?(rel, first, second, first_priv, second_priv) do
+    with {:file, perm, sum_a} <- Map.get(first, rel),
+         {:file, ^perm, sum_b} <- Map.get(second, rel),
+         {:ok, a} <- read_hashed(Path.join(first_priv, rel), sum_a),
+         {:ok, b} <- read_hashed(Path.join(second_priv, rel), sum_b) do
+      TarTimes.same?(rel, a, b)
+    else
+      _ -> false
+    end
+  end
+
+  # A file the walk read and hashed, read again under the same caps.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_hashed(path, sum) do
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_bytes <-
+           File.lstat(path),
+         {:ok, bytes} <- File.read(path),
+         true <- :crypto.hash(:sha256, bytes) == sum do
+      {:ok, bytes}
+    else
+      _ -> :error
+    end
+  end
+
+  defp put_tar_times(verdict, []), do: verdict
+
+  defp put_tar_times(%{observations: obs} = verdict, rels) do
+    obs =
+      obs
+      |> Map.put("priv_tar_times", Enum.take(rels, 50))
+      |> Map.update("trace_stats", %{}, &Map.put(&1, "priv_repro", "same_but_tar_times"))
+
+    %{verdict | observations: obs}
   end
 
   # `rel => {:dir, mode} | {:file, mode, sha256}` for everything under
@@ -347,7 +396,8 @@ defmodule NccWorker.Portability.PrivRepro do
   defp update_problems(%{observations: obs} = verdict, fun),
     do: %{verdict | observations: Map.put(obs, "problems", fun.(obs["problems"] || []))}
 
-  # `trace_stats["priv_repro"]`: `"same"`, `"differs"`, `"not_finished"`
+  # `trace_stats["priv_repro"]`: `"same"` (or `"same_but_tar_times"`,
+  # `put_tar_times/2`), `"differs"`, `"not_finished"`
   # (transient: the portal builds it again) or `"not_judged"`.
   defp put_repro(%{observations: obs} = verdict, outcome) do
     stats = Map.put(obs["trace_stats"] || %{}, "priv_repro", outcome)

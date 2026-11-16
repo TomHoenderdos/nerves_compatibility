@@ -47,6 +47,31 @@ defmodule NccWorker.Tracer.FixturesOwnPrivTest do
     %{files: %{"lib/hook.ex" => hook(app, content), "lib/#{app}.ex" => use_it}}
   end
 
+  # A package whose compile packs `content` into
+  # `priv/assets/<Module>/main.tar.gz` with `:erl_tar`, as kino does.
+  defp tarred(app, content) do
+    mod = Macro.camelize(app)
+
+    lib(app, """
+    defmodule #{mod}.Hook do
+      defmacro __using__(_opts), do: quote(do: @before_compile #{mod}.Hook)
+
+      defmacro __before_compile__(env) do
+        dir = Path.join([:code.priv_dir(:#{app}), "assets", inspect(env.module)])
+        File.rm_rf!(dir)
+        File.mkdir_p!(dir)
+        archive = String.to_charlist(Path.join(dir, "main.tar.gz"))
+        :ok = :erl_tar.create(archive, [{~c"main.js", #{content}}], [:compressed])
+        quote(do: def(assets, do: true))
+      end
+    end
+
+    defmodule #{mod} do
+      use #{mod}.Hook
+    end
+    """)
+  end
+
   setup_all do
     root =
       Path.join(
@@ -77,6 +102,12 @@ defmodule NccWorker.Tracer.FixturesOwnPrivTest do
           def x, do: true
         end
         """),
+      # kino's own shape: an `:erl_tar` archive of the assets, whose members
+      # carry the time they were packed at.
+      "fx_priv_tar" => tarred("fx_priv_tar", ~S|"export function init() {}"|),
+      # The same, with the time in a member's bytes.
+      "fx_priv_tar_time" =>
+        tarred("fx_priv_tar_time", "Integer.to_string(System.os_time(:nanosecond))"),
       # kino_db's shape: a dependent whose compile packs its assets into the
       # hook's own package's priv.
       "fx_priv_user" =>
@@ -97,7 +128,7 @@ defmodule NccWorker.Tracer.FixturesOwnPrivTest do
     # One package at a time: each run rebuilds the closure into _build/host.
     verdicts =
       for app <- ~w(fx_priv_det fx_priv_time fx_priv_host fx_priv_env fx_priv_build
-                    fx_priv_literal fx_priv_user),
+                    fx_priv_literal fx_priv_user fx_priv_tar fx_priv_tar_time),
           into: %{} do
         {app, run(root, proj, app)}
       end
@@ -219,5 +250,21 @@ defmodule NccWorker.Tracer.FixturesOwnPrivTest do
       v.observations["refusals"],
       &(&1["owner"] == owner and String.starts_with?(&1["reason"], prefix))
     )
+  end
+
+  test "an :erl_tar archive whose members' times alone differ publishes", ctx do
+    v = ctx.verdicts["fx_priv_tar"]
+    assert %{status: :pass, reason: nil} = v, log(ctx, "fx_priv_tar")
+    assert v.built_priv == ["assets/FxPrivTar/main.tar.gz"]
+    assert v.observations["priv_tar_times"] == ["assets/FxPrivTar/main.tar.gz"]
+    assert v.observations["trace_stats"]["priv_repro"] == "same_but_tar_times"
+  end
+
+  test "an :erl_tar archive holding the time refuses", ctx do
+    v = ctx.verdicts["fx_priv_tar_time"]
+
+    assert v.reason ==
+             Reasons.priv_not_reproduced() <>
+               "priv/assets/FxPrivTarTime/main.tar.gz differs between two builds"
   end
 end

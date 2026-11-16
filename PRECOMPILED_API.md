@@ -571,8 +571,10 @@ What it lists:
   priv file the package's own compile wrote into its own build `priv` (such
   as the asset archives kino writes there) is published too, when the
   compile-time trace below shows it came from the package's own compile
-  alone and a second traced build wrote it byte for byte the same (judge
-  revision 21). Such a file is never in the tarball: the tarball must not
+  alone and a second traced build wrote it byte for byte the same, or, for
+  a `.tar` or `.tar.gz`, the same but for its members' times and the gzip
+  header's time and OS byte (judge revision 21; the first build's bytes are
+  published). Such a file is never in the tarball: the tarball must not
   carry its path at all, it passes the same native-code, executable and cap
   rules as any other, and the build lists it in its `built_priv`, by its
   manifest path, so the portal checks it against that list rather than the

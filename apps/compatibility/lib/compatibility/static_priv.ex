@@ -28,8 +28,9 @@ defmodule Compatibility.StaticPriv do
   own compile wrote into its own build `priv`, such as the asset archives
   kino writes under `priv/assets`. The caller names those (`built`, their
   paths below `priv`) only when the compile-time trace showed the writes came
-  from the package's own compile and a second traced build wrote them byte for
-  byte the same (`NccWorker.Portability`, judge revision 21). Such a file has
+  from the package's own compile and a second traced build wrote them the
+  same: byte for byte, or for a `.tar`/`.tar.gz` all but its times
+  (`NccWorker.Portability`, judge revision 21). Such a file has
   no tarball entry to compare against, so the rule for it is the other way
   round: it must not be in the tarball at all, since a compile that wrote over
   a file the release ships has made the release's word about that file

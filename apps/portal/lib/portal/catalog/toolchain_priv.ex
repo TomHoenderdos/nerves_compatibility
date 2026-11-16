@@ -27,7 +27,8 @@ defmodule Portal.Catalog.ToolchainPriv do
   A file the package's own compile wrote into its own build priv (kino's
   asset archives) is not in the tarball. The worker publishes one only when
   its trace showed the package's own compile alone wrote it and a second
-  traced build wrote it byte for byte the same (judge revision 21), and lists
+  traced build wrote it the same (byte for byte, or a tar archive but for
+  its times; judge revision 21), and lists
   it in the build's `built_priv`, by its manifest path. Those files, and only
   those, are judged against that list rather than the tarball: the tarball
   must not carry them at all, and the caps, the native name and magic and the

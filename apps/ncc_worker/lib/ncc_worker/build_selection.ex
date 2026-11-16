@@ -110,7 +110,8 @@ defmodule NccWorker.BuildSelection do
   Mix never runs pass (item 1, `NccWorker.NativeBuild`), judged by the
   `build_tools` in `tarball:`, never by `mix.lock`. `built_priv:` (default
   `[]`) lists the paths below `priv` that a passing trace says the package's
-  own compile wrote and a second traced build wrote byte for byte the same
+  own compile wrote and a second traced build wrote the same (byte for byte,
+  or a tar archive but for its times, `NccWorker.Portability.TarTimes`)
   (judge revision 21): such a file is static when the tarball does not carry
   it at all, and is held to every other priv rule
   (`Compatibility.StaticPriv.check/3`). Rule 1 never takes it.

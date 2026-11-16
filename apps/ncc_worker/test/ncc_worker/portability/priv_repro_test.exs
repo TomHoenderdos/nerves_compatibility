@@ -106,6 +106,44 @@ defmodule NccWorker.Portability.PrivReproTest do
     end
   end
 
+  # The first build's archive is the one published; the second's may differ
+  # in its members' times alone.
+  test "a tar.gz whose times alone differ passes; any other difference refuses", ctx do
+    archive = fn mtime, body ->
+      path = Path.join(ctx.dir, "a-#{System.unique_integer([:positive])}.tar.gz")
+      entries = [{~c"main.js", body}]
+      :ok = :erl_tar.create(String.to_charlist(path), entries, [:compressed, mtime: mtime])
+      File.read!(path)
+    end
+
+    first = archive.(5, "x")
+    File.write!(Path.join(ctx.build, "priv/assets/m.tar.gz"), first)
+    files = &%{"assets/a.txt" => "a", "assets/m.tar.gz" => &1}
+
+    v = settle(ctx.held, ctx.dir, second(files.(archive.(6, "x"))))
+    assert %{status: :pass} = v
+    assert v.observations["priv_tar_times"] == ["assets/m.tar.gz"]
+    assert v.observations["trace_stats"]["priv_repro"] == "same_but_tar_times"
+    assert File.read!(Path.join(ctx.build, "priv/assets/m.tar.gz")) == first
+
+    v = settle(ctx.held, ctx.dir, second(files.(archive.(6, "y"))))
+
+    assert v.reason ==
+             Reasons.priv_not_reproduced() <> "priv/assets/m.tar.gz differs between two builds"
+
+    # Named otherwise, it is compared byte for byte.
+    File.rename!(
+      Path.join(ctx.build, "priv/assets/m.tar.gz"),
+      Path.join(ctx.build, "priv/assets/m.bin")
+    )
+
+    second_files = %{"assets/a.txt" => "a", "assets/m.bin" => archive.(6, "x")}
+    v = settle(ctx.held, ctx.dir, second(second_files))
+
+    assert v.reason ==
+             Reasons.priv_not_reproduced() <> "priv/assets/m.bin differs between two builds"
+  end
+
   test "a link in priv cannot be compared", ctx do
     File.ln_s!("a.txt", Path.join(ctx.build, "priv/assets/l"))
     v = settle(ctx.held, ctx.dir, second(%{"assets/a.txt" => "a"}))

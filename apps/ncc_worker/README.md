@@ -563,10 +563,16 @@ second time, traced, in judge mode, into a fresh build path under the system tem
 `/work` but `/`), at least a second later (`NccWorker.Portability.PrivRepro`). That trace must pass on its own, so a
 path the package named itself (the first build's `priv`, a directory above it) refuses there; both `priv` trees must
 hold the same paths, only directories and regular files, with the same permission bits and bytes; and the first
-build must be unchanged. A difference refuses as `compile-time priv write not reproducible: priv/<path> differs between
-two builds` (or `a second build refused (...)`). On a pass the verdict's `built_priv` names the files, which the
-static priv rules then take without a tarball entry (below). kino 0.19.1 does not pass: `:erl_tar` stamps every member
-of its asset archives with the wall clock, so the archives differ in their tar header times between any two builds.
+build must be unchanged. One difference is let through: a `.tar` or `.tar.gz` whose two copies differ only in their
+members' times (the ustar `mtime`, pax `mtime`/`atime`/`ctime` records) and the gzip header's `MTIME` and `OS`
+(`NccWorker.Portability.TarTimes`: one gzip member and nothing after it, every other header byte, the member order and
+every data byte the same; anything it cannot parse differs). `:erl_tar` stamps the members it packs from binaries
+with the wall clock, so two users' own compiles differ the same way, and the first build's bytes are published;
+`priv_tar_times` names such files. Any other difference refuses as `compile-time priv write not reproducible:
+priv/<path> differs between two builds` (or `a second build refused (...)`). On a pass the verdict's `built_priv`
+names the files, which the static priv rules then take without a tarball entry (below). kino 0.19.1 passes so, with
+its ten asset archives under `priv/assets`; a dependent that packs its own assets into kino's `priv` (kino_db,
+kino_vega_lite) still refuses.
 
 A host-read reason names the `system_info` key or environment variable, the path, and with `via` the function that
 made the call when it is not the package's own (`compile-time host read: erlang:system_info/1 (system_architecture)
@@ -670,7 +676,7 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
 
 One kind of priv file passes without being in the tarball: one the package's own compile wrote into its own build
 `priv` (kino's asset archives under `priv/assets`, say), when the trace's pass lists it in its `built_priv` because
-the package's own compile alone wrote it and a second traced build wrote it byte for byte the same (judge revision
+the package's own compile alone wrote it and a second traced build wrote it the same (byte for byte, or a tar archive but for its times; judge revision
 21). `BuildSelection.static_rules/4` takes that list as `built_priv:`; rule 1 never does. Such a file is static only
 when the tarball does not carry its path at all (one the compile wrote over a file the release ships skips as
 `"ships a priv file its compile wrote over one its Hex tarball carries (priv/<path>)"`), and the caps, the native name
