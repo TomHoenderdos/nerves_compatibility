@@ -797,6 +797,52 @@ defmodule NccWorker.Tracer.RuntimeTest do
            )
   end
 
+  # A `File` whose rm_rf/1 hands back the whole OS type, `{os:type(), ok}`:
+  # not a tail call, so its own frame is the read's caller.
+  defp forged_file do
+    read = {:call, 1, {:remote, 1, {:atom, 1, :os}, {:atom, 1, :type}}, []}
+
+    forms = [
+      {:attribute, 1, :module, File},
+      {:attribute, 1, :export, [rm_rf: 1]},
+      {:function, 1, :rm_rf, 1,
+       [{:clause, 1, [{:var, 1, :_}], [], [{:tuple, 1, [read, {:atom, 1, :ok}]}]}]}
+    ]
+
+    {:ok, File, bin} = :compile.forms(forms, [:binary])
+    Base.encode64(bin)
+  end
+
+  # The judge records File.rm_rf/1's os:type/0 read as the family alone
+  # when the collector, whenever it gets to the read, finds the toolchain's
+  # code loaded for File. A package can call a forged File and put the
+  # toolchain's back, purged, in between: the check must fail the window,
+  # so a verdict taken on the restored code never counts.
+  test "a forged File swapped in and back around an os:type/0 read fails the window",
+       %{tmp_dir: dir} do
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      forged = Base.decode64!("#{forged_file()}")
+      :ok = :ncc_tracer.window_open(tok, "fx")
+      {:module, File} = :code.load_binary(File, ~c"nofile", forged)
+      {_, _} = File.rm_rf("x")
+      _ = :code.purge(File)
+      {:module, File} = :code.load_file(File)
+      true = :code.soft_purge(File)
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+
+    assert [%{"caller" => %{"module" => "Elixir.File", "function" => "rm_rf"}}] =
+             for(e <- kind(lines, "event"), e["mfa"] == "os:type/0", do: e),
+           out
+
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
   test "a traced module deleted and purged without a reload fails the check",
        %{tmp_dir: dir} do
     {0, out} =

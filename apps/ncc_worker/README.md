@@ -457,7 +457,7 @@ it themselves: kino's `File.rm_rf!/1` in `Kino.JS.__before_compile__/1`, and eve
 hook) as an `os_type` compile input valued from the tracer's start line (`os_type`, `[family, name]`), instead of
 refusing it as a host read. It names `family` alone only when every read was the toolchain's own `File.rm_rf/1`
 (`{major, _} = :os.type()`, by the event's `caller` and the tracer's `caller_kind` verdict on that module's loaded
-code), or OTP's `os:type/0` reading `system_info(os_type)` for such a call; any other read keeps `name` as well. A
+code; the tracer patterns `File.rm_rf/1` so that a reload of `File` during the trace fails its integrity check), or OTP's `os:type/0` reading `system_info(os_type)` for such a call; any other read keeps `name` as well. A
 read whose OS type the trace does not record is "portability could not be judged". `os:version/0` still refuses.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex

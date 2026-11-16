@@ -4,7 +4,7 @@
 %% writes when the call happens in user extent. Pure: no process, no I/O.
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
          checker_module/1, mix_patterns/0, mix_entry/1, mix_state/3, mix_state_heads/1,
-         path_os_frames/0, path_os_frame/3,
+         path_os_frames/0, path_os_frame/3, os_family_callers/0,
          path_os_read/3, returned_mfas/0, returned_mfa/3, returned_value/4,
          returned_term/4, recorded/1, value_etf/1, value_b64/1]).
 
@@ -258,6 +258,19 @@ path_os_frames() ->
 
 path_os_frame(Module, Function, Arity) ->
     lists:member({Module, Function, Arity}, path_os_frames()).
+
+%% The toolchain functions whose own os:type/0 read keeps only the family
+%% ({major, _} = :os.type()) and runs no package code, as text: the judge
+%% records such a read, made by the toolchain's code for the function
+%% (the event's caller_kind), as the family alone
+%% (NccWorker.Portability.Events; pinned on the running toolchain by
+%% NccWorker.Tracer.OsFamilyCallersTest). The collector takes caller_kind
+%% from the code loaded when it gets to the read, so the tracer sets a
+%% pattern on each that never fires: a package that loads other code for
+%% the module and puts the toolchain's back in between drops it, which
+%% fails the check (ncc_tracer canary_patterns/0).
+os_family_callers() ->
+    [{<<"Elixir.File">>, <<"rm_rf">>, 1}].
 
 %% The OS-identity reads the judge allows as path handling, by the summary
 %% classify/3 made of them: os:type/0, os:version/0 and

@@ -29,6 +29,8 @@
 %% so values never overflow a trace nor outgrow the report's read budget.
 -define(MAX_VALUE_BYTES, 8388608).
 -define(INTROSPECTION, ['__info__', module_info, behaviour_info]).
+%% A match spec that never matches: the pattern is set, no call is traced.
+-define(NEVER, [{'_', [false], []}]).
 -define(SPAWNS, [spawn, spawn_link, spawn_monitor, spawn_opt, spawn_request]).
 
 %% set_depth: the backtrace_depth the tracer set and read back at start.
@@ -288,9 +290,11 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     put(preloaded_md5, preloaded_md5s()),
     put(owned_md5, owned_md5s()),
     Patterns = ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role),
-    _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns],
+    Canaries = canary_patterns(),
+    _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns ++ Canaries],
     Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
-              || MFA <- Patterns ++ mix_patterns(Role)],
+              || MFA <- Patterns ++ mix_patterns(Role)]
+        ++ [wanted(Session, MFA, ?NEVER) || MFA <- Canaries],
     Preloaded = preloaded(Before, Role),
     put(preloaded, Preloaded),
     Calls = app_calls(Preloaded),
@@ -337,6 +341,13 @@ watch(Collector, File) ->
 
 reason_bin(Reason) when is_atom(Reason) -> atom_to_binary(Reason);
 reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
+
+%% A pattern only for the check (patterns_check/2) to find gone: one on each
+%% function whose loaded code a judge verdict trusts (caller_kind), which a
+%% reload of its module drops (ncc_tracer_channels:os_family_callers/0).
+canary_patterns() ->
+    [{binary_to_atom(M), binary_to_atom(F), A}
+     || {M, F, A} <- ncc_tracer_channels:os_family_callers()].
 
 role_patterns(child) -> [{compile, file, 2}];
 role_patterns(main) -> [].

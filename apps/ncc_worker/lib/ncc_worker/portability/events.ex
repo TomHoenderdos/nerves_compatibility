@@ -152,9 +152,10 @@ defmodule NccWorker.Portability.Events do
   @same_within_major ~w(machine smp_support threads heap_type)
   # The toolchain functions whose own `:os.type/0` read keeps only the
   # family (`{major, _} = :os.type()`) and that run no package code: their
-  # read is an `os_type` input without the name. Pinned on the running
-  # toolchain by `NccWorker.Tracer.OsFamilyCallersTest`.
-  @os_family_callers [{"Elixir.File", "rm_rf", 1}]
+  # read is an `os_type` input without the name. Shared with the tracer,
+  # which sets a pattern on each so a reload of the module fails the check;
+  # pinned on the running toolchain by `NccWorker.Tracer.OsFamilyCallersTest`.
+  @os_family_callers :ncc_tracer_channels.os_family_callers()
 
   @type decision ::
           :ignore
