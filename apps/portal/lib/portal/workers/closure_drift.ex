@@ -1,6 +1,6 @@
 defmodule Portal.Workers.ClosureDrift do
   @moduledoc """
-  Oban worker (queue `:maintenance`, a daily cron and a manual run) that
+  Oban worker (queue `:intake`, a daily cron and a manual run) that
   rebuilds the toolchain builds a new dependency release left behind.
 
   ## The decay it stops
@@ -36,7 +36,16 @@ defmodule Portal.Workers.ClosureDrift do
   picks. Its args also say why: `reason: "closure_drift"` and `drift`, the
   dependencies that moved (`%{"dep", "from", "to"}`). At most `max_per_run/0`
   are queued per run, and the cron runs once a day, which is the daily cap;
-  at most `scan_limit` builds are judged per run, which bounds the Hex reads.
+  at most `scan_limit` builds are judged per run.
+
+  A run asks Hex about each closure member at most once, a failed read
+  included, and never retries one: a build whose closure could not be read
+  is judged again tomorrow. So its Hex reads are bounded by the packages the
+  judged closures name (about 400 on production), not by the builds, and a
+  slow `repo.hex.pm` costs at most the read timeout per package. It runs on
+  `:intake`, the web host's HTTP queue, as `Portal.Workers.CoverageRefresh`
+  does, rather than on the single `:maintenance` slot that signs the
+  precompiled batch and reaps builder leases.
 
   ## The old build keeps serving
 
@@ -57,7 +66,7 @@ defmodule Portal.Workers.ClosureDrift do
   """
 
   use Oban.Worker,
-    queue: :maintenance,
+    queue: :intake,
     max_attempts: 2,
     unique: [period: :infinity, states: :incomplete]
 
@@ -123,9 +132,21 @@ defmodule Portal.Workers.ClosureDrift do
         )
 
       queue_for = MemoryRouting.router(candidates |> Enum.map(& &1.package) |> Enum.uniq())
-      context = %{images: images, builder_version: builder_version, queue_for: queue_for}
+      {memo, releases} = memoized_releases()
 
-      summary = judge_all(candidates, index, context, dry_run?)
+      context = %{
+        images: images,
+        builder_version: builder_version,
+        queue_for: queue_for,
+        releases: releases
+      }
+
+      summary =
+        try do
+          judge_all(candidates, index, context, dry_run?)
+        after
+          Process.delete(memo)
+        end
 
       Logger.info(
         "Closure drift: #{summary.candidates} builds behind a release, #{summary.drifted} drifted, " <>
@@ -148,7 +169,7 @@ defmodule Portal.Workers.ClosureDrift do
   end
 
   defp judge(candidate, index, context, dry_run?, acc) do
-    case ClosureDrift.drift(candidate, index, &releases/1) do
+    case ClosureDrift.drift(candidate, index, context.releases) do
       {:drift, changes} when dry_run? ->
         log_drift(candidate, changes)
         %{acc | drifted: acc.drifted + 1}
@@ -238,7 +259,26 @@ defmodule Portal.Workers.ClosureDrift do
     :ok
   end
 
-  defp releases(name), do: hex_deps().releases(name, receive_timeout: 15_000)
+  # `Portal.HexDeps.releases/2` once per package for the run, its answer
+  # (an error too) kept in this process until the run ends (moduledoc).
+  defp memoized_releases do
+    memo = {__MODULE__, :releases, make_ref()}
+    Process.put(memo, %{})
+
+    releases = fn name ->
+      case Map.fetch(Process.get(memo), name) do
+        {:ok, answer} ->
+          answer
+
+        :error ->
+          answer = hex_deps().releases(name, receive_timeout: 15_000, retry: false)
+          Process.put(memo, Map.put(Process.get(memo), name, answer))
+          answer
+      end
+    end
+
+    {memo, releases}
+  end
 
   @doc "Whether the scheduled run is switched on (`NCC_CLOSURE_DRIFT`)."
   @spec enabled?() :: boolean()

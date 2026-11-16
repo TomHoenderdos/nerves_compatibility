@@ -115,8 +115,10 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.CoverageRefresh.__opts__()[:queue] == :intake
   end
 
-  # Once a day is the closure-drift cap's period: `max_per_run` per run.
-  test "closure drift runs once a day, on the maintenance queue" do
+  # Once a day is the closure-drift cap's period: `max_per_run` per run. Its
+  # Hex reads go on the web host's HTTP queue, as `CoverageRefresh`'s do, not
+  # on the single `:maintenance` slot that signs batches and reaps leases.
+  test "closure drift runs once a day, on the web host's HTTP queue" do
     {_mod, opts} = plugin(Oban.Plugins.Cron)
 
     assert {expr, Portal.Workers.ClosureDrift} =
@@ -125,7 +127,7 @@ defmodule Portal.ObanConfigTest do
     assert [minute, hour, "*", "*", "*"] = String.split(expr)
     assert {_, ""} = Integer.parse(minute)
     assert {_, ""} = Integer.parse(hour)
-    assert Portal.Workers.ClosureDrift.__opts__()[:queue] == :maintenance
+    assert Portal.Workers.ClosureDrift.__opts__()[:queue] == :intake
   end
 
   test "the toolchain sweep runs every 15 minutes, on the maintenance queue" do

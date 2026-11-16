@@ -157,8 +157,8 @@ config :portal, Oban,
        # whose lock a newer dependency release left behind
        # (`Portal.Workers.ClosureDrift`), at most `max_per_run` a day. Two
        # registry requests and the Hex reads of the closures it judges;
-       # carries `:maintenance`, the web host's queue, where the sweep that
-       # names the toolchain images runs too.
+       # carries `:intake`, the web host's HTTP queue, as CoverageRefresh
+       # does, off the single `:maintenance` slot.
        {"19 6 * * *", Portal.Workers.ClosureDrift}
      ]}
   ]

@@ -203,6 +203,38 @@ defmodule Portal.Workers.ClosureDriftTest do
     assert_received {:asked_registry, [all_versions: true]}
   end
 
+  # Records every read; answers like `Portal.Test.FakeHexDeps`, except that
+  # a name under `:hex_down` fails as an outage would.
+  defmodule RecordingHexDeps do
+    def releases(name, opts) do
+      send(self(), {:asked_hex, name, opts})
+
+      if name in Process.get(:hex_down, []),
+        do: {:error, :hex_registry_unavailable},
+        else: Portal.Test.FakeHexDeps.releases(name, opts)
+    end
+  end
+
+  # A run is daily and judges again tomorrow: a read that fails is not
+  # retried, and is not asked again for every build whose closure has it.
+  test "a run asks Hex for each package at most once, without retries" do
+    [first, second] = [name(), name()]
+    drifted_world([first, second])
+    built!(first, "0.4.0", "2.18.0")
+    built!(second, "0.4.0", "2.18.0")
+
+    hex_deps = Application.get_env(:portal, :hex_deps)
+    Application.put_env(:portal, :hex_deps, RecordingHexDeps)
+    on_exit(fn -> Application.put_env(:portal, :hex_deps, hex_deps) end)
+    Process.put(:hex_down, ["certifi"])
+
+    assert {:ok, %{unknown: 2, enqueued: 0}} = ClosureDrift.run()
+
+    assert_received {:asked_hex, "certifi", opts}
+    assert opts[:retry] == false
+    refute_received {:asked_hex, "certifi", _opts}
+  end
+
   test "a registry outage fails the run" do
     Process.put(:hex_answer, {:error, :hex_registry_unavailable})
     assert {:error, :hex_registry_unavailable} = perform_job(ClosureDrift, %{"manual" => true})
