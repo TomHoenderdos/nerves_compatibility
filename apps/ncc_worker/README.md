@@ -579,6 +579,26 @@ names the files, which the static priv rules then take without a tarball entry (
 its ten asset archives under `priv/assets`; a dependent that packs its own assets into kino's `priv` (kino_db,
 kino_vega_lite) still refuses.
 
+One read is let through too (judge revision 23): a closure dependency's own compile (its window, never its
+`mix.exs`, never another dependency's) reading the bytes of a file in its own source `priv` (`file:read_file`, an
+`open` for reading, `file:consult/1`, `erl_prim_loader:get_file/1`; never a stat, a probe or a listing) through the
+link Mix makes from its build `priv` when its tarball ships one: `_build/<env>/lib/<d>/priv` must resolve to exactly
+`deps/<d>/priv`, and the file, after every link, must lie under it. That is rustler's `Mix.Tasks.Rustler.New`
+embedding its templates (`compile-time host read: file:read_file/2 .../_build/host/lib/rustler/priv/templates/...`);
+a natively built dependency's `priv` is otherwise unreadable, since its build may write there. The read is allowed
+only when that dependency's whole source tree, checked after the compile, is still exactly its verified Hex
+tarball's and the tarball holds the file (the check revision 15 makes, since a natively built dependency's tree is
+not checked before the compile): every user's compile then reads the same bytes. A tree a compile wrote into keeps
+the refusal, Mix's own leex and yecc output in `src/` included (localize). Anything else is the host read it always
+was, in that dependency's window, so a refused one taints it. Another
+package reading that `priv` (a dependent embedding rustler's templates), a build `priv` of the package's own (a
+directory, which revision 21 lets its compile write first) and a link out of the package's tree keep their refusal.
+A firmware target's trace and a host-native build judge it the same: the same tree check is what they already ask
+of every natively built closure dependency, so rustler in tokenizers' closure no longer refuses there. The allowed
+reads are listed as `own_priv_reads`. A non-native dependency's own `priv` read through the link was already a
+read of its Hex-listed sources, re-checked against the tree snapshot taken before the compile (item 5e), and is
+unchanged.
+
 A host-read reason names the `system_info` key or environment variable, the path, and with `via` the function that
 made the call when it is not the package's own (`compile-time host read: erlang:system_info/1 (system_architecture)
 via CCPrecompiler.current_target/0 in ...`). `erlang:system_info/1` of `otp_release`, `machine`, `smp_support`, `threads` or

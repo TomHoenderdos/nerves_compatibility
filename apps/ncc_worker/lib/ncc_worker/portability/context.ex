@@ -33,7 +33,9 @@ defmodule NccWorker.Portability.Context do
   directory covers the files under it) and, for a native dependency, not
   under `priv`. Never the project's own files: they stand for the consumer
   project. A natively built dependency's `ebin` is not readable either; the
-  judge decides a read of it (`native_ebin_app/2`). Writes are allowed only
+  judge decides a read of it (`native_ebin_app/2`), as it does a
+  dependency's own compile reading a file in its own `priv` through Mix's
+  link (`linked_priv/2`, judge revision 23). Writes are allowed only
   under the owning window's dependency's `ebin`, and, for the package's own
   compile, under its own build `priv` (`own_priv/2`, judge revision 21).
 
@@ -499,6 +501,44 @@ defmodule NccWorker.Portability.Context do
   end
 
   def above_own_priv?(_ctx, _path, _owner), do: false
+
+  @doc """
+  A closure dependency's source `priv` (`deps/<d>/priv`), real path, when
+  its build `priv` (`_build/<env>/lib/<d>/priv`) resolves to exactly that
+  directory: the link Mix makes when the dependency's own tarball ships a
+  `priv`. `nil` for any other app, and when the build `priv` is a directory
+  of its own (`own_priv/2`), is missing, or resolves anywhere else (a
+  source `priv` that is itself a link included). Judge revision 23
+  (`NccWorker.Portability.Events`).
+  """
+  @spec linked_priv(t(), term()) :: String.t() | nil
+  def linked_priv(ctx, app) do
+    with true <- dep?(ctx, app),
+         %{build: build, dest: dest} when is_binary(build) and is_binary(dest) <- ctx.deps[app],
+         source = Path.join(dest, "priv"),
+         ^source <- realpath(Path.join(build, "priv")) do
+      source
+    else
+      _ -> nil
+    end
+  end
+
+  @doc """
+  `real`, a real path read in `owner`'s window, relative to `owner`'s source
+  dir (`"priv/<path>"`), when it lies under `owner`'s `linked_priv/2` and is
+  not that directory itself; else `nil`.
+  """
+  @spec linked_priv_file(t(), term(), String.t() | nil) :: String.t() | nil
+  def linked_priv_file(ctx, owner, real) when is_binary(real) do
+    with priv when is_binary(priv) <- linked_priv(ctx, owner),
+         true <- real != priv and under?(real, priv) do
+      real |> Path.split() |> Enum.drop(length(Path.split(dest(ctx, owner)))) |> rel_path()
+    else
+      _ -> nil
+    end
+  end
+
+  def linked_priv_file(_ctx, _owner, _real), do: nil
 
   @doc "An absolute path to a regular file in some closure dependency's source dir."
   @spec closure_file?(t(), term()) :: boolean()

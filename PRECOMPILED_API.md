@@ -586,7 +586,10 @@ What it lists:
   wrote anything outside its own `ebin` (its own `priv` aside, as above),
   baked the build path into code or into such a priv file, or
   depends on a package whose own compile did, and any build whose trace did
-  not finish; its beams are the traced compile's. What the package does at
+  not finish; its beams are the traced compile's. A package's own compile
+  reading a file its own Hex tarball ships in its `priv` (rustler embedding
+  its templates) reads no host, when the package's source tree is still
+  exactly that tarball's after the compile (judge revision 23). What the package does at
   runtime does not count: a package that runs programs, opens ports, looks
   up executables or reads the OS type when it runs is built and served like
   any other, since those calls run the same from a precompiled build. Native

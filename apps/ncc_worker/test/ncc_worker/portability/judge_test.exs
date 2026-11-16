@@ -183,6 +183,138 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
+  # Judge revision 23: a closure dependency's own compile reading a file in
+  # its own source priv through Mix's link, rustler's
+  # `Mix.Tasks.Rustler.New` embedding its templates. dep and pkg are both
+  # natively built here, each with a verified Hex release whose files are
+  # exactly its source dir's.
+  describe "a dependency's own source priv reads" do
+    defp linked_priv(proj, dir, apps) do
+      home = Path.join(dir, "hex")
+
+      releases =
+        for app <- apps, into: %{} do
+          File.mkdir_p!(Path.join([proj, "deps", app, "priv"]))
+          File.write!(Path.join([proj, "deps", app, "priv", "t.txt"]), "template of #{app}")
+
+          File.ln_s!(
+            "../../../../deps/#{app}/priv",
+            Path.join([proj, "_build/host/lib", app, "priv"])
+          )
+
+          contents = %{
+            "lib/#{app}.ex" => "",
+            "mix.exs" => "",
+            "priv/t.txt" => "template of #{app}"
+          }
+
+          NccWorker.TracerFixtures.hex_release(home, app, Map.keys(contents), contents)
+        end
+
+      [releases: releases, hex_home: home, nif_waiver: true]
+    end
+
+    defp priv_read(proj, ts, app, owner_file) do
+      path = Path.join([proj, "_build/host/lib", app, "priv/t.txt"])
+      %{event(ts, "file:read_file/2", owner_file, "file_read") | "arg" => %{"path" => path}}
+    end
+
+    defp pjudge(proj, r, opts),
+      do:
+        Portability.judge(proj, "pkg", r, ["dep", "pkg"], Keyword.put(opts, :built_check, false))
+
+    defp priv_refusal(proj, app, file),
+      do:
+        "compile-time host read: file:read_file/2 " <>
+          Path.join([proj, "_build/host/lib", app, "priv/t.txt"]) <>
+          " in X.__MODULE__/1 (#{file}:2)"
+
+    test "the package's own read passes when its tree is its tarball's", %{proj: proj, dir: dir} do
+      opts = linked_priv(proj, dir, ["dep", "pkg"])
+      r = report(proj, %{events: [priv_read(proj, 35, "pkg", "lib/pkg.ex")]})
+      assert %{status: :pass, reason: nil, observations: obs} = v = pjudge(proj, r, opts)
+      assert v.built_priv == []
+
+      assert [%{"owner" => "pkg", "app" => "pkg", "source" => "priv/t.txt"} = item] =
+               obs["own_priv_reads"]
+
+      refute Map.has_key?(item, "refusal")
+
+      # The same in a firmware target's trace, whose own check of a natively
+      # built dependency's tree is the same.
+      assert %{status: :pass} = pjudge(proj, r, Keyword.put(opts, :target, "rpi4"))
+    end
+
+    test "a dependency's own read in its window leaves it clean", %{proj: proj, dir: dir} do
+      opts = linked_priv(proj, dir, ["dep", "pkg"])
+      r = report(proj, %{events: [priv_read(proj, 15, "dep", "lib/dep.ex")]})
+
+      assert %{status: :pass, observations: %{"own_priv_reads" => [%{"owner" => "dep"}]}} =
+               pjudge(proj, r, opts)
+
+      assert %{status: :pass} = pjudge(proj, r, Keyword.put(opts, :target, "rpi4"))
+    end
+
+    test "refuses as before when the tree is not its tarball's", %{proj: proj, dir: dir} do
+      opts = linked_priv(proj, dir, ["dep", "pkg"])
+
+      for {app, ts, file} <- [{"pkg", 35, "lib/pkg.ex"}, {"dep", 15, "lib/dep.ex"}] do
+        r = report(proj, %{events: [priv_read(proj, ts, app, file)]})
+        refusal = priv_refusal(proj, app, file)
+        assert %{status: :pass} = pjudge(proj, r, opts)
+
+        # A file the build wrote beside it, the file read changed, no
+        # verified tarball: the read is the host read it always was.
+        generated = Path.join([proj, "deps", app, "priv", "generated.txt"])
+        read = Path.join([proj, "deps", app, "priv", "t.txt"])
+
+        for {change, undo} <- [
+              {fn -> File.write!(generated, "x") end, fn -> File.rm!(generated) end},
+              {fn -> File.write!(read, "changed") end,
+               fn -> File.write!(read, "template of #{app}") end}
+            ] do
+          change.()
+          v = pjudge(proj, r, opts)
+          target_v = pjudge(proj, r, Keyword.put(opts, :target, "rpi4"))
+          undo.()
+          assert_priv_refused(v, app, refusal)
+          assert_priv_refused(target_v, app, refusal)
+        end
+
+        assert_priv_refused(pjudge(proj, r, Keyword.put(opts, :releases, %{})), app, refusal)
+      end
+    end
+
+    defp assert_priv_refused(v, "pkg", refusal),
+      do: assert(%{status: :skip, reason: ^refusal} = v)
+
+    defp assert_priv_refused(v, "dep", refusal) do
+      assert %{status: :skip, reason: reason} = v
+
+      assert reason in [
+               "closure dependency observed the host: dep (#{refusal})",
+               # A firmware target's trace refuses on the first refusal itself.
+               refusal
+             ]
+    end
+
+    test "the package reading a dependency's priv refuses as before", %{proj: proj, dir: dir} do
+      opts = linked_priv(proj, dir, ["dep", "pkg"])
+      r = report(proj, %{events: [priv_read(proj, 35, "dep", "lib/pkg.ex")]})
+      refusal = priv_refusal(proj, "dep", "lib/pkg.ex")
+      assert %{status: :skip, reason: ^refusal} = pjudge(proj, r, opts)
+
+      assert %{status: :skip, reason: ^refusal} =
+               pjudge(proj, r, Keyword.put(opts, :target, "rpi4"))
+
+      # And a dependency reading the package's.
+      r = report(proj, %{events: [priv_read(proj, 15, "pkg", "lib/dep.ex")]})
+
+      assert %{status: :skip, reason: "closure dependency observed the host: dep" <> _} =
+               pjudge(proj, r, opts)
+    end
+  end
+
   describe "the mapped-library check" do
     defp with_libs(r, libs), do: %{r | ending: %{r.ending | "mapped_libs" => libs}}
 
@@ -2599,9 +2731,9 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
     end
 
-    test "the judge revision is 21, 22 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 21
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 22
+    test "the judge revision is 23, 24 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 23
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 24
 
       # The portal withdraws only on refusals of a judge at least this new.
       # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4

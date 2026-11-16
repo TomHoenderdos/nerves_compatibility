@@ -65,6 +65,17 @@ defmodule NccWorker.Portability.Events do
       are observed as `native_beam_reads`, carrying the refusal they would
       otherwise be; `NccWorker.Portability` refuses each unless that
       dependency's own compile is shown clean (judge revision 15).
+    * A closure dependency's own compile (its window, never its `mix.exs`)
+      reading the bytes of a file (`file:read_file`, an `open` for reading,
+      `file:consult/1`, `erl_prim_loader:get_file/1`) under its own source
+      `priv`, reached through the link Mix made from its build `priv`
+      (`Context.linked_priv_file/3`), that `Context.readable?/2` does not
+      allow (a natively built dependency's `priv`), is observed as
+      `own_priv_reads`, carrying the refusal it would otherwise be:
+      rustler's `Mix.Tasks.Rustler.New` embedding its own templates.
+      `NccWorker.Portability` refuses each unless that dependency's source
+      tree is its verified tarball's after the compile and holds the file
+      (judge revision 23).
     * Reads: `Context.readable?/2` of the real path, relative paths and
       `get_cwd` against the window's dependency (`Context.cwd/2`). A read
       file or directory listing in a closure dependency whose tree matched
@@ -154,6 +165,11 @@ defmodule NccWorker.Portability.Events do
   # removal, a file's metadata).
   @mkdir_p {"Elixir.File", "do_mkdir_p", 1}
   @type_probe {"elixir_utils", "read_file_type", 2}
+  # Judge revision 23: the reads that hand their caller a file's bytes and
+  # nothing about the file (no size, time, owner or listing).
+  @content_reads ~w(file:read_file/1 file:read_file/2 prim_file:read_file/1
+                    prim_file:read_file/2 file:open/2 prim_file:open/2 file:consult/1
+                    erl_prim_loader:get_file/1)
   @not_content ~w(file:make_dir/1 prim_file:make_dir/1 file:del_dir/1 file:del_dir_r/1
                   prim_file:del_dir/1 file:delete/1 prim_file:delete/1 file:write_file_info/2
                   file:write_file_info/3 prim_file:write_file_info/2 prim_file:write_file_info/3
@@ -470,6 +486,15 @@ defmodule NccWorker.Portability.Events do
       app = Context.native_ebin_app(ctx, real) ->
         {:observe, "native_beam_reads", native_beam_read(e, app, host_read(e, path))}
 
+      file = own_priv_read(e, ctx, owner, real) ->
+        {:observe, "own_priv_reads",
+         Map.merge(summary(e), %{
+           "app" => owner,
+           "source" => file,
+           "ts" => e["ts"],
+           "refusal" => host_read(e, path)
+         })}
+
       type_probe?(e, ctx, owner, path) ->
         {:observe, "priv_probes", Map.put(summary(e), "refusal", host_read(e, path))}
 
@@ -477,6 +502,27 @@ defmodule NccWorker.Portability.Events do
         {:refuse, host_read(e, path)}
     end
   end
+
+  # Judge revision 23: a dependency's own compile (its window, never its
+  # `mix.exs`, never another dependency's window) reading the bytes of a
+  # file in its own source `priv` through the link Mix made from its build
+  # `priv` (`Context.linked_priv_file/3`, the real path): rustler's
+  # `Mix.Tasks.Rustler.New` embedding its templates. Only a content read
+  # (`@content_reads`), never a probe or a listing. Observed, with the
+  # refusal it was before and the file relative to the source dir: the
+  # judge allows it only when that dependency's whole source tree is its
+  # verified tarball's after the compile and holds the file
+  # (`NccWorker.Portability`). A read of another dependency's `priv`, a
+  # `priv` of its own (a directory, which a compile may have written) and a
+  # path that resolves out of the source `priv` keep their treatment.
+  defp own_priv_read(%{"mfa" => mfa, "arg" => arg} = e, ctx, owner, real)
+       when mfa in @content_reads and is_map(arg) do
+    if arg["listing"] != true and Context.dep?(ctx, owner) and
+         Context.mix_exs(ctx, e, owner) == nil,
+       do: Context.linked_priv_file(ctx, owner, real)
+  end
+
+  defp own_priv_read(_e, _ctx, _owner, _real), do: nil
 
   # Judge revision 21: whether a directory above the package's own `priv`
   # is one (`Context.above_own_priv?/3`), asked by the package's own compile

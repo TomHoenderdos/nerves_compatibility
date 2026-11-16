@@ -38,6 +38,11 @@ defmodule NccWorker.Portability do
   `native_beam_reads`) is settled before steps 3 and 7: allowed when that
   dependency is clean and the read came after its window, otherwise the
   refusal of the window it fell in (`beam_reads/5`, judge revision 15).
+  So is a closure dependency's own compile reading a file in its own source
+  `priv` through Mix's link (`Events`' `own_priv_reads`): allowed when that
+  dependency's source tree is exactly its verified tarball's after the
+  compile and holds the file, otherwise the refusal of its window
+  (`own_priv_reads/2`, judge revision 23), in a firmware target's trace too.
 
   The package's own compile writing into its own build `priv`, and the
   probes `File.mkdir_p/1` makes of the directories above it (`Events`'
@@ -135,7 +140,8 @@ defmodule NccWorker.Portability do
     "native_build" => 50,
     "target_reads" => 50,
     "priv_writes" => 50,
-    "priv_probes" => 50
+    "priv_probes" => 50,
+    "own_priv_reads" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -212,8 +218,16 @@ defmodule NccWorker.Portability do
   # makes it natively built in the trace (`NativeBuild.split/4`), as it does
   # not in the static rules, so Elixir 1.20's parallel checker reading the
   # package's own protocol beam back from its ebin is allowed (bumped by two
+  # while `makefile_rule2` exists). 23: a closure dependency's own compile
+  # may read the bytes of a file in its own source `priv` through the link
+  # Mix made from its build `priv` (rustler's `Mix.Tasks.Rustler.New`
+  # embedding its templates), when that dependency's whole source tree is
+  # still exactly its verified tarball's after the compile and the tarball
+  # holds the file (`own_priv_reads/2`); a
+  # dependent reading it, a build `priv` of its own and a path that
+  # resolves out of the source `priv` keep their refusal (bumped by two
   # while `makefile_rule2` exists).
-  @judge_revision 21
+  @judge_revision 23
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -813,7 +827,7 @@ defmodule NccWorker.Portability do
         ElixirVersion.reviewed_apps(elem(ctx.hex, 1), ctx.trees)
       )
 
-    decided = decided ++ config.refusals ++ version.refusals
+    decided = own_priv_reads(decided ++ config.refusals ++ version.refusals, ctx)
     package_r2 = package_build_root(ctx)
     {decided, deps} = dep_results(ctx, report, decided, libs, target(opts) != nil)
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
@@ -1798,21 +1812,71 @@ defmodule NccWorker.Portability do
   # natively built dependencies): nothing a build generated, nothing
   # changed. No verified tarball, no source dir at `<deps>/<app>` (the
   # compile's deps dir, `Context.deps_path/1`) or no time left is not clean.
-  defp tree_clean?(%Context{project_dir: project, hex: {home, releases}} = ctx, app)
+  defp tree_clean?(ctx, app), do: clean_tree(ctx, app) != nil
+
+  # `tree_clean?/2`'s check, with the tarball's members when it holds, else nil.
+  defp clean_tree(%Context{project_dir: project, hex: {home, releases}} = ctx, app)
        when is_binary(project) do
     deps = Context.deps_path(ctx)
 
     with %{} = release <- Map.get(releases, app),
          true <- is_binary(deps) and Context.dest(ctx, app) == Path.join(deps, app),
-         %{^app => {:ok, _members}} <-
+         %{^app => {:ok, members}} <-
            Trees.snapshot(project, %{app => release}, home, [], deps_path: deps) do
-      true
+      members
     else
-      _ -> false
+      _ -> nil
     end
   end
 
-  defp tree_clean?(_ctx, _app), do: false
+  defp clean_tree(_ctx, _app), do: nil
+
+  # Judge revision 23. A closure dependency's own compile reading a file in
+  # its own source `priv` through Mix's link (`Events`, `own_priv_reads`:
+  # rustler's `Mix.Tasks.Rustler.New` embedding its templates) read what
+  # every user's compile of it reads, its verified tarball's bytes, when
+  # that dependency's whole source tree is still exactly that tarball's
+  # after the compile (`clean_tree/2`, the check revision 15 makes: a
+  # natively built dependency's tree is not checked before the compile, and
+  # nothing a build wrote there may be what was read) and the tarball holds
+  # the file. A tree any compile wrote into (Mix's leex and yecc output in
+  # `src/`) is not clean, so its reads keep their refusal. Allowed then,
+  # refused as the host read it always was otherwise: in the dependency's
+  # window, before its R3 result, so a refused read taints it. A firmware
+  # target's trace is judged the same: the same tree check is what it
+  # already asks of every natively built dependency (`native_output/2`).
+  defp own_priv_reads(decided, ctx) do
+    {decided, _memo} =
+      Enum.map_reduce(decided, %{}, fn
+        {owner, {:observe, "own_priv_reads", item}} = entry, memo ->
+          {members, memo} = clean_members(ctx, item["app"], memo)
+
+          allowed? =
+            owner == item["app"] and is_map(members) and is_binary(item["source"]) and
+              Map.has_key?(members, item["source"])
+
+          {if(allowed?, do: entry, else: {owner, {:refuse, own_priv_refusal(item)}}), memo}
+
+        entry, memo ->
+          {entry, memo}
+      end)
+
+    decided
+  end
+
+  defp clean_members(ctx, app, memo) do
+    case memo do
+      %{^app => members} ->
+        {members, memo}
+
+      _ ->
+        members = if Context.dep?(ctx, app), do: clean_tree(ctx, app)
+        {members, Map.put(memo, app, members)}
+    end
+  end
+
+  defp own_priv_refusal(%{"refusal" => refusal}) when is_binary(refusal), do: refusal
+  defp own_priv_refusal(item), do: "compile-time host read: #{item["mfa"]}"
 
   defp libs_clean?(libs, app) do
     case Map.get(libs.by_owner, app, []) do

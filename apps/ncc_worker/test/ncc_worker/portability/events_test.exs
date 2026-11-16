@@ -1536,4 +1536,154 @@ defmodule NccWorker.Portability.EventsTest do
                "pkg"
              )
   end
+
+  describe "a dependency's own compile reading its own source priv (judge revision 23)" do
+    # pkg is natively built, ships `priv/templates/a.txt`, and its build
+    # `priv` is Mix's link to `deps/pkg/priv`; `user` is a closure
+    # dependency that depends on it. rustler's `Mix.Tasks.Rustler.New`
+    # reading its templates through `:code.priv_dir(:rustler)`.
+    defp linked_ctx(dir, proj, pkg, opts \\ []) do
+      File.mkdir_p!(Path.join(pkg, "priv/templates"))
+      File.write!(Path.join(pkg, "priv/templates/a.txt"), "a")
+      build_priv = Path.join(proj, "_build/host/lib/pkg/priv")
+      File.ln_s!("../../../../deps/pkg/priv", build_priv)
+      user = Path.join([proj, "deps", "user"])
+      File.mkdir_p!(Path.join(user, "lib"))
+      File.mkdir_p!(Path.join(proj, "_build/host/lib/user/ebin"))
+
+      dependent = %{
+        "app" => "user",
+        "dest" => user,
+        "build" => Path.join(proj, "_build/host/lib/user"),
+        "manager" => "mix",
+        "children" => ["pkg"]
+      }
+
+      report = report(dir, proj, pkg, [])
+      report = update_in(report.closure["deps"], &(&1 ++ [dependent]))
+      ctx = build(dir, proj, report, Keyword.merge([native: ["pkg"]], opts))
+      %{ctx: ctx, file: Path.join(build_priv, "templates/a.txt"), build_priv: build_priv}
+    end
+
+    defp read(path, mfa \\ "file:read_file/2"),
+      do: ev("file_read", mfa, %{"path" => path})
+
+    test "a content read through Mix's link is observed with the refusal it would be",
+         %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx, file: file} = linked_ctx(dir, proj, pkg)
+
+      for mfa <- ~w(file:read_file/1 file:read_file/2 prim_file:read_file/1 file:open/2
+                    file:consult/1 erl_prim_loader:get_file/1) do
+        assert {:observe, "own_priv_reads", item} = Events.decide(read(file, mfa), ctx, "pkg")
+        assert %{"app" => "pkg", "source" => "priv/templates/a.txt", "ts" => 50} = item
+
+        assert item["refusal"] ==
+                 "compile-time host read: #{mfa} #{file} in Pkg.f/0 (lib/pkg.ex:3)"
+      end
+
+      # The source path itself, relative in its own window, is the same file.
+      assert {:observe, "own_priv_reads", %{"source" => "priv/templates/a.txt"}} =
+               Events.decide(read("priv/templates/a.txt"), ctx, "pkg")
+    end
+
+    test "a probe, a listing or the priv dir itself keeps its refusal",
+         %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx, file: file, build_priv: build_priv} = linked_ctx(dir, proj, pkg)
+
+      for event <- [
+            read(file, "file:read_file_info/2"),
+            read(file, "prim_file:read_file_info/2"),
+            read(file, "file:read_link_info/2"),
+            ev("file_read", "file:list_dir/1", %{
+              "path" => Path.join(build_priv, "templates"),
+              "listing" => true
+            }),
+            read(build_priv, "file:read_file/2")
+          ] do
+        assert {:refuse, "compile-time host read: " <> _} = Events.decide(event, ctx, "pkg"),
+               inspect(event)
+      end
+    end
+
+    test "another app's read, a read outside every window or from mix.exs keeps its refusal",
+         %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx, file: file} = linked_ctx(dir, proj, pkg)
+
+      for owner <- ["user", :outside, :quiet, "other"] do
+        assert {:refuse, "compile-time host read: " <> _} =
+                 Events.decide(read(file), ctx, owner),
+               inspect(owner)
+      end
+
+      in_mix = in_mix_exs(read(file), pkg, 5)
+      refute match?({:observe, "own_priv_reads", _}, Events.decide(in_mix, ctx, "pkg"))
+    end
+
+    test "a build priv of its own keeps its refusal", %{dir: dir, proj: proj, pkg: pkg} do
+      # No link: a directory in the build dir, which the compile may have
+      # written (`Context.own_priv/2`, judge revision 21).
+      build_priv = Path.join(proj, "_build/host/lib/pkg/priv")
+      File.mkdir_p!(build_priv)
+      File.write!(Path.join(build_priv, "gen.txt"), "g")
+      File.mkdir_p!(Path.join(pkg, "priv"))
+      File.write!(Path.join(pkg, "priv/gen.txt"), "g")
+      ctx = build(dir, proj, report(dir, proj, pkg, []), native: ["pkg"])
+
+      for path <- [Path.join(build_priv, "gen.txt"), Path.join(pkg, "priv/gen.txt")] do
+        assert {:refuse, "compile-time host read: " <> _} =
+                 Events.decide(read(path), ctx, "pkg"),
+               path
+      end
+    end
+
+    test "a link that resolves out of the source priv keeps its refusal",
+         %{dir: dir, proj: proj, pkg: pkg} do
+      outside = Path.join(dir, "outside")
+      File.mkdir_p!(outside)
+      File.write!(Path.join(outside, "a.txt"), "a")
+
+      # The source priv itself a link out of the package's tree.
+      File.ln_s!(outside, Path.join(pkg, "priv"))
+      build_priv = Path.join(proj, "_build/host/lib/pkg/priv")
+      File.ln_s!("../../../../deps/pkg/priv", build_priv)
+      ctx = build(dir, proj, report(dir, proj, pkg, []), native: ["pkg"])
+
+      assert {:refuse, "compile-time host read: " <> _} =
+               Events.decide(read(Path.join(build_priv, "a.txt")), ctx, "pkg")
+
+      # A link inside the source priv out of the tree.
+      File.rm!(Path.join(pkg, "priv"))
+      File.mkdir_p!(Path.join(pkg, "priv"))
+      File.ln_s!(Path.join(outside, "a.txt"), Path.join(pkg, "priv/b.txt"))
+      ctx = build(dir, proj, report(dir, proj, pkg, []), native: ["pkg"])
+
+      assert {:refuse, "compile-time host read: " <> _} =
+               Events.decide(read(Path.join(build_priv, "b.txt")), ctx, "pkg")
+
+      # The build priv a link to anywhere but the package's own source priv.
+      File.rm!(build_priv)
+      File.ln_s!(outside, build_priv)
+      ctx = build(dir, proj, report(dir, proj, pkg, []), native: ["pkg"])
+
+      assert {:refuse, "compile-time host read: " <> _} =
+               Events.decide(read(Path.join(build_priv, "a.txt")), ctx, "pkg")
+    end
+
+    test "a missing file in its priv refuses first", %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx, build_priv: build_priv} = linked_ctx(dir, proj, pkg)
+
+      assert {:refuse, "compile-time host read: " <> _} =
+               Events.decide(read(Path.join(build_priv, "templates/none.txt")), ctx, "pkg")
+    end
+
+    test "a non-native dependency's own priv read is a plain readable source read",
+         %{dir: dir, proj: proj, pkg: pkg} do
+      %{file: file} = linked_ctx(dir, proj, pkg)
+
+      ctx =
+        build(dir, proj, report(dir, proj, pkg, []), hex_files: ~w(lib priv README.md mix.exs))
+
+      assert :ignore = Events.decide(read(file), ctx, "pkg")
+    end
+  end
 end
