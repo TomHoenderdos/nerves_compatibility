@@ -665,7 +665,11 @@ What it lists:
   compile read, so at most one of them matches a project; a client needs no
   rule for them. Two versions of one Nerves
   system are two builds: a client prefers the build made on its own system
-  version (see below).
+  version (see below). A toolchain build rebuilt because a dependency
+  released a newer version (the portal's closure-drift rebuilds) keeps the
+  build it replaced listed, up to three earlier `deps` per build: a project
+  still locked at the older dependency matches that one, a fresh project the
+  new one. A client needs no rule for them either.
 
 ### Matching a format-2 build to a project
 

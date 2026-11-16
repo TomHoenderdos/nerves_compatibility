@@ -64,6 +64,8 @@ defmodule Portal.Catalog.Ingestion do
     ToolchainPriv
   }
 
+  alias Portal.Catalog.ToolchainBuild.EarlierBuilds
+
   alias Portal.Precompiled.{ElfFacts, FirmwareRefusal, Withheld}
   alias Portal.Repo
 
@@ -737,12 +739,63 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp write_toolchain_row(result, build, counted, opts, package_id, staged) do
+    replaced = identity_row(package_id, opts)
+
     with {:ok, toolchain_build} <-
            upsert_toolchain_build(result, build, counted, opts, package_id),
-         {:ok, toolchain_build} <- maybe_unrevoke(toolchain_build) do
+         {:ok, toolchain_build} <- maybe_unrevoke(toolchain_build),
+         {:ok, toolchain_build} <- record_earlier_builds(toolchain_build, replaced) do
       :ok = upsert_artifacts(staged)
-      :ok = replace_toolchain_memberships(toolchain_build.id, staged)
+
+      :ok =
+        replace_toolchain_memberships(
+          toolchain_build.id,
+          staged,
+          EarlierBuilds.shas(toolchain_build.earlier_builds)
+        )
+
       {:ok, toolchain_build}
+    end
+  end
+
+  # The row of the identity before this ingest writes it, whatever its
+  # status, read under the identity's lock: the build it serves becomes an
+  # earlier build when the new one has another lock.
+  defp identity_row(package_id, opts) do
+    variant = Map.get(opts, :variant, :with)
+    config_variant = Map.get(opts, :config_variant, ConfigVariants.default())
+
+    ToolchainBuild
+    |> Ash.Query.filter(
+      package_id == ^package_id and version == ^opts.version and
+        toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
+        variant == ^variant and config_variant == ^config_variant
+    )
+    |> Ash.read_one!(domain: @domain)
+  end
+
+  # A passing rebuild with another dependency lock keeps the build it
+  # replaced (`ToolchainBuild.EarlierBuilds.push/3`): a project still locked
+  # at the older dependency keeps its hit. A rebuild that does not pass is a
+  # verdict on the package's build (a refusal or a skip), not on one lock, so
+  # it drops them with the row's own. Written only when the list changes, so
+  # a rebuild with the same lock writes nothing more than before.
+  defp record_earlier_builds(toolchain_build, replaced) do
+    current = List.wrap(toolchain_build.earlier_builds)
+
+    earlier =
+      EarlierBuilds.push(
+        replaced,
+        if(replaced, do: replaced.earlier_builds, else: current),
+        toolchain_build
+      )
+
+    if earlier == current do
+      {:ok, toolchain_build}
+    else
+      toolchain_build
+      |> Ash.Changeset.for_update(:record_earlier_builds, %{earlier_builds: earlier})
+      |> Ash.update(domain: @domain)
     end
   end
 
@@ -1005,7 +1058,10 @@ defmodule Portal.Catalog.Ingestion do
   # no longer produces are removed first. A retry stages the same shas again
   # (`ArtifactStore.put/2` verifies an already moved blob), so it removes
   # nothing.
-  defp replace_toolchain_memberships(toolchain_build_id, staged) do
+  # The row's memberships become its new build's files and those of the
+  # earlier builds it keeps (`ToolchainBuild.EarlierBuilds`), which were the
+  # row's memberships already; only the new build's are inserted.
+  defp replace_toolchain_memberships(toolchain_build_id, staged, kept) do
     shas = staged |> Enum.map(& &1.sha256) |> Enum.uniq() |> Enum.sort()
 
     Repo.query!(
@@ -1013,7 +1069,7 @@ defmodule Portal.Catalog.Ingestion do
       DELETE FROM catalog_artifact_memberships
       WHERE toolchain_build_id = $1 AND NOT (sha256 = ANY($2::text[]))
       """,
-      [dump(toolchain_build_id), shas]
+      [dump(toolchain_build_id), Enum.uniq(shas ++ kept)]
     )
 
     shas

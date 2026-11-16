@@ -48,6 +48,7 @@ defmodule Portal.Catalog do
     VersionBackfill
   }
 
+  alias Portal.Catalog.ToolchainBuild.EarlierBuilds
   alias Portal.Precompiled.Withheld
   alias Portal.Repo
 
@@ -3150,9 +3151,12 @@ defmodule Portal.Catalog do
         shas_by_system_result_id =
           results |> Enum.map(& &1.id) |> manifest_shas_for_system_results()
 
+        # A row's earlier builds (`ToolchainBuild.EarlierBuilds`) are builds
+        # of their own, each judged by its own lock.
         served =
           package.id
           |> published_toolchain_builds()
+          |> Enum.flat_map(&EarlierBuilds.expand/1)
           |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld, &1))
 
         toolchain_builds = Enum.filter(served, &Withheld.config_variant_served?(&1, served))
@@ -3563,7 +3567,8 @@ defmodule Portal.Catalog do
       :compile_env_rule,
       :compile_env_run_id,
       :file_manifest,
-      :finished_at
+      :finished_at,
+      :earlier_builds
     ])
     |> Ash.read!(domain: __MODULE__)
   end

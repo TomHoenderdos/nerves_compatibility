@@ -60,6 +60,10 @@ defmodule Portal.Catalog.ToolchainBuild do
   The identity is `(package_id, version, toolchain, builder_version,
   variant, config_variant)`: a new build of the same inputs replaces the row
   (`:upsert`), and bumping `builder_version` keeps older builds side by side.
+  A passing rebuild that resolved another dependency lock keeps the build it
+  replaced published as one of the row's `earlier_builds`
+  (`Portal.Catalog.ToolchainBuild.EarlierBuilds`), so a project still locked
+  at the older dependency keeps its hit.
   Were the five-column index from before config variants recreated (a
   rollback), only the default could be stored again
   (`Portal.Catalog.ToolchainIdentity`).
@@ -223,6 +227,13 @@ defmodule Portal.Catalog.ToolchainBuild do
 
     update :revoke do
       change(set_attribute(:revoked_at, &DateTime.utc_now/0))
+    end
+
+    # The earlier builds of the identity (`EarlierBuilds`), written by the
+    # ingest that replaced one and by `Portal.Workers.ClosureDrift` before it
+    # queues a rebuild, each under the identity's ingest lock.
+    update :record_earlier_builds do
+      accept([:earlier_builds])
     end
 
     # A rebuild of a re-opened identity that failed keeps the row it was
@@ -454,6 +465,14 @@ defmodule Portal.Catalog.ToolchainBuild do
     # Why the row was revoked, when the backlog acts on it:
     # `withheld_revocation/0`.
     attribute :revoked_reason, :string do
+      public?(true)
+    end
+
+    # The builds of this identity a rebuild with another dependency lock
+    # replaced, newest first (`Portal.Catalog.ToolchainBuild.EarlierBuilds`).
+    # Written only by `:record_earlier_builds`, never by an upsert, so a
+    # release that does not know the column leaves it as it was.
+    attribute :earlier_builds, {:array, :map} do
       public?(true)
     end
 
