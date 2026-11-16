@@ -21,6 +21,10 @@
 %% loaded module stays loaded and traced.
 -export([run/1, '__info__'/1]).
 
+%% The exit status of a trace whose sweep at a window boundary left processes
+%% running or could not run (NccWorker.Tracer's `window_sweep_failed`).
+-define(SWEEP_EXIT, 87).
+
 %% Mix reads module.__info__(:attributes) for @shortdoc, @recursive and
 %% @requirements; this task has none of them.
 '__info__'(_Kind) -> [].
@@ -96,6 +100,12 @@ traced(Token, Packages, Native, Mode, Late) ->
             _ = consolidated(Token, Mode, Config),
             _ = ncc_tracer:finish(Token, ok),
             ok;
+        {sweep_failed, App} ->
+            _ = ncc_tracer:finish(Token, window_sweep_failed),
+            io:format(standard_error,
+                      "ncc.trace_compile: processes left running in ~ts's window could not be "
+                      "stopped~n", [App]),
+            erlang:exit({shutdown, ?SWEEP_EXIT});
         {not_in_closure, Missing} ->
             _ = ncc_tracer:finish(Token, package_not_in_closure),
             io:format(standard_error, "ncc.trace_compile: not in the project's dependencies: ~ts~n",
@@ -155,7 +165,15 @@ compile_closure(Token, Apps, Deps, Native) ->
     Ordered = closure_order(Apps, Deps),
     _ = ncc_tracer:closure(Token, Apps, [dep_info(D) || D <- Ordered]),
     DepConfig = 'Elixir.Mix.Project':deps_config(),
-    lists:foreach(fun(D) -> compile_dep(Token, D, Native, DepConfig) end, Ordered).
+    compile_deps(Token, Ordered, Native, DepConfig).
+
+%% One window at a time; a window whose sweep failed ends the compile.
+compile_deps(_Token, [], _Native, _DepConfig) -> ok;
+compile_deps(Token, [Dep | Rest], Native, DepConfig) ->
+    case compile_dep(Token, Dep, Native, DepConfig) of
+        ok -> compile_deps(Token, Rest, Native, DepConfig);
+        {sweep_failed, _App} = Failed -> Failed
+    end.
 
 %% The dependencies as the compile loads them. With a late env (a firmware
 %% target's trace) they are loaded twice, as `mix firmware` loads them:
@@ -203,11 +221,29 @@ hex_name(Dep) ->
         _ -> {no_hex_name}
     end.
 
+%% Before the window closes, the collector kills whatever the compile left
+%% running (ncc_tracer:sweep/2): a native build's make, cmake or cargo is not
+%% traced, and a process it leaves behind must not live on into a later
+%% window, nor change the build its close digests.
 compile_dep(Token, Dep, Native, DepConfig) ->
     App = maps:get(app, Dep),
     _ = ncc_tracer:window_open(Token, App),
     _ = ncc_tracer:fire(App),
     _ = 'Elixir.Mix.Tasks.Deps.Compile':compile_single(Dep, true, DepConfig),
+    case swept(ncc_tracer:sweep(Token, App)) of
+        true -> close_window(Token, App, Dep, Native);
+        false -> {sweep_failed, App}
+    end.
+
+%% A collector that is gone (killed, or past its heap cap) has already cost
+%% the trace its judgement, which its report says: the compile goes on, so
+%% the host status stays the package's own. Any other answer but ok, a
+%% failed sweep or a collector that did not answer in time, ends it.
+swept(ok) -> true;
+swept({error, no_tracer}) -> true;
+swept(_Other) -> false.
+
+close_window(Token, App, Dep, Native) ->
     _ = ncc_tracer:window_close(Token, App),
     _ = ncc_tracer:built(Token, App, opt(build, Dep)),
     case lists:member(App, Native) of

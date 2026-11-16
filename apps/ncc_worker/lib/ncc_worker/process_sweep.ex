@@ -53,7 +53,9 @@ defmodule NccWorker.ProcessSweep do
   window is open could rewrite a dependency's source for the compile to
   read and put the tarball's bytes back before the window closes, which no
   check after it would see. Every program the worker launched has returned
-  by then, as at the end of the run.
+  by then, as at the end of the run. Inside the compile the trace driver
+  sweeps at each window boundary with the same rules (`:ncc_tracer_sweep`),
+  for what a native build leaves running.
   """
 
   @allowed_helper "erl_child_setup"
@@ -284,6 +286,15 @@ defmodule NccWorker.ProcessSweep do
     |> case do
       nil -> nil
       proc -> proc.pid
+    end
+  end
+
+  @doc "The start time of `pid` (clock ticks since boot), from its `stat` under `proc_root`."
+  @spec start_time(pos_integer(), Path.t()) :: {:ok, non_neg_integer()} | :error
+  def start_time(pid, proc_root \\ "/proc") do
+    case read_stat(proc_root, Integer.to_string(pid)) do
+      [%{start_time: start}] -> {:ok, start}
+      [] -> :error
     end
   end
 

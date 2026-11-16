@@ -124,6 +124,49 @@ defmodule NccWorker.Tracer.ReportTest do
     end)
   end
 
+  # The driver sweeps the container before each window closes when the
+  # worker asked for it (`window_sweep` on the start line): a native build's
+  # leftover process must not live on into a later window.
+  describe "window sweeps" do
+    defp swept(lines, results) do
+      Enum.flat_map(lines, fn
+        %{"kind" => "start"} = l ->
+          [Map.put(l, "window_sweep", true)]
+
+        %{"kind" => "window_close", "app" => app} = l ->
+          case Map.fetch(results, app) do
+            {:ok, result} -> [%{"kind" => "sweep", "app" => app, "result" => result}, l]
+            :error -> [l]
+          end
+
+        l ->
+          [l]
+      end)
+    end
+
+    test "a sweep before every window's close adds no problem", %{tmp_dir: dir} do
+      r = read(dir, swept(clean(), %{"r3" => "ok", "pkg" => "ok"}))
+      assert r.problems == []
+      assert r.sweeps == [%{app: "r3", result: "ok"}, %{app: "pkg", result: "ok"}]
+    end
+
+    test "a sweep that left survivors or could not run is a problem", %{tmp_dir: dir} do
+      for result <- ["survivors", "unavailable"] do
+        r = read(dir, swept(clean(), %{"r3" => result, "pkg" => "ok"}))
+        assert "processes left running in r3's window could not be stopped" in r.problems
+      end
+    end
+
+    test "a window not swept when the start line asked for it is a problem", %{tmp_dir: dir} do
+      r = read(dir, swept(clean(), %{"r3" => "ok"}))
+      assert r.problems == ["pkg's window was not swept"]
+    end
+
+    test "without window_sweep on the start line no sweep is asked for", %{tmp_dir: dir} do
+      assert read(dir, clean()).problems == []
+    end
+  end
+
   test "a clean trace has no problems and keeps every check", %{tmp_dir: dir} do
     r = read(dir, clean())
     assert r.problems == []

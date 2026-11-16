@@ -135,4 +135,39 @@ defmodule NccWorker.Tracer.WindowSweepTest do
                )
     end
   end
+
+  # Inside the traced compile the driver sweeps again before each window
+  # closes (`:ncc_tracer_sweep`), once the worker asks: it passes its own
+  # start time as pid 1, which only its container can match.
+  describe "the driver's window sweep" do
+    defp env_of(dir, opts) do
+      test = self()
+
+      cmd = fn _caller, _ref, _command, [_args, _dir, env], _log ->
+        send(test, {:env, env})
+        {:ok, 1}
+      end
+
+      Tracer.run(dir, ["x"], [trace_dir: Path.join(dir, "trace"), cmd: cmd] ++ opts)
+      assert_received {:env, env}
+      env |> Enum.filter(fn {name, _} -> name == "NCC_TRACE_SWEEP" end) |> List.last()
+    end
+
+    test "is asked for with the worker's start time", %{tmp_dir: dir} do
+      assert {"NCC_TRACE_SWEEP", "4242"} = env_of(dir, window_sweep: "4242")
+    end
+
+    test "is not asked for where the worker's own sweep cannot run", %{tmp_dir: dir} do
+      # The test BEAM is never pid 1.
+      assert {"NCC_TRACE_SWEEP", nil} = env_of(dir, [])
+    end
+
+    test "a trace whose window sweep failed is its own error", %{tmp_dir: dir} do
+      assert {:error, :window_sweep_failed} =
+               Tracer.run(dir, ["x"],
+                 trace_dir: Path.join(dir, "trace"),
+                 cmd: compile(Tracer.window_sweep_exit())
+               )
+    end
+  end
 end

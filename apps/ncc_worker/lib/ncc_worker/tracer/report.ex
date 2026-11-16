@@ -24,6 +24,10 @@ defmodule NccWorker.Tracer.Report do
       is not true, a quiet close whose `delivered` is not true;
     * windows that are not exactly the closure's dependencies, in its order;
     * any `unencodable`, `collector_down` or `watcher_down` line;
+    * a `sweep` line (the driver's sweep before a window closes) whose
+      `result` is not `"ok"`, and, when the start line says the worker
+      asked for them (`window_sweep: true`), a window without an `"ok"`
+      sweep of its own;
     * in the child trace of a closure app (of any app but `unknown` when
       the closure line is missing): any of the line-level problems above,
       and a child VM whose tracer modules (`start.tracer`, their md5s) are
@@ -85,6 +89,7 @@ defmodule NccWorker.Tracer.Report do
             refused_start: nil,
             children: %{},
             built: %{},
+            sweeps: [],
             over_budget: false,
             problems: [],
             # returns: call_id => value (or {:value_id, id}) of the main file's
@@ -138,6 +143,7 @@ defmodule NccWorker.Tracer.Report do
               error: String.t() | nil
             }
           },
+          sweeps: [%{app: String.t() | nil, result: String.t() | nil}],
           over_budget: boolean(),
           problems: [String.t()]
         }
@@ -285,6 +291,14 @@ defmodule NccWorker.Tracer.Report do
 
   defp main_line({:line, %{"kind" => "built", "app" => app} = l}, r) when is_binary(app),
     do: %{r | built: Map.put(r.built, app, built(r, app, l))}
+
+  defp main_line({:line, %{"kind" => "sweep"} = l}, r) do
+    r = %{r | sweeps: [%{app: l["app"], result: l["result"]} | r.sweeps]}
+
+    if l["result"] == "ok",
+      do: r,
+      else: problem(r, "processes left running in #{l["app"]}'s window could not be stopped")
+  end
 
   defp main_line({:line, %{"kind" => "event"} = l}, r), do: %{r | events: [l | r.events]}
   defp main_line({:line, %{"kind" => "stats"} = l}, r), do: %{r | stats: r.stats || l}
@@ -542,6 +556,7 @@ defmodule NccWorker.Tracer.Report do
       | windows: Enum.reverse(r.windows),
         quiet: Enum.reverse(r.quiet),
         sentinels: Enum.reverse(r.sentinels),
+        sweeps: Enum.reverse(r.sweeps),
         events:
           r.events
           |> Enum.reverse()
@@ -560,10 +575,23 @@ defmodule NccWorker.Tracer.Report do
     }
 
     structural =
-      shape(items) ++ stats(r.stats) ++ windows(r) ++ order(r) ++ open_quiet(r.quiet)
+      shape(items) ++
+        stats(r.stats) ++ windows(r) ++ order(r) ++ open_quiet(r.quiet) ++ unswept(r)
 
     %{r | problems: r.problems ++ structural ++ child_problems(r)}
   end
+
+  # Every window the driver opened was swept before it closed, when the
+  # worker asked for sweeps.
+  defp unswept(%{start: %{"window_sweep" => true}} = r) do
+    swept = for %{app: app, result: "ok"} <- r.sweeps, into: MapSet.new(), do: app
+
+    for %{app: app} <- r.windows,
+        not MapSet.member?(swept, app),
+        do: "#{app}'s window was not swept"
+  end
+
+  defp unswept(_r), do: []
 
   # The value a return-traced read returned (`ncc_tracer`'s `returned`
   # lines, by call id), nil when its return was never seen: a read whose

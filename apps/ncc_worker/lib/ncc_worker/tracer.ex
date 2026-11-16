@@ -26,6 +26,15 @@ defmodule NccWorker.Tracer do
   survivors, or cannot run in a portal build, fails the trace
   (`left_running/0`).
 
+  Inside the compile the driver sweeps too, before each dependency's window
+  closes (`:ncc_tracer_sweep`, `window_sweep:`): a natively built
+  dependency's `make`, cmake or cargo is not traced, and a process it leaves
+  behind must not live on into a later window. The worker asks for it with
+  its own start time (`NCC_TRACE_SWEEP`) only where its own sweep runs, and
+  the driver sweeps only where pid 1 started then. One that leaves survivors
+  or cannot run ends the compile with exit 87, `{:error,
+  :window_sweep_failed}`.
+
   `timeout(1)` bounds the compile and kills its whole process group, so no
   orphaned compile goes on rewriting `_build` after this returns. Without
   `timeout` on the PATH nothing is run. Exit 124 (timed out) is
@@ -59,6 +68,7 @@ defmodule NccWorker.Tracer do
     :ncc_tracer_stack,
     :ncc_tracer_config,
     :ncc_tracer_digest,
+    :ncc_tracer_sweep,
     :"Elixir.Mix.Tasks.Ncc.TraceCompile"
   ]
   @default_timeout_ms 30 * 60 * 1000
@@ -71,6 +81,9 @@ defmodule NccWorker.Tracer do
 
   @timeout_exit 124
   @killed_exit 137
+  # The driver's own exit when a sweep at a window boundary failed
+  # (`Elixir.Mix.Tasks.Ncc.TraceCompile`'s SWEEP_EXIT).
+  @window_sweep_exit 87
 
   # How long after `timeout(1)`'s own deadline (plus its 10 s kill-after)
   # the Elixir side gives up waiting. A backstop only.
@@ -345,8 +358,27 @@ defmodule NccWorker.Tracer do
       {"NCC_TRACE_PACKAGE", Enum.join(packages, ",")},
       {"NCC_TRACE_NATIVE", opts |> Keyword.get(:native, []) |> Enum.join(",")},
       {"NCC_TRACE_MODE", Atom.to_string(mode)},
+      {"NCC_TRACE_SWEEP", Keyword.get_lazy(opts, :window_sweep, &window_sweep/0)},
       {"MIX_OS_DEPS_COMPILE_PARTITION_COUNT", nil}
     ]
+  end
+
+  @doc "The driver's exit status when a sweep at a window boundary failed."
+  @spec window_sweep_exit() :: pos_integer()
+  def window_sweep_exit, do: @window_sweep_exit
+
+  # The worker's own start time as pid 1, which the driver's sweep checks
+  # before it kills anything (`:ncc_tracer_sweep`): asked for only where the
+  # worker's own sweep runs, its container. One that cannot be read is
+  # passed as one that never matches, so the trace fails rather than goes
+  # unswept.
+  defp window_sweep do
+    if ProcessSweep.environment() == :ok do
+      case ProcessSweep.start_time(1) do
+        {:ok, start} -> Integer.to_string(start)
+        :error -> "unknown"
+      end
+    end
   end
 
   # The compile runs in a monitored, unlinked process: a crash there is an
@@ -379,6 +411,7 @@ defmodule NccWorker.Tracer do
     case outcome do
       {:ok, {:ok, @timeout_exit}} -> {:error, :timeout}
       {:ok, {:ok, @killed_exit}} -> {:error, :killed}
+      {:ok, {:ok, @window_sweep_exit}} -> {:error, :window_sweep_failed}
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:exited, reason}}
       nil -> {:error, :timeout}

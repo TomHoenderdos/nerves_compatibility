@@ -322,7 +322,7 @@ defmodule NccWorker.Portability do
   when it exited 0): the error `NccWorker.Tracer.run/3` returned (`"timeout"`,
   `"killed"`, `"run_budget_exhausted"`, `"group_survived"`,
   `"cleanup_unverified"`, `"writers_survived"`, `"sweep_survived"`,
-  `"sweep_unavailable"`, `"tracer_modified"`,
+  `"sweep_unavailable"`, `"window_sweep_failed"`, `"tracer_modified"`,
   `"exited"`, `"cmd_failed"`, ...) or `"exit_<n>"` for a non-zero exit.
   `trace_mode` (only when the compile finished) is the mode the report's start
   line names (`NccWorker.Tracer.Report.mode/1`, `"judge"` without one): a
@@ -729,7 +729,7 @@ defmodule NccWorker.Portability do
       extra_env: Keyword.get(opts, :extra_env, []),
       run_started_at: Keyword.get(opts, :run_started_at),
       mode: Keyword.get(opts, :mode, :judge)
-    ] ++ Keyword.take(opts, [:reap, :cmd, :wrapper, :argv, :late_env, :sweep])
+    ] ++ Keyword.take(opts, [:reap, :cmd, :wrapper, :argv, :late_env, :sweep, :window_sweep])
   end
 
   defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
@@ -749,6 +749,10 @@ defmodule NccWorker.Portability do
 
   defp verdict(_project_dir, _package, {:ok, status}, _trace_dir, _native, _ctx_opts),
     do: not_judged("traced compile exited #{inspect(status)}")
+
+  defp verdict(_project_dir, _package, {:error, :window_sweep_failed}, _dir, _native, _ctx),
+    do:
+      not_judged("processes left running in a window of the traced compile could not be stopped")
 
   defp verdict(_project_dir, _package, {:error, {:sweep_survived, procs}}, _dir, _native, _ctx),
     do: not_judged("after the traced compile: " <> sweep_problem(procs))

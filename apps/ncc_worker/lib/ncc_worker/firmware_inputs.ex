@@ -76,7 +76,9 @@ defmodule NccWorker.FirmwareInputs do
       mailbox, or touching tracing or the system flags;
     * not traced, and so not closed here: `:persistent_term` (the tracer's
       collector, where `mix firmware` holds Nerves's build plan), the
-      process list, the clock and file times (the trace runs later), and
+      process list, the clock and file times (the trace runs later), the
+      resolver (`:inet_db`'s `lookup`, Erlang's own in the trace, so its
+      window sweeps can clear what a download left, `ncc_tracer`), and
       the stacks: the tracer's backtrace depth of 64 frames (8 in the
       build), and a stack the compile takes of itself (`__STACKTRACE__`)
       or of the Mix process (`Process.info/2`'s `current_stacktrace`), in

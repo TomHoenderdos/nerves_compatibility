@@ -4,7 +4,7 @@
 %% start_child/0 from ERL_AFLAGS in every other BEAM the compile starts
 %% (rebar3). Writes one JSON object per line; NccWorker.Tracer.Report reads them.
 -export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3, built/3,
-         config_env/2,
+         config_env/2, sweep/2,
          native_patterns/3, consolidated/2, finish/2, fire/1, ebin_dir/0, flush/0,
          collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
@@ -70,6 +70,9 @@
 %% it fails every check until the end.
 %% consolidated: the project's protocol consolidation dir, named by the
 %% driver after the project compile (host mode), else none.
+%% sweep: {on, WorkerStart} when the worker asked the Mix VM to sweep the
+%% container at each window boundary (NCC_TRACE_SWEEP, read at start, before
+%% any package code runs), else off.
 %% returns: per process, a stack of the return-traced calls awaiting their return ({call, CallId, Args} or skip).
 %% values: each recorded value's ETF => its value_id; value_bytes: the bytes
 %% of value lines written, at most max_value_bytes.
@@ -80,7 +83,7 @@
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0, path_os_reads = 0,
              max_calls, max_user, max_queue, overflow = false, final = false,
              returns = #{}, values = #{}, value_bytes = 0, max_value_bytes,
-             consolidated = none}).
+             consolidated = none, sweep = off}).
 
 %% --- API used by the driver ---------------------------------------------
 
@@ -124,6 +127,12 @@ closure(Token, Packages, Deps) -> call(Token, {closure, [bin(P) || P <- Packages
 %% The digest of what App's compile left in its build dir (ncc_tracer_digest),
 %% taken by the collector, which is not traced, right after its window.
 built(Token, App, Dir) -> call(Token, {built, bin(App), Dir}).
+
+%% Kills what App's compile left running (ncc_tracer_sweep), before its window
+%% closes: ok, or an error when the worker asked for the sweep and something
+%% survived it or it could not run. The collector does it, untraced, and
+%% writes a sweep line; with no sweep asked for it does nothing.
+sweep(Token, App) -> call(Token, {sweep, bin(App)}).
 
 %% The driver's application-env snapshot (ncc_tracer_config:snapshot/0),
 %% written once, before the closure is loaded and anything compiles.
@@ -192,6 +201,7 @@ start(Role, Dir, App, Before) ->
     %% first one left, which is the depth every stack is judged against.
     _ = erlang:system_flag(backtrace_depth, ?DEPTH),
     Depth = erlang:system_flag(backtrace_depth, ?DEPTH),
+    ok = erlang_resolver(Role),
     ok = load_probe(),
     ok = load_digest(Role),
     Script = mix_script(Role),
@@ -211,6 +221,24 @@ start(Role, Dir, App, Before) ->
         {'DOWN', Ref, process, Pid, Reason} -> {error, Reason}
     after ?TIMEOUT -> {error, timeout}
     end.
+
+%% The Mix VM resolves names with Erlang's own resolver (/etc/hosts, then DNS
+%% as /etc/resolv.conf sets it), as the worker does (NccWorker.ProcessSweep).
+%% The native one is a port program, inet_gethost, that the VM restarts the
+%% moment it is killed: a compile that looked a name up (rustler_precompiled's
+%% download) would leave one no window sweep (ncc_tracer_sweep) could clear.
+%% A native resolver already running is stopped; it is a temporary child, and
+%% nothing starts it again but a direct call into it. Child VMs (rebar3) end
+%% inside a window, their resolver with them.
+erlang_resolver(main) ->
+    _ = quietly(fun() -> inet_db:set_lookup([file, dns]) end),
+    _ = case whereis(inet_gethost_native) of
+            undefined -> ok;
+            _Pid -> quietly(fun() -> supervisor:terminate_child(kernel_safe_sup,
+                                                                 inet_gethost_native_sup) end)
+        end,
+    ok;
+erlang_resolver(child) -> ok.
 
 %% The Mix VM's collector digests every build after its window, by which
 %% time Mix has pruned the code path to the project's; so the module is
@@ -296,8 +324,9 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     _ = trace:process(Session, existing, true, Flags),
     _ = trace:process(Session, self(), false, Flags),
     Token = random_hex(),
+    Sweep = sweep_setting(Role),
     St0 = #st{fd = Fd, file = File, session = Session, set_depth = Depth, depth = Depth,
-              token = Token,             initial = maps:from_keys(erlang:processes(), true),
+              token = Token, sweep = Sweep,             initial = maps:from_keys(erlang:processes(), true),
              max_calls = env_int("NCC_TRACE_MAX_CALLS", 20000000),
              max_user = env_int("NCC_TRACE_MAX_USER_EVENTS", 200000),
              max_queue = env_int("NCC_TRACE_MAX_QUEUE", 2000000),
@@ -326,7 +355,8 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
         ++ [wanted(Session, {M, '_', '_'}, match_spec(M, Role, Depth))
             || M <- maps:keys(Calls)],
     write(St0, maps:merge((start_line(Role, App, Depth))#{mix_script => script_bin(Script),
-                                                          preloaded => Preloaded},
+                                                          preloaded => Preloaded,
+                                                          window_sweep => Sweep =/= off},
                           libs_fields(Libs))),
     St = watcher(St0#st{wanted = Wanted ++ ProbeWanted, libs = Libs, unloaded = Unloaded}),
     Parent ! {self(), ready, Token},
@@ -1297,6 +1327,16 @@ request({built, App, Dir}, _From, St) ->
     Fields = built_fields(ncc_tracer_digest, Dir),
     write(St, Fields#{kind => built, app => App, ts => now_ns()}),
     {ok, St};
+request({sweep, _App}, _From, #st{sweep = off} = St) -> {ok, St};
+request({sweep, App}, _From, #st{sweep = {on, Expected}} = St) ->
+    Result = try ncc_tracer_sweep:sweep(Expected)
+             catch _:_ -> {unavailable, <<"the sweep failed">>}
+             end,
+    write(St, (sweep_fields(Result))#{kind => sweep, app => App, ts => now_ns()}),
+    case Result of
+        {ok, _Killed} -> {ok, St};
+        _ -> {{error, sweep_failed}, St}
+    end;
 request({native, App, Ebin}, _From, St) -> {ok, native(App, Ebin, St)};
 request({consolidated, Dir}, _From, St) -> {ok, St#st{consolidated = Dir}};
 request({config_env, Entries, Truncated}, _From, St) ->
@@ -1312,6 +1352,33 @@ request({finish, Status, Ts, Delivered}, _From, St) ->
     {finish_trace(Status, Ts, Delivered, St), St};
 request(flush, _From, St) -> {ok, libs_line(St)};
 request(_Req, _From, St) -> {{error, unknown_request}, St}.
+
+%% Read once, in the collector's init: what a package's code does to the env
+%% later cannot turn the sweep off. Child VMs (rebar3) never sweep: they run
+%% inside a window of the Mix VM's, which sweeps when it closes.
+sweep_setting(main) ->
+    case os:getenv("NCC_TRACE_SWEEP") of
+        V when V =:= false; V =:= "" -> off;
+        Start -> {on, Start}
+    end;
+sweep_setting(child) -> off.
+
+sweep_fields({ok, Killed}) -> #{result => ok, killed => procs_json(Killed)};
+sweep_fields({survivors, Left, Killed}) ->
+    #{result => survivors, survivors => procs_json(Left), killed => procs_json(Killed)};
+sweep_fields({unavailable, Why}) -> #{result => unavailable, why => Why};
+sweep_fields(_Other) -> #{result => unavailable, why => <<"unexpected sweep result">>}.
+
+procs_json(Procs) ->
+    [#{pid => Pid, comm => comm_text(Comm)} || #{pid := Pid, comm := Comm} <- Procs].
+
+%% A command name is whatever bytes a process set, which JSON cannot always
+%% carry as text.
+comm_text(Comm) ->
+    case unicode:characters_to_binary(Comm) of
+        Text when is_binary(Text) -> Text;
+        _ -> <<"hex:", (binary:encode_hex(Comm))/binary>>
+    end.
 
 %% The built line's digest fields, by Mod:dir/1 (ncc_tracer_digest). It
 %% never raises, but a digest module that is not loaded must cost one

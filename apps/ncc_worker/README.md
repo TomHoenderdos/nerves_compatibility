@@ -296,6 +296,18 @@ or cannot run in a portal build, is never judged: before the compile it runs not
 left running (`NccWorker.Tracer.left_running/0`): a toolchain or host-native run's host compile is then a worker
 error and a firmware target's trace fails the run, as when the tracer's own cleanup leaves one.
 
+Inside the traced compile the driver sweeps too, before each dependency's window closes (`:ncc_tracer_sweep`, run by
+the tracer's collector, which is not traced): a natively built dependency's `make`, cmake, cargo or rebar3 port
+compiler is not traced, and a process it leaves behind must not live on into a later window. It kills every process
+that started after the traced VM except that VM's own `erl_child_setup`; everything older is the launch chain (the
+worker, `timeout`, `fakeroot` and its `faked`). The worker asks for it with its own start time as pid 1
+(`NCC_TRACE_SWEEP`), and only where its own sweep runs: the driver sweeps only on Linux, where `/proc/1` started then
+and the traced VM after it, so a trace elsewhere never kills anything. Each sweep writes a `sweep` line to the trace;
+one that leaves survivors or cannot run ends the compile with exit 87 (`tracer_error` `"window_sweep_failed"`), and
+the report reader refuses a `sweep` line that is not `"ok"` and, when the start line says sweeps were asked for
+(`window_sweep: true`), a window without one. A collector that died has already cost the trace its judgement, so the
+compile goes on without sweeps and the host status stays the package's own.
+
 Dependency sources are not made read-only after `mix deps.get`: the compile runs as the same uid as anything that
 would rewrite them, which could make them writable again, and Mix itself writes into a dependency's source dir (leex
 and yecc output in `src/`, rebar3's `_build`, a native build's objects).
