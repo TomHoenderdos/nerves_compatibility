@@ -190,14 +190,25 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   columns in place of its own, the same id, version, toolchain, variant and
   config variant, and no earlier builds of its own. A manifest lists each as
   a build, judged by its own lock. An entry the row does not cover
-  (`covered?/2`) is left out: a release that does not know the column
-  rewrites the row's verdict on a rebuild and leaves the entries as they
-  were, so the check at ingest alone does not hold. `row` needs its
-  `portability_rule`, `rule1_reason` and `judge_revision` loaded.
+  (`covered?/2`) is left out, and so is one of the row's own lock, the
+  build a rebuild with that lock replaced: a release that does not know the
+  column rewrites the row on a rebuild and leaves the entries as they were,
+  so the checks at ingest alone do not hold. The manifest picks the newest
+  build per lock within each list only, so an entry of the row's lock would
+  stay listed wherever the row's compile inputs moved it from. `row` needs
+  its `portability_rule`, `rule1_reason` and `judge_revision` loaded.
   """
   @spec expand(ToolchainBuild.t()) :: [ToolchainBuild.t()]
   def expand(%ToolchainBuild{earlier_builds: [_ | _] = earlier} = row) do
-    [row | for(entry <- earlier, covered?(entry, row), do: as_row(row, entry))]
+    [
+      row
+      | for(
+          entry <- earlier,
+          entry["deps_lock"] != row.deps_lock,
+          covered?(entry, row),
+          do: as_row(row, entry)
+        )
+    ]
   end
 
   def expand(row), do: [row]

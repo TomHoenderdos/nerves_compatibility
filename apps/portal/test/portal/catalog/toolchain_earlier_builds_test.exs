@@ -253,6 +253,38 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     assert served_locks(name) == ["2.19.0"]
   end
 
+  # `Portal.Workers.ClosureDrift` keeps the row's build before queueing its
+  # rebuild, and a release that does not know the column may ingest one that
+  # came back with the same lock and the same files. The newest per key is
+  # picked within each list only: the build the rebuild replaced must not
+  # stay in `builds` while the rebuild's inputs move the row to
+  # `builds_with_inputs`, where a client takes the old one when they differ.
+  test "an earlier build with the row's own lock is never listed" do
+    name = name()
+    built = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
+
+    built
+    |> Ash.Changeset.for_update(:record_earlier_builds, %{
+      earlier_builds: EarlierBuilds.keep(built)
+    })
+    |> Ash.update!(domain: Catalog)
+
+    Repo.query!(
+      """
+      UPDATE catalog_toolchain_builds
+      SET run_id = 'tc-old-release', compile_inputs = $2,
+          finished_at = finished_at + interval '1 day'
+      WHERE id = $1
+      """,
+      [Ecto.UUID.dump!(built.id), [%{"kind" => "env_all"}]]
+    )
+
+    version = Catalog.precompiled_manifest_v2(name)["versions"]["0.4.0"]
+
+    assert version["builds"] == []
+    assert [%{"build" => %{"run_id" => "tc-old-release"}}] = version["builds_with_inputs"]
+  end
+
   test "an earlier build whose file the row no longer owns is left out whole" do
     name = name()
     old = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
