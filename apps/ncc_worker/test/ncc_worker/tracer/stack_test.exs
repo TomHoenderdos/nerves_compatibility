@@ -193,6 +193,7 @@ defmodule NccWorker.Tracer.StackTest do
         {:compile, :foldl_transform},
         {:compile, :foldl_core_transforms},
         {Mix.Task, :run_task},
+        {Mix.Task, :run_alias},
         {Module.ParallelChecker, :verify},
         {Kernel.ParallelCompiler, :verify_modules}
       ]

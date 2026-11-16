@@ -58,12 +58,14 @@
 %% no frame of its own, so the IO.ANSI frame stays first instead.
 -define(REACHED_THROUGH, [{logger_h_common, 'Elixir.Logger.Formatter'}]).
 %% The frames left on top when package code tail-calls a primitive from a
-%% compile-time hook. Pinned per toolchain by the fixture suite.
+%% compile-time hook (Mix.Task's run_alias/6: a package fun in an alias,
+%% circuits_i2c's `compile: [&set_make_env/1, "compile"]`). Pinned per
+%% toolchain by the fixture suite.
 -define(DISPATCHERS, [{elixir_module, "expand_callback"}, {elixir_module, "eval_callbacks"},
                       {elixir_dispatch, "expand_macro_fun"},
                       {elixir_def, "run_on_definition_callbacks"},
                       {compile, "foldl_transform"}, {compile, "foldl_core_transforms"},
-                      {'Elixir.Mix.Task', "run_task"},
+                      {'Elixir.Mix.Task', "run_task"}, {'Elixir.Mix.Task', "run_alias"},
                       {'Elixir.Module.ParallelChecker', "verify"},
                       {'Elixir.Kernel.ParallelCompiler', "verify_modules"}]).
 %% Toolchain higher-order and eval frames: package code that tail-calls

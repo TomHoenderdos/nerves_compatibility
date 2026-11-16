@@ -13,6 +13,7 @@ defmodule NccWorker.Worker do
     DepsLock,
     EgressProbe,
     FirmwareBuildRoot,
+    FirmwareInputs,
     Footprint,
     HexCache,
     HexHome,
@@ -439,7 +440,11 @@ defmodule NccWorker.Worker do
               # config reads in `compile_env` (R5), nil on one that is not;
               # absent on firmware results and from `result.json` when nil.
               optional(:compile_env_rule) => 1 | nil,
-              # On a published pure_elixir result only.
+              # On a published pure_elixir result, and on a passing firmware
+              # target that publishes its own first build and whose package
+              # reads the environment at compile time, when its traced
+              # compile recorded them (`NccWorker.FirmwareInputs`); that
+              # target's `compile_env` is then the trace's too.
               optional(:compile_inputs) => [map()] | nil,
               # Only on a passing firmware target, each absent when it could
               # not be read (`NccWorker.SystemAbi`, advisory): the toolchain
@@ -999,7 +1004,9 @@ defmodule NccWorker.Worker do
       timeout: timeout,
       started_at: Map.get(input, :started_at, System.monotonic_time(:second)),
       known_system_abi: List.wrap(input[:known_system_abi]),
-      firmware_world: input[:firmware_world]
+      firmware_world: input[:firmware_world],
+      releases: releases,
+      trees: trees
     }
 
     with {:ok, system_results, optional_deps, run_lock} <-
@@ -1349,7 +1356,7 @@ defmodule NccWorker.Worker do
     with {:ok, out} <- OptionalDepsTargets.run(params),
          {:ok, systems, world} <- firmware_world(params, out, pass) do
       log_target_pass(pass.paths, out.systems)
-      systems = gate_build_root(systems, pass, envs)
+      systems = systems |> gate_build_root(pass, envs) |> put_firmware_inputs(pass, envs)
 
       optional_deps =
         out.optional_deps
@@ -1380,6 +1387,31 @@ defmodule NccWorker.Worker do
         project_dir: pass.project_dir,
         package: pass.package,
         targets: targets
+      })
+
+    Enum.each(lines, &log_host(pass.paths, &1))
+    systems
+  end
+
+  # The compile-time inputs of each passing target whose package reads the
+  # environment at compile time (`NccWorker.FirmwareInputs`), once R2 has
+  # settled which files each target publishes.
+  defp put_firmware_inputs(systems, pass, envs) do
+    targets =
+      for system <- pass.systems, env = envs[system.name], env != nil, into: %{} do
+        {system.name, {system.target, env}}
+      end
+
+    {systems, lines} =
+      FirmwareInputs.put(systems, %{
+        project_dir: pass.project_dir,
+        package: pass.package,
+        targets: targets,
+        releases: Map.get(pass, :releases),
+        trees: Map.get(pass, :trees),
+        started_at: pass.started_at,
+        work_dir: pass.paths.work_dir,
+        log_dir: Path.join(pass.paths.output_dir, "logs")
       })
 
     Enum.each(lines, &log_host(pass.paths, &1))

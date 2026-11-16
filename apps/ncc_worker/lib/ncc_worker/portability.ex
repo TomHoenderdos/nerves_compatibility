@@ -120,7 +120,9 @@ defmodule NccWorker.Portability do
     "endian_reads" => 50,
     "os_type_reads" => 50,
     "env_writes" => 50,
-    "config_writes" => 50
+    "config_writes" => 50,
+    "native_build" => 50,
+    "target_reads" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -177,8 +179,14 @@ defmodule NccWorker.Portability do
   # `system_info(os_type)`; kino's `Kino.JS.__before_compile__/1` through
   # `File.rm_rf!/1`) is an `os_type` compile input the client compares,
   # valued from the tracer's start line, instead of a host read (bumped by
-  # two while `makefile_rule2` exists).
-  @judge_revision 17
+  # two while `makefile_rule2` exists). 19: a package fun Mix runs as an
+  # alias that tail-calls `System.put_env/2` (circuits_i2c's
+  # `compile: [&set_make_env/1, "compile"]`) is traced as the package's
+  # write, a write with no source file of its own has recorded inputs when
+  # every earlier read in its VM is recorded, and a firmware target's trace
+  # is judged for its compile inputs (`target_inputs/3`) (bumped by two
+  # while `makefile_rule2` exists).
+  @judge_revision 19
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -274,6 +282,27 @@ defmodule NccWorker.Portability do
     |> put_transient()
   end
 
+  @doc """
+  A firmware target's compile-time inputs (`NccWorker.FirmwareInputs`): the
+  traced judge compile of `package`'s closure, as `run/3` runs it, in a
+  project whose env (`env:`, `extra_env:`) is the target's own, Nerves's
+  build env included, judged by what a firmware build needs a client to
+  check rather than by R1 to R4. `target:` (required) is the `MIX_TARGET`
+  it compiled for, recorded for every `Mix.target/0` read; `roots:` the
+  builder's `NERVES_TOOLCHAIN` and `NERVES_SYSTEM`
+  (`NccWorker.Portability.CompileInputs`). The reviewed native build tool's
+  own activity (`native_tools/0`) is set apart, never an input. Passing
+  means every other compile-time read was recorded: the verdict then
+  carries `compile_inputs` and `compile_env`. Anything else is `:skip`,
+  and so is a `target:` that is not a target name. Never raises.
+  """
+  @spec target_inputs(String.t(), String.t(), keyword()) :: verdict()
+  def target_inputs(project_dir, package, opts) do
+    if Compatibility.CompileInputs.name?(Keyword.get(opts, :target)),
+      do: run(project_dir, package, Keyword.put(opts, :mode, :judge)),
+      else: not_run("no target to judge a firmware build's inputs for")
+  end
+
   defp put_transient(%{status: :pass} = verdict), do: put_stat(verdict, "transient", false)
 
   defp put_transient(%{observations: obs} = verdict) do
@@ -333,13 +362,14 @@ defmodule NccWorker.Portability do
         Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
       end)
 
-    ctx_opts = [
-      releases: releases,
-      hex_home: home,
-      declassified: declassified,
-      trees: trees,
-      hook_scripts: hooks
-    ]
+    ctx_opts =
+      [
+        releases: releases,
+        hex_home: home,
+        declassified: declassified,
+        trees: trees,
+        hook_scripts: hooks
+      ] ++ Keyword.take(opts, [:target, :roots])
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
@@ -643,7 +673,8 @@ defmodule NccWorker.Portability do
 
   def judge(project_dir, package, %Report{} = report, native, opts) do
     Context.with_link_cache(fn ->
-      project_dir |> facts(package, report, native, opts) |> verdict_of()
+      facts = facts(project_dir, package, report, native, opts)
+      if target(opts), do: target_verdict_of(facts), else: verdict_of(facts)
     end)
   rescue
     e -> not_judged("judge failed: " <> Exception.message(e))
@@ -659,7 +690,7 @@ defmodule NccWorker.Portability do
   defp facts(project_dir, package, report, native, opts) do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
-    decided = decide_all(report, ctx, scope)
+    decided = decide_all(report, ctx, scope, target_mode(opts, ctx, scope, native))
     unjudged = for {_owner, {:unjudged, why}} <- decided, do: why
     decided = for {owner, decision} <- decided, in_scope?(owner, scope), do: {owner, decision}
 
@@ -688,7 +719,7 @@ defmodule NccWorker.Portability do
 
     decided = decided ++ config.refusals ++ version.refusals
     package_r2 = package_build_root(ctx)
-    {decided, deps} = dep_results(ctx, report, decided, libs)
+    {decided, deps} = dep_results(ctx, report, decided, libs, target(opts) != nil)
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
     rebar_inputs = Enum.uniq(package_inputs ++ Enum.flat_map(deps, &elem(&1, 1).inputs))
     endian = endian_of(report)
@@ -700,7 +731,14 @@ defmodule NccWorker.Portability do
       report: report,
       decided: decided,
       config: config,
-      inputs: CompileInputs.build(decided, config.inputs ++ rebar_inputs, endian, os_type),
+      inputs:
+        CompileInputs.build(
+          decided,
+          config.inputs ++ rebar_inputs,
+          endian,
+          os_type,
+          Keyword.take(opts, [:roots, :target])
+        ),
       trace_problems:
         trace_problems(report, ctx) ++
           built_problems(ctx, report, opts) ++
@@ -808,7 +846,7 @@ defmodule NccWorker.Portability do
   # with the Mix VM's windows). One `MixExsSlice.analyse/1` per `mix.exs`.
   # Each VM's events are decided with that VM's own ensure_loaded probes
   # (`Context.ensured`): pids and times mean nothing in another VM.
-  defp decide_all(report, ctx, scope) do
+  defp decide_all(report, ctx, scope, target_mode) do
     main = for event <- report.events, do: {Context.owner(ctx, event), event}
 
     children =
@@ -823,7 +861,11 @@ defmodule NccWorker.Portability do
     for {vm_name, vm} <- vms,
         vm_ctx = %{ctx | ensured: Probes.ensured(vm)},
         {owner, event} <- vm,
-        decision = event |> Events.decide(vm_ctx, owner, slices) |> in_vm(vm_name),
+        decision =
+          event
+          |> Events.decide(vm_ctx, owner, slices)
+          |> in_vm(vm_name)
+          |> targeted(event, vm_name, target_mode),
         kept = keep(owner, decision, scope),
         kept != nil,
         do: kept
@@ -838,6 +880,130 @@ defmodule NccWorker.Portability do
        do: {:observe, kind, Map.put(item, "vm", vm)}
 
   defp in_vm(decision, _vm), do: decision
+
+  # --- a firmware target's inputs ---------------------------------------------
+
+  # The reviewed native build tools (`target_inputs/3`): a Mix compiler that
+  # runs the package's native build, whose own host reads decide only what
+  # that build writes to `priv`, which the target's system and toolchain
+  # match covers. Each needs its modules named by its own `.app` and by no
+  # other closure application's.
+  @native_tools ["elixir_make"]
+
+  @doc "The native build tools whose activity a firmware target's trace sets apart."
+  @spec native_tools() :: [String.t()]
+  def native_tools, do: @native_tools
+
+  defp target(opts), do: Keyword.get(opts, :target)
+
+  # nil outside target mode; else the native tools' modules (strings, as
+  # the tracer names them). A tool is set apart only when the tracer put call
+  # patterns on its modules (it is in `native`): then every call the
+  # package's own code makes into it is an event of its own, which refuses.
+  # A tool in the closure that is not traced so sets nothing apart.
+  defp target_mode(opts, ctx, scope, native) do
+    if target(opts), do: %{tool_modules: tool_modules(ctx, scope, native)}
+  end
+
+  defp tool_modules(ctx, scope, native) do
+    if Enum.any?(@native_tools, &(MapSet.member?(scope, &1) and &1 not in native)),
+      do: MapSet.new(),
+      else: traced_tool_modules(ctx, scope)
+  end
+
+  defp traced_tool_modules(ctx, scope) do
+    listed = for app <- scope, Context.dep?(ctx, app), into: %{}, do: {app, app_modules(ctx, app)}
+
+    {tools, others} = Enum.split_with(listed, fn {app, _mods} -> app in @native_tools end)
+    other = others |> Enum.map(&elem(&1, 1)) |> Enum.reduce(MapSet.new(), &MapSet.union/2)
+
+    tools
+    |> Enum.map(&elem(&1, 1))
+    |> Enum.reduce(MapSet.new(), &MapSet.union/2)
+    |> MapSet.difference(other)
+  end
+
+  # The modules an application's built `.app` lists, as strings; none when
+  # it cannot be read.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp app_modules(ctx, app) do
+    with ebin when is_binary(ebin) <- Context.ebin(ctx, app),
+         {:ok, [{:application, _name, props}]} <-
+           :file.consult(String.to_charlist(Path.join(ebin, app <> ".app"))),
+         modules when is_list(modules) <- props[:modules] do
+      for m <- modules, is_atom(m), into: MapSet.new(), do: Atom.to_string(m)
+    else
+      _ -> MapSet.new()
+    end
+  end
+
+  # In target mode, what a native tool's own code did is `native_build`
+  # (never an input, never a refusal), and a target read is `target_reads`
+  # (a `mix_target` input the client compares). An unjudged event stays
+  # unjudged.
+  defp targeted(decision, _event, _vm, nil), do: decision
+  defp targeted({:unjudged, _} = decision, _event, _vm, _mode), do: decision
+  defp targeted(:ignore, _event, _vm, _mode), do: :ignore
+
+  defp targeted(decision, event, vm, %{tool_modules: tools}) do
+    cond do
+      tool_event?(event, tools) ->
+        {:observe, "native_build",
+         %{"mfa" => event["mfa"], "module" => user_module(event), "ts" => event["ts"], "vm" => vm}}
+
+      target_read?(event) and match?({:refuse, _}, decision) ->
+        {:observe, "target_reads", %{"mfa" => event["mfa"], "ts" => event["ts"], "vm" => vm}}
+
+      true ->
+        decision
+    end
+  end
+
+  # The tool's own code (its frame is the topmost one that is not the
+  # toolchain's), or Mix's task runner calling into it with no package frame
+  # on the stack (Mix running its compiler). A call the package's own code
+  # makes into it has the package's frame on top and is not the tool's.
+  defp tool_event?(event, tools) do
+    case user_module(event) do
+      nil -> MapSet.member?(tools, mfa_module(event["mfa"]) || "") and run_by_mix?(event)
+      module -> MapSet.member?(tools, module)
+    end
+  end
+
+  defp run_by_mix?(%{"caller" => %{"module" => "Elixir.Mix.Task", "function" => fun}})
+       when is_binary(fun),
+       do: String.starts_with?(fun, "-run_task/")
+
+  defp run_by_mix?(_event), do: false
+
+  defp user_module(%{"user" => %{"module" => module}}) when is_binary(module), do: module
+  defp user_module(_event), do: nil
+
+  defp target_read?(%{"channel" => "mix_state", "arg" => %{"fun" => "target"}}), do: true
+  defp target_read?(_event), do: false
+
+  # The module of a tracer `mfa` string as an atom's text: `"os:getenv/1"`
+  # is `"os"`, `"Mix.Tasks.Compile.ElixirMake.run/1"` is
+  # `"Elixir.Mix.Tasks.Compile.ElixirMake"`.
+  @doc false
+  @spec mfa_module(term()) :: String.t() | nil
+  def mfa_module(mfa) when is_binary(mfa) do
+    case String.split(mfa, "/", parts: 2) do
+      [call, _arity] -> call_module(String.split(call, ":", parts: 2))
+      _ -> nil
+    end
+  end
+
+  def mfa_module(_mfa), do: nil
+
+  defp call_module([module, _fun]), do: module
+
+  defp call_module([call]) do
+    case call |> String.split(".") |> Enum.drop(-1) do
+      [] -> nil
+      parts -> "Elixir." <> Enum.join(parts, ".")
+    end
+  end
 
   # An unjudged event counts wherever it fell (`:any`, never in scope). An
   # integrity refusal (the trace itself tampered with) refuses wherever it
@@ -1195,7 +1361,7 @@ defmodule NccWorker.Portability do
   # `native_beam_reads` observation settled (`beam_reads/5`): a dependency's
   # own reads before its R3 result, since a refused one taints it, then
   # everyone else's (the package's, outside every window).
-  defp dep_results(ctx, report, decided, libs) do
+  defp dep_results(ctx, report, decided, libs, target?) do
     scope = Context.closure_of(ctx, ctx.package)
 
     order =
@@ -1207,8 +1373,30 @@ defmodule NccWorker.Portability do
         {decided, Map.put(results, app, dep_result(ctx, report, decided, app))}
       end)
 
-    decided = beam_reads(decided, ctx, report, {results, libs}, &(&1 not in order))
+    decided =
+      decided
+      |> own_beam_reads(ctx, target?)
+      |> beam_reads(ctx, report, {results, libs}, &(&1 not in order))
+
     {decided, Enum.map(order, &{&1, results[&1]})}
+  end
+
+  # A firmware target's trace (`target_inputs/3`): the package's own compile
+  # reading a beam it wrote itself (Elixir 1.20's type checker on a module
+  # compiled earlier in the same compile) reads nothing but that compile's
+  # own output, whose files the target publishes as they are. Settled
+  # before `beam_reads/5`, which refuses it on the host.
+  defp own_beam_reads(decided, _ctx, false), do: decided
+
+  defp own_beam_reads(decided, ctx, true) do
+    Enum.map(decided, fn
+      {owner, {:observe, "native_beam_reads", %{"app" => app, "vm" => "main"} = item}}
+      when owner == ctx.package and app == ctx.package ->
+        {owner, {:observe, "own_beam_reads", item}}
+
+      entry ->
+        entry
+    end)
   end
 
   # Judge revision 15. A read in a natively built dependency's `ebin`
@@ -1415,6 +1603,50 @@ defmodule NccWorker.Portability do
       compile_inputs: if(status == :pass, do: facts.inputs),
       manager: Context.manager(facts.ctx, facts.ctx.package)
     }
+  end
+
+  # A firmware target's verdict (`target_inputs/3`): only whether the trace
+  # recorded every compile-time input of the package's closure. The trace
+  # must be whole (step 1), the trees their tarballs', the package's window
+  # intact and the rebar3 coverage judged; and nothing in it may refuse, a
+  # dependency's window included: the native tool's activity and the target
+  # reads are no refusals here (`targeted/4`), and every other host read is
+  # an input no client could check. R2 is the firmware build's own
+  # (`NccWorker.FirmwareBuildRoot`), on the files it publishes.
+  defp target_verdict_of(facts) do
+    problems = problems(facts)
+
+    reason =
+      Enum.find_value(
+        [
+          fn -> if facts.trace_problems != [], do: Reasons.could_not_judge() end,
+          fn -> facts.manager_mismatch end,
+          fn -> facts.tree_refusal end,
+          fn -> any_refusal(facts.decided) end,
+          fn -> if facts.package_window, do: Reasons.could_not_judge() end,
+          fn -> package_rebar(facts.package_rebar) end,
+          fn -> closure(facts.deps) end
+        ],
+        & &1.()
+      )
+
+    status = if reason, do: :skip, else: :pass
+
+    %{
+      status: status,
+      reason: reason,
+      observations: observations(facts, problems),
+      compile_env: if(status == :pass, do: facts.config.items),
+      compile_inputs: if(status == :pass, do: facts.inputs),
+      manager: Context.manager(facts.ctx, facts.ctx.package)
+    }
+  end
+
+  defp any_refusal(decided) do
+    Enum.find_value(decided, fn
+      {_owner, {:refuse, reason}} -> reason
+      _ -> nil
+    end)
   end
 
   defp package_r2({:refuse, reason}), do: reason

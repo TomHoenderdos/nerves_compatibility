@@ -130,7 +130,9 @@ defmodule NccWorker.JsonWriter do
   # `deps_lock` only on one that kept the optional dependencies, whose files
   # were built against that lock rather than the run's. `compile_env_rule`
   # only on a `pure_elixir` result whose files are published with the trace's
-  # config reads. `compile_inputs` only on a published `pure_elixir` result.
+  # config reads. `compile_inputs` only on a published `pure_elixir` result
+  # and on a firmware target whose compile inputs its trace recorded
+  # (`NccWorker.FirmwareInputs`).
   # `toolchain`, `otp_full` and `system_libs` only on a passing
   # firmware target whose release they could be read for
   # (`NccWorker.SystemAbi`), `system_libs` only for a release the portal

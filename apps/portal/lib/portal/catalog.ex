@@ -3450,7 +3450,9 @@ defmodule Portal.Catalog do
   # its own files: one with a file this row does not own or this host lacks
   # is left out whole. The ABI facts were read from the row's own priv
   # files, so a variant whose priv files differ publishes none of them, and
-  # a client then takes it at its exact system version only.
+  # a client then takes it at its exact system version only. The row's
+  # `compile_inputs` were recorded against its own build
+  # (`NccWorker.FirmwareInputs`), so a variant carries none.
   defp variant_builds(%{published_variants: [_ | _] = variants} = result, build, stored, present) do
     own_priv = priv_set(get_in(result.beam_scan || %{}, ["footprint", "file_manifest"]))
 
@@ -3461,6 +3463,7 @@ defmodule Portal.Catalog do
         build
         |> Map.put("deps", variant["deps_lock"])
         |> Map.put("compile_env", variant["compile_env"])
+        |> Map.delete("compile_inputs")
         |> keep_abi_facts(priv_set(variant["file_manifest"]) == own_priv)
 
       {Map.put(files, :closure_only, true), variant_build}

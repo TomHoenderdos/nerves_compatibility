@@ -74,6 +74,42 @@ defmodule NccWorker.Tracer.FixturesEnvTest do
           """
         }
       ),
+    # circuits_i2c's own shape: a fun in the `compile` alias reads one
+    # variable and tail-calls System.put_env/2 for another, which lib/ reads.
+    # The tail call leaves Mix.Task's run_alias on top (judge revision 19).
+    "fx_env_alias" =>
+      lib(
+        "fx_env_alias",
+        """
+        defmodule FxEnvAlias do
+          case System.get_env("FX_ALIAS_DEV") do
+            "normal" -> def dev, do: :normal
+            _ -> def dev, do: :none
+          end
+        end
+        """,
+        %{
+          mix_exs: """
+          defmodule FxEnvAlias.MixProject do
+            use Mix.Project
+
+            def project do
+              [
+                app: :fx_env_alias,
+                version: "0.1.0",
+                deps: [],
+                aliases: [compile: [&set_make_env/1, "compile"]]
+              ]
+            end
+
+            defp set_make_env(_args) do
+              mode = if System.get_env("FX_ALIAS_CROSS"), do: "cross", else: "normal"
+              System.put_env("FX_ALIAS_DEV", mode)
+            end
+          end
+          """
+        }
+      ),
     # A config read of an application no compile_inputs item can name,
     # next to an env read: the env read still needs its check.
     "fx_env_badapp" =>
@@ -167,6 +203,17 @@ defmodule NccWorker.Tracer.FixturesEnvTest do
 
     assert value == rec({:ok, "host"})
     assert %{"set_by" => "host", "value" => cross} = env(v, "FX_SHAPE_CROSS")
+    assert cross == rec(:error)
+  end
+
+  test "the alias shape: a value an alias fun set is the build's own", ctx do
+    v = passes(ctx, "fx_env_alias")
+
+    assert %{"set_by" => "build", "inputs" => "recorded", "value" => value} =
+             env(v, "FX_ALIAS_DEV")
+
+    assert value == rec({:ok, "normal"})
+    assert %{"set_by" => "host", "value" => cross} = env(v, "FX_ALIAS_CROSS")
     assert cross == rec(:error)
   end
 

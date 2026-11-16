@@ -761,6 +761,34 @@ records `config_unrecorded` too.
 Other host reads (`os:version`, `system_info` keys other than `endian`, `os_type` and the ones constant within an OTP
 major, files, the network, programs, init arguments) still refuse.
 
+A `System.put_env/2` that a package fun Mix runs as an alias tail-calls (circuits_i2c's
+`compile: [&set_make_env/1, "compile"]`) is the package's own write; a write that leaves no source file of its own has
+`"inputs": "recorded"` only when every earlier env read in its VM is recorded (judge revision 19).
+
+### Firmware targets
+
+`mix firmware` is not traced, so a firmware target's build carries no `compile_inputs` and a client refuses it when
+the package's own `lib/` reads the environment at module level (circuits_i2c reads `CIRCUITS_I2C_I2CDEV`, which its
+`mix.exs` sets from the Nerves target and its `:default_backend` config just before it compiles). For such a package
+`NccWorker.FirmwareInputs` records them (judge revision 19), once every other pass is over and one target at a time,
+only on a passing target that publishes its own first build (no optional dependencies kept, no variants):
+
+1. `mix ncc.nerves_env` in the target's deps and build dirs: the variables Nerves's Mix integration sets up before
+   a compile (`CROSSCOMPILE`, `NERVES_TOOLCHAIN`, `NERVES_SYSTEM`, ...);
+2. the traced judge compile of the package's closure for the target under that env, from the run's `deps/` into a
+   build dir of its own (`NccWorker.Portability.target_inputs/3`): it passes only when the trace is whole, the trees
+   are their tarballs' and nothing in it refuses, except what the reviewed native build tool's own code did
+   (elixir_make, `Portability.native_tools/0`: `native_build`, never an input) and `Mix.target/0` reads, which record
+   `{"kind": "mix_target", "value"}`. A host read whose value holds the builder's `NERVES_TOOLCHAIN` or
+   `NERVES_SYSTEM` is `{"kind": "env", "name", "set_by": "nerves", "value": [segments]}`: the value cut at those
+   paths (`Compatibility.CompileInputs.split/2`), which a client compares with its own value cut at its own paths;
+   the published files never hold such a path (`NccWorker.FirmwareBuildRoot`);
+3. the binding: the traced beams of the package carry the code (`beam_lib:md5/1`) of the published ones, module
+   for module.
+
+The target then carries the trace's `compile_inputs` and its `compile_env`; anything that does not hold leaves it
+without, as before. `NCC_FIRMWARE_INPUTS=0` turns it off.
+
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
 ## Egress probe

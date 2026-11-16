@@ -625,6 +625,21 @@ What it lists:
     `Kino.JS` hook clearing its asset dir with `File.rm_rf!/1`. `family` and `name` are the
     build's `:os.type/0`. `name` is left out when every read was one only the family can reach
     (Elixir's own `File.rm_rf/1`). Listed once, however many reads there were.
+  - `{"kind": "env", "name", "set_by": "nerves", "value": [segments]}` (judge revision 19 and
+    later, firmware builds only): the compile read a variable whose value holds where the Nerves
+    toolchain or system sits on the builder, such as circuits_i2c's `mix.exs` reading
+    `CROSSCOMPILE`. `value` is that value cut at every occurrence of the builder's
+    `NERVES_TOOLCHAIN` and `NERVES_SYSTEM` paths, leftmost first and, of two that start at the same
+    byte, the longer: each cut is `{"root": "NERVES_TOOLCHAIN" | "NERVES_SYSTEM"}` and the text
+    between cuts a non-empty string, never two strings in a row, at least one cut. The published
+    files never hold either path (the firmware build-root rule withholds them).
+  - `{"kind": "mix_target", "value": <target>}` (judge revision 19 and later, firmware builds
+    only): the compile read `Mix.target/0`; `value` is the `MIX_TARGET` it was built for.
+
+  A firmware build (`target` a Nerves system) carries `compile_inputs` only when its package's
+  own `lib/` reads the environment at module level and the worker's traced compile of the
+  package's closure for the target recorded every input (`NccWorker.FirmwareInputs`); its
+  `compile_env` is then that trace's. Such a build's published variants carry none.
 
   A `compile_env` value may also be `"unrecordable"`, which matches no config. A list the portal
   rejects as malformed is stored as `[{"kind": "config_unrecorded"}]` with the build's `compile_env`
@@ -726,13 +741,19 @@ build fails as the reason it was not used:
       `:os.type/0` and, when the item has `name`, `name` is the second. Else `os_type_differs`,
       with the build's and the client's OS type (`unix:linux`, or the family alone for an item
       without `name`) as its arguments. A client that does not know the kind treats the item as
-      malformed: a miss.
+      malformed: a miss;
+    - a `set_by: "nerves"` `env` item holds when the project's environment sets `name` and its
+      value, cut the same way at the project's own `NERVES_TOOLCHAIN` and `NERVES_SYSTEM`, is
+      `value`; else `env_differs`;
+    - a `mix_target` item holds when `value` is the target Mix compiles for, else `rule8_target`,
+      with the build's and the project's target as its arguments.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
     being installed, `default` is `:error`, and the device's value for the key equals `seen`.
-    On a device, an `env` item recorded unset holds, one recorded set is `env_set_at_build`, and
-    an `endian` item is `endian_differs` and an `os_type` item `os_type_differs` (the device
-    cannot check the machine its firmware was compiled on). A
+    On a device, an `env` item recorded unset holds, one recorded set or `set_by: "nerves"` is
+    `env_set_at_build`, an `endian` item is `endian_differs`, an `os_type` item
+    `os_type_differs` and a `mix_target` item `rule8_target` (the device cannot check the machine
+    its firmware was compiled on, nor its target). A
     client never prints the project's value. A build that carries `compile_inputs` is exempt
     from the source scan's environment-variable rule (`rule8_env`).
 

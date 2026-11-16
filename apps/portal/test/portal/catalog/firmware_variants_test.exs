@@ -243,6 +243,21 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
              )
     end
 
+    # A target's compile_inputs were recorded against its own build
+    # (`NccWorker.FirmwareInputs`); the build without is another compile.
+    test "a variant never carries the target's own compile_inputs" do
+      inputs = [%{"kind" => "mix_target", "value" => "rpi4"}]
+
+      [variant()]
+      |> kept_run()
+      |> put_in(["systems", "nerves_system_rpi4", "compile_inputs"], inputs)
+      |> ingest!()
+
+      assert [%{"build" => %{"compile_inputs" => ^inputs}}] = rpi4_builds("builds_with_inputs")
+      assert [without] = rpi4_builds("builds_closure")
+      refute Map.has_key?(without["build"], "compile_inputs")
+    end
+
     # A device ranks an installed build first and only ranks by rule 8, so
     # a device that has the optional dependency could take the build
     # without it. Only clients that check the whole env closure read

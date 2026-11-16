@@ -49,18 +49,40 @@ defmodule NccWorker.Portability.CompileInputs do
   never dropped for it.
 
   A compile-time read of the byte order (`endian_reads`, `Events`) is one
-  `endian` item, valued with the byte order `build/3` is given (the traced
+  `endian` item, valued with the byte order `build/5` is given (the traced
   compile's, from the tracer's start line); without a known one it is
   `config_unrecorded`.
 
   A compile-time read of the OS type (`os_type_reads`, `Events`) is one
-  `os_type` item, valued with the `[family, name]` `build/4` is given (the
+  `os_type` item, valued with the `[family, name]` `build/5` is given (the
   traced compile's, from the tracer's start line). It carries `name` unless
   every read is one whose caller keeps only the family (`"scope"`
   `"family"`, Elixir's `File.rm_rf/1`, or `"covered"`, OTP's `os:type/0`
   reading `system_info(os_type)` for a caller its own read names) and at
   least one is `"family"`. Without a known OS type it is
   `config_unrecorded`.
+
+  A firmware build's trace (`NccWorker.Portability.target_inputs/3`) adds
+  three things, through `build/5`'s options:
+
+    * `roots:` (`[{name, path}]`, the builder's `NERVES_TOOLCHAIN` and
+      `NERVES_SYSTEM`): a host read whose recorded value holds one of those
+      paths is `set_by: "nerves"`, its value cut at them
+      (`Compatibility.CompileInputs.split/2`), so a client compares it with
+      its own value cut at its own paths. A value that does not cut into
+      the shared shape stays as read.
+    * `target:`: any read of `Mix.target/0` (`target_reads`) is one
+      `mix_target` item with that target; without a valid one it is
+      `config_unrecorded`.
+    * `native_build` observations, the reviewed native build tool's own
+      activity, which records no input: a write made after one in the same
+      window and VM has inputs `"unknown"`, since that activity may have
+      decided its value.
+
+  A write with no source file (a package fun Mix runs as an alias that
+  tail-called `System.put_env/2`, so no frame of it is left) has inputs
+  `"recorded"` only when every env read made before it in its VM, by any
+  owner, is recorded.
   """
 
   alias Compatibility.{CompileInputs, RecordedValue}
@@ -76,12 +98,17 @@ defmodule NccWorker.Portability.CompileInputs do
   # anywhere in the decoded value.
   @userinfo_url ~r{[a-z][a-z0-9+.-]*://[^/?#@\s]*@}i
 
-  @spec build([{term(), term()}], [map()], term(), term()) :: [map()]
-  def build(decided, config_inputs, endian \\ nil, os_type \\ nil) do
+  @spec build([{term(), term()}], [map()], term(), term(), keyword()) :: [map()]
+  def build(decided, config_inputs, endian \\ nil, os_type \\ nil, opts \\ []) do
     reads = for {_owner, {:observe, "env_reads", item}} <- decided, do: item
 
     writes =
-      for {owner, {:observe, "env_writes", item}} <- decided, is_binary(owner), do: item
+      for {owner, {:observe, "env_writes", item}} <- decided,
+          is_binary(owner),
+          do: Map.put(item, "owner", owner)
+
+    native = for {owner, {:observe, "native_build", item}} <- decided, do: {owner, item}
+    roots = roots(Keyword.get(opts, :roots, []))
 
     {all, named} = Enum.split_with(reads, &(&1["all"] == true))
     writer_files = MapSet.new(writes, &file_key/1)
@@ -93,7 +120,7 @@ defmodule NccWorker.Portability.CompileInputs do
 
     env =
       named_ok
-      |> Enum.map(&item(&1, writes, named))
+      |> Enum.map(&item(&1, writes, named, native, roots))
       |> Enum.uniq()
       |> Enum.sort_by(&{&1["name"], &1["set_by"], &1["value"], &1["inputs"]})
 
@@ -105,9 +132,30 @@ defmodule NccWorker.Portability.CompileInputs do
     env ++
       cap_config(
         if(all?, do: [@env_all], else: []) ++
-          endian_inputs(decided, endian) ++ os_type_inputs(decided, os_type) ++ config_inputs
+          endian_inputs(decided, endian) ++ os_type_inputs(decided, os_type) ++
+          target_inputs(decided, Keyword.get(opts, :target)) ++ config_inputs
       )
   end
+
+  # The firmware build's target, for its `Mix.target/0` reads: an item a
+  # client compares, never nothing.
+  defp target_inputs(decided, target) do
+    cond do
+      not Enum.any?(decided, &match?({_owner, {:observe, "target_reads", _}}, &1)) -> []
+      CompileInputs.name?(target) -> [%{"kind" => "mix_target", "value" => target}]
+      true -> [@unrecorded]
+    end
+  end
+
+  # Only the two Nerves paths, and only a path that is one.
+  defp roots(roots) when is_list(roots) do
+    for {name, path} <- roots,
+        name in CompileInputs.nerves_roots(),
+        is_binary(path) and path != "",
+        do: {name, path}
+  end
+
+  defp roots(_roots), do: []
 
   # Any byte-order read in the closure (`Events`, `endian_reads`) is one
   # `endian` item with the byte order the traced compile ran with (the
@@ -176,12 +224,30 @@ defmodule NccWorker.Portability.CompileInputs do
 
   defp carriable(input), do: input
 
-  defp item(read, writes, reads) do
+  defp item(read, writes, reads, native, roots) do
     base = %{"kind" => "env", "name" => read["name"], "value" => value_of(read)}
 
     case writer(read, writes) do
-      nil -> Map.put(base, "set_by", "host")
-      write -> Map.merge(base, %{"set_by" => "build", "inputs" => inputs_of(write, reads)})
+      nil ->
+        host(base, roots)
+
+      write ->
+        Map.merge(base, %{"set_by" => "build", "inputs" => inputs_of(write, reads, native)})
+    end
+  end
+
+  # A recorded value holding a Nerves path, cut at it; anything else as read.
+  defp host(base, []), do: Map.put(base, "set_by", "host")
+
+  defp host(%{"value" => value} = base, roots) do
+    with {:ok, {:ok, string}} when is_binary(string) <- decode(value),
+         segments = CompileInputs.split(string, roots),
+         true <- Enum.any?(segments, &is_map/1),
+         item = %{base | "value" => segments} |> Map.put("set_by", "nerves"),
+         {:ok, [_]} <- CompileInputs.validate([item]) do
+      item
+    else
+      _ -> Map.put(base, "set_by", "host")
     end
   end
 
@@ -224,6 +290,25 @@ defmodule NccWorker.Portability.CompileInputs do
     |> Enum.max_by(& &1["ts"], fn -> nil end)
   end
 
+  # The string a recorded `{:ok, binary}` holds, read from its bytes alone
+  # (an ETF small tuple of the atom `ok` and a binary, nothing after): no
+  # term is decoded. Any other shape is `:error`, and the value stays as read.
+  defp decode(value) do
+    with {:ok, bin} <- Base.url_decode64(value, padding: false),
+         <<131, 104, 2, rest::binary>> <- bin,
+         {:ok, <<109, size::32, string::binary-size(size)>>} <- ok_atom(rest) do
+      {:ok, {:ok, string}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp ok_atom(<<119, 2, "ok", rest::binary>>), do: {:ok, rest}
+  defp ok_atom(<<115, 2, "ok", rest::binary>>), do: {:ok, rest}
+  defp ok_atom(<<118, 2::16, "ok", rest::binary>>), do: {:ok, rest}
+  defp ok_atom(<<100, 2::16, "ok", rest::binary>>), do: {:ok, rest}
+  defp ok_atom(_bin), do: :error
+
   # Only a value the trace recorded can match: two missing or unrecordable
   # captures say nothing about each other.
   defp same_value(%{"value" => returned} = write, returned) when is_binary(returned) do
@@ -232,15 +317,24 @@ defmodule NccWorker.Portability.CompileInputs do
 
   defp same_value(_write, _returned), do: nil
 
-  defp inputs_of(%{"file" => file} = write, reads) when is_binary(file) do
-    earlier = Enum.filter(reads, &(file_key(&1) == file_key(write) and before?(&1, write)))
+  defp inputs_of(write, reads, native) do
+    earlier =
+      if is_binary(write["file"]),
+        do: Enum.filter(reads, &(file_key(&1) == file_key(write) and before?(&1, write))),
+        else: Enum.filter(reads, &(&1["vm"] == write["vm"] and before?(&1, write)))
 
-    if Enum.all?(earlier, &recorded?/1),
+    if Enum.all?(earlier, &recorded?/1) and not native_before?(write, native),
       do: "recorded",
       else: "unknown"
   end
 
-  defp inputs_of(_write, _reads), do: "unknown"
+  # Native build activity (`native_build`) in the write's own window and VM
+  # before it: what it did is no input anyone records.
+  defp native_before?(write, native) do
+    Enum.any?(native, fn {owner, item} ->
+      owner == write["owner"] and item["vm"] == write["vm"] and before?(item, write)
+    end)
+  end
 
   defp recorded?(read),
     do: CompileInputs.name?(read["name"]) and value_of(read) != CompileInputs.unrecordable()

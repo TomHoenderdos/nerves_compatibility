@@ -267,11 +267,20 @@ defmodule NccWorker.Portability.CompileInputsTest do
              Enum.find(CompileInputs.build(decided, []), &(&1["name"] == "BACKEND"))
   end
 
-  test "a write with no file has unknown inputs; a later different value is the host's" do
+  # Judge revision 19: a write with no file (an alias fun's tail call) is
+  # judged against every earlier read in its VM, not none.
+  test "a write with no file is judged by its VM; a later different value is the host's" do
     nofile = write("X", rec({:ok, "1"}), ts: 4, file: nil)
 
-    assert [%{"set_by" => "build", "inputs" => "unknown"}] =
+    assert [%{"set_by" => "build", "inputs" => "recorded"}] =
              CompileInputs.build([nofile, read("X", rec({:ok, "1"}), ts: 9)], [])
+
+    unrecorded = read("SOME_TOKEN", rec({:ok, "s"}), ts: 2, file: "lib/other.ex")
+
+    assert %{"set_by" => "build", "inputs" => "unknown"} =
+             [unrecorded, nofile, read("X", rec({:ok, "1"}), ts: 9)]
+             |> CompileInputs.build([])
+             |> Enum.find(&(&1["name"] == "X"))
 
     assert [%{"set_by" => "host"}] =
              CompileInputs.build([nofile, read("X", rec({:ok, "2"}), ts: 9)], [])
@@ -437,5 +446,135 @@ defmodule NccWorker.Portability.CompileInputsTest do
   test "other kinds over their cap collapse to one not-recorded item" do
     others = for i <- 1..33, do: %{"kind" => "config_other_#{i}"}
     assert CompileInputs.build([], others) == [%{"kind" => "config_unrecorded"}]
+  end
+
+  describe "a firmware build's inputs (target mode)" do
+    @roots [{"NERVES_TOOLCHAIN", "/n/tc-15"}, {"NERVES_SYSTEM", "/n/sys-2"}]
+
+    defp native(owner, ts, vm \\ "main"),
+      do: {owner, {:observe, "native_build", %{"ts" => ts, "vm" => vm}}}
+
+    defp target_read(owner \\ "pkg"),
+      do: {owner, {:observe, "target_reads", %{"mfa" => "Mix.target/0"}}}
+
+    test "a host value holding a Nerves path is cut at it, the rest kept as read" do
+      decided = [
+        read("CROSSCOMPILE", rec({:ok, "/n/tc-15/bin/aarch64-nerves-linux-gnu"})),
+        read("CFLAGS", rec({:ok, "-I/n/sys-2/usr/include -O2"})),
+        read("TARGET_ARCH", rec({:ok, "aarch64"})),
+        read("UNSET", rec(:error))
+      ]
+
+      assert CompileInputs.build(decided, [], nil, nil, roots: @roots) == [
+               %{
+                 "kind" => "env",
+                 "name" => "CFLAGS",
+                 "set_by" => "nerves",
+                 "value" => ["-I", %{"root" => "NERVES_SYSTEM"}, "/usr/include -O2"]
+               },
+               %{
+                 "kind" => "env",
+                 "name" => "CROSSCOMPILE",
+                 "set_by" => "nerves",
+                 "value" => [%{"root" => "NERVES_TOOLCHAIN"}, "/bin/aarch64-nerves-linux-gnu"]
+               },
+               %{
+                 "kind" => "env",
+                 "name" => "TARGET_ARCH",
+                 "value" => rec({:ok, "aarch64"}),
+                 "set_by" => "host"
+               },
+               %{"kind" => "env", "name" => "UNSET", "value" => rec(:error), "set_by" => "host"}
+             ]
+    end
+
+    test "without roots, or for a value that cannot be one canonical split, the value stays" do
+      cross = read("CROSSCOMPILE", rec({:ok, "/n/tc-15/bin/gcc"}))
+      host = %{"kind" => "env", "name" => "CROSSCOMPILE", "set_by" => "host"}
+
+      assert [%{"value" => value} = item] = CompileInputs.build([cross], [])
+      assert item == Map.put(host, "value", value)
+
+      bad = read("CROSSCOMPILE", rec({:ok, "/n/tc-15/" <> <<0xFF>>}))
+      assert [%{"set_by" => "host"}] = CompileInputs.build([bad], [], nil, nil, roots: @roots)
+
+      secret = read("NERVES_API_TOKEN", rec({:ok, "/n/tc-15/x"}))
+
+      assert [%{"set_by" => "host", "value" => "unrecordable"}] =
+               CompileInputs.build([secret], [], nil, nil, roots: @roots)
+    end
+
+    test "a write with no source file is the build's when every earlier read is recorded" do
+      decided = [
+        read("CROSSCOMPILE", rec({:ok, "/n/tc-15/bin/gcc"}), ts: 10, file: "/p/deps/pkg/mix.exs"),
+        write("PKG_DEV", rec({:ok, "normal"}), ts: 20, file: nil),
+        read("PKG_DEV", rec({:ok, "normal"}), ts: 30)
+      ]
+
+      assert %{"set_by" => "build", "inputs" => "recorded"} =
+               decided
+               |> CompileInputs.build([], nil, nil, roots: @roots)
+               |> Enum.find(&(&1["name"] == "PKG_DEV"))
+    end
+
+    test "a write with no source file is unknown after any unrecorded read in its VM" do
+      decided = [
+        read("NERVES_API_TOKEN", rec({:ok, "x"}), ts: 5, owner: "dep", file: "lib/dep.ex"),
+        write("PKG_DEV", rec({:ok, "normal"}), ts: 20, file: nil),
+        read("PKG_DEV", rec({:ok, "normal"}), ts: 30)
+      ]
+
+      assert %{"set_by" => "build", "inputs" => "unknown"} =
+               decided |> CompileInputs.build([]) |> Enum.find(&(&1["name"] == "PKG_DEV"))
+
+      # A read in another VM, or after the write, does not count.
+      later = [
+        read("NERVES_API_TOKEN", rec({:ok, "x"}), ts: 5, vm: "child:dep"),
+        read("NERVES_API_TOKEN", rec({:ok, "x"}), ts: 25),
+        write("PKG_DEV", rec({:ok, "normal"}), ts: 20, file: nil),
+        read("PKG_DEV", rec({:ok, "normal"}), ts: 30)
+      ]
+
+      assert %{"inputs" => "recorded"} =
+               later |> CompileInputs.build([]) |> Enum.find(&(&1["name"] == "PKG_DEV"))
+    end
+
+    test "native build activity before a write in its window makes its inputs unknown" do
+      write = write("PKG_DEV", rec({:ok, "normal"}), ts: 20)
+      lib_read = read("PKG_DEV", rec({:ok, "normal"}), ts: 30)
+      dev = &Enum.find(CompileInputs.build(&1, []), fn i -> i["name"] == "PKG_DEV" end)
+
+      assert %{"inputs" => "unknown"} = dev.([native("pkg", 10), write, lib_read])
+      assert %{"inputs" => "recorded"} = dev.([native("pkg", 25), write, lib_read])
+      assert %{"inputs" => "recorded"} = dev.([native("dep", 10), write, lib_read])
+      assert %{"inputs" => "recorded"} = dev.([native("pkg", 10, "child:x"), write, lib_read])
+    end
+
+    test "a target read records the target the build was made for" do
+      assert CompileInputs.build([target_read(), target_read(:outside)], [], nil, nil, target: "rpi4") ==
+               [%{"kind" => "mix_target", "value" => "rpi4"}]
+
+      for target <- [nil, "", "a=b", :rpi4] do
+        assert CompileInputs.build([target_read()], [], nil, nil, target: target) ==
+                 [%{"kind" => "config_unrecorded"}],
+               inspect(target)
+      end
+
+      assert CompileInputs.build([], [], nil, nil, target: "rpi4") == []
+    end
+
+    test "everything it records validates as the shared shape and needs a check" do
+      decided = [
+        target_read(),
+        read("CROSSCOMPILE", rec({:ok, "/n/tc-15/bin/gcc"}), ts: 10),
+        write("PKG_DEV", rec({:ok, "normal"}), ts: 20, file: nil),
+        read("PKG_DEV", rec({:ok, "normal"}), ts: 30)
+      ]
+
+      items = CompileInputs.build(decided, [], nil, nil, roots: @roots, target: "rpi4")
+      assert length(items) == 3
+      assert Compatibility.CompileInputs.validate(items) == {:ok, items}
+      assert Compatibility.CompileInputs.needs_check?(items)
+    end
   end
 end
