@@ -489,6 +489,14 @@ inflate cap, a tree over 64 MiB, and anything left once the check's 60 s budget 
 today's verdict. `compile_observations.tree_check` says, per closure dependency, `ok`, `differs: ...` or
 `unverified: ...`; `trace_stats.trees_ms` is the check's time.
 
+Revision 21, with item 1 on: a target read in a doc file of the package under
+test (`*.md`, `*.markdown`, `*.txt`, `LICENSE*`; fledex's README naming `MIX_TARGET`) no longer makes the package
+natively built in the trace (`NccWorker.NativeBuild.split/4`), as it does not in the static rules. Elixir 1.20's
+parallel checker reading the package's own protocol beam back from its `ebin` (fledex's `Fledex.Color.beam`) was
+refused for it as a read in a native `ebin`. Every other native check of the package stays whole (its own name in the
+native-tool grep, so zigler stays native, and a target read anywhere in its code), and as a dependency the same
+package keeps its doc files.
+
 Fleet hazard: every node running the `:toolchain` queue must run the same worker image and the same
 `NCC_JUDGE_MAKEFILE_RULE2` value. A node at a lower judge revision than the fleet's newest leaves its toolchain rows
 at that lower revision, and the portal's judge-revision reopen requeues their `skipped` rows against the fleet's

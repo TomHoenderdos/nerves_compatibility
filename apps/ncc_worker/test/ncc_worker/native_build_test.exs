@@ -117,6 +117,51 @@ defmodule NccWorker.NativeBuildTest do
               ], %{"ranch" => "rebar3"}}
   end
 
+  test "split/4 skips the package's own doc files only, and nothing else (revision 21)",
+       %{tmp_dir: root} do
+    readme = "Build with `MIX_TARGET=rpi4 mix firmware`, or `Mix.target()`.\n"
+    mix_exs = "defmodule P.MixProject do end\n"
+    docs = %{"README.md" => readme, "CHANGELOG.markdown" => readme, "LICENSE" => readme}
+    plain = Map.put(docs, "mix.exs", mix_exs)
+
+    dep(root, "fledex", plain, [:mix])
+    dep(root, "docdep", plain, [:mix])
+    # Really native, or a target read in code, with the same README.
+    dep(root, "emake", Map.put(docs, "mix.exs", "compilers: [:elixir_make]"), [:mix])
+    dep(root, "csrc", Map.merge(plain, %{"c_src/x.c" => ""}), [:mix])
+    dep(root, "zigler", Map.put(docs, "mix.exs", "[app: :zigler]"), [:mix])
+    dep(root, "code", Map.put(plain, "lib/t.ex", "def t, do: Mix.target()"), [:mix])
+    dep(root, "notes", Map.put(plain, "notes.rst", readme), [:mix])
+    dep(root, "nerves_x", plain, [:mix])
+    # Mix runs make for it, or nothing says which manager: native.
+    dep(root, "mk", Map.merge(docs, %{"Makefile" => "all:\n"}), [:make])
+    dep(root, "unlocked", plain, nil)
+
+    all = ~w(code csrc docdep emake fledex mk nerves_x notes unlocked zigler)
+
+    for package <- ~w(code csrc emake mk nerves_x notes unlocked zigler) do
+      assert NativeBuild.split(root, tarball_of(root), nil, package: package) == {all, %{}},
+             package
+    end
+
+    assert NativeBuild.split(root, tarball_of(root), nil, package: "fledex") ==
+             {all -- ["fledex"], %{"fledex" => "mix"}}
+
+    # As a dependency, the same package keeps its doc files: split/2.
+    assert NativeBuild.split(root, tarball_of(root)) == {all, %{}}
+
+    assert NativeBuild.split(root, tarball_of(root), nil, package: "docdep") ==
+             {all -- ["docdep"], %{"docdep" => "mix"}}
+
+    # Rule 1, the build cache keys and the static rules' `own: true` do not move.
+    deps = Path.join(root, "deps")
+    refute BuildCache.dep_target_agnostic?(deps, "fledex")
+    refute BuildCache.dep_target_agnostic_rule2?(deps, "fledex", "mix")
+    assert BuildCache.dep_target_agnostic_rule2?(deps, "fledex", "mix", own: true)
+    assert BuildCache.dep_target_agnostic_rule2?(deps, "zigler", "mix", own: true)
+    refute BuildCache.dep_target_agnostic_rule2?(deps, "zigler", "mix", docs: false)
+  end
+
   test "under make or no manager, the rule-2 predicate is dep_target_agnostic?/2",
        %{tmp_dir: root} do
     fixtures = %{

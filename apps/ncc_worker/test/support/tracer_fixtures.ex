@@ -76,17 +76,20 @@ defmodule NccWorker.TracerFixtures do
   dependency's source reads are judged against. Returns the lock entry for
   `releases:`. The tarball holds `VERSION`, `metadata.config` and, when
   `contents` (`%{path => body}`) is given, a `contents.tar.gz` of them: the
-  judge reads a rebar3 dependency's `rebar.config` from there.
+  judge reads a rebar3 dependency's `rebar.config` from there. `meta` adds
+  `metadata.config` terms, such as `{"build_tools", ["mix"]}`, which rule 2
+  (`NccWorker.NativeBuild`) reads the manager from.
   """
-  @spec hex_release(String.t(), String.t(), [String.t()], %{String.t() => binary()}) ::
+  @spec hex_release(String.t(), String.t(), [String.t()], %{String.t() => binary()}, [tuple()]) ::
           {String.t(), map()}
-  def hex_release(home, app, files, contents \\ %{}) do
+  def hex_release(home, app, files, contents \\ %{}, meta \\ []) do
     dir = Path.join(home, "packages/hexpm")
     File.mkdir_p!(dir)
     tar = Path.join(dir, "#{app}-0.1.0.tar")
+    terms = [{"name", app}, {"version", "0.1.0"}, {"files", files}] ++ meta
 
     meta =
-      Enum.map_join([{"name", app}, {"version", "0.1.0"}, {"files", files}], "", fn term ->
+      Enum.map_join(terms, "", fn term ->
         :io_lib.format(~c"~p.~n", [term]) |> IO.chardata_to_string()
       end)
 

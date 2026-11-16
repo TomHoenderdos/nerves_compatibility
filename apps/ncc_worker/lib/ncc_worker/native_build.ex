@@ -98,31 +98,46 @@ defmodule NccWorker.NativeBuild do
   must tell that from no dependencies list it themselves. `deps` is the
   dir the compile reads them from instead of `deps/` (a firmware target's
   `deps_<target>`).
+
+  `package:` names the package under test (judge revision 21): a target
+  read in one of its doc files (`NccWorker.TargetScan.doc_file?/1`, a
+  README naming `MIX_TARGET`) does not count for it, as it does not in
+  `NccWorker.BuildSelection.static_rules/4`. It is then declassified like
+  any other, held to its manager. Its other checks, and every dependency's,
+  are whole. `deps` must be a path or `nil` and `opts` a keyword list: an
+  option list in the `deps` place raises rather than reading no `deps/`
+  at all (every dependency non-native).
   """
-  @spec split(String.t(), (String.t() -> binary() | nil), String.t() | nil) ::
+  @spec split(String.t(), (String.t() -> binary() | nil), String.t() | nil, keyword()) ::
           {[String.t()], %{String.t() => String.t()}}
   # The run's own project dir.
   # sobelow_skip ["Traversal.FileModule"]
-  def split(project_dir, tarball_of, deps \\ nil) do
+  def split(project_dir, tarball_of, deps \\ nil, opts \\ [])
+      when (is_binary(deps) or is_nil(deps)) and is_list(opts) do
     deps = deps || Path.join(project_dir, "deps")
+    package = Keyword.get(opts, :package)
 
     case File.ls(deps) do
       {:ok, names} ->
-        names |> Enum.sort() |> Enum.reduce({[], %{}}, &split_one(deps, tarball_of, &1, &2))
+        names
+        |> Enum.sort()
+        |> Enum.reduce({[], %{}}, &split_one(deps, tarball_of, package, &1, &2))
 
       {:error, _reason} ->
         {[], %{}}
     end
   end
 
-  defp split_one(deps, tarball_of, name, {native, declassified}) do
+  defp split_one(deps, tarball_of, package, name, {native, declassified}) do
     manager = computed(build_tools(tarball_of.(name)), Path.join(deps, name))
+    rule2_opts = if is_binary(package) and name == package, do: [docs: false], else: []
 
     cond do
       BuildCache.dep_target_agnostic?(deps, name) ->
         {native, declassified}
 
-      manager in @mix_managers and BuildCache.dep_target_agnostic_rule2?(deps, name, manager) ->
+      manager in @mix_managers and
+          BuildCache.dep_target_agnostic_rule2?(deps, name, manager, rule2_opts) ->
         {native, Map.put(declassified, name, manager)}
 
       true ->

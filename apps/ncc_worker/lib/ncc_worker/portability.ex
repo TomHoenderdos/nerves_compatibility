@@ -203,9 +203,15 @@ defmodule NccWorker.Portability do
   # `File.mkdir_p/1` may ask the directories above that `priv` whether they
   # are directories (kino's `Kino.JS.__before_compile__/1`), when a second
   # traced build at a build path that shares no directory with the first
-  # writes that `priv` byte for byte the same (`PrivRepro`); its files are
-  # the verdict's `built_priv`, which the static priv rules take without a
-  # tarball entry (bumped by two while `makefile_rule2` exists).
+  # writes that `priv` the same (`PrivRepro`: byte for byte, or a tar
+  # archive whose members' times alone differ); its files are the verdict's
+  # `built_priv`, which the static priv rules take without a tarball entry.
+  # Also 21: with `makefile_rule2`, a target read in a doc file of the
+  # package under test (fledex's README naming `MIX_TARGET`) no longer
+  # makes it natively built in the trace (`NativeBuild.split/4`), as it does
+  # not in the static rules, so Elixir 1.20's parallel checker reading the
+  # package's own protocol beam back from its ebin is allowed (bumped by two
+  # while `makefile_rule2` exists).
   @judge_revision 21
 
   @doc "The judge revision a toolchain build made with `opts` records."
@@ -388,7 +394,9 @@ defmodule NccWorker.Portability do
     trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
     home = hex_home(opts, env)
     deps = deps_path(project_dir, env)
-    {native, declassified, split_problem} = native_split(project_dir, deps, opts, releases, home)
+
+    {native, declassified, split_problem} =
+      native_split(project_dir, deps, Keyword.put(opts, :package, package), releases, home)
 
     {trees_ms, {trees, tree_problem}} =
       timed(fn -> trees(project_dir, deps, opts, env, releases, home, native) end)
@@ -429,8 +437,10 @@ defmodule NccWorker.Portability do
   # dependencies whose native build file Mix never runs, which the judge
   # then holds to the manager the trace recorded (`declassified:`). The
   # `build_tools` come from each dependency's tarball verified against the
-  # lock snapshot, never from `mix.lock` itself.
-  # `NativeBuild.split/3` reads an unlistable `deps/` as no dependencies at
+  # lock snapshot, never from `mix.lock` itself. `package:` is the package
+  # under test, whose doc files do not count (`NativeBuild.split/4`, judge
+  # revision 21), as in the static rules.
+  # `NativeBuild.split/4` reads an unlistable `deps/` as no dependencies at
   # all; with the flag on that is a problem instead (fail closed), which
   # `unsplit/2` turns into could-not-judge once the compile is over. `deps`
   # is the dir the compile reads the dependencies from (`deps_path/2`).
@@ -442,7 +452,12 @@ defmodule NccWorker.Portability do
 
       match?({:ok, _}, File.ls(deps)) ->
         {native, declassified} =
-          NativeBuild.split(project_dir, &Context.release_tarball(home, releases, &1), deps)
+          NativeBuild.split(
+            project_dir,
+            &Context.release_tarball(home, releases, &1),
+            deps,
+            Keyword.take(opts, [:package])
+          )
 
         {native, declassified, nil}
 
@@ -491,7 +506,9 @@ defmodule NccWorker.Portability do
   `project_dir` for `run/3`'s `trees:`, with the native list `run/3` would
   use for the same `opts` (`releases:`, `hex_home:` (default `HEX_HOME`),
   `makefile_rule2:`, `deps_path:`, the dependencies' dir, default
-  `<project_dir>/deps`). Take it before the first compile of the closure,
+  `<project_dir>/deps`, and `package:`, the package `run/3` is given;
+  without it the package's tree may be left unchecked). Take it before the
+  first compile of the closure,
   right after the `deps.get` that fetched it: a compile writes into a
   dependency's own source dir (Mix's leex and yecc compilers put the `.erl`
   they generate in `src/`). Never raises; `%{}` (nothing checked) when it

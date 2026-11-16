@@ -575,6 +575,13 @@ defmodule NccWorker.BuildCache do
   # or a doc file. Any compile-time `Mix.target`/`MIX_TARGET` read is the
   # trace's refusal or compile input as well. As a dependency, the same
   # package keeps both checks whole.
+  #
+  # `docs: false` (judge revision 21), the trace's native list for the
+  # package under test only (`NccWorker.NativeBuild.split/4`): a target read
+  # in a doc file (`NccWorker.TargetScan.doc_file?/1`, fledex's README naming
+  # `MIX_TARGET`) does not count, as it does not under `own: true`. Every
+  # other check stays whole: the package's own name in the native-tool grep
+  # (zigler), its optional-only tools and a target read anywhere in its code.
   @doc false
   @spec dep_target_agnostic_rule2?(String.t(), String.t(), String.t() | nil, keyword()) ::
           boolean()
@@ -587,9 +594,16 @@ defmodule NccWorker.BuildCache do
         do: (@native_deps -- [name]) -- optional_only_tools(Path.join(dir, "mix.exs")),
         else: @native_deps
 
+    scan =
+      cond do
+        own? -> :compile_time
+        Keyword.get(opts, :docs) == false -> :code
+        true -> :whole
+      end
+
     File.dir?(dir) and not String.starts_with?(name, "nerves") and
       not native_rule2?(dir, manager, tools) and
-      not reads_target?(dir, target_read_pattern_rule2(), own?)
+      not reads_target?(dir, target_read_pattern_rule2(), scan)
   end
 
   # Judge revision 15, `own: true` only: the native tools the package's own
@@ -772,7 +786,8 @@ defmodule NccWorker.BuildCache do
   # artifacts and VCS metadata are skipped. grep exit 1 is no candidate;
   # anything else (no grep, unreadable tree, a file that cannot be read or is
   # too large) counts as a match so the dependency stays target-scoped.
-  defp reads_target?(dir, pattern \\ target_read_pattern(), compile_time? \\ false) do
+  # `scan` is what of each file is matched (`scanned/3`).
+  defp reads_target?(dir, pattern \\ target_read_pattern(), scan \\ :whole) do
     excludes = Enum.map(~w(.git _build node_modules), &"--exclude-dir=#{&1}")
     args = ["-r", "-l", "-I", "-i", "-F", "--null", "--exclude=*.beam"] ++ excludes
     args = args ++ ["-e", "target", "-e", "mix", "--", dir]
@@ -784,7 +799,7 @@ defmodule NccWorker.BuildCache do
       {output, 0} ->
         output
         |> String.split(<<0>>, trim: true)
-        |> Enum.any?(&target_read?(&1, pattern, compile_time?))
+        |> Enum.any?(&target_read?(&1, pattern, scan))
 
       _ ->
         true
@@ -795,17 +810,21 @@ defmodule NccWorker.BuildCache do
 
   # Read-only inspection of a dependency file grep listed.
   # sobelow_skip ["Traversal.FileModule"]
-  defp target_read?(file, pattern, compile_time?) do
+  defp target_read?(file, pattern, scan) do
     with {:ok, %File.Stat{size: size}} when size <= @target_scan_max_bytes <- File.stat(file),
          {:ok, contents} <- File.read(file) do
-      scanned_match?(
-        pattern,
-        if(compile_time?, do: TargetScan.scanned(file, contents), else: contents)
-      )
+      scanned_match?(pattern, scanned(scan, file, contents))
     else
       _ -> true
     end
   end
+
+  # `:whole`, the file as it is; `:code`, nothing of a doc file
+  # (`TargetScan.doc_file?/1`) and every other file whole; `:compile_time`,
+  # only what can run while the package compiles (`TargetScan.scanned/2`).
+  defp scanned(:whole, _file, contents), do: contents
+  defp scanned(:code, file, contents), do: if(TargetScan.doc_file?(file), do: nil, else: contents)
+  defp scanned(:compile_time, file, contents), do: TargetScan.scanned(file, contents)
 
   # `nil`: nothing in the file can run at compile time (`TargetScan`).
   defp scanned_match?(_pattern, nil), do: false

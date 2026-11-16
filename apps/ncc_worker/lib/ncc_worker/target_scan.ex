@@ -38,15 +38,23 @@ defmodule NccWorker.TargetScan do
     base = Path.basename(path)
 
     cond do
-      doc_file?(base) -> nil
+      doc_file?(path) -> nil
       base == "mix.exs" -> contents
       Path.extname(base) in [".ex", ".exs"] -> compile_time_text(contents)
       true -> contents
     end
   end
 
-  defp doc_file?(base),
-    do: String.downcase(Path.extname(base)) in @doc_exts or String.starts_with?(base, "LICENSE")
+  @doc """
+  Whether `path` is a doc file (`*.md`, `*.markdown`, `*.txt`, `LICENSE*`),
+  which nothing compiles. The trace's native classification of the package
+  under test skips these too (`NccWorker.NativeBuild.split/4`).
+  """
+  @spec doc_file?(String.t()) :: boolean()
+  def doc_file?(path) when is_binary(path) do
+    base = Path.basename(path)
+    String.downcase(Path.extname(base)) in @doc_exts or String.starts_with?(base, "LICENSE")
+  end
 
   defp compile_time_text(contents) do
     case MixExsSlice.quoted(contents) do

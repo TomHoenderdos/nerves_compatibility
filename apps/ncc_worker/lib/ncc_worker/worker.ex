@@ -1826,7 +1826,8 @@ defmodule NccWorker.Worker do
           Portability.tree_snapshot(project_dir,
             releases: releases,
             hex_home: System.get_env("HEX_HOME"),
-            makefile_rule2: rule2
+            makefile_rule2: rule2,
+            package: package_name
           ),
         run_started_at: input[:started_at],
         log_tail_bytes: log_tail_bytes,
@@ -2021,7 +2022,7 @@ defmodule NccWorker.Worker do
     world_opts =
       opts
       |> Keyword.put(:releases, releases)
-      |> Keyword.put(:trees, added_trees(project_dir, releases, opts))
+      |> Keyword.put(:trees, added_trees(project_dir, package_name, releases, opts))
 
     case host_trace(project_dir, package_name, paths, world_opts) do
       {:ok, %{host: %{status: :pass}} = compiled} ->
@@ -2160,7 +2161,7 @@ defmodule NccWorker.Worker do
          with_opts =
            opts
            |> Keyword.put(:releases, releases)
-           |> Keyword.put(:trees, added_trees(project_dir, releases, opts)),
+           |> Keyword.put(:trees, added_trees(project_dir, package_name, releases, opts)),
          {:ok, %{host: %{status: :pass}} = compiled} <-
            host_trace(project_dir, package_name, paths, with_opts) do
       {:ok, Map.put(compiled, :optional_deps, optional_deps_info(added, [], nil))}
@@ -2184,11 +2185,12 @@ defmodule NccWorker.Worker do
     end
   end
 
-  defp added_trees(project_dir, releases, opts) do
+  defp added_trees(project_dir, package_name, releases, opts) do
     Portability.tree_snapshot(project_dir,
       releases: releases,
       hex_home: System.get_env("HEX_HOME"),
-      makefile_rule2: Keyword.get(opts, :makefile_rule2) == true
+      makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
+      package: package_name
     )
   end
 
