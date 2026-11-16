@@ -922,8 +922,22 @@ host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2:
   reviewed native tools' own activity is set apart: elixir_make, and rustler_precompiled (its target triple, NIF
   version, OTP release and OS type reads, its download and its writes into the package's priv; any other OS identity
   read or program run from its frame still refuses, and so does the package's own code, `use RustlerPrecompiled` and
-  its `__using__/2` call excepted). The package's own priv libraries may be mapped (rustler's `@on_load` runs in the
-  compiler VM). R2 (a baked build path) applies to the package's ebin, as do the tree, rebar3, closure-taint and
+  its `__using__/2` call excepted). Two more of its normal path's events pass (judge revision 25, tokenizers 0.5.2):
+  the expander calling `Rustler.MACRO-__using__/2` with no package frame, once per `RustlerPrecompiled` macro before
+  it in the same window and process (the tool's quote holds `use Rustler` in its force-build branch whenever the
+  optional rustler is loaded; Rustler's macro is a `bind_quoted` quote that reads and runs nothing, and the branch
+  that would run its code, `Rustler.Compiler.compile_crate/3` and `__before_compile__/2`, keeps their refusal, as
+  does a `use Rustler` of the package's own), and the port to OTP's in-memory ram_file driver that
+  `:erl_tar.extract({:binary, tar_gz}, ...)` opens through `ram_file:ll_open/3` right under the tool's
+  `download_or_reuse_nif_file/2` (any other port, or that one from elsewhere, still refuses; unpacking a cached
+  archive reads it in a `raw_file_io_inflate` process no tool frame owns and still refuses). What picks the
+  force-build branch is recorded: the package's env read (`TOKENIZERS_BUILD`) and
+  `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL` are `compile_inputs`, `:rustler_precompiled`'s `force_build` and
+  `force_build_all` are `compile_env`. The package's own priv libraries may be mapped (rustler's `@on_load` runs in the
+  compiler VM), and so may the libraries the loader maps with one (judge revision 25): first seen in the same snapshot,
+  named by its `DT_NEEDED` by `DT_SONAME` (or through another so named), from the directory the VM's own C library was
+  mapped from (tokenizers' NIF needs glibc's `libdl.so.2` and `libpthread.so.0`); a client resolves the same sonames
+  (`elf.needs`). R2 (a baked build path) applies to the package's ebin, as do the tree, rebar3, closure-taint and
   built checks;
 - the beams: at least one, Elixir or Erlang;
 - the priv (at most 500 files and 128 MiB, one link to the package's own source priv): every non-ELF file is static

@@ -69,9 +69,11 @@ defmodule NccWorker.Portability.MappedLibs do
     end)
   end
 
-  defp libs(%{"nif_check" => "ok", "mapped_libs" => list}) when is_list(list) do
+  @doc "A snapshot's mapped libraries, or `:error` when it has no usable list."
+  @spec libs(snapshot()) :: {:ok, [String.t()]} | :error
+  def libs(%{"nif_check" => "ok", "mapped_libs" => list}) when is_list(list) do
     if Enum.all?(list, &is_binary/1), do: {:ok, list}, else: :error
   end
 
-  defp libs(_snapshot), do: :error
+  def libs(_snapshot), do: :error
 end

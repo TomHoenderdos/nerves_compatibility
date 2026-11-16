@@ -94,6 +94,7 @@ defmodule NccWorker.Portability do
   which publishes nothing and changes no status.
   """
 
+  alias Compatibility.Elf
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.{BuildCache, DepsLock, NativeBuild, ProcessSweep}
 
@@ -227,8 +228,18 @@ defmodule NccWorker.Portability do
   # holds the file (`own_priv_reads/2`); a
   # dependent reading it, a build `priv` of its own and a path that
   # resolves out of the source `priv` keep their refusal (bumped by two
-  # while `makefile_rule2` exists).
-  @judge_revision 23
+  # while `makefile_rule2` exists). 25: a host-native build (only) lets
+  # through rustler_precompiled's normal path (tokenizers 0.5.2): the
+  # expander calling `Rustler.MACRO-__using__/2` for the tool's quote, once
+  # per tool macro before it in the same process, and the ram_file driver's
+  # port its `download_or_reuse_nif_file/2` opens to unpack the downloaded
+  # archive (`@reviewed_unpacks`), both in the package's own window only
+  # (`tool_events/2`), and the libraries the package's own priv library's
+  # `DT_NEEDED` makes the loader map with it from the C library's dir
+  # (`needed_libs/3`: glibc's `libdl.so.2` and `libpthread.so.0` for
+  # tokenizers' NIF); firmware target and toolchain verdicts do not change
+  # (bumped by two while `makefile_rule2` exists).
+  @judge_revision 25
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -282,9 +293,12 @@ defmodule NccWorker.Portability do
     * `target:` and `host_native: true`, a host-native build's verdict
       (`NccWorker.HostNative`, `target: "host"`): judged as a firmware
       target's inputs are (`target_inputs/3`), with rustler_precompiled set
-      apart too (`host_native_tools/0`), the package's own priv libraries
-      allowed to be mapped, and R2 on the package's ebin; `host_native:`
-      without `target:` is off;
+      apart too (`host_native_tools/0`; its quote's expansion of Rustler's
+      macro and its unpack's ram_file port included, judge revision 25),
+      the package's own priv libraries allowed to be mapped, with the
+      system libraries their `DT_NEEDED` maps alongside them (judge
+      revision 25), and R2 on the package's ebin; `host_native:` without
+      `target:` is off;
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
       `timeout_ms:`, `extra_env:`, `reap:`, `cmd:`, `sweep:` (tests).
 
@@ -834,7 +848,12 @@ defmodule NccWorker.Portability do
   defp facts(project_dir, package, report, native, opts) do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
-    decided = decide_all(report, ctx, scope, target_mode(opts, ctx, scope, native))
+
+    decided =
+      report
+      |> decide_all(ctx, scope, target_mode(opts, ctx, scope, native))
+      |> tool_events(ctx.package)
+
     host_native = host_native?(opts)
     unjudged = for {_owner, {:unjudged, why}} <- decided, do: why
     decided = for {owner, decision} <- decided, in_scope?(owner, scope), do: {owner, decision}
@@ -1113,13 +1132,43 @@ defmodule NccWorker.Portability do
                          "RustlerPrecompiled.__using__/2"
                        ])
 
+  # Judge revision 25. The tool's macro returns a quote whose
+  # `{:force_build, only_rustler_opts}` branch is `use Rustler,
+  # only_rustler_opts` whenever Rustler is loaded (the optional dependency a
+  # host-native run adds), so the expander calls Rustler's macro while it
+  # expands that quote, whichever branch the module body then takes.
+  # Rustler's `__using__/2` (rustler 0.37, 0.38) is a `bind_quoted` quote:
+  # calling it reads nothing and runs nothing. What it returns runs only in
+  # the force-build branch, and then calls `Rustler.Compiler.compile_crate/3`
+  # from the package's module body and Rustler's `__before_compile__/2`,
+  # which keep their refusal. `tool_events/2` lets one such expansion
+  # through per tool macro before it, in the package's own window and the
+  # same process.
+  @tool_macro "RustlerPrecompiled.MACRO-__using__/2"
+  @host_native_expansions MapSet.new(["Rustler.MACRO-__using__/2"])
+  @expanded_tools ["rustler"]
+
+  # Judge revision 25. The tool's `download_or_reuse_nif_file/2` unpacks the
+  # archive it downloaded with `:erl_tar.extract({:binary, tar_gz},
+  # [:compressed, ...])`, which opens a port to OTP's ram_file driver
+  # (`ram_file:ll_open/3`): a driver linked into the VM that holds the
+  # archive in memory, runs no program and reads nothing of the host. Only
+  # that port, opened by OTP's own `ram_file`, right under that function of
+  # the tool, in the package's own window (`tool_events/2`); any other port
+  # or program from the tool's frame keeps its refusal. OTP's zlib is a NIF
+  # and opens no port. Unpacking a cached archive instead spawns
+  # `raw_file_io_inflate`, whose read of the archive no tool frame owns, so
+  # a build that reuses a cached archive stays refused.
+  @reviewed_unpacks [{"Elixir.RustlerPrecompiled", "download_or_reuse_nif_file", 2}]
+  @ram_file_port ~s({spawn,"ram_file_drv"})
+
   # What a host-native tool's own frame may read of the machine and still be
   # set apart: the target triple, the NIF version and the OTP release it
   # picks the archive by, and the OS type. Any other OS identity read or a
-  # program run from its frame keeps its refusal: a package fun the tool
-  # runs that tail-calls one (a variant's CPU probe ending in
-  # `:os.version/0`) leaves the tool's frame on top, and what it reads would
-  # pick a NIF the triple does not cover.
+  # program run from its frame (but `@reviewed_unpacks`' ram_file port)
+  # keeps its refusal: a package fun the tool runs that tail-calls one (a
+  # variant's CPU probe ending in `:os.version/0`) leaves the tool's frame
+  # on top, and what it reads would pick a NIF the triple does not cover.
   @host_tool_reads ~w(system_architecture nif_version otp_release version wordsize os_type)
 
   @tool_never_writes ["env_write", "config_write"]
@@ -1157,7 +1206,12 @@ defmodule NccWorker.Portability do
           do: traced_tool_modules(ctx, scope, @host_native_tools),
           else: MapSet.new()
 
-      %{tool_modules: tools, entries: entries, host_tools: host_tools}
+      expanded =
+        if MapSet.size(host_tools) > 0,
+          do: traced_tool_modules(ctx, scope, @expanded_tools),
+          else: MapSet.new()
+
+      %{tool_modules: tools, entries: entries, host_tools: host_tools, expanded: expanded}
     end
   end
 
@@ -1221,12 +1275,37 @@ defmodule NccWorker.Portability do
         {:refuse, elem(decision, 2)["refusal"]}
 
       tool_entry?(event, mode) ->
-        native_build(event, vm)
+        event |> native_build(vm) |> entry_pid(event)
+
+      tool_expansion?(event, mode) ->
+        held("tool_expansions", event, vm, decision)
 
       true ->
         decision
     end
   end
+
+  # An event `tool_events/2` settles once every event is decided, with the
+  # decision it keeps when it is not let through.
+  defp held(kind, event, vm, decision),
+    do:
+      {:observe, kind,
+       %{
+         "mfa" => event["mfa"],
+         "module" => user_module(event),
+         "ts" => event["ts"],
+         "vm" => vm,
+         "pid" => event["pid"],
+         "decision" => decision
+       }}
+
+  # The tool macro's process, which `tool_events/2` pairs Rustler's
+  # expansion with and then drops.
+  defp entry_pid({:observe, kind, item}, %{"mfa" => @tool_macro, "pid" => pid})
+       when is_binary(pid),
+       do: {:observe, kind, Map.put(item, "pid", pid)}
+
+  defp entry_pid(decision, _event), do: decision
 
   # A firmware target's trace has no second build (`PrivRepro`), so the
   # package's own priv writes and the probes above that priv refuse there
@@ -1245,6 +1324,9 @@ defmodule NccWorker.Portability do
 
       event["channel"] in @tool_never_writes ->
         {:refuse, "compile-time write from the native build tool's frame: #{event["mfa"]}"}
+
+      host_tool?(event, mode) and reviewed_unpack?(event) ->
+        held("tool_unpacks", event, vm, decision)
 
       unreviewed_host_read?(event, mode) ->
         decision
@@ -1284,13 +1366,93 @@ defmodule NccWorker.Portability do
 
   defp tool_entry?(_event, _mode), do: false
 
-  defp unreviewed_host_read?(event, %{host_tools: host_tools}) do
-    module = user_module(event) || mfa_module(event["mfa"])
+  # The expander calling Rustler's macro (`@host_native_expansions`): the
+  # call is made by `elixir_dispatch:expand_macro_fun/7` with no frame of
+  # any package on the stack, so it expands code (a quote the tool's macro
+  # returned); a call the package's own code makes, or a call into any
+  # other of Rustler's functions, is not one. Only a module rustler's own
+  # `.app` lists.
+  defp tool_expansion?(
+         %{
+           "channel" => "native_closure",
+           "mfa" => mfa,
+           "extent" => "dispatcher",
+           "user" => nil,
+           "caller_kind" => "toolchain",
+           "caller" => %{"module" => "elixir_dispatch", "function" => "expand_macro_fun"},
+           "pid" => pid
+         },
+         %{expanded: expanded}
+       )
+       when is_binary(mfa) and is_binary(pid),
+       do:
+         MapSet.member?(@host_native_expansions, mfa) and
+           MapSet.member?(expanded, mfa_module(mfa))
 
-    MapSet.member?(host_tools, module || "") and
+  defp tool_expansion?(_event, _mode), do: false
+
+  # Judge revision 25, in the package's own window only (where the tool
+  # picks and unpacks the NIF the build serves): a Rustler expansion
+  # (`@host_native_expansions`) needs a tool macro (`@tool_macro`) before it
+  # in the same VM and process that no other expansion took, and the ram_file
+  # port (`@reviewed_unpacks`) nothing more; either is then the tool's
+  # (`native_build`). Anywhere else each keeps the decision it had, as before
+  # (a dependency's window is tainted for it). Events are in trace order, and
+  # one process's calls in the order it made them. The macro's process is
+  # dropped once used.
+  defp tool_events(decided, package) do
+    {decided, _open} =
+      Enum.map_reduce(decided, %{}, fn
+        {owner, {:observe, "native_build", %{"mfa" => @tool_macro, "pid" => pid} = item}}, open ->
+          key = {owner, item["vm"], pid}
+
+          {{owner, {:observe, "native_build", Map.delete(item, "pid")}},
+           Map.update(open, key, 1, &(&1 + 1))}
+
+        {owner, {:observe, "tool_expansions", item}}, open ->
+          key = {owner, item["vm"], item["pid"]}
+
+          case {owner == package, Map.get(open, key, 0)} do
+            {true, n} when n > 0 -> {{owner, tool_build(item)}, Map.put(open, key, n - 1)}
+            _ -> {{owner, item["decision"]}, open}
+          end
+
+        {owner, {:observe, "tool_unpacks", item}}, open ->
+          {{owner, if(owner == package, do: tool_build(item), else: item["decision"])}, open}
+
+        entry, open ->
+          {entry, open}
+      end)
+
+    decided
+  end
+
+  defp tool_build(item), do: {:observe, "native_build", Map.drop(item, ["pid", "decision"])}
+
+  defp unreviewed_host_read?(event, mode) do
+    host_tool?(event, mode) and
       (event["channel"] == "programs" or
          (event["channel"] == "os_identity" and not reviewed_host_read?(event)))
   end
+
+  defp host_tool?(event, %{host_tools: host_tools}) do
+    module = user_module(event) || mfa_module(event["mfa"])
+    MapSet.member?(host_tools, module || "")
+  end
+
+  # `@reviewed_unpacks`: the ram_file driver's port, opened by OTP's own
+  # `ram_file:ll_open/3` right under the tool's unpack.
+  defp reviewed_unpack?(%{
+         "channel" => "programs",
+         "mfa" => "erlang:open_port/2",
+         "arg" => %{"port" => @ram_file_port},
+         "first_kind" => "toolchain",
+         "first" => %{"module" => "ram_file", "function" => "ll_open", "arity" => 3},
+         "user" => %{"module" => module, "function" => fun, "arity" => arity}
+       }),
+       do: {module, fun, arity} in @reviewed_unpacks
+
+  defp reviewed_unpack?(_event), do: false
 
   defp reviewed_host_read?(%{"mfa" => "os:type/0"}), do: true
 
@@ -1358,13 +1520,18 @@ defmodule NccWorker.Portability do
   defp mapped_libs(report, ctx, scope, waiver, host_native) do
     own = if host_native, do: own_priv_dirs(ctx), else: []
     allowed? = &lib_allowed?(ctx, scope, own, &1)
+    snapshots = main_snapshots(report)
+
+    needed =
+      if host_native, do: needed_libs(report.start, snapshots, own), else: MapSet.new()
 
     children =
       for {app, child} <- Enum.sort(report.children), Context.dep?(ctx, app) do
         {app, MappedLibs.check(child.start, child_snapshots(child), allowed?)}
       end
 
-    results = Enum.filter(main_libs(report, allowed?) ++ children, &in_scope?(elem(&1, 0), scope))
+    main = main_libs(report.start, snapshots, &(allowed?.(&1) or MapSet.member?(needed, &1)))
+    results = Enum.filter(main ++ children, &in_scope?(elem(&1, 0), scope))
     by_owner = Enum.group_by(results, &elem(&1, 0), &elem(&1, 1))
     acc = %{decided: [], problems: [], native: [], waived: false, by_owner: by_owner}
 
@@ -1389,20 +1556,108 @@ defmodule NccWorker.Portability do
   defp child_snapshots(%{compiles: [_ | _]}), do: []
   defp child_snapshots(child), do: [child.start]
 
-  defp main_libs(report, allowed?) do
+  # The Mix VM's snapshots after its start, in order: every window close,
+  # then the end (`:outside`).
+  defp main_snapshots(report) do
     closes =
       report.windows
       |> Enum.filter(&is_integer(&1.close))
       |> Enum.sort_by(& &1.close)
       |> Enum.map(&{&1.app, Map.get(&1, :libs)})
 
+    closes ++ [{:outside, report.ending}]
+  end
+
+  defp main_libs(start, snapshots, allowed?) do
     {_last, results} =
-      Enum.reduce(closes ++ [{:outside, report.ending}], {report.start, []}, fn {owner, snap},
-                                                                                {prev, acc} ->
+      Enum.reduce(snapshots, {start, []}, fn {owner, snap}, {prev, acc} ->
         {snap, [{owner, MappedLibs.check(prev, [snap], allowed?)} | acc]}
       end)
 
     Enum.reverse(results)
+  end
+
+  # Judge revision 25, a host-native build's Mix VM only: loading the
+  # package's own priv library (its `@on_load`) makes the dynamic loader map
+  # the libraries its `DT_NEEDED` names that the VM had not mapped yet
+  # (tokenizers 0.5.2's NIF needs glibc's `libdl.so.2` and
+  # `libpthread.so.0`, which a VM linked against glibc 2.34 or later never
+  # maps itself). Such a library may be mapped when it first shows in the
+  # same snapshot as a library of the package's own priv whose `DT_NEEDED`
+  # names its `DT_SONAME` (its file name when it has none), directly or
+  # through another library let through so, and its real path is in the
+  # directory the VM's own C library was mapped from at start. Nothing else
+  # is read to decide it: the published NIF's bytes (checksum-pinned,
+  # `NccWorker.HostNative`) name these libraries, and a client resolves the
+  # same sonames (`elf.needs`). One mapped earlier, anywhere else, or not
+  # named so keeps its refusal.
+  defp needed_libs(start, snapshots, own) do
+    case MappedLibs.libs(start) do
+      {:ok, before} ->
+        dirs = libc_dirs(before)
+
+        {_last, needed} =
+          Enum.reduce(snapshots, {before, MapSet.new()}, &needed_in(&1, &2, own, dirs))
+
+        needed
+
+      :error ->
+        MapSet.new()
+    end
+  end
+
+  # What one snapshot adds to the one before it, as `MappedLibs.check/3`
+  # compares them.
+  defp needed_in({_owner, snap}, {prev, acc}, own, dirs) do
+    case MappedLibs.libs(snap) do
+      {:ok, libs} -> {libs, MapSet.union(acc, needed_by_own(Enum.uniq(libs) -- prev, own, dirs))}
+      :error -> {prev, acc}
+    end
+  end
+
+  # The real directories of the C library mapped at start.
+  defp libc_dirs(libs) do
+    for path <- libs,
+        real = Context.realpath(path),
+        is_binary(real),
+        Regex.match?(~r/^libc(\.so(\.\d+)*|-\d+\.\d+\.so)$/, Path.basename(real)),
+        into: MapSet.new(),
+        do: Path.dirname(real)
+  end
+
+  defp needed_by_own(added, own, dirs) do
+    {roots, rest} = Enum.split_with(added, &own_lib?(&1, own))
+
+    candidates =
+      for path <- rest,
+          real = Context.realpath(path),
+          is_binary(real) and MapSet.member?(dirs, Path.dirname(real)),
+          {:ok, %{type: :dyn} = info} <- [Elf.read_file(real)],
+          do: {info.soname || Path.basename(real), path, info.needed}
+
+    roots |> Enum.flat_map(&elf_needed/1) |> take_needed(candidates, MapSet.new())
+  end
+
+  defp own_lib?(path, own) do
+    real = Context.realpath(path)
+    is_binary(real) and Enum.any?(own, &Context.under?(real, &1))
+  end
+
+  defp elf_needed(path) do
+    case Elf.read_file(Context.realpath(path) || path) do
+      {:ok, %{needed: needed}} -> needed
+      _ -> []
+    end
+  end
+
+  # Each soname takes every candidate it names, whose own `DT_NEEDED` then
+  # joins the list; a candidate is taken once.
+  defp take_needed([], _candidates, acc), do: acc
+
+  defp take_needed([soname | rest], candidates, acc) do
+    {hits, others} = Enum.split_with(candidates, &(elem(&1, 0) == soname))
+    acc = Enum.reduce(hits, acc, &MapSet.put(&2, elem(&1, 1)))
+    take_needed(rest ++ Enum.flat_map(hits, &elem(&1, 2)), others, acc)
   end
 
   defp lib_allowed?(ctx, scope, own, path) do

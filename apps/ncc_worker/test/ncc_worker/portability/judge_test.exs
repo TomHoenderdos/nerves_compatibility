@@ -2807,8 +2807,8 @@ defmodule NccWorker.Portability.JudgeTest do
     end
 
     test "the judge revision is 23, 24 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 23
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 24
+      assert NccWorker.Portability.judge_revision() == 25
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 26
 
       # The portal withdraws only on refusals of a judge at least this new.
       # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4
