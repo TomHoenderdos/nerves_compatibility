@@ -784,7 +784,10 @@ only on a passing target that publishes its own first build (no optional depende
    `{"kind": "mix_target", "value"}`. A host read whose value holds the builder's `NERVES_TOOLCHAIN` or
    `NERVES_SYSTEM` is `{"kind": "env", "name", "set_by": "nerves", "value": [segments]}`: the value cut at those
    paths (`Compatibility.CompileInputs.split/2`), which a client compares with its own value cut at its own paths;
-   the published files never hold such a path (`NccWorker.FirmwareBuildRoot`);
+   the published files never hold such a path (`NccWorker.FirmwareBuildRoot`). `make` is no traced process, so
+   nothing the native build wrote may reach the package's beams: every natively built closure dependency's source tree
+   must still be its verified tarball's after the compile, and every beam in the package's ebin compiled from a file
+   in its own source dir;
 3. the binding: the traced beams of the package carry the code (`beam_lib:md5/1`) and the attributes chunk (persisted
    attributes) of the published ones, module for module, and the `.app` is the published one byte for byte.
 

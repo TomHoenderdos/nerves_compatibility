@@ -753,8 +753,62 @@ defmodule NccWorker.Portability do
       package_rebar: package_rebar,
       deps: deps,
       manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{})),
-      tree_refusal: tree_refusal(ctx, scope)
+      tree_refusal: tree_refusal(ctx, scope),
+      native_output: if(target(opts), do: native_output(ctx, scope))
     }
+  end
+
+  # A firmware target's trace (`target_inputs/3`) sets the native build
+  # tool's own activity apart, and `make` is no process the tracer follows:
+  # what the native build wrote, from inputs nobody records (its own reads
+  # of the environment, the Nerves system's headers), is no event, and
+  # both builds wrote the same, so binding the published beams to the
+  # trace's (`NccWorker.FirmwareInputs`) cannot tell. Nothing it wrote may
+  # reach the package's beams: every natively built closure dependency's
+  # source tree must still be exactly its verified tarball's after the
+  # compile (`tree_clean?/2`: no source generated there for the compile to
+  # read or compile, which the trees checked before it never covered), and
+  # every beam in the package's ebin compiled from a file in its source
+  # dir (`compiled_in?/2`: no module the native build put there).
+  defp native_output(ctx, scope) do
+    native =
+      scope |> Enum.filter(&(Context.dep?(ctx, &1) and ctx.deps[&1].native?)) |> Enum.sort()
+
+    Enum.find_value(native, fn app ->
+      unless tree_clean?(ctx, app),
+        do: "natively built dependency's source tree is not its verified tarball's: #{app}"
+    end) || foreign_beam(ctx)
+  end
+
+  defp foreign_beam(ctx) do
+    with ebin when is_binary(ebin) <- Context.ebin(ctx, ctx.package),
+         dest when is_binary(dest) <- Context.dest(ctx, ctx.package) do
+      ebin
+      |> Path.join("*.beam")
+      |> Path.wildcard()
+      |> Enum.sort()
+      |> Enum.find_value(&foreign_beam(&1, dest))
+    else
+      _ -> "no build of the package to check its beams' sources"
+    end
+  end
+
+  defp foreign_beam(beam, dest) do
+    unless compiled_in?(beam, dest),
+      do: "beam not compiled from the package's own sources: #{Path.basename(beam)}"
+  end
+
+  # The source a beam's compile info names: a regular file under `dest`.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp compiled_in?(beam, dest) do
+    with {:ok, {_module, [compile_info: info]}} <-
+           :beam_lib.chunks(String.to_charlist(beam), [:compile_info]),
+         source when is_list(source) <- Keyword.get(info, :source),
+         real when is_binary(real) <- Context.realpath(List.to_string(source)) do
+      Context.under?(real, dest) and File.regular?(real)
+    else
+      _ -> false
+    end
   end
 
   # Item 5e: a closure dependency whose source tree was not its verified
@@ -1626,8 +1680,9 @@ defmodule NccWorker.Portability do
   # intact and the rebar3 coverage judged; and nothing in it may refuse, a
   # dependency's window included: the native tool's activity and the target
   # reads are no refusals here (`targeted/4`), and every other host read is
-  # an input no client could check. R2 is the firmware build's own
-  # (`NccWorker.FirmwareBuildRoot`), on the files it publishes.
+  # an input no client could check. Nor may anything the native build wrote
+  # reach the package's beams (`native_output/2`). R2 is the firmware
+  # build's own (`NccWorker.FirmwareBuildRoot`), on the files it publishes.
   defp target_verdict_of(facts) do
     problems = problems(facts)
 
@@ -1640,7 +1695,8 @@ defmodule NccWorker.Portability do
           fn -> any_refusal(facts.decided) end,
           fn -> if facts.package_window, do: Reasons.could_not_judge() end,
           fn -> package_rebar(facts.package_rebar) end,
-          fn -> closure(facts.deps) end
+          fn -> closure(facts.deps) end,
+          fn -> facts.native_output end
         ],
         & &1.()
       )

@@ -30,6 +30,17 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
             _ -> :ok
           end
 
+          # `make`: a program the tracer does not follow, which may write
+          # anywhere it likes.
+          case Mix.Project.config()[:make_gen] do
+            script when is_binary(script) ->
+              env = [{"COMPILE_PATH", Mix.Project.compile_path()}]
+              {_, 0} = System.cmd("sh", [script], env: env, stderr_to_stdout: true)
+
+            _ ->
+              :ok
+          end
+
           {:ok, []}
         end
 
@@ -103,6 +114,25 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
     Map.merge(lib(app, body, %{mix_exs: mix_exs}), %{deps: ["elixir_make"]})
   end
 
+  @gen_source """
+  cat > lib/gen.ex <<EOS
+  defmodule FxBoardGen.Gen do
+    def mode, do: "$FX_GEN_MODE"
+  end
+  EOS
+  """
+
+  @gen_beam """
+  d=$(mktemp -d)
+  cat > "$d/fx_board_beam_gen.erl" <<EOS
+  -module(fx_board_beam_gen).
+  -export([mode/0]).
+  mode() -> "$FX_GEN_MODE".
+  EOS
+  mkdir -p "$COMPILE_PATH"
+  erlc -o "$COMPILE_PATH" "$d/fx_board_beam_gen.erl"
+  """
+
   defp deps do
     %{
       "elixir_make" => @tool,
@@ -118,6 +148,11 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
       # The package's own compile reading the host through the tool's code.
       "fx_board_tool_lib" => board("fx_board_tool_lib", "@os ElixirMake.Compiler.os()"),
       "fx_board_tool_alias" => tool_alias_board(),
+      # The native build writing a source the package's compile then
+      # compiles, from a variable only the native build reads.
+      "fx_board_gen" => gen_board("fx_board_gen", @gen_source),
+      # The native build putting a module of its own in the package's ebin.
+      "fx_board_beam" => gen_board("fx_board_beam", @gen_beam),
       "fx_board_make_env" =>
         make_env_board(
           "fx_board_make_env",
@@ -150,8 +185,18 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
     %{files: files, mix_exs: mix_exs, deps: ["elixir_make"]}
   end
 
+  # A package whose native build runs `gen.sh`, a file of its own tarball.
+  defp gen_board(app, script) do
+    %{files: files, mix_exs: mix_exs} = board(app)
+
+    mix_exs =
+      String.replace(mix_exs, "compilers: [", "make_gen: \"gen.sh\",\n          compilers: [")
+
+    %{files: Map.put(files, "gen.sh", script), mix_exs: mix_exs, deps: ["elixir_make"]}
+  end
+
   @apps ~w(elixir_make fx_board fx_board_os fx_board_sneaky fx_board_tool_lib fx_board_tool_alias
-           fx_board_make_env)
+           fx_board_make_env fx_board_gen fx_board_beam)
 
   setup_all do
     root =
@@ -162,6 +207,8 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
 
     on_exit(fn -> File.rm_rf(root) end)
     proj = TracerFixtures.project(Path.join(root, "p"), @apps, deps())
+    home = Path.join(root, "hex")
+    releases = Map.new(@apps, &release(home, proj, &1))
 
     traced =
       TracerFixtures.trace(proj, @apps,
@@ -169,18 +216,37 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
         extra_env: [
           {"MIX_TARGET", "rpi4"},
           {"CROSSCOMPILE", @toolchain <> "/bin/aarch64-nerves-linux-gnu"},
-          {"NERVES_TOOLCHAIN", @toolchain}
+          {"NERVES_TOOLCHAIN", @toolchain},
+          {"FX_GEN_MODE", "fast"}
         ]
       )
 
-    %{proj: proj, traced: traced}
+    %{proj: proj, traced: traced, hex: [releases: releases, hex_home: home]}
+  end
+
+  # A Hex release of `app` whose tarball holds the files its source dir
+  # holds before anything compiles.
+  defp release(home, proj, app) do
+    dir = Path.join([proj, "deps", app])
+
+    contents =
+      for path <- Path.wildcard(Path.join(dir, "**"), match_dot: true),
+          File.regular?(path),
+          rel = Path.relative_to(path, dir),
+          rel != "hex_metadata.config",
+          into: %{},
+          do: {rel, File.read!(path)}
+
+    TracerFixtures.hex_release(home, app, Map.keys(contents), contents)
   end
 
   defp rec(term),
     do: term |> :erlang.term_to_binary([:deterministic]) |> Base.url_encode64(padding: false)
 
   defp target_verdict(ctx, app, opts \\ []) do
-    opts = Keyword.merge([target: "rpi4", roots: [{"NERVES_TOOLCHAIN", @toolchain}]], opts)
+    opts =
+      Keyword.merge([target: "rpi4", roots: [{"NERVES_TOOLCHAIN", @toolchain}]] ++ ctx.hex, opts)
+
     TracerFixtures.judge(ctx.proj, app, ctx.traced, @apps, opts)
   end
 
@@ -295,6 +361,27 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
                target: "rpi4",
                roots: [{"NERVES_TOOLCHAIN", @toolchain}]
              )
+  end
+
+  # `make` is no traced process, and the tool's own activity is set apart:
+  # what the native build wrote, from inputs nobody records, is in both
+  # builds alike, so binding the published beams to the trace's cannot
+  # tell. Nothing it generated may reach the package's beams.
+  test "a source the native build generated and the package compiled records nothing", ctx do
+    assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, "fx_board_gen")
+    assert v.reason =~ "fx_board_gen"
+  end
+
+  test "a module the native build put in the package's ebin records nothing", ctx do
+    assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, "fx_board_beam")
+    assert v.reason =~ "fx_board_beam_gen"
+  end
+
+  test "a natively built tree no verified tarball vouches for records nothing", ctx do
+    assert %{status: :skip, compile_inputs: nil} =
+             v = target_verdict(ctx, "fx_board", releases: %{})
+
+    assert v.reason =~ "source tree is not its verified tarball's"
   end
 
   test "without the Nerves roots the toolchain path is the builder's own", ctx do
