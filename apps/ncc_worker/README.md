@@ -545,6 +545,21 @@ of these skips the build:
   sha256 and the build env left `QUIC_BUILD_NIF` unset, with no traced write of it (`Rebar.reviewed_hooks/0`);
 - a trace that did not finish.
 
+One write is let through (judge revision 21): the package's own compile (never its `mix.exs`, never a dependency's,
+never another package's) writing into its own build `priv` when that is a directory of its own, not Mix's link to
+`deps/<package>/priv`, together with the probes Elixir 1.20's `File.mkdir_p/1` makes of the directories above it (the
+toolchain's `File.do_mkdir_p/1` calling `:file.make_dir/1`, and `elixir_utils:read_file_type/2`, which returns the
+file type alone). kino's `Kino.JS.__before_compile__/1` packing each module's assets into `priv/assets` is the case.
+The trace cannot see the clock, a random number or the path it was built at, so the package's closure is built a
+second time, traced, in judge mode, into a fresh build path under the system temp dir (which shares no directory with
+`/work` but `/`), at least a second later (`NccWorker.Portability.PrivRepro`). That trace must pass on its own, so a
+path the package named itself (the first build's `priv`, a directory above it) refuses there; both `priv` trees must
+hold the same paths, only directories and regular files, with the same permission bits and bytes; and the first
+build must be unchanged. A difference refuses as `compile-time priv write not reproducible: priv/<path> differs between
+two builds` (or `a second build refused (...)`). On a pass the verdict's `built_priv` names the files, which the
+static priv rules then take without a tarball entry (below). kino 0.19.1 does not pass: `:erl_tar` stamps every member
+of its asset archives with the wall clock, so the archives differ in their tar header times between any two builds.
+
 A host-read reason names the `system_info` key or environment variable, the path, and with `via` the function that
 made the call when it is not the package's own (`compile-time host read: erlang:system_info/1 (system_architecture)
 via CCPrecompiler.current_target/0 in ...`). `erlang:system_info/1` of `otp_release`, `machine`, `smp_support`, `threads` or
@@ -645,6 +660,15 @@ the outer checksum the signed registry lists: a pass here is the container's wor
 publishes nothing. The tarball is bounded before it is unpacked: at most 8 MiB, a `contents.tar.gz` that inflates to
 at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
 
+One kind of priv file passes without being in the tarball: one the package's own compile wrote into its own build
+`priv` (kino's asset archives under `priv/assets`, say), when the trace's pass lists it in its `built_priv` because
+the package's own compile alone wrote it and a second traced build wrote it byte for byte the same (judge revision
+21). `BuildSelection.static_rules/4` takes that list as `built_priv:`; rule 1 never does. Such a file is static only
+when the tarball does not carry its path at all (one the compile wrote over a file the release ships skips as
+`"ships a priv file its compile wrote over one its Hex tarball carries (priv/<path>)"`), and the caps, the native name
+and magic and the execute bit hold for it as for any other. A file not on the list is judged against the tarball as
+before, and the tarball is still needed: only the tarball can say a file is not in it.
+
 `result.json` has `"scope": "toolchain"`, `"systems": {}`, the usual top-level `deps_lock`, `package_checksum`, `declared` and
 `optional_deps`, and:
 
@@ -665,13 +689,17 @@ at most 64 MiB, counted on the bytes inflated, and at most 20,000 entries.
   "judge_revision": 5,
   "manager": "rebar3",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
-  "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []}
+  "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []},
+  "built_priv": []
 }
 ```
 
 `deps_lock`, `package_checksum`, `declared` and `compile_env` are present for `pass` and `skipped` and `null` for
 `error` (`declared` is also `null` when the lock could not be read);
-`file_manifest` only for `pass`, and those files are archived by SHA256 from `_build/host/lib/<package>`. A failed
+`file_manifest` only for `pass`, and those files are archived by SHA256 from `_build/host/lib/<package>`.
+`built_priv` is, for `pass`, the `file_manifest` paths (`"priv/<path>"`, sorted) of the priv files the trace's pass
+listed as written by the package's own compile and that the manifest ships, `[]` for none, and `null` for every other
+status; the portal judges exactly those files against this list instead of the tarball at ingest. A failed
 host compile is `status: "error"`: `result.json` is still written and the exit code is `0`, so the portal ingests the
 verdict (as a `fail` row). A compile failure is deterministic for that package, version and toolchain, so it is
 recorded, not retried. A `deps.get` failure here always exits `10` without a result and is retried — toolchain

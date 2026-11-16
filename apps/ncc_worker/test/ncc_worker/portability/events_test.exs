@@ -623,6 +623,182 @@ defmodule NccWorker.Portability.EventsTest do
     end
   end
 
+  # Judge revision 21: the package's own compile may write into its own build
+  # priv, observed with the refusal it was before (the judge allows it only
+  # when a second build reproduces that priv), and nowhere else.
+  test "the package's own compile writing into its own build priv is observed", %{
+    ctx: ctx,
+    proj: proj,
+    pkg: pkg
+  } do
+    file = Path.join(proj, "_build/host/lib/pkg/priv/assets/a.tar.gz")
+
+    assert {:observe, "priv_writes", item} =
+             Events.decide(ev("file_write", "file:open/2", %{"path" => file}), ctx, "pkg")
+
+    assert item["paths"] == ["assets/a.tar.gz"]
+    assert item["written"] == "assets/a.tar.gz"
+    assert "compile-time write outside ebin: file:open/2 " <> _ = item["refusal"]
+
+    dir = Path.join(proj, "_build/host/lib/pkg/priv/assets")
+
+    assert {:observe, "priv_writes", %{"paths" => ["assets"], "written" => nil}} =
+             Events.decide(ev("file_write", "file:make_dir/1", %{"path" => dir}), ctx, "pkg")
+
+    assert {:observe, "priv_writes", %{"written" => nil}} =
+             Events.decide(ev("file_write", "file:delete/1", %{"path" => file}), ctx, "pkg")
+
+    # A copy's source is a read first.
+    assert {:refuse, "compile-time host read: " <> _} =
+             Events.decide(
+               ev("file_write", "file:copy/2", %{
+                 "path" => file,
+                 "from" => "/etc/hosts",
+                 "from_kind" => "read"
+               }),
+               ctx,
+               "pkg"
+             )
+
+    assert {:observe, "priv_writes", %{"written" => "assets/a.tar.gz"}} =
+             Events.decide(
+               ev("file_write", "file:copy/2", %{
+                 "path" => file,
+                 "from" => Path.join(pkg, "README.md"),
+                 "from_kind" => "read"
+               }),
+               ctx,
+               "pkg"
+             )
+
+    # Never from the package's mix.exs, outside its window or for another app.
+    event = in_mix_exs(ev("file_write", "file:write_file/3", %{"path" => file}), pkg, 4)
+    assert {:refuse, "compile-time write outside ebin: " <> _} = Events.decide(event, ctx, "pkg")
+
+    for owner <- ["other", :outside, :quiet] do
+      assert {:refuse, "compile-time write outside ebin: " <> _} =
+               Events.decide(ev("file_write", "file:open/2", %{"path" => file}), ctx, owner)
+    end
+
+    # The source tree's priv is no build priv.
+    assert {:refuse, "compile-time write outside ebin: " <> _} =
+             Events.decide(
+               ev("file_write", "file:open/2", %{"path" => Path.join(pkg, "priv/a")}),
+               ctx,
+               "pkg"
+             )
+  end
+
+  test "another closure app's compile writing into the package's priv refuses",
+       %{dir: dir, proj: proj, pkg: pkg} do
+    user = Path.join([proj, "deps", "user"])
+    File.mkdir_p!(Path.join(user, "lib"))
+    report = report(dir, proj, pkg, [])
+
+    dependent = %{
+      "app" => "user",
+      "dest" => user,
+      "build" => Path.join(proj, "_build/host/lib/user"),
+      "manager" => "mix",
+      "children" => ["pkg"]
+    }
+
+    report = %{report | closure: Map.update!(report.closure, "deps", &(&1 ++ [dependent]))}
+
+    file = Path.join(proj, "_build/host/lib/pkg/priv/assets/User/a.tar.gz")
+    event = ev("file_write", "file:open/2", %{"path" => file})
+
+    # Judged for the package: the dependent's window is not the package's.
+    ctx = build(dir, proj, report)
+    assert {:observe, "priv_writes", _} = Events.decide(event, ctx, "pkg")
+    assert {:refuse, "compile-time write outside ebin: " <> _} = Events.decide(event, ctx, "user")
+
+    # Judged for the dependent: the package is a dependency, whose priv the
+    # dependent's own compile may never write.
+    ctx = %{ctx | package: "user"}
+    assert {:refuse, "compile-time write outside ebin: " <> _} = Events.decide(event, ctx, "user")
+    assert {:refuse, "compile-time write outside ebin: " <> _} = Events.decide(event, ctx, "pkg")
+  end
+
+  test "a build priv Mix linked to the package's source priv is not its own",
+       %{dir: dir, proj: proj, pkg: pkg} do
+    File.mkdir_p!(Path.join(pkg, "priv"))
+    :ok = File.ln_s(Path.join(pkg, "priv"), Path.join(proj, "_build/host/lib/pkg/priv"))
+    ctx = build(dir, proj, report(dir, proj, pkg, []))
+    file = Path.join(proj, "_build/host/lib/pkg/priv/a")
+
+    assert {:refuse, "compile-time write outside ebin: " <> _} =
+             Events.decide(ev("file_write", "file:open/2", %{"path" => file}), ctx, "pkg")
+  end
+
+  # Elixir 1.20's File.mkdir_p/1 tries :file.make_dir/1 on every directory
+  # from / down and asks File.dir?/1 of each one that is there: above the
+  # package's own priv those are probes of directories every build has,
+  # observed (allowed only with the second build), when the toolchain's own
+  # File and elixir_utils make them; anything else stays a refusal.
+  test "File.mkdir_p/1's probes above the package's own priv are observed", %{
+    ctx: ctx,
+    proj: proj
+  } do
+    mkdir_p = %{"module" => "Elixir.File", "function" => "do_mkdir_p", "arity" => 1}
+    type = %{"module" => "elixir_utils", "function" => "read_file_type", "arity" => 2}
+    above = [proj, Path.join(proj, "_build/host"), Path.join(proj, "_build/host/lib/pkg")]
+
+    for path <- above do
+      make_dir =
+        ev("file_write", "file:make_dir/1", %{"path" => path})
+        |> Map.merge(%{"caller" => mkdir_p, "caller_kind" => "toolchain"})
+
+      assert {:observe, "priv_probes", %{"refusal" => "compile-time write outside ebin: " <> _}} =
+               Events.decide(make_dir, ctx, "pkg")
+
+      dir? =
+        ev("file_read", "file:read_file_info/2", %{"path" => path})
+        |> Map.merge(%{"caller" => type, "caller_kind" => "toolchain"})
+
+      expected = if path == Path.join(proj, "_build/host/lib/pkg"), do: :ignore, else: :probe
+
+      case expected do
+        :ignore ->
+          assert :ignore = Events.decide(dir?, ctx, "pkg")
+
+        :probe ->
+          assert {:observe, "priv_probes", %{"refusal" => "compile-time host read: " <> _}} =
+                   Events.decide(dir?, ctx, "pkg")
+      end
+
+      # Another window, another caller, a package's own module of that name.
+      for {event, owner} <- [
+            {make_dir, "other"},
+            {make_dir, :outside},
+            {%{make_dir | "caller_kind" => "user"}, "pkg"},
+            {Map.delete(make_dir, "caller"), "pkg"},
+            {Map.put(dir?, "caller", mkdir_p), "pkg"},
+            {%{dir? | "caller_kind" => "user"}, "pkg"},
+            {%{dir? | "mfa" => "file:read_file_info/1"}, "pkg"}
+          ],
+          expected == :probe or event["channel"] == "file_write" do
+        assert {:refuse, _} = Events.decide(event, ctx, owner), inspect({event, owner})
+      end
+    end
+
+    # Not above the package's own priv: a sibling, the file system root,
+    # a path below priv's parent that is not on the way to it.
+    for path <- ["/", Path.join(proj, "deps"), Path.join(proj, "_build/host/lib/other")] do
+      make_dir =
+        ev("file_write", "file:make_dir/1", %{"path" => path})
+        |> Map.merge(%{"caller" => mkdir_p, "caller_kind" => "toolchain"})
+
+      assert {:refuse, _} = Events.decide(make_dir, ctx, "pkg")
+
+      dir? =
+        ev("file_read", "file:read_file_info/2", %{"path" => path})
+        |> Map.merge(%{"caller" => type, "caller_kind" => "toolchain"})
+
+      assert {:refuse, _} = Events.decide(dir?, ctx, "pkg")
+    end
+  end
+
   test "calls into a native dependency refuse in the package's window and outside every window",
        %{ctx: ctx} do
     event = ev("native_closure", "nat:open/1", %{"module" => "nat"})

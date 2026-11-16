@@ -22,6 +22,7 @@ defmodule Compatibility.Portability do
     "rebar3 build ",
     "compile-time config read: ",
     "compile-time Elixir patch dependence: ",
+    "compile-time priv write not reproducible: ",
     "manager mismatch: ",
     "dependency tree differs from its tarball: "
   ]
@@ -30,7 +31,8 @@ defmodule Compatibility.Portability do
   # judges R1 events) and R2 (a baked build path): the refusals that
   # withdraw an earlier publication. The Elixir-patch rule is R1 too (the
   # package's own compile read the Elixir version in a way that differs
-  # between patches). R3 taint, a call into a natively built
+  # between patches), and so is a write into the package's own `priv` that
+  # a second build did not reproduce. R3 taint, a call into a natively built
   # dependency and the rebar3 rules do not: they speak of a dependency or of
   # the trace's own coverage, not of the package's own compile. A native
   # library load (`NccWorker.Portability.MappedLibs`) is a refusal but, until
@@ -41,6 +43,7 @@ defmodule Compatibility.Portability do
     "compile-time write outside ebin: ",
     "compile-time tracing or system flag: ",
     "compile-time Elixir patch dependence: ",
+    "compile-time priv write not reproducible: ",
     "bakes the build path: "
   ]
 
@@ -53,6 +56,7 @@ defmodule Compatibility.Portability do
   @could_not_judge "portability could not be judged"
   @manager_mismatch "manager mismatch: "
   @tree_differs "dependency tree differs from its tarball: "
+  @priv_not_reproduced "compile-time priv write not reproducible: "
 
   @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
@@ -97,6 +101,16 @@ defmodule Compatibility.Portability do
   """
   @spec tree_differs() :: String.t()
   def tree_differs, do: @tree_differs
+
+  @doc """
+  The prefix of a refusal of a package whose own compile wrote into its own
+  build `priv`, when a second traced build did not write the same bytes
+  (judge revision 21, `NccWorker.Portability`). It withdraws: it speaks of
+  what the package's own compile wrote, as the write refusal it replaces
+  did.
+  """
+  @spec priv_not_reproduced() :: String.t()
+  def priv_not_reproduced, do: @priv_not_reproduced
 
   @doc "Whether `reason` is a trace refusal (and not a rule 1 reason or could-not-judge)."
   @spec refusal?(term()) :: boolean()

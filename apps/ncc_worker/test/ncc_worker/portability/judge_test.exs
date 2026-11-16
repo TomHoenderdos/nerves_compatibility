@@ -4,7 +4,7 @@ defmodule NccWorker.Portability.JudgeTest do
   use ExUnit.Case, async: true, group: :real_vm
 
   alias NccWorker.Portability
-  alias NccWorker.Portability.{Context, Rebar}
+  alias NccWorker.Portability.{Context, PrivRepro, Rebar}
   alias NccWorker.Tracer.Report
 
   @moduletag :tmp_dir
@@ -130,6 +130,58 @@ defmodule NccWorker.Portability.JudgeTest do
   end
 
   @snap %{entries: %{}, truncated: false}
+
+  # Judge revision 21: the package's own compile writing into its own build
+  # priv. The judge alone never passes it: the pass waits for the second
+  # build (`Portability.run/3`, `PrivRepro`), and a firmware target's
+  # trace, which has none, refuses it as before.
+  describe "the package's own priv writes" do
+    defp priv_write(proj, ts) do
+      path = Path.join(proj, "_build/host/lib/pkg/priv/assets/a.txt")
+
+      %{
+        event(ts, "file:write_file/3", Path.join(proj, "deps/pkg/lib/pkg.ex"), "file_write")
+        | "arg" => %{"path" => path}
+      }
+    end
+
+    defp with_priv_file(proj) do
+      File.mkdir_p!(Path.join(proj, "_build/host/lib/pkg/priv/assets"))
+      File.write!(Path.join(proj, "_build/host/lib/pkg/priv/assets/a.txt"), "a")
+    end
+
+    test "hold the pass for a second build", %{proj: proj} do
+      with_priv_file(proj)
+      r = report(proj, %{events: [priv_write(proj, 35)]})
+      v = judge(proj, r, nif_waiver: true)
+
+      assert %{status: :skip, reason: @cnj, compile_env: nil, compile_inputs: nil} = v
+      assert %{built_priv: ["assets/a.txt"], compile_inputs: [], dir: dir} = v.priv_repro
+      assert dir =~ "_build/host/lib/pkg/priv"
+      assert v.observations["problems"] == [PrivRepro.hold_problem()]
+      assert [%{"written" => "assets/a.txt", "owner" => "pkg"}] = v.observations["priv_writes"]
+      refute Map.has_key?(v.observations["priv_writes"] |> hd(), "refusal")
+
+      # Without such a write, nothing is held.
+      assert %{status: :pass, built_priv: []} = judge(proj, report(proj), nif_waiver: true)
+    end
+
+    test "refuse in a dependency's window", %{proj: proj} do
+      with_priv_file(proj)
+      r = report(proj, %{events: [priv_write(proj, 15)]})
+
+      assert %{status: :skip, reason: "closure dependency observed the host: dep" <> _} =
+               judge(proj, r, nif_waiver: true)
+    end
+
+    test "refuse in a firmware target's trace", %{proj: proj} do
+      with_priv_file(proj)
+      r = report(proj, %{events: [priv_write(proj, 35)]})
+
+      assert %{status: :skip, reason: "compile-time write outside ebin: file:write_file/3 " <> _} =
+               judge(proj, r, nif_waiver: true, target: "rpi4")
+    end
+  end
 
   describe "the mapped-library check" do
     defp with_libs(r, libs), do: %{r | ending: %{r.ending | "mapped_libs" => libs}}
@@ -2547,9 +2599,9 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
     end
 
-    test "the judge revision is 19, 20 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 19
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 20
+    test "the judge revision is 21, 22 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 21
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 22
 
       # The portal withdraws only on refusals of a judge at least this new.
       # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4

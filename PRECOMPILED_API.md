@@ -568,12 +568,21 @@ What it lists:
   the tarball it fetches itself: its SHA-256 must be the outer checksum the
   signed Hex registry lists, which must also be the build's
   `package_checksum`, and each file must hash to its manifest `sha256`. A
-  build that fails publishes none of its files, beams included. A package
-  whose `priv` is anything else gets a `skipped` toolchain build.
+  priv file the package's own compile wrote into its own build `priv` (such
+  as the asset archives kino writes there) is published too, when the
+  compile-time trace below shows it came from the package's own compile
+  alone and a second traced build wrote it byte for byte the same (judge
+  revision 21). Such a file is never in the tarball: the tarball must not
+  carry its path at all, it passes the same native-code, executable and cap
+  rules as any other, and the build lists it in its `built_priv`, by its
+  manifest path, so the portal checks it against that list rather than the
+  tarball. A build that fails publishes none of its files, beams included.
+  A package whose `priv` is anything else gets a `skipped` toolchain build.
   The builder also recompiles the package's dependency closure under a
   compile-time trace and skips any build whose compile read the build host
   (its OS, environment, programs or files outside the dependency closure),
-  wrote anything outside its own `ebin`, baked the build path into code, or
+  wrote anything outside its own `ebin` (its own `priv` aside, as above),
+  baked the build path into code, or
   depends on a package whose own compile did, and any build whose trace did
   not finish; its beams are the traced compile's. What the package does at
   runtime does not count: a package that runs programs, opens ports, looks

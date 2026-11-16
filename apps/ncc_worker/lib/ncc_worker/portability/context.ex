@@ -34,7 +34,8 @@ defmodule NccWorker.Portability.Context do
   under `priv`. Never the project's own files: they stand for the consumer
   project. A natively built dependency's `ebin` is not readable either; the
   judge decides a read of it (`native_ebin_app/2`). Writes are allowed only
-  under the owning window's dependency's `ebin`.
+  under the owning window's dependency's `ebin`, and, for the package's own
+  compile, under its own build `priv` (`own_priv/2`, judge revision 21).
 
   The Hex file list is the `metadata.config` of the dependency's tarball in
   the run's Hex cache, used only when its outer checksum is the lock's
@@ -438,6 +439,66 @@ defmodule NccWorker.Portability.Context do
   def writable?(ctx, path, owner) do
     is_binary(path) and dep?(ctx, owner) and under?(resolve(ctx, path, owner), ebin(ctx, owner))
   end
+
+  @doc """
+  The package's own build `priv` (`_build/<env>/lib/<package>/priv`), real
+  path, when it is a directory of its own: `nil` for any other app, and
+  when the build's `priv` is a link (Mix links it to `deps/<d>/priv` when
+  the package ships one), since a write through that link lands in the
+  package's source tree. A `priv` that is not there resolves to its own
+  path. Judge revision 21: the package's own compile may write here
+  (`NccWorker.Portability.Events`).
+  """
+  @spec own_priv(t(), term()) :: String.t() | nil
+  def own_priv(%__MODULE__{package: package} = ctx, app) when is_binary(app) and app == package do
+    with %{build: build} when is_binary(build) <- Map.get(ctx.deps, app),
+         priv = Path.join(build, "priv"),
+         ^priv <- realpath(priv) do
+      if Enum.any?(Map.values(ctx.deps), &under?(priv, &1.dest)), do: nil, else: priv
+    else
+      _ -> nil
+    end
+  end
+
+  def own_priv(_ctx, _app), do: nil
+
+  @doc """
+  `path`, written in `owner`'s window, as a path relative to the package's
+  own build `priv` (`own_priv/2`), `""` for `priv` itself; `nil` when it is
+  not there or `owner` is not the package.
+  """
+  @spec own_priv_path(t(), term(), term()) :: String.t() | nil
+  def own_priv_path(ctx, path, owner) when is_binary(path) do
+    with priv when is_binary(priv) <- own_priv(ctx, owner),
+         real when is_binary(real) <- resolve(ctx, path, owner),
+         true <- under?(real, priv) do
+      real |> Path.split() |> Enum.drop(length(Path.split(priv))) |> rel_path()
+    else
+      _ -> nil
+    end
+  end
+
+  def own_priv_path(_ctx, _path, _owner), do: nil
+
+  @doc """
+  Whether `path`, named in `owner`'s window, is the package's own build dir
+  or one of the directories above it, so above its own `priv`: where
+  `File.mkdir_p/1` walks from `/` down to `priv` on Elixir 1.20. Every
+  machine that builds the package has those directories, so whether one is
+  a directory is answered the same everywhere; anything more a read could
+  learn there is not. `false` for any other app and for `/`.
+  """
+  @spec above_own_priv?(t(), term(), term()) :: boolean()
+  def above_own_priv?(ctx, path, owner) when is_binary(path) do
+    with priv when is_binary(priv) <- own_priv(ctx, owner),
+         real when is_binary(real) <- resolve(ctx, path, owner) do
+      real != priv and under?(priv, real)
+    else
+      _ -> false
+    end
+  end
+
+  def above_own_priv?(_ctx, _path, _owner), do: false
 
   @doc "An absolute path to a regular file in some closure dependency's source dir."
   @spec closure_file?(t(), term()) :: boolean()

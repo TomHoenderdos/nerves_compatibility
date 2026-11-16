@@ -13,7 +13,8 @@ defmodule Compatibility.PortabilityTest do
           "bakes the build path: Elixir.X \"/p/deps/x\"",
           "closure dependency observed the host: d (compile-time host read: os:type/0)",
           "rebar3 build runs pre_hooks",
-          "compile-time native library load: /tmp/evil.so"
+          "compile-time native library load: /tmp/evil.so",
+          "compile-time priv write not reproducible: priv/assets/x.tar.gz differs"
         ] do
       assert Portability.refusal?(reason), reason
     end
@@ -32,6 +33,7 @@ defmodule Compatibility.PortabilityTest do
                "compile-time write outside ebin: ",
                "compile-time tracing or system flag: ",
                "compile-time Elixir patch dependence: ",
+               "compile-time priv write not reproducible: ",
                "bakes the build path: "
              ])
 
@@ -47,6 +49,11 @@ defmodule Compatibility.PortabilityTest do
 
     assert Portability.withdraws?("compile-time host read: os:type/0")
     assert Portability.withdraws?("bakes the build path: Elixir.X \"<root>\"")
+
+    assert Portability.withdraws?(
+             Portability.priv_not_reproduced() <> "priv/assets/x.tar.gz differs"
+           )
+
     refute Portability.withdraws?(nil)
   end
 

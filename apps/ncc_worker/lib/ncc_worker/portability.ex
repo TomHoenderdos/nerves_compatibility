@@ -39,6 +39,16 @@ defmodule NccWorker.Portability do
   dependency is clean and the read came after its window, otherwise the
   refusal of the window it fell in (`beam_reads/5`, judge revision 15).
 
+  The package's own compile writing into its own build `priv`, and the
+  probes `File.mkdir_p/1` makes of the directories above it (`Events`'
+  `priv_writes` and `priv_probes`, judge revision 21), refuse nothing here,
+  but a verdict that would pass with any of them is held as could-not-judge
+  (`PrivRepro.hold/2`): only `run/3` passes it, after a second traced build
+  wrote the same `priv` (`PrivRepro.settle/6`). Then the verdict carries
+  `built_priv`, the files the package's own compile wrote there, relative
+  to `priv`; every other pass carries `[]`. In a dependency's window, and in
+  a firmware target's trace, they refuse as they always did.
+
   Compile-time config reads (R5) and Elixir-version reads are judged over the
   package's whole closure (`ConfigReads`, `ElixirVersion`): their refusals
   belong to the window they fell in, so in a dependency's window they taint
@@ -89,6 +99,7 @@ defmodule NccWorker.Portability do
     ElixirVersion,
     Events,
     MappedLibs,
+    PrivRepro,
     Probes,
     Rebar,
     Trees
@@ -122,7 +133,9 @@ defmodule NccWorker.Portability do
     "env_writes" => 50,
     "config_writes" => 50,
     "native_build" => 50,
-    "target_reads" => 50
+    "target_reads" => 50,
+    "priv_writes" => 50,
+    "priv_probes" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -185,8 +198,15 @@ defmodule NccWorker.Portability do
   # write, a write with no source file of its own has recorded inputs when
   # every earlier read in its VM is recorded, and a firmware target's trace
   # is judged for its compile inputs (`target_inputs/3`) (bumped by two
-  # while `makefile_rule2` exists).
-  @judge_revision 19
+  # while `makefile_rule2` exists). 21: the package's own compile may write
+  # into its own build `priv` (not a link to its sources), and
+  # `File.mkdir_p/1` may ask the directories above that `priv` whether they
+  # are directories (kino's `Kino.JS.__before_compile__/1`), when a second
+  # traced build at a build path that shares no directory with the first
+  # writes that `priv` byte for byte the same (`PrivRepro`); its files are
+  # the verdict's `built_priv`, which the static priv rules take without a
+  # tarball entry (bumped by two while `makefile_rule2` exists).
+  @judge_revision 21
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -278,9 +298,22 @@ defmodule NccWorker.Portability do
 
     project_dir
     |> guarded_run(package, opts)
+    |> PrivRepro.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> put_stat("wall_ms", System.monotonic_time(:millisecond) - started)
     |> put_transient()
   end
+
+  # The digest the tracer takes of a build dir when its window closes, taken
+  # again now (`PrivRepro`: the first build must not change while the second
+  # one runs).
+  defp build_digest(dir) when is_binary(dir) do
+    case digest_now(dir, @digest_timeout_ms) do
+      {:ok, digest, _files} -> {:ok, digest}
+      {:error, why} -> {:error, why}
+    end
+  end
+
+  defp build_digest(_dir), do: {:error, :no_build_dir}
 
   @doc """
   A firmware target's compile-time inputs (`NccWorker.FirmwareInputs`): the
@@ -312,7 +345,8 @@ defmodule NccWorker.Portability do
     stats = Map.get(obs, "trace_stats") || %{}
 
     transient =
-      stats["judge_compile"] != "finished" or stats["report_over_budget"] == true
+      stats["judge_compile"] != "finished" or stats["report_over_budget"] == true or
+        stats["priv_repro"] == "not_finished"
 
     put_stat(verdict, "transient", transient)
   end
@@ -1038,26 +1072,46 @@ defmodule NccWorker.Portability do
   defp targeted(:ignore, _event, _vm, _mode), do: :ignore
 
   defp targeted(decision, event, vm, %{tool_modules: tools}) do
-    tool? = tool_event?(event, tools)
+    if tool_event?(event, tools),
+      do: tool_decision(decision, event, vm),
+      else: package_decision(decision, event, vm)
+  end
 
+  defp tool_decision(decision, event, vm) do
     cond do
-      tool? and event["channel"] == "integrity" ->
+      event["channel"] == "integrity" ->
         decision
 
-      tool? and event["channel"] in @tool_never_writes ->
+      event["channel"] in @tool_never_writes ->
         {:refuse, "compile-time write from the native build tool's frame: #{event["mfa"]}"}
 
-      tool? ->
+      true ->
         {:observe, "native_build",
          %{"mfa" => event["mfa"], "module" => user_module(event), "ts" => event["ts"], "vm" => vm}}
+    end
+  end
 
+  defp package_decision(decision, event, vm) do
+    cond do
       target_read?(event) and match?({:refuse, _}, decision) ->
         {:observe, "target_reads", %{"mfa" => event["mfa"], "ts" => event["ts"], "vm" => vm}}
+
+      own_priv?(decision) ->
+        {:refuse, elem(decision, 2)["refusal"]}
 
       true ->
         decision
     end
   end
+
+  # A firmware target's trace has no second build (`PrivRepro`), so the
+  # package's own priv writes and the probes above that priv refuse there
+  # as they did before judge revision 21.
+  defp own_priv?({:observe, kind, %{"refusal" => refusal}})
+       when kind in ["priv_writes", "priv_probes"] and is_binary(refusal),
+       do: true
+
+  defp own_priv?(_decision), do: false
 
   # The tool's own code (its frame is the topmost one that is not the
   # toolchain's), or Mix's task runner calling into it with no package frame
@@ -1719,7 +1773,7 @@ defmodule NccWorker.Portability do
 
     status = if reason, do: :skip, else: :pass
 
-    %{
+    verdict = %{
       status: status,
       reason: reason,
       observations: observations(facts, problems),
@@ -1727,7 +1781,42 @@ defmodule NccWorker.Portability do
       compile_inputs: if(status == :pass, do: facts.inputs),
       manager: Context.manager(facts.ctx, facts.ctx.package)
     }
+
+    if status == :pass, do: PrivRepro.hold(verdict, own_priv(facts)), else: verdict
   end
+
+  # Judge revision 21: what the package's own compile did in its own build
+  # `priv` and above it (`Events`' `priv_writes` and `priv_probes`). `built`
+  # is every file a write set the bytes of that is a regular file in that
+  # `priv` now, relative to it.
+  defp own_priv(%{ctx: ctx, decided: decided}) do
+    items =
+      for {owner, {:observe, kind, item}} <- decided,
+          owner == ctx.package,
+          kind in ["priv_writes", "priv_probes"],
+          do: item
+
+    dir = Context.own_priv(ctx, ctx.package)
+
+    built =
+      for %{"written" => rel} <- items,
+          is_binary(rel) and rel != "" and is_binary(dir),
+          regular_file?(Path.join(dir, rel)),
+          uniq: true,
+          do: rel
+
+    %{
+      observed?: items != [],
+      dir: dir,
+      build: Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build,
+      built: Enum.sort(built)
+    }
+  end
+
+  # A path the trace named under the package's own build priv, checked
+  # without following a link.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp regular_file?(path), do: match?({:ok, %File.Stat{type: :regular}}, File.lstat(path))
 
   # A firmware target's verdict (`target_inputs/3`): only whether the trace
   # recorded every compile-time input of the package's closure. The trace

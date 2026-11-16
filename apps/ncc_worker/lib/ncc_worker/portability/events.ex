@@ -77,7 +77,18 @@ defmodule NccWorker.Portability.Events do
     * Writes: only under the window's own `ebin` (`Context.writable?/3`); a
       rename's source too, a copy's source must be readable. Any symlink or
       hard link refuses, even inside `ebin`: the judge resolves paths after
-      the build, so a link there can stand for a read of any target.
+      the build, so a link there can stand for a read of any target. The
+      package's own compile (its window, never its `mix.exs`) may also
+      write into its own build `priv` when that is a directory of its own
+      (`Context.own_priv/2`); such a write is observed as `priv_writes`,
+      with the refusal it would be, since the judge allows it only after a
+      second build (`NccWorker.Portability.PrivRepro`, judge revision 21).
+      So is `File.mkdir_p/1` on Elixir 1.20 asking each directory above that
+      `priv` whether it is one (`priv_probes`): `:file.make_dir/1` from the
+      toolchain's `File.do_mkdir_p/1`, and `file:read_file_info/2` from the
+      toolchain's `elixir_utils:read_file_type/2`, which hands its caller the
+      file type alone. Anywhere else these refuse as before, and a write
+      into another package's `priv` always does.
     * A user `set_cwd` refuses: it changes what every later relative path
       names.
     * A call into a natively built dependency refuses in the package's
@@ -138,6 +149,15 @@ defmodule NccWorker.Portability.Events do
   @epp_server ~w(server init_server)
   @max_mix_exs_bytes 1024 * 1024
   @mix_paths ~w(build_path app_path compile_path)
+  # Judge revision 21: the calls `File.mkdir_p/1` makes above the package's
+  # own `priv`, and the writes that set no file's bytes (a directory, a
+  # removal, a file's metadata).
+  @mkdir_p {"Elixir.File", "do_mkdir_p", 1}
+  @type_probe {"elixir_utils", "read_file_type", 2}
+  @not_content ~w(file:make_dir/1 prim_file:make_dir/1 file:del_dir/1 file:del_dir_r/1
+                  prim_file:del_dir/1 file:delete/1 prim_file:delete/1 file:write_file_info/2
+                  file:write_file_info/3 prim_file:write_file_info/2 prim_file:write_file_info/3
+                  file:change_mode/2 file:change_time/2 file:change_time/3)
 
   # Compile-time env reads are build inputs (compile-time inputs spec):
   # observed with what they returned, never refused. os:getenv/2 reaches
@@ -450,10 +470,28 @@ defmodule NccWorker.Portability.Events do
       app = Context.native_ebin_app(ctx, real) ->
         {:observe, "native_beam_reads", native_beam_read(e, app, host_read(e, path))}
 
+      type_probe?(e, ctx, owner, path) ->
+        {:observe, "priv_probes", Map.put(summary(e), "refusal", host_read(e, path))}
+
       true ->
         {:refuse, host_read(e, path)}
     end
   end
+
+  # Judge revision 21: whether a directory above the package's own `priv`
+  # is one (`Context.above_own_priv?/3`), asked by the package's own compile
+  # through the toolchain's `elixir_utils:read_file_type/2` (`File.dir?/1`,
+  # which `File.mkdir_p/1` calls on each of them), which hands its caller
+  # the file type alone, never a size, a time or an owner. Observed, with
+  # the refusal it was before: allowed only together with the second build
+  # (`NccWorker.Portability`), whose build dir has none of these
+  # directories, so a path the package named itself is refused there.
+  defp type_probe?(%{"mfa" => "file:read_file_info/2"} = e, ctx, owner, path) do
+    own_compile?(e, ctx, owner) and toolchain_caller?(e, @type_probe) and
+      Context.above_own_priv?(ctx, path, owner)
+  end
+
+  defp type_probe?(_e, _ctx, _owner, _path), do: false
 
   # Judge revision 15: a read in a natively built dependency's `ebin` (the
   # 1.20 type checker reading a remote module's beam) is the judge's to
@@ -491,13 +529,76 @@ defmodule NccWorker.Portability.Events do
 
   defp file_write(%{"arg" => arg} = e, ctx, owner) do
     targets = [arg["path"] | if(arg["from_kind"] == "write", do: [arg["from"]], else: [])]
+    own = own_compile?(e, ctx, owner)
 
     # Filtered, not found: a missing (`nil`) target is itself the bad one.
     case Enum.reject(targets, &Context.writable?(ctx, &1, owner)) do
-      [] -> copy_source(e, ctx, owner)
-      [bad | _] -> {:refuse, "compile-time write outside ebin: #{e["mfa"]} #{show(bad)}"}
+      [] ->
+        copy_source(e, ctx, owner)
+
+      outside ->
+        cond do
+          own and mkdir_p_probe?(e, ctx, owner) ->
+            {:observe, "priv_probes", Map.put(summary(e), "refusal", outside_ebin(e, outside))}
+
+          own and Enum.all?(outside, &Context.own_priv_path(ctx, &1, owner)) ->
+            own_priv_write(e, ctx, owner, outside)
+
+          true ->
+            {:refuse, outside_ebin(e, outside)}
+        end
     end
   end
+
+  defp outside_ebin(e, [bad | _]), do: "compile-time write outside ebin: #{e["mfa"]} #{show(bad)}"
+
+  # Judge revision 21: the package's own compile writing into its own build
+  # `priv` (`Context.own_priv/2`; kino's `Kino.JS.__before_compile__/1`
+  # packing each module's assets there). Observed, with the refusal it was
+  # before: the judge allows it only when a second build reproduces that
+  # `priv` byte for byte (`NccWorker.Portability`), and refuses it anywhere
+  # else. A copy's source is judged as a read first. `"path"` is the file
+  # relative to `priv`, for every target the write names.
+  defp own_priv_write(e, ctx, owner, outside) do
+    case copy_source(e, ctx, owner) do
+      :ignore ->
+        paths = for t <- outside, do: Context.own_priv_path(ctx, t, owner)
+        written = if e["mfa"] in @not_content, do: nil, else: own_target(e, ctx, owner)
+
+        {:observe, "priv_writes",
+         Map.merge(summary(e), %{
+           "paths" => paths,
+           "written" => written,
+           "refusal" => outside_ebin(e, outside)
+         })}
+
+      other ->
+        other
+    end
+  end
+
+  # The file whose bytes the write sets: its target (a rename's or a copy's
+  # destination), when that is in the package's own `priv`.
+  defp own_target(%{"arg" => %{"path" => path}}, ctx, owner),
+    do: Context.own_priv_path(ctx, path, owner)
+
+  # Only the package's own compile, never its `mix.exs`, which Mix evaluates
+  # outside any compile, and never a dependency's window.
+  defp own_compile?(e, ctx, owner),
+    do: owner == ctx.package and Context.mix_exs(ctx, e, owner) == nil
+
+  # `File.mkdir_p/1` (Elixir 1.20) tries `:file.make_dir/1` on every
+  # directory from `/` down: above the package's own `priv` each one is
+  # there already, so the call creates nothing and only says it exists. Only
+  # the toolchain's own `File` makes it (`caller_kind`: never a package's
+  # module of that name).
+  defp mkdir_p_probe?(%{"mfa" => "file:make_dir/1", "arg" => %{"path" => path}} = e, ctx, owner),
+    do: toolchain_caller?(e, @mkdir_p) and Context.above_own_priv?(ctx, path, owner)
+
+  defp mkdir_p_probe?(_e, _ctx, _owner), do: false
+
+  defp toolchain_caller?(%{"caller_kind" => "toolchain"} = e, mfa), do: caller?(e, mfa)
+  defp toolchain_caller?(_e, _mfa), do: false
 
   defp copy_source(%{"arg" => %{"from_kind" => "read", "from" => from}} = e, ctx, owner),
     do: file_read(%{e | "arg" => %{"path" => from}}, ctx, owner)
