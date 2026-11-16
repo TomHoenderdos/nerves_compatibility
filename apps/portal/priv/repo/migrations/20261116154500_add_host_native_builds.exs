@@ -105,19 +105,16 @@ defmodule Portal.Repo.Migrations.AddHostNativeBuilds do
       )
     end
 
-    create(index(:catalog_artifact_memberships, [:host_native_build_id]))
-
-    create(
-      unique_index(:catalog_artifact_memberships, [:host_native_build_id, :sha256],
-        name: "catalog_artifact_memberships_host_native_build_sha256_index"
-      )
-    )
-
     drop(constraint(:catalog_artifact_memberships, :one_owner))
 
+    # NOT VALID: checked for every new or updated row from here on, without
+    # scanning the existing millions under the ACCESS EXCLUSIVE lock this
+    # transaction holds. `AddHostNativeMembershipIndexes` builds the indexes
+    # concurrently and validates it outside any transaction.
     create(
       constraint(:catalog_artifact_memberships, :one_owner,
-        check: "num_nonnulls(system_result_id, toolchain_build_id, host_native_build_id) = 1"
+        check: "num_nonnulls(system_result_id, toolchain_build_id, host_native_build_id) = 1",
+        validate: false
       )
     )
   end
@@ -132,14 +129,6 @@ defmodule Portal.Repo.Migrations.AddHostNativeBuilds do
         check: "num_nonnulls(system_result_id, toolchain_build_id) = 1"
       )
     )
-
-    drop(
-      index(:catalog_artifact_memberships, [:host_native_build_id, :sha256],
-        name: "catalog_artifact_memberships_host_native_build_sha256_index"
-      )
-    )
-
-    drop(index(:catalog_artifact_memberships, [:host_native_build_id]))
 
     alter table(:catalog_artifact_memberships) do
       remove(:host_native_build_id)
