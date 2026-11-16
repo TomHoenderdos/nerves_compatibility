@@ -1262,38 +1262,90 @@ defmodule Portal.Catalog do
                                "(s.compile_env_rule = 1 AND s.compile_env IS NOT NULL " <>
                                  "AND s.system_pkg = 'pure_elixir')"
                              ))
-  @withheld_toolchain_clause @withheld_lock_clause
-                             |> String.replace("$L", "t.deps_lock")
-                             |> String.replace(
-                               "$E",
-                               "(t.compile_env_rule = 1 AND t.compile_env IS NOT NULL " <>
-                                 "AND t.compile_env_run_id = t.run_id)"
-                             )
+  withheld_lock_clause = @withheld_lock_clause
 
-  # `Withheld.config_variant_served?/2` for the toolchain build `t` of the
-  # package `p`: a default always; a named variant only when it records its
-  # own config reads and its default (same version, toolchain, builder
-  # version and optional-deps variant) is served, that is a pass, not
-  # revoked and not withheld (`@withheld_toolchain_clause` for that row).
-  # Every selector that applies `@withheld_toolchain_clause` applies this
-  # beside it.
-  @withheld_default_clause @withheld_lock_clause
-                           |> String.replace("$L", "dd.deps_lock")
-                           |> String.replace("$E", records_config_reads.("dd"))
-  @config_variant_served_clause """
-  (t.config_variant = 'default'
-   OR (#{records_config_reads.("t")}
-       AND EXISTS (SELECT 1 FROM catalog_toolchain_builds dd
-                   WHERE dd.package_id = t.package_id
-                     AND dd.version = t.version
-                     AND dd.toolchain = t.toolchain
-                     AND dd.builder_version = t.builder_version
-                     AND dd.variant = t.variant
-                     AND dd.config_variant = 'default'
-                     AND dd.status = 'pass'
-                     AND dd.revoked_at IS NULL
-                     AND #{@withheld_default_clause})))
+  # `Withheld.withheld?/4` for the toolchain build aliased `table`.
+  withheld_toolchain = fn table ->
+    withheld_lock_clause
+    |> String.replace("$L", "#{table}.deps_lock")
+    |> String.replace("$E", records_config_reads.(table))
+  end
+
+  # `Withheld.config_variant_served?/2` for the toolchain build aliased
+  # `table` of the package `p`: a default always; a named variant only when
+  # it records its own config reads and its default (same version,
+  # toolchain, builder version and optional-deps variant) is served, that
+  # is a pass, not revoked and not withheld.
+  withheld_default_clause = withheld_toolchain.("dd")
+
+  config_variant_served = fn table ->
+    """
+    (#{table}.config_variant = 'default'
+     OR (#{records_config_reads.(table)}
+         AND EXISTS (SELECT 1 FROM catalog_toolchain_builds dd
+                     WHERE dd.package_id = #{table}.package_id
+                       AND dd.version = #{table}.version
+                       AND dd.toolchain = #{table}.toolchain
+                       AND dd.builder_version = #{table}.builder_version
+                       AND dd.variant = #{table}.variant
+                       AND dd.config_variant = 'default'
+                       AND dd.status = 'pass'
+                       AND dd.revoked_at IS NULL
+                       AND #{withheld_default_clause})))
+    """
+  end
+
+  # The one predicate that serves a toolchain build aliased `table` of the
+  # package `p` (`$W` the withheld list), as `serve_toolchain/3` applies it
+  # in Elixir: a pass, not revoked, of a known variant, not withheld and, for
+  # a named config variant, served beside its default.
+  served_toolchain = fn table ->
+    "#{table}.revoked_at IS NULL AND #{table}.status = 'pass' " <>
+      "AND #{table}.variant IN #{ToolchainBuild.variants_sql()} " <>
+      "AND #{withheld_toolchain.(table)} AND #{config_variant_served.(table)}"
+  end
+
+  # The toolchain builds a selector of published files judges, aliased `t`,
+  # for the row `r` of the package `p`: the row itself, and each of its
+  # earlier builds (`ToolchainBuild.EarlierBuilds`) as a virtual row, as
+  # `EarlierBuilds.virtual_rows/1` builds them: the row's id, identity and
+  # served-ness, and the earlier build's own lock, config reads and file
+  # manifest, only beside a row that is served itself and never of the
+  # row's own lock. `@served_toolchain_clause` then judges every one of
+  # them by the same predicate. Every selector of published toolchain files
+  # selects them this way.
+  @served_toolchain_builds """
+  CROSS JOIN LATERAL (
+    SELECT r.id, r.package_id, r.version, r.toolchain, r.builder_version, r.variant,
+           r.config_variant, r.status, r.revoked_at, r.deps_lock,
+           to_jsonb(r.compile_env) AS compile_env, r.compile_env_rule,
+           r.compile_env_run_id, r.run_id, r.file_manifest
+    UNION ALL
+    SELECT r.id, r.package_id, r.version, r.toolchain, r.builder_version, r.variant,
+           r.config_variant, r.status, r.revoked_at, e->'deps_lock',
+           CASE WHEN jsonb_typeof(e->'compile_env') = 'array' THEN e->'compile_env' END,
+           CASE WHEN jsonb_typeof(e->'compile_env_rule') = 'number'
+                 AND e->>'compile_env_rule' ~ '^[0-9]{1,9}$'
+                THEN (e->>'compile_env_rule')::integer END,
+           e->>'compile_env_run_id', e->>'run_id', e->'file_manifest'
+    FROM unnest(r.earlier_builds) AS e
+    WHERE e->'deps_lock' IS DISTINCT FROM r.deps_lock
+      AND #{served_toolchain.("r")}
+  ) t
   """
+  @served_toolchain_clause served_toolchain.("t")
+
+  # Whether the toolchain build aliased `table` lists `sha` in its own file
+  # manifest, under either key it publishes: a row's memberships also hold
+  # its earlier builds' files, which only those builds publish.
+  in_own_manifest = fn table, sha ->
+    "(#{table}.file_manifest @> jsonb_build_object('ebin', " <>
+      "jsonb_build_array(jsonb_build_object('sha256', #{sha}))) " <>
+      "OR #{table}.file_manifest @> jsonb_build_object('priv', " <>
+      "jsonb_build_array(jsonb_build_object('sha256', #{sha}))))"
+  end
+
+  @served_toolchain_file_clause in_own_manifest.("t", "m.sha256")
 
   @packages_with_precompiled_files_sql_template """
   SELECT p.name
@@ -1312,13 +1364,11 @@ defmodule Portal.Catalog do
   UNION
   SELECT p.name
   FROM catalog_packages p
-  JOIN catalog_toolchain_builds t ON t.package_id = p.id
-  JOIN catalog_artifact_memberships m ON m.toolchain_build_id = t.id
-  WHERE t.revoked_at IS NULL
-    AND t.status = 'pass'
-    AND t.variant IN #{ToolchainBuild.variants_sql()}
-    AND #{@withheld_toolchain_clause}
-    AND #{@config_variant_served_clause}
+  JOIN catalog_toolchain_builds r ON r.package_id = p.id
+  #{@served_toolchain_builds}
+  WHERE #{@served_toolchain_clause}
+    AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m
+                WHERE m.toolchain_build_id = r.id AND #{@served_toolchain_file_clause})
   ORDER BY 1
   """
   @packages_with_precompiled_files_sql String.replace(
@@ -1335,7 +1385,9 @@ defmodule Portal.Catalog do
   result or build whose closure has a withheld package
   (`Portal.Precompiled.Withheld`) does not count, nor does a named config
   variant that is not served beside its default
-  (`Portal.Precompiled.Withheld.config_variant_served?/2`).
+  (`Portal.Precompiled.Withheld.config_variant_served?/2`). A toolchain
+  build's earlier builds count as virtual rows of it, by the same predicate
+  (`@served_toolchain_builds`).
   """
   @spec packages_with_precompiled_files() :: [String.t()]
   def packages_with_precompiled_files do
@@ -1775,13 +1827,9 @@ defmodule Portal.Catalog do
                                      |> String.replace("$BACKFILL_PACKAGES", "$16")
                                      |> String.replace("$BACKFILL_VERSIONS", "$17")
 
-  # `@withheld_toolchain_clause` for the default row aliased `d` (its package
-  # `p`, the withheld list in $7).
-  default_not_withheld =
-    @withheld_lock_clause
-    |> String.replace("$W", "$7")
-    |> String.replace("$L", "d.deps_lock")
-    |> String.replace("$E", records_config_reads.("d"))
+  # `withheld_toolchain` for the default row aliased `d` (its package `p`,
+  # the withheld list in $7).
+  default_not_withheld = withheld_toolchain.("d") |> String.replace("$W", "$7")
 
   # Named config variants wanted (precompiled portability spec, R7): for a
   # `default` row that is a served pass recording its config reads, one
@@ -1789,8 +1837,8 @@ defmodule Portal.Catalog do
   # pairs the row's `compile_env` read is non-empty and the first of its
   # kind in rank order (`Compatibility.ConfigVariants.wanted/2`, which a test
   # holds this to). Served: not revoked and not withheld
-  # (`@withheld_toolchain_clause`, which for a row recording its config reads
-  # asks only for a recorded lock). $9: config variants can be stored
+  # (`withheld_toolchain`, which for a row recording its config reads asks
+  # only for a recorded lock). $9: config variants can be stored
   # (`ToolchainIdentity`) and some are enabled; $10..$14:
   # `ConfigVariants.rows/1`, column-wise. A live row of the variant's own
   # identity removes it, as for a default. Never a refresh: a named variant
@@ -2540,14 +2588,12 @@ defmodule Portal.Catalog do
   UNION ALL
   SELECT 1
   FROM catalog_artifact_memberships m
-  JOIN catalog_toolchain_builds t ON t.id = m.toolchain_build_id
-  JOIN catalog_packages p ON p.id = t.package_id
+  JOIN catalog_toolchain_builds r ON r.id = m.toolchain_build_id
+  JOIN catalog_packages p ON p.id = r.package_id
+  #{@served_toolchain_builds}
   WHERE m.sha256 = $1
-    AND t.revoked_at IS NULL
-    AND t.status = 'pass'
-    AND t.variant IN #{ToolchainBuild.variants_sql()}
-    AND #{@withheld_toolchain_clause}
-    AND #{@config_variant_served_clause}
+    AND #{@served_toolchain_clause}
+    AND #{@served_toolchain_file_clause}
   LIMIT 1
   """
   @published_sha256_sql String.replace(@published_sha256_sql_template, "$W", "$2")
@@ -2562,7 +2608,11 @@ defmodule Portal.Catalog do
   builder uploaded, or one only withheld builds own, has an `Artifact` row
   and a file but is not served; so has one only named config variants own
   whose default is not served
-  (`Portal.Precompiled.Withheld.config_variant_served?/2`).
+  (`Portal.Precompiled.Withheld.config_variant_served?/2`). A toolchain
+  build serves only the files its own manifest lists, and its earlier
+  builds (`ToolchainBuild.EarlierBuilds`) theirs, each judged as a virtual
+  row of it (`@served_toolchain_builds`): a withheld earlier build's file is
+  not served, though it is a membership of a served row.
   """
   @spec published_sha256?(String.t()) :: boolean()
   # The SQL is a module constant; the digest is a bound parameter the caller
@@ -3151,24 +3201,18 @@ defmodule Portal.Catalog do
         shas_by_system_result_id =
           results |> Enum.map(& &1.id) |> manifest_shas_for_system_results()
 
-        rows =
-          package.id
-          |> published_toolchain_builds()
-          |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld, &1))
+        # Each row, then each earlier build of a row served as a virtual
+        # row (`EarlierBuilds.virtual_rows/1`), through the one predicate
+        # (`serve_toolchain/3`), as the files route and the package list
+        # select them (`@served_toolchain_builds`).
+        rows = serve_toolchain(published_toolchain_builds(package.id), package.name, withheld)
 
-        # A row's earlier builds (`ToolchainBuild.EarlierBuilds`) are builds
-        # of their own, each judged by its own lock and config reads, and
-        # listed only beside a row that is served itself: their files are
-        # the row's memberships, which the files route and the package list
-        # publish by the row's own lock and config reads
-        # (`@withheld_toolchain_clause`, `@config_variant_served_clause`).
-        served =
-          rows
-          |> Enum.filter(&Withheld.config_variant_served?(&1, rows))
-          |> Enum.flat_map(&EarlierBuilds.expand/1)
-          |> Enum.reject(&Withheld.withheld?(package.name, &1.deps_lock, withheld, &1))
-
-        toolchain_builds = Enum.filter(served, &Withheld.config_variant_served?(&1, served))
+        toolchain_builds =
+          serve_toolchain(
+            rows ++ Enum.flat_map(rows, &EarlierBuilds.virtual_rows/1),
+            package.name,
+            withheld
+          )
 
         shas_by_toolchain_build_id =
           toolchain_builds |> Enum.map(& &1.id) |> manifest_shas_for_toolchain_builds()
@@ -3189,6 +3233,17 @@ defmodule Portal.Catalog do
       _ ->
         nil
     end
+  end
+
+  # Whether a toolchain build is served, for the builds `published_toolchain_builds/1`
+  # reads (a pass, not revoked, of a known variant) and the virtual rows of
+  # their earlier builds: not withheld by its own lock and config reads, and
+  # a named config variant only beside its served default. The files route
+  # and the package list apply the same predicate in SQL
+  # (`@served_toolchain_clause`).
+  defp serve_toolchain(builds, package_name, withheld) do
+    kept = Enum.reject(builds, &Withheld.withheld?(package_name, &1.deps_lock, withheld, &1))
+    Enum.filter(kept, &Withheld.config_variant_served?(&1, kept))
   end
 
   # A result's closure is its own lock, else that of the run that built it,
@@ -3577,10 +3632,6 @@ defmodule Portal.Catalog do
       :compile_env_run_id,
       :file_manifest,
       :finished_at,
-      # What `EarlierBuilds.expand/1` checks each earlier build against.
-      :portability_rule,
-      :rule1_reason,
-      :judge_revision,
       :earlier_builds
     ])
     |> Ash.read!(domain: __MODULE__)

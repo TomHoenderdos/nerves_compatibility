@@ -34,6 +34,12 @@ defmodule Portal.Precompiled.ToolchainRevocation do
       copy keeps both, and ingest stores a later rule-2 `pure_elixir` result
       of the same version withdrawn with the same reason and timestamp.
 
+  A toolchain build's earlier builds (`Portal.Catalog.ToolchainBuild.EarlierBuilds`)
+  are served as virtual rows that share the row's served-ness, so each is
+  judged by its own recorded verdict: a row is selected when it or any of
+  its earlier builds matches, and revoking it hides them all. The row's
+  listed `rule1_reason` is then the first matching one, its own first.
+
   ## What a revocation does not cover
 
   A revocation sticks per identity and version, never per package. A
@@ -142,18 +148,35 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   @candidates """
   WITH tc AS (
     SELECT 'toolchain_build'::text AS kind, t.id, p.name, t.version, t.toolchain,
-           t.variant::text AS variant, t.config_variant, t.rule1_reason
+           t.variant::text AS variant, t.config_variant, v.rule1_reason
     FROM catalog_toolchain_builds t
     JOIN catalog_packages p ON p.id = t.package_id
+    CROSS JOIN LATERAL (
+      SELECT b.rule1_reason
+      FROM (
+        SELECT 0::bigint AS n, t.portability_rule, t.rule1_reason, t.judge_revision
+        UNION ALL
+        SELECT e.n,
+               CASE WHEN e.entry->>'portability_rule' ~ '^[0-9]{1,9}$'
+                    THEN (e.entry->>'portability_rule')::bigint END,
+               CASE WHEN jsonb_typeof(e.entry->'rule1_reason') = 'string'
+                    THEN e.entry->>'rule1_reason' END,
+               CASE WHEN e.entry->>'judge_revision' ~ '^[0-9]{1,9}$'
+                    THEN (e.entry->>'judge_revision')::bigint END
+        FROM unnest(t.earlier_builds) WITH ORDINALITY AS e(entry, n)
+      ) b
+      WHERE b.portability_rule = 2
+        AND ($7::boolean OR $8::integer IS NOT NULL OR b.rule1_reason IS NOT NULL)
+        AND ($8::integer IS NULL OR b.judge_revision >= $8)
+        AND ($4::text IS NULL OR starts_with(b.rule1_reason, $4))
+      ORDER BY b.n
+      LIMIT 1
+    ) v
     WHERE t.builder_version = $1
-      AND t.portability_rule = 2
-      AND ($7::boolean OR $8::integer IS NOT NULL OR t.rule1_reason IS NOT NULL)
-      AND ($8::integer IS NULL OR t.judge_revision >= $8)
       AND t.revoked_at IS NULL
       AND t.status = 'pass'
       AND ($2::text IS NULL OR p.name = $2)
       AND ($3::text IS NULL OR t.version = $3)
-      AND ($4::text IS NULL OR starts_with(t.rule1_reason, $4))
     ORDER BY p.name, t.version, t.toolchain, t.variant, t.config_variant, t.id
     LIMIT $5::bigint
     <lock_t>

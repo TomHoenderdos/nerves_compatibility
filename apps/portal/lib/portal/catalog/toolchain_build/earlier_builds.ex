@@ -20,35 +20,40 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
 
   ## Shape and cost
 
-  Each entry is the served columns of the replaced row (`entry/1`), newest
-  first, at most `max/0`, at most one per lock and never the row's own lock.
-  Its files stay memberships of the row (`Portal.Catalog.Ingestion` keeps
-  them), so publication, revocation and the batch fingerprint work by the row
-  as before; a row that does not pass, or is revoked, serves none of them.
-  Only a passing rebuild keeps them: one that does not pass is a verdict on
-  the package's build (a refusal, a skip), not on one lock, and the ingest
-  drops them with the row's own build. Nor does a passing rebuild of a row
-  that served nothing (skipped or revoked) bring that row's entries back.
-
-  Revocation is by row (`revoked_at`), and `Portal.Precompiled.ToolchainRevocation`
-  picks rows by their verdict: `portability_rule` 2, with or without a
-  `rule1_reason`, the `rule1_reason`'s prefix, and `judge_revision` at or
-  above a revision. So an entry is kept only beside a row that every such
-  revocation of the entry also selects (`covered?/2`, on the verdict columns
-  recorded on the entry): the same `portability_rule` 2 or not, the same
-  `rule1_reason`, and a `judge_revision` no lower than the entry's. The row
-  then hides it. The manifest checks this again when it lists an entry
-  (`expand/1`), since a release that does not know the column rewrites the
-  row's verdict without looking at its entries.
+  Each entry is the served columns of the replaced row (`entry/1`) and its
+  verdict, newest first, at most `max/0`, at most one per lock and never
+  the row's own lock. Its files stay memberships of the row
+  (`Portal.Catalog.Ingestion` keeps them). Only a passing rebuild keeps
+  them: one that does not pass is a verdict on the package's build (a
+  refusal, a skip), not on one lock, and the ingest drops them with the
+  row's own build. Nor does a passing rebuild of a row that served nothing
+  (skipped or revoked) bring that row's entries back.
   The blobs cost nothing extra: the store never deletes one, and a rebuild
   against a patch release of a dependency mostly compiles the same bytes.
   What is new is the entry (a few KB of JSON) and a membership per file that
   differs.
 
-  An entry whose files are not all memberships of the row is left out whole
-  (`Portal.Catalog.precompiled_manifest_v2/1` only lists a build whose every
-  file it owns): what a release that does not know the column leaves behind,
-  since its ingest replaces the memberships with its own build's alone.
+  ## Served as a virtual row
+
+  An entry is served as a row of its own (`virtual_rows/1`): the row's id,
+  identity (package, version, toolchain, builder version, variant, config
+  variant) and served-ness (`status`, `revoked_at`), with its own lock,
+  compile inputs, `compile_env`, config reads, file manifest and
+  `finished_at`. Every reader of published toolchain builds judges it by
+  the same predicate as a row, and only beside a row that predicate
+  serves: `Portal.Catalog.precompiled_manifest_v2/1` (`builds`,
+  `builds_with_inputs` and `builds_closure` alike), the files route
+  (`Portal.Catalog.published_sha256?/1`, which serves a file only for a
+  build whose own manifest lists it) and the package list the batch is
+  built from. A build whose files are not all memberships of the row and
+  present is left out whole, as a row's is: what a release that does not
+  know the column leaves behind, since its ingest replaces the
+  memberships with its own build's alone.
+
+  A revocation (`Portal.Precompiled.ToolchainRevocation`) judges each
+  entry by its own recorded verdict (`portability_rule`, `rule1_reason`,
+  `judge_revision`) and revokes the row when the row or any of its entries
+  matches, which hides them all: the served-ness is the row's.
   """
 
   alias Portal.Catalog.ToolchainBuild
@@ -73,7 +78,7 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
     :file_manifest
   ]
 
-  # Not served, but what a revocation selects a build by (moduledoc).
+  # Not served, but what a revocation judges an entry by (moduledoc).
   @verdict [:portability_rule, :rule1_reason, :judge_revision]
 
   @manifest_keys ["ebin", "priv"]
@@ -104,8 +109,7 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   `new`, the row as the rebuild wrote it: none unless `new` passes, nor when
   `replaced` served nothing; else `replaced`'s own build first, then
   `earlier` (with no `replaced`, `earlier` alone), without
-  any entry of `new`'s lock or that `new` does not cover (`covered?/2`), one
-  per lock, at most `max/0`.
+  any entry of `new`'s lock, one per lock, at most `max/0`.
   """
   @spec push(ToolchainBuild.t() | nil, [map()] | nil, ToolchainBuild.t()) :: [map()]
   def push(replaced, earlier, %ToolchainBuild{status: :pass} = new) do
@@ -118,35 +122,11 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
       {_replaced, entry} -> [entry | List.wrap(earlier)]
     end
     |> Enum.reject(&(&1["deps_lock"] == new.deps_lock))
-    |> Enum.filter(&covered?(&1, new))
     |> Enum.uniq_by(& &1["deps_lock"])
     |> Enum.take(@max)
   end
 
   def push(_replaced, _earlier, _new), do: []
-
-  @doc """
-  Whether every `Portal.Precompiled.ToolchainRevocation` that would select
-  the build `entry` records also selects `row`: both `portability_rule` 2 or
-  neither, the same `rule1_reason` (a revocation takes it by prefix), and a
-  `judge_revision` on `row` no lower than the entry's (a revocation takes
-  every revision at or above one). An entry without a recorded revision key
-  is not covered: its revision is unknown, not absent.
-  """
-  @spec covered?(map(), ToolchainBuild.t()) :: boolean()
-  def covered?(entry, %ToolchainBuild{} = row) do
-    entry["portability_rule"] == 2 == (row.portability_rule == 2) and
-      entry["rule1_reason"] == row.rule1_reason and
-      revision_covered?(Map.fetch(entry, "judge_revision"), row.judge_revision)
-  end
-
-  defp revision_covered?({:ok, nil}, _row_revision), do: true
-
-  defp revision_covered?({:ok, revision}, row_revision)
-       when is_integer(revision) and is_integer(row_revision),
-       do: row_revision >= revision
-
-  defp revision_covered?(_entry_revision, _row_revision), do: false
 
   @doc """
   The earlier builds of `row` with the build it serves now kept among them,
@@ -186,32 +166,19 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   defp manifest_shas(_manifest), do: []
 
   @doc """
-  `row` followed by one row per earlier build: the row with the entry's
-  columns in place of its own, the same id, version, toolchain, variant and
-  config variant, and no earlier builds of its own. A manifest lists each as
-  a build, judged by its own lock. An entry the row does not cover
-  (`covered?/2`) is left out, and so is one of the row's own lock, the
-  build a rebuild with that lock replaced: a release that does not know the
-  column rewrites the row on a rebuild and leaves the entries as they were,
-  so the checks at ingest alone do not hold. The manifest picks the newest
-  build per lock within each list only, so an entry of the row's lock would
-  stay listed wherever the row's compile inputs moved it from. `row` needs
-  its `portability_rule`, `rule1_reason` and `judge_revision` loaded.
+  The virtual rows of `row`'s earlier builds (moduledoc, "Served as a
+  virtual row"): `row` with each entry's columns in place of its own and no
+  earlier builds of its own. An entry of `row`'s own lock has none: that
+  lock's build is the row's, and a release that does not know the column
+  can leave the one a rebuild replaced beside it. The caller serves them
+  only beside a row it serves.
   """
-  @spec expand(ToolchainBuild.t()) :: [ToolchainBuild.t()]
-  def expand(%ToolchainBuild{earlier_builds: [_ | _] = earlier} = row) do
-    [
-      row
-      | for(
-          entry <- earlier,
-          entry["deps_lock"] != row.deps_lock,
-          covered?(entry, row),
-          do: as_row(row, entry)
-        )
-    ]
+  @spec virtual_rows(ToolchainBuild.t()) :: [ToolchainBuild.t()]
+  def virtual_rows(%ToolchainBuild{earlier_builds: [_ | _] = earlier} = row) do
+    for entry <- earlier, entry["deps_lock"] != row.deps_lock, do: as_row(row, entry)
   end
 
-  def expand(row), do: [row]
+  def virtual_rows(_row), do: []
 
   defp as_row(row, entry) do
     columns =

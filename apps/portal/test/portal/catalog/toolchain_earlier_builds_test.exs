@@ -158,8 +158,9 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
 
   # `Portal.Workers.ClosureDrift` keeps the build before its rebuild, and a
   # release that does not know the column ingests that rebuild: its upsert
-  # rewrites the row's verdict and never looks at the entries.
-  test "an earlier build beside a row an older release rewrote is served only if covered" do
+  # rewrites the row's verdict and never looks at the entries. A revocation
+  # judges each entry by its own verdict, and revokes the row it hangs off.
+  test "a revocation that would take an earlier build takes its row, whatever the row's verdict" do
     name = name()
 
     built =
@@ -185,9 +186,10 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
       [Ecto.UUID.dump!(built.id), lock("2.19.0")]
     )
 
-    ToolchainRevocation.revoke(dry_run: false, everything: true, package: name)
+    assert {:revoked, 1, [%{rule1_reason: "calls erlang:open_port/2"}], _at} =
+             ToolchainRevocation.revoke(dry_run: false, everything: true, package: name)
 
-    assert served_locks(name) == ["2.19.0"]
+    assert served_locks(name) == []
   end
 
   # The files route and the package list publish a row's memberships by the
@@ -212,9 +214,9 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     assert served_locks(name) == []
   end
 
-  # The files route and the package list serve a named config variant's
-  # memberships only while the row records its own config reads
-  # (`@config_variant_served_clause`). A release that does not know
+  # A named config variant row is served only while it records its own
+  # config reads, and its earlier builds only beside it
+  # (`@served_toolchain_builds`). A release that does not know
   # `compile_env_run_id` rewrites the row with its own `run_id` and leaves
   # the mark, which then vouches for nothing, while an earlier build kept on
   # the row still carries a mark of its own.
@@ -318,6 +320,28 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     assert served_locks(name) == ["2.19.0"]
   end
 
+  # A row's memberships hold its earlier builds' files too, but a build
+  # serves only the files its own manifest lists, each earlier build judged
+  # as a virtual row of the row.
+  test "a withheld earlier build's file is not fetchable by hash" do
+    name = name()
+    live_view = %{"version" => "1.1.0", "checksum" => "lv"}
+
+    withheld =
+      ingest_toolchain_build(name, "0.4.0",
+        deps_lock: Map.put(lock("2.18.0"), "phoenix_live_view", live_view)
+      )
+
+    row = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.19.0"))
+
+    assert [_] = row.earlier_builds
+    assert served_locks(name) == ["2.19.0"]
+    assert MapSet.member?(memberships(row.id), hd(shas(withheld.file_manifest)))
+    assert Catalog.published_sha256?(hd(shas(row.file_manifest)))
+    refute Catalog.published_sha256?(hd(shas(withheld.file_manifest)))
+    assert name in Catalog.packages_with_precompiled_files()
+  end
+
   test "an earlier build whose file the row no longer owns is left out whole" do
     name = name()
     old = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
@@ -397,44 +421,16 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
       assert EarlierBuilds.push(passing("2.18.0"), [], passing("2.19.0", status: :skipped)) == []
     end
 
-    # A revocation selects rows by verdict, and hides a row's earlier builds
-    # with it: an entry it would select must sit beside a row it selects too.
-    test "keeps only the builds of the new row's verdict class" do
+    # A revocation judges an entry by its own verdict and revokes its row
+    # (`Portal.Precompiled.ToolchainRevocation`), so an entry is kept beside
+    # a row of any verdict.
+    test "keeps a build whatever the new row's verdict" do
       rule2 = passing("2.18.0", portability_rule: 2, rule1_reason: "reads os:type/0")
 
-      assert EarlierBuilds.push(rule2, [], passing("2.19.0", portability_rule: 1)) == []
-      assert EarlierBuilds.push(rule2, [], passing("2.19.0", portability_rule: 2)) == []
-
-      assert [%{"deps_lock" => kept}] =
-               EarlierBuilds.push(
-                 rule2,
-                 [],
-                 passing("2.19.0", portability_rule: 2, rule1_reason: "reads os:type/0")
-               )
+      assert [%{"deps_lock" => kept, "rule1_reason" => "reads os:type/0"}] =
+               EarlierBuilds.push(rule2, [], passing("2.19.0", portability_rule: 1))
 
       assert kept == lock("2.18.0")
-
-      assert [_] =
-               EarlierBuilds.push(passing("2.18.0"), [], passing("2.19.0", portability_rule: 1))
-
-      other_reason = passing("2.19.0", portability_rule: 2, rule1_reason: "calls System.cmd/3")
-      assert EarlierBuilds.push(rule2, [], other_reason) == []
-    end
-
-    test "keeps a build only beside a row judged at its revision or later" do
-      at = fn certifi, revision ->
-        passing(certifi, portability_rule: 2, judge_revision: revision)
-      end
-
-      assert [_] = EarlierBuilds.push(at.("2.18.0", 4), [], at.("2.19.0", 4))
-      assert [_] = EarlierBuilds.push(at.("2.18.0", 4), [], at.("2.19.0", 5))
-      assert [_] = EarlierBuilds.push(at.("2.18.0", nil), [], at.("2.19.0", 5))
-      assert EarlierBuilds.push(at.("2.18.0", 5), [], at.("2.19.0", 4)) == []
-      assert EarlierBuilds.push(at.("2.18.0", 5), [], at.("2.19.0", nil)) == []
-
-      # An entry recorded without the key has an unknown revision.
-      unknown = Map.delete(recorded("2.17.0", %{"portability_rule" => 2}), "judge_revision")
-      assert EarlierBuilds.push(nil, [unknown], at.("2.19.0", 9)) == []
     end
   end
 
