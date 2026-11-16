@@ -43,8 +43,9 @@ defmodule Portal.HexRegistryTest do
 
   defp versions_resource(packages, private) do
     packages =
-      Enum.map(packages, fn {name, versions} ->
-        %{name: name, versions: versions, retired: []}
+      Enum.map(packages, fn
+        {name, versions} -> %{name: name, versions: versions, retired: []}
+        {name, versions, retired} -> %{name: name, versions: versions, retired: retired}
       end)
 
     :hex_registry.build_versions(%{repository: "hexpm", packages: packages}, private)
@@ -86,6 +87,37 @@ defmodule Portal.HexRegistryTest do
                  updated_at: ~U[2026-09-14 09:39:58Z]
                }
              ]
+    end
+
+    # `Portal.Workers.ClosureDrift` needs every release and which are retired,
+    # to know what a fresh resolve could pick; the update check needs only the
+    # newest, so it never asks and its entries keep their shape.
+    test "with all_versions, lists every release and the retired ones", context do
+      names = names_resource([{"certifi", 1_789_378_798}], context.private)
+
+      versions =
+        versions_resource(
+          [{"certifi", ["2.17.0", "2.18.0", "2.19.0-rc.1", "2.19.0"], [1]}],
+          context.private
+        )
+
+      Process.put({:body, "/names"}, names)
+      Process.put({:body, "/versions"}, versions)
+
+      assert {:ok, [entry]} =
+               HexRegistry.snapshot(
+                 client: Client,
+                 public_key: context.public,
+                 all_versions: true
+               )
+
+      assert entry == %{
+               name: "certifi",
+               latest_version: "2.19.0",
+               updated_at: ~U[2026-09-14 09:39:58Z],
+               versions: ["2.17.0", "2.18.0", "2.19.0-rc.1", "2.19.0"],
+               retired: ["2.18.0"]
+             }
     end
 
     # `/versions` lists releases in ascending semver order, so the newest is the

@@ -60,6 +60,13 @@ defmodule Portal.Workers.UpdateCheck do
   takes -- and its precompiled files keep coming from the firmware `Build`
   they always needed.
 
+  ## A dependency's release
+
+  This worker rebuilds a package when the package itself releases. A
+  release of one of its dependencies leaves its toolchain builds' locks
+  behind instead, which `Portal.Workers.ClosureDrift` rebuilds from the same
+  registry once a day.
+
   ## Scope
 
   Only packages already in the catalogue. A registry package we have never

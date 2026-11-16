@@ -335,6 +335,26 @@ if portal_available? do
       :ok
   end
 
+  # The daily closure-drift rebuilds (`Portal.Workers.ClosureDrift`): the
+  # same parsing, and the same reasoning about typos, as `NCC_UPDATE_CHECK`.
+  # `NCC_CLOSURE_DRIFT_MAX` caps the rebuilds one run queues; anything but a
+  # non-negative integer leaves the compile-time default alone.
+  case System.get_env("NCC_CLOSURE_DRIFT") do
+    v when v in ["1", "true", "yes"] ->
+      config :portal, Portal.Workers.ClosureDrift, enabled: true
+
+    v when v in ["0", "false", "no"] ->
+      config :portal, Portal.Workers.ClosureDrift, enabled: false
+
+    _ ->
+      :ok
+  end
+
+  case Integer.parse(System.get_env("NCC_CLOSURE_DRIFT_MAX", "")) do
+    {max, ""} when max >= 0 -> config :portal, Portal.Workers.ClosureDrift, max_per_run: max
+    _ -> :ok
+  end
+
   # Same parsing, and the same reasoning about typos, as `NCC_UPDATE_CHECK`.
   case System.get_env("NCC_QUEUE_FILTER") do
     v when v in ["1", "true", "yes"] ->

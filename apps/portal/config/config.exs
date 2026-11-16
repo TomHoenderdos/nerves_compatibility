@@ -151,7 +151,15 @@ config :portal, Oban,
        # human remembered to do by hand (see
        # docs/superpowers/ops/factory/hex-all.md). Carries `:intake`, the web
        # host's queue: hex.pm lookups, not builds.
-       {"11 5 * * *", Portal.Workers.CatalogSeedSweep}
+       {"11 5 * * *", Portal.Workers.CatalogSeedSweep},
+       # Daily at 06:19 UTC, a minute no other entry here uses: queue a
+       # rebuild of the toolchain builds of each package's newest release
+       # whose lock a newer dependency release left behind
+       # (`Portal.Workers.ClosureDrift`), at most `max_per_run` a day. Two
+       # registry requests and the Hex reads of the closures it judges;
+       # carries `:maintenance`, the web host's queue, where the sweep that
+       # names the toolchain images runs too.
+       {"19 6 * * *", Portal.Workers.ClosureDrift}
      ]}
   ]
 
@@ -180,6 +188,12 @@ config :portal, Portal.Workers.LogRetention, budget_bytes: 2 * 1024 * 1024 * 102
 # catalogue against the whole registry, so a package stays visible until it is
 # actually rebuilt. See `Portal.Workers.UpdateCheck`.
 config :portal, Portal.Workers.UpdateCheck, enabled: true
+
+# Rebuilding the toolchain builds a new dependency release left behind, at
+# most `max_per_run` a run and one scheduled run a day; at most `scan_limit`
+# builds are judged a run. `NCC_CLOSURE_DRIFT=0` and `NCC_CLOSURE_DRIFT_MAX`
+# override it at runtime. See `Portal.Workers.ClosureDrift`.
+config :portal, Portal.Workers.ClosureDrift, enabled: true, max_per_run: 500, scan_limit: 5_000
 
 # Registry-based native-code filter for bulk intake (`catalog_seed`,
 # `backfill`). Off by default so a deploy changes nothing until

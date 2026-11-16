@@ -59,17 +59,23 @@ defmodule Portal.HexRegistry do
 
     * `:client` - HTTP client module exposing `get/2` (default `Req`).
     * `:public_key` - key the signature is checked against (default hex.pm's).
+
+  `all_versions: true` adds `versions` (every release, ascending, as
+  `/versions` lists them) and `retired` (the retired ones) to each entry, for
+  `Portal.Workers.ClosureDrift`, which needs to know what a fresh resolve
+  could pick. Without it each entry is just `entry()`.
   """
   @spec snapshot(keyword()) :: {:ok, [entry()]} | {:error, term()}
   def snapshot(opts \\ []) do
     client = Keyword.get(opts, :client, Req)
     key = Keyword.get(opts, :public_key, public_key())
+    all? = Keyword.get(opts, :all_versions, false)
 
     with {:ok, names_body} <- fetch(client, "/names"),
          {:ok, versions_body} <- fetch(client, "/versions"),
          {:ok, names} <- unpack(:names, names_body, key),
          {:ok, versions} <- unpack(:versions, versions_body, key) do
-      {:ok, join(names, versions)}
+      {:ok, join(names, versions, all?)}
     end
   end
 
@@ -123,7 +129,7 @@ defmodule Portal.HexRegistry do
 
   defp public_key, do: :hex_core.default_config()[:repo_public_key]
 
-  defp join(names, versions) do
+  defp join(names, versions, all?) do
     updated = Map.new(names, &{&1.name, timestamp(&1)})
 
     Enum.flat_map(versions, fn package ->
@@ -132,15 +138,27 @@ defmodule Portal.HexRegistry do
           []
 
         version ->
-          [
-            %{
-              name: package.name,
-              latest_version: version,
-              updated_at: Map.get(updated, package.name)
-            }
-          ]
+          entry = %{
+            name: package.name,
+            latest_version: version,
+            updated_at: Map.get(updated, package.name)
+          }
+
+          [if(all?, do: put_all_versions(entry, package), else: entry)]
       end
     end)
+  end
+
+  # `retired` is a list of indexes into `versions` in the protobuf.
+  defp put_all_versions(entry, %{versions: versions} = package) do
+    retired = package |> Map.get(:retired, []) |> MapSet.new()
+
+    retired_versions =
+      for {version, index} <- Enum.with_index(versions),
+          MapSet.member?(retired, index),
+          do: version
+
+    Map.merge(entry, %{versions: versions, retired: retired_versions})
   end
 
   # `/versions` lists a package's releases in ascending semver order -- verified
