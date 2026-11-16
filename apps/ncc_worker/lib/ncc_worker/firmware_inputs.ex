@@ -35,7 +35,7 @@ defmodule NccWorker.FirmwareInputs do
   So the trace runs as the build ran, wherever a package can look without
   the trace seeing it:
 
-    * at the build's paths (`in_build_layout/3`): the project dir (also
+    * at the build's paths (`in_build_layout/4`): the project dir (also
       the cwd), the target's build dir (`MIX_BUILD_PATH`, `_build/<target>`,
       the published build moved aside for the trace's) and deps dir
       (`MIX_DEPS_PATH`, `deps_<target>`, holding the run's `deps/` for the
@@ -149,7 +149,7 @@ defmodule NccWorker.FirmwareInputs do
   could be recorded for. Returns the systems and one line per target tried,
   for the run's log, or `{:error, {:firmware_inputs_layout_not_restored,
   why}}` when a target's dirs could not be put back after its trace
-  (`in_build_layout/3`) or its trace left processes running that may still
+  (`in_build_layout/4`) or its trace left processes running that may still
   write them: the run fails (exit 10) rather than publish from a project its
   build did not leave. `record` (default `record/4`) is for tests.
   """
@@ -253,7 +253,7 @@ defmodule NccWorker.FirmwareInputs do
   @doc """
   Records one target's inputs: `{:ok, %{compile_inputs, compile_env}}`, or
   `{:error, why}` when any step does not hold. `result` is the target's
-  system result. Raises only `LayoutNotRestored` (`in_build_layout/3`, or a
+  system result. Raises only `LayoutNotRestored` (`in_build_layout/4`, or a
   trace that left processes running), which `put/3` returns as the run's
   error. `nerves_env:` and `target_inputs:` (tests) replace step 1 and
   `NccWorker.Portability.target_inputs/3`.
@@ -270,17 +270,20 @@ defmodule NccWorker.FirmwareInputs do
     target_inputs = Keyword.get(opts, :target_inputs, &Portability.target_inputs/3)
     _ = File.rm_rf(dir)
     File.mkdir_p!(dir)
+    # Where the trace's build is kept for the binding: a name nothing the
+    # trace ran can know, so none of it can have put a build there.
+    kept = Path.join(dir, "traced-" <> Base.url_encode64(:crypto.strong_rand_bytes(12)))
 
     try do
       with {:ok, layout} <- layout(ctx.project_dir, target, env),
            {:ok, nerves} <- nerves_env.(ctx.project_dir, env, dir),
            {:ok, artifacts, roots} <- roots(nerves),
            {:ok, moved, roots} <- move(nerves, artifacts, roots, dir),
-           {:ok, verdict} <-
-             in_build_layout(layout, dir, fn ->
+           {:ok, verdict, traced} <-
+             in_build_layout(layout, dir, kept, fn ->
                trace(target_inputs, {name, target, env}, moved, roots, ctx, dir)
              end),
-           :ok <- bound(dir, layout.build, ctx.package) do
+           :ok <- bound(traced, layout.build, ctx.package) do
         {:ok, %{compile_inputs: verdict.compile_inputs, compile_env: verdict.compile_env}}
       end
     rescue
@@ -435,7 +438,7 @@ defmodule NccWorker.FirmwareInputs do
   # Step 2: the closure from the run's own `deps/`, which the run's lock
   # and tree snapshots describe, compiled for the target as its firmware
   # build compiled it: in its build env as it is, under the same command
-  # (`firmware_command/0`), at its own paths (`in_build_layout/3` has laid
+  # (`firmware_command/0`), at its own paths (`in_build_layout/4` has laid
   # them out), with Nerves's variables exported once every dependency is
   # loaded (`late_env:`). The compile writes the build's own dirs, so a
   # process it left running that the tracer could not kill (`@left_running`,
@@ -561,23 +564,25 @@ defmodule NccWorker.FirmwareInputs do
   # (`<dir>/published`), leaving its path for the trace to build into, and
   # the run's own `deps/` at the target's deps dir, whose own tree is moved
   # aside too. Renames only, within the run's work dir. Afterwards the
-  # trace's build is at `<dir>/_build` (removed if it cannot be moved
-  # there) and every dir is back; whatever the trace left at a path one was
-  # moved from is removed first. A move that cannot be undone raises
+  # trace's build is at `kept` (removed if it cannot be moved there) and
+  # every dir is back; whatever the trace left at a path one was moved from
+  # is removed first. Returns `{:ok, result, kept}` for a `{:ok, result}` of
+  # `fun`, its result as it is otherwise. A move that cannot be undone raises
   # `LayoutNotRestored`: nothing may go on to publish files from a project
   # laid out otherwise than the build left it.
-  @spec in_build_layout(layout(), String.t(), (-> result)) :: result | {:error, String.t()}
+  @spec in_build_layout(layout(), String.t(), String.t(), (-> result)) ::
+          {:ok, term(), String.t()} | result | {:error, String.t()}
         when result: term()
   # sobelow_skip ["Traversal.FileModule"]
-  def in_build_layout(layout, dir, fun) do
+  def in_build_layout(layout, dir, kept, fun) do
     File.mkdir_p!(stash(dir))
 
     case move_all(moves(layout, dir), []) do
       {:ok, done} ->
         try do
-          fun.()
+          with {:ok, result} <- fun.(), do: {:ok, result, kept}
         after
-          keep_trace_build(layout.build, Path.join(dir, "_build"))
+          keep_trace_build(layout.build, kept)
           undo!(done)
           File.rmdir(stash(dir))
         end
@@ -628,11 +633,11 @@ defmodule NccWorker.FirmwareInputs do
     end)
   end
 
-  # Step 3: the traced compile's beams for the package (`<dir>/_build`,
-  # where `in_build_layout/3` left them) against the published build's, by
-  # the code and the attributes each holds.
-  defp bound(dir, build_path, package) do
-    traced = Path.join([dir, "_build", "lib", package, "ebin"])
+  # Step 3: the traced compile's beams for the package (under `kept`, where
+  # `in_build_layout/4` left them) against the published build's, by the
+  # code and the attributes each holds.
+  defp bound(kept, build_path, package) do
+    traced = Path.join([kept, "lib", package, "ebin"])
 
     published =
       case BeamScan.package_dir(build_path, package) do
@@ -691,7 +696,7 @@ end
 defmodule NccWorker.FirmwareInputs.LayoutNotRestored do
   @moduledoc """
   A firmware target's dirs could not be put back after its trace
-  (`NccWorker.FirmwareInputs.in_build_layout/3`), or the trace left
+  (`NccWorker.FirmwareInputs.in_build_layout/4`), or the trace left
   processes running that may still write them: the run must stop rather
   than publish from them.
   """

@@ -776,7 +776,7 @@ only on a passing target that publishes its own first build (no optional depende
 1. `mix ncc.nerves_env` in the target's deps and build dirs: the variables Nerves's Mix integration sets up before
    a compile (`CROSSCOMPILE`, `NERVES_TOOLCHAIN`, `NERVES_SYSTEM`, ...);
 2. the traced judge compile of the package's closure for the target as the firmware build compiled it, so a package
-   cannot tell the two apart and read otherwise only in the build (`FirmwareInputs.in_build_layout/3`): the run's
+   cannot tell the two apart and read otherwise only in the build (`FirmwareInputs.in_build_layout/4`): the run's
    `deps/` renamed to the target's `deps_<target>` and the trace built into `_build/<target>` (the build's own dirs
    moved aside meanwhile, then put back; one that cannot be put back stops the run), so `__DIR__` and every Mix path
    are the build's; the target's build env as it is, its `HEX_HOME` included; the build's own command

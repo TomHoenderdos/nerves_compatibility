@@ -355,7 +355,8 @@ defmodule NccWorker.FirmwareInputsTest do
         {"MIX_ENV", "prod"}
       ]
 
-      %{proj: proj, env: env, dir: Path.join(tmp_dir, "fw-inputs-rpi4")}
+      dir = Path.join(tmp_dir, "fw-inputs-rpi4")
+      %{proj: proj, env: env, dir: dir, kept: Path.join(dir, "_build")}
     end
 
     defp which(proj, rel), do: File.read(Path.join([proj, rel, "which"]))
@@ -395,7 +396,7 @@ defmodule NccWorker.FirmwareInputsTest do
       {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
 
       seen =
-        FirmwareInputs.in_build_layout(layout, c.dir, fn ->
+        FirmwareInputs.in_build_layout(layout, c.dir, c.kept, fn ->
           # The trace builds where the build did, and leaves a deps/ behind.
           File.mkdir_p!(Path.join(c.proj, "_build/rpi4/lib"))
           File.write!(Path.join(c.proj, "_build/rpi4/which"), "trace")
@@ -418,7 +419,7 @@ defmodule NccWorker.FirmwareInputsTest do
       {:ok, layout} = FirmwareInputs.layout(c.proj, "rpi4", c.env)
 
       assert_raise RuntimeError, fn ->
-        FirmwareInputs.in_build_layout(layout, c.dir, fn -> raise "boom" end)
+        FirmwareInputs.in_build_layout(layout, c.dir, c.kept, fn -> raise "boom" end)
       end
 
       assert which(c.proj, "deps/pkg") == {:ok, "run"}
@@ -445,7 +446,7 @@ defmodule NccWorker.FirmwareInputsTest do
           ] do
         result =
           with {:ok, layout} <- FirmwareInputs.layout(c.proj, "rpi4", env) do
-            FirmwareInputs.in_build_layout(layout, c.dir, fn ->
+            FirmwareInputs.in_build_layout(layout, c.dir, c.kept, fn ->
               File.write!(Path.join(c.proj, "deps/pkg/priv/pkg.so"), "trace")
             end)
           end
@@ -455,6 +456,45 @@ defmodule NccWorker.FirmwareInputsTest do
         assert File.read(Path.join(c.proj, "_build/rpi4/lib/pkg/priv/pkg.so")) ==
                  {:ok, "build"}
       end
+    end
+
+    # The binding reads the trace's build where `in_build_layout` moved it.
+    # A native build in the trace (a Makefile, which the tracer does not see
+    # write) could put the published beams, which it can read where they
+    # are moved aside, at that path itself: had the path been fixed, they
+    # would bind in place of whatever the trace compiled.
+    test "nothing the trace put where its build is kept is taken for its build", c do
+      toolchain = Path.join([c.tmp_dir, "artifacts", "nerves_toolchain_fx-1.0.0"])
+      File.mkdir_p!(toolchain)
+      nerves_env = fn _proj, _env, _dir -> {:ok, [{"NERVES_TOOLCHAIN", toolchain}]} end
+      ctx = %{ctx(c.proj, []) | work_dir: c.tmp_dir, log_dir: c.tmp_dir}
+
+      ebin = Path.join(c.proj, "_build/rpi4/lib/pkg/ebin")
+      File.mkdir_p!(ebin)
+      [{module, beam}] = Code.compile_string("defmodule FirmwareInputsPlanted, do: nil")
+      File.write!(Path.join(ebin, "#{module}.beam"), beam)
+      File.write!(Path.join(ebin, "pkg.app"), "{application, pkg, []}.\n")
+
+      # The trace compiles nothing and copies the published build to every
+      # path under its dir it might be read from.
+      plant = fn _proj, _package, opts ->
+        dir = opts |> Keyword.fetch!(:trace_dir) |> Path.dirname()
+        published = Path.join([dir, "published", "build"])
+
+        for kept <- ["_build", "build", "trace_build", "traced"] do
+          File.cp_r!(published, Path.join(dir, kept))
+        end
+
+        %{status: :pass, compile_inputs: [], compile_env: []}
+      end
+
+      assert {:error, _why} =
+               FirmwareInputs.record("rpi4", {"rpi4", c.env}, ctx, pass(),
+                 nerves_env: nerves_env,
+                 target_inputs: plant
+               )
+
+      assert which(c.proj, "_build/rpi4") == {:ok, "build"}
     end
 
     # The trace builds into the published build's own paths, so a process it
@@ -511,7 +551,9 @@ defmodule NccWorker.FirmwareInputsTest do
 
       try do
         assert_raise FirmwareInputs.LayoutNotRestored, fn ->
-          FirmwareInputs.in_build_layout(layout, c.dir, fn -> File.chmod!(c.proj, 0o555) end)
+          FirmwareInputs.in_build_layout(layout, c.dir, c.kept, fn ->
+            File.chmod!(c.proj, 0o555)
+          end)
         end
       after
         File.chmod!(c.proj, 0o755)
