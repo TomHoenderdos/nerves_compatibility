@@ -266,9 +266,10 @@ path_os_frame(Module, Function, Arity) ->
 %% (NccWorker.Portability.Events; pinned on the running toolchain by
 %% NccWorker.Tracer.OsFamilyCallersTest). The collector takes caller_kind
 %% from the code loaded when it gets to the read, so the tracer sets a
-%% pattern on each that never fires: a package that loads other code for
-%% the module and puts the toolchain's back in between drops it, which
-%% fails the check (ncc_tracer canary_patterns/0).
+%% pattern on each one's module that never fires: a package that loads
+%% other code for the module and puts the toolchain's back in between drops
+%% it, which fails the check (ncc_tracer canary_patterns/0, which covers the
+%% path internals' modules the same way).
 os_family_callers() ->
     [{<<"Elixir.File">>, <<"rm_rf">>, 1}].
 

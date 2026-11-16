@@ -457,8 +457,12 @@ it themselves: kino's `File.rm_rf!/1` in `Kino.JS.__before_compile__/1`, and eve
 hook) as an `os_type` compile input valued from the tracer's start line (`os_type`, `[family, name]`), instead of
 refusing it as a host read. It names `family` alone only when every read was the toolchain's own `File.rm_rf/1`
 (`{major, _} = :os.type()`, by the event's `caller` and the tracer's `caller_kind` verdict on that module's loaded
-code; the tracer patterns `File.rm_rf/1` so that a reload of `File` during the trace fails its integrity check), or OTP's `os:type/0` reading `system_info(os_type)` for such a call; any other read keeps `name` as well. A
+code), or OTP's `os:type/0` reading `system_info(os_type)` for such a call; any other read keeps `name` as well. A
 read whose OS type the trace does not record is "portability could not be judged". `os:version/0` still refuses.
+Every module whose frames are trusted by name (the path internals' `Path`, `filename` and `erl_prim_loader`, `File`,
+the stack wrappers, the code-loading shapes' modules, `epp`, `erlang`) carries a trace pattern on `module_info/0`
+that never fires: loading other code under such a name during the trace, even with the toolchain's put back before
+the collector looks (`erlang:load_module/2` passes a sticky directory), drops it and fails the integrity check.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's

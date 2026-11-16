@@ -9,7 +9,7 @@
          collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0, object_verdict/4,
-         installed_app/3, cache_hit/2]).
+         installed_app/3, cache_hit/2, canary_patterns/0]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -342,12 +342,30 @@ watch(Collector, File) ->
 reason_bin(Reason) when is_atom(Reason) -> atom_to_binary(Reason);
 reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 
-%% A pattern only for the check (patterns_check/2) to find gone: one on each
-%% function whose loaded code a judge verdict trusts (caller_kind), which a
-%% reload of its module drops (ncc_tracer_channels:os_family_callers/0).
+%% A pattern only for the check (patterns_check/2) to find gone, on
+%% module_info/0 (every module's, and never hot) of each module whose frames
+%% are trusted by name, or by the verdict the collector takes on the code
+%% loaded when it gets to an event rather than when the call was made:
+%% loading other code under the name, even for one call with the
+%% toolchain's put back before the collector looks, drops it. The path
+%% internals (ncc_tracer_channels:path_os_frames/0: such a read is only
+%% counted), the family-only os:type/0 callers (os_family_callers/0,
+%% caller_kind), the wrappers strip/3 skips (ncc_tracer_stack:wrappers/0),
+%% the code-loading shapes' modules (code_load/5), the epp server whose
+%% predefined-macro reads the judge ignores, and erlang (the judge's
+%% big_binary_to_int/2 caller). Sticky modules are no exception:
+%% erlang:load_module/2 does not ask the code server. A canary is held only
+%% while its module, when loaded, exports module_info/0 (canary_held/2), so a
+%% forged module cannot pass by leaving the canary's function out.
 canary_patterns() ->
-    [{binary_to_atom(M), binary_to_atom(F), A}
-     || {M, F, A} <- ncc_tracer_channels:os_family_callers()].
+    Named = [binary_to_atom(M)
+             || {M, _F, _A} <- ncc_tracer_channels:path_os_frames()
+                    ++ ncc_tracer_channels:os_family_callers()],
+    Shapes = [M || Shape <- ncc_tracer_stack:code_loading_shapes(
+                               erlang:system_info(otp_release)),
+                   {M, _F, _A} <- Shape],
+    [{M, module_info, 0}
+     || M <- lists:usort(Named ++ ncc_tracer_stack:wrappers() ++ Shapes ++ [epp, erlang])].
 
 role_patterns(child) -> [{compile, file, 2}];
 role_patterns(main) -> [].
@@ -403,7 +421,7 @@ repatterned(#st{session = Session, wanted = Wanted} = St, When) ->
     end.
 
 rewanted(Session, {MFA, MS, Loaded} = W, When, St) ->
-    case traced(Session, MFA, Loaded) of
+    case traced(Session, MFA, Loaded) andalso canary_held(MFA, MS) of
         true -> {true, W};
         false ->
             %% Patterned again (and loaded, if it is not) before it is judged.
@@ -443,6 +461,12 @@ traced(Session, {M, F, A}, WasLoaded) ->
             lists:all(fun(MFA) -> trace:info(Session, MFA, traced) =:= {traced, global} end,
                       concrete(M, F, A))
     end.
+
+%% A canary's module, when loaded, must still export the canary's function:
+%% traced/3 takes a function the module does not export as nothing to check.
+canary_held({M, F, A}, ?NEVER) ->
+    not erlang:module_loaded(M) orelse erlang:function_exported(M, F, A);
+canary_held(_MFA, _MS) -> true.
 
 concrete(M, '_', '_') -> [{M, F, A} || {F, A} <- M:module_info(exports)];
 concrete(M, F, A) ->

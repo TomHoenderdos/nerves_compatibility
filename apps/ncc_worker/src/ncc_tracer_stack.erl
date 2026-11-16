@@ -6,7 +6,7 @@
          uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
          made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1,
          code_loading/1, code_loading/2, code_loading_shapes/1,
-         code_loading_read/4, code_loading_read/5]).
+         code_loading_read/4, code_loading_read/5, wrappers/0]).
 
 -include("ncc_code_loading_shapes.hrl").
 
@@ -220,6 +220,9 @@ compiler_frame({M, _, _, _}) ->
         "elixir_compiler_" ++ [D | Ds] -> lists:all(fun(C) -> C >= $0 andalso C =< $9 end, [D | Ds]);
         _ -> false
     end.
+
+%% The modules whose frames strip/3 skips by name alone.
+wrappers() -> ?WRAPPERS.
 
 strip(Stack, IsToolchain) -> strip(Stack, none, IsToolchain).
 

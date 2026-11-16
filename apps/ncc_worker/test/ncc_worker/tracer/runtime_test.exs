@@ -797,6 +797,26 @@ defmodule NccWorker.Tracer.RuntimeTest do
            )
   end
 
+  test "every module whose frames are trusted by name carries a canary" do
+    canaries = for {m, :module_info, 0} <- :ncc_tracer.canary_patterns(), do: m
+
+    named =
+      for {m, _f, _a} <-
+            :ncc_tracer_channels.path_os_frames() ++ :ncc_tracer_channels.os_family_callers(),
+          do: String.to_atom(m)
+
+    shapes =
+      for shape <- :ncc_tracer_stack.code_loading_shapes(:erlang.system_info(:otp_release)),
+          {m, _f, _a} <- shape,
+          do: m
+
+    for m <- named ++ :ncc_tracer_stack.wrappers() ++ shapes ++ [:epp, :erlang] do
+      assert m in canaries, inspect(m)
+    end
+
+    assert Path in canaries and :filename in canaries and :erl_prim_loader in canaries
+  end
+
   # A `File` whose rm_rf/1 hands back the whole OS type, `{os:type(), ok}`:
   # not a tail call, so its own frame is the read's caller.
   defp forged_file do
@@ -840,6 +860,53 @@ defmodule NccWorker.Tracer.RuntimeTest do
              for(e <- kind(lines, "event"), e["mfa"] == "os:type/0", do: e),
            out
 
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
+  # A `Path` whose private major_os_type/0 hands back the whole OS type,
+  # `{os:type(), ok}` (not a tail call, so its frame is the read's first
+  # past the wrappers, by the name of a path internal), through leak/0.
+  defp forged_path do
+    read = {:call, 1, {:remote, 1, {:atom, 1, :os}, {:atom, 1, :type}}, []}
+    local = {:call, 1, {:atom, 1, :major_os_type}, []}
+    element = {:remote, 1, {:atom, 1, :erlang}, {:atom, 1, :element}}
+
+    forms = [
+      {:attribute, 1, :module, Path},
+      {:attribute, 1, :export, [leak: 0]},
+      {:function, 1, :leak, 0,
+       [{:clause, 1, [], [], [{:call, 1, element, [{:integer, 1, 1}, local]}]}]},
+      {:function, 1, :major_os_type, 0,
+       [{:clause, 1, [], [], [{:tuple, 1, [read, {:atom, 1, :ok}]}]}]}
+    ]
+
+    {:ok, Path, bin} = :compile.forms(forms, [:binary])
+    Base.encode64(bin)
+  end
+
+  # A path internal's own OS-type read is trusted by its frame's name: the
+  # tracer only counts it and the judge ignores it. A package can load a
+  # forged module of that name, read through it, and put the toolchain's
+  # back: the read is never written, so the check must fail the window.
+  test "a forged Path swapped in and back around a path-frame read fails the window",
+       %{tmp_dir: dir} do
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      forged = Base.decode64!("#{forged_path()}")
+      :ok = :ncc_tracer.window_open(tok, "fx")
+      {:module, Path} = :code.load_binary(Path, ~c"nofile", forged)
+      {_, _} = Path.leak()
+      _ = :code.purge(Path)
+      {:module, Path} = :code.load_file(Path)
+      true = :code.soft_purge(Path)
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    # Counted as path handling, never written.
+    assert [] = for(e <- kind(lines, "event"), e["mfa"] == "os:type/0", do: e), out
     assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
   end
 
