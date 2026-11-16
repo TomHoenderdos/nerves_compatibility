@@ -239,6 +239,47 @@ defmodule NccWorker.Tracer.ToolchainTrustTest do
       end
     end
 
+    # The toolchain's code prepared before other code and finished after it:
+    # the finish (erlang:finish_loading/1) may reach the collector before or
+    # after the prepare's return names its reference.
+    test "the toolchain's code prepared first and finished after other code fails, either way round" do
+      for finish_first <- [false, true] do
+        task =
+          Task.async(fn ->
+            ref = make_ref()
+            entry = prepared(real(), 10)
+            prepared(other(1), 20)
+
+            if finish_first do
+              :ncc_tracer.code_finished([ref], 30)
+              :ncc_tracer.prepared_ref(entry, ref)
+            else
+              :ncc_tracer.prepared_ref(entry, ref)
+              :ncc_tracer.code_finished([ref], 30)
+            end
+
+            judged()
+            Process.get(:code_swap)
+          end)
+
+        assert Task.await(task) == :lists, inspect(finish_first)
+      end
+    end
+
+    test "the toolchain's code finished before other code is prepared passes" do
+      task =
+        Task.async(fn ->
+          ref = make_ref()
+          :ncc_tracer.prepared_ref(prepared(real(), 10), ref)
+          :ncc_tracer.code_finished([ref], 15)
+          prepared(other(1), 20)
+          judged()
+          Process.get(:code_swap)
+        end)
+
+      assert Task.await(task) == nil
+    end
+
     test "past the kept versions, a module ever taken for the toolchain's fails" do
       task =
         Task.async(fn ->

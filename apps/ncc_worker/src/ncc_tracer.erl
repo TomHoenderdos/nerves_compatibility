@@ -9,7 +9,8 @@
          collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0, object_verdict/4,
-         installed_app/3, cache_hit/2, canary_patterns/0, code_prepared/3, toolchain_code/2]).
+         installed_app/3, cache_hit/2, canary_patterns/0, code_prepared/3, code_finished/2,
+         prepared_ref/2, toolchain_code/2]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -33,8 +34,15 @@
 -define(NEVER, [{'_', [false], []}]).
 %% Every load of Erlang code passes here (erlang:prepare_loading/2,
 %% erlang:load_module/2, the code server, or a package calling it itself):
-%% traced without a stack, tagged, for code_prepared/3.
+%% traced without a stack, tagged, for code_prepared/3, with its return (the
+%% prepared code's reference) for code_finished/2.
 -define(PREPARE_LOADING, {erts_internal, prepare_loading, 2}).
+%% What makes prepared code current, in any process and at any later time
+%% (code:finish_loading/1 too): traced without a stack, tagged.
+-define(FINISH_LOADING, {erlang, finish_loading, 1}).
+%% Prepared code references code_finished/2 waits on at once, either way
+%% round; past that every check fails.
+-define(MAX_REFS, 4096).
 %% The distinct versions of one module's code code_prepared/3 keeps; past
 %% that the module's history is only `overflow`, which fails the check once
 %% the module is ever taken for the toolchain's.
@@ -298,7 +306,7 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     put(preloaded_md5, preloaded_md5s()),
     put(owned_md5, owned_md5s()),
     Patterns = ncc_tracer_channels:patterns() ++ spawn_patterns() ++ role_patterns(Role)
-        ++ [?PREPARE_LOADING],
+        ++ [?PREPARE_LOADING, ?FINISH_LOADING],
     Canaries = canary_patterns(),
     _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns ++ Canaries],
     Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
@@ -617,7 +625,8 @@ app_call(M, F, Args) ->
         _ -> false
     end.
 
-match_spec(?PREPARE_LOADING, _Role, _Depth) -> [{'_', [], [{message, code_load}]}];
+match_spec(?PREPARE_LOADING, _Role, _Depth) -> [{'_', [], [{message, code_load}, {return_trace}]}];
+match_spec(?FINISH_LOADING, _Role, _Depth) -> [{'_', [], [{message, code_load}]}];
 match_spec({compile, file, 2}, child, _Depth) -> [{'_', [], [{return_trace}]}];
 match_spec({erlang, process_info, 2}, _Role, Depth) ->
     Msg = {message, {current_stacktrace, Depth}},
@@ -665,8 +674,14 @@ loop(St) ->
             loop(St)
     end.
 
-traced({trace_ts, _Pid, call, {erts_internal, prepare_loading, [M, Bin]}, code_load, Ts}, St) ->
-    code_prepared(M, Bin, Ts),
+traced({trace_ts, Pid, call, {erts_internal, prepare_loading, [M, Bin]}, code_load, Ts}, St) ->
+    put({preparing, Pid}, code_prepared(M, Bin, Ts)),
+    St;
+traced({trace_ts, Pid, return_from, ?PREPARE_LOADING, Prepared, _Ts}, St) ->
+    prepared_ref(erase({preparing, Pid}), Prepared),
+    St;
+traced({trace_ts, _Pid, call, {erlang, finish_loading, [Refs]}, code_load, Ts}, St) ->
+    code_finished(Refs, Ts),
     St;
 traced({trace_ts, Pid, call, {M, F, Args}, Stack, Ts}, St) ->
     call_event(Pid, M, F, Args, Stack, Ts, pending(Pid, M, F, Args, St));
@@ -689,6 +704,7 @@ traced({trace_ts, Child, spawned, Parent, _MFA, _Ts}, St) ->
         false -> St#st{parents = maps:put(Child, Parent, St#st.parents)}
     end;
 traced({trace_ts, Pid, exit, _Reason, _Ts}, St) ->
+    _ = erase({preparing, Pid}),
     St#st{procs = maps:remove(Pid, St#st.procs), spawning = maps:remove(Pid, St#st.spawning),
           parents = maps:remove(Pid, St#st.parents), returns = maps:remove(Pid, St#st.returns)};
 traced(_Msg, St) -> St.
@@ -1504,32 +1520,78 @@ object_code_toolchain(M) ->
 %% collector gets to the event, not when the call was made: a package can
 %% call a forged module named like a toolchain one and load the toolchain's
 %% code back before then, and the frame is taken for the toolchain's. Every
-%% load is traced (PREPARE_LOADING), and each module's versions kept with
-%% the first and last time each was prepared. The toolchain's code for a
-%% module (the md5s the verdict passed, toolchain_code/2) prepared again
-%% after other code of that name fails every check from then on (code_swap):
-%% only then can a verdict on the current code differ from the code a call
-%% ran. Either fact may come first, in any order the messages arrive: each
-%% checks the other, and a window's close sees every load made before it.
-%% Mix's protocol consolidation loads other code after the toolchain's, never
-%% the toolchain's after, and a package's module of a toolchain name that
-%% stays loaded is never the toolchain's.
+%% load is traced, its prepare (PREPARE_LOADING) and its finish
+%% (FINISH_LOADING), and each module's versions kept with the first and last
+%% time each was prepared or finished: code prepared before other code can
+%% be finished after it, and only the finish makes it current. The
+%% toolchain's code for a module (the md5s the verdict passed,
+%% toolchain_code/2) prepared or finished again after other code of that
+%% name fails every check from then on (code_swap): only then can a verdict
+%% on the current code differ from the code a call ran. Either fact may come
+%% first, in any order the messages arrive: each checks the other, and a
+%% window's close sees every load made before it. Mix's protocol
+%% consolidation loads other code after the toolchain's, never the
+%% toolchain's after, and a package's module of a toolchain name that stays
+%% loaded is never the toolchain's.
+%% Returns what a finish of this prepare is a load of (code_finished/2).
 code_prepared(M, Bin, Ts) when is_atom(M) ->
     case ncc_tracer_stack:compiler_frame({M, none, 0, []}) of
-        true -> ok;
+        true -> skip;
         false ->
             Md5 = case (try beam_lib:md5(Bin) catch _:_ -> error end) of
                       {ok, {M, Sum}} -> Sum;
                       _ -> bad
                   end,
-            Prepared = prepared(Md5, Ts, get({prepared, M})),
-            put({prepared, M}, case is_list(Prepared) andalso length(Prepared) > ?MAX_PREPARED of
-                                   true -> overflow;
-                                   false -> Prepared
-                               end),
-            restored(M)
+            version(M, Md5, Ts),
+            {M, Md5}
     end;
-code_prepared(_M, _Bin, _Ts) -> ok.
+code_prepared(_M, _Bin, _Ts) -> skip.
+
+version(M, Md5, Ts) ->
+    Prepared = prepared(Md5, Ts, get({prepared, M})),
+    put({prepared, M}, case is_list(Prepared) andalso length(Prepared) > ?MAX_PREPARED of
+                           true -> overflow;
+                           false -> Prepared
+                       end),
+    restored(M).
+
+%% The prepared code a prepare returned, keyed by its reference until a
+%% finish names it (or, when the finish was seen first, the finish's time).
+%% A prepare that failed returns no reference.
+prepared_ref(Entry, Ref) when is_reference(Ref), Entry =/= undefined ->
+    case erase({finished_ref, Ref}) of
+        undefined -> outstanding({prepared_ref, Ref}, Entry);
+        Ts -> refs(-1), finished(Entry, Ts)
+    end;
+prepared_ref(_Entry, _Prepared) -> ok.
+
+%% erlang:finish_loading/1 at Ts: each reference's code is loaded then. One
+%% whose prepare was not seen yet waits for it; one never seen was prepared
+%% before the trace or by the collector itself, which runs untraced.
+code_finished(Refs, Ts) when is_list(Refs) ->
+    lists:foreach(fun(Ref) when is_reference(Ref) ->
+                          case erase({prepared_ref, Ref}) of
+                              undefined -> outstanding({finished_ref, Ref}, Ts);
+                              Entry -> refs(-1), finished(Entry, Ts)
+                          end;
+                     (_) -> ok
+                  end, Refs);
+code_finished(_Refs, _Ts) -> ok.
+
+finished({M, Md5}, Ts) -> version(M, Md5, Ts);
+finished(skip, _Ts) -> ok.
+
+outstanding(Key, Value) ->
+    put(Key, Value),
+    refs(1) > ?MAX_REFS andalso swapped(overflow).
+
+refs(N) ->
+    Refs = case get(outstanding_refs) of
+               undefined -> N;
+               Old -> Old + N
+           end,
+    put(outstanding_refs, Refs),
+    Refs.
 
 prepared(_Md5, _Ts, overflow) -> overflow;
 prepared(Md5, Ts, undefined) -> [{Md5, Ts, Ts}];
@@ -1547,7 +1609,8 @@ toolchain_code(M, Md5) ->
     end,
     restored(M).
 
-%% The toolchain's code prepared at or after another version's first load.
+%% The toolchain's code prepared or finished at or after another version's
+%% first prepare.
 restored(M) ->
     case {get({toolchain_code, M}), get({prepared, M})} of
         {Known, Prepared} when is_list(Known), is_list(Prepared) ->

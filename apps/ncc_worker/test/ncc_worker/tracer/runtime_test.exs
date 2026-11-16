@@ -972,6 +972,42 @@ defmodule NccWorker.Tracer.RuntimeTest do
     assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
   end
 
+  # The toolchain's code can be prepared before the forged code and finished
+  # after it (erlang:prepare_loading/2 then erlang:finish_loading/1, or
+  # code:prepare_loading/1 then code:finish_loading/1): what puts it back is
+  # the finish, which no prepare marks.
+  test "a config read from a forged module restored by finishing code prepared before it fails the window",
+       %{tmp_dir: dir} do
+    read =
+      {:call, 1, {:remote, 1, {:atom, 1, :application}, {:atom, 1, :get_env}},
+       [{:atom, 1, :kernel}, {:atom, 1, :ncc_swap_probe}]}
+
+    {0, out} =
+      run_script(dir, """
+      {:ok, tok} = :ncc_tracer.start_main()
+      forged = Base.decode64!("#{forged_uri(read)}")
+      collector = :ncc_tracer.collector()
+      path = :code.which(URI)
+      :ok = :ncc_tracer.window_open(tok, "fx")
+      true = :erlang.suspend_process(collector)
+      held = :erlang.prepare_loading(URI, File.read!(path))
+      _ = :code.purge(URI)
+      {:module, URI} = :code.load_binary(URI, path, forged)
+      {_, :ok} = URI.leak()
+      _ = :code.purge(URI)
+      :ok = :erlang.finish_loading([held])
+      true = :code.soft_purge(URI)
+      true = :erlang.resume_process(collector)
+      :ok = :ncc_tracer.window_close(tok, "fx")
+      :ok = :ncc_tracer.finish(tok, "ok")
+      """)
+
+    lines = lines(Path.join(dir, "trace-main.jsonl"))
+    reads = for e <- kind(lines, "event"), e["first"]["module"] == "Elixir.URI", do: e
+    assert [%{"channel" => "config", "first_kind" => "toolchain"}] = reads, out
+    assert [%{"integrity_ok" => false}] = kind(lines, "window_close"), out
+  end
+
   test "a traced module deleted and purged without a reload fails the check",
        %{tmp_dir: dir} do
     {0, out} =
