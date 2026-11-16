@@ -190,6 +190,28 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     assert served_locks(name) == ["2.19.0"]
   end
 
+  # The files route and the package list publish a row's memberships by the
+  # row's own lock (`Portal.Precompiled.Withheld`), earlier builds' files
+  # included: a manifest that listed an earlier build beside a withheld row
+  # would name files the route refuses.
+  test "an earlier build is listed only beside a row that is not withheld" do
+    name = name()
+    ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
+
+    ingest_toolchain_build(name, "0.4.0",
+      deps_lock: Map.put(lock("2.19.0"), "phoenix_live_view", %{"version" => "1.1.0"})
+    )
+
+    listed =
+      for build <- builds(name),
+          key <- ["ebin", "priv"],
+          file <- build[key] || [],
+          do: file["sha256"]
+
+    assert Enum.all?(listed, &Catalog.published_sha256?/1)
+    assert served_locks(name) == []
+  end
+
   test "an earlier build whose file the row no longer owns is left out whole" do
     name = name()
     old = ingest_toolchain_build(name, "0.4.0", deps_lock: lock("2.18.0"))
