@@ -1454,19 +1454,26 @@ defmodule NccWorker.Portability do
   # reading a beam it wrote itself (Elixir 1.20's type checker on a module
   # compiled earlier in the same compile) reads nothing but that compile's
   # own output, whose files the target publishes as they are. Settled
-  # before `beam_reads/5`, which refuses it on the host.
+  # before `beam_reads/5`, which refuses it on the host. Only a beam: any
+  # other file in that ebin is the native build's, which nobody traced
+  # (`native_output/2` checks the beams).
   defp own_beam_reads(decided, _ctx, false), do: decided
 
   defp own_beam_reads(decided, ctx, true) do
     Enum.map(decided, fn
-      {owner, {:observe, "native_beam_reads", %{"app" => app, "vm" => "main"} = item}}
+      {owner, {:observe, "native_beam_reads", %{"app" => app, "vm" => "main"} = item}} = entry
       when owner == ctx.package and app == ctx.package ->
-        {owner, {:observe, "own_beam_reads", item}}
+        if beam_path?(item), do: {owner, {:observe, "own_beam_reads", item}}, else: entry
 
       entry ->
         entry
     end)
   end
+
+  defp beam_path?(%{"arg" => %{"path" => path}}) when is_binary(path),
+    do: Path.extname(path) == ".beam"
+
+  defp beam_path?(_item), do: false
 
   # Judge revision 15. A read in a natively built dependency's `ebin`
   # (`Events`, `native_beam_reads`: Elixir 1.20's type checker reading a

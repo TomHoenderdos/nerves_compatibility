@@ -133,6 +133,11 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
   erlc -o "$COMPILE_PATH" "$d/fx_board_beam_gen.erl"
   """
 
+  @gen_data """
+  mkdir -p "$COMPILE_PATH"
+  printf '%s' "$FX_GEN_MODE" > "$COMPILE_PATH/mode.txt"
+  """
+
   defp deps do
     %{
       "elixir_make" => @tool,
@@ -153,6 +158,13 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
       "fx_board_gen" => gen_board("fx_board_gen", @gen_source),
       # The native build putting a module of its own in the package's ebin.
       "fx_board_beam" => gen_board("fx_board_beam", @gen_beam),
+      # The package's compile reading a file the native build put in its ebin.
+      "fx_board_data" =>
+        gen_board(
+          "fx_board_data",
+          @gen_data,
+          "@mode File.read!(Path.join(Mix.Project.compile_path(), \"mode.txt\"))\n  def mode, do: @mode"
+        ),
       "fx_board_make_env" =>
         make_env_board(
           "fx_board_make_env",
@@ -186,8 +198,8 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
   end
 
   # A package whose native build runs `gen.sh`, a file of its own tarball.
-  defp gen_board(app, script) do
-    %{files: files, mix_exs: mix_exs} = board(app)
+  defp gen_board(app, script, lib_extra \\ "") do
+    %{files: files, mix_exs: mix_exs} = board(app, lib_extra)
 
     mix_exs =
       String.replace(mix_exs, "compilers: [", "make_gen: \"gen.sh\",\n          compilers: [")
@@ -196,7 +208,7 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
   end
 
   @apps ~w(elixir_make fx_board fx_board_os fx_board_sneaky fx_board_tool_lib fx_board_tool_alias
-           fx_board_make_env fx_board_gen fx_board_beam)
+           fx_board_make_env fx_board_gen fx_board_beam fx_board_data)
 
   setup_all do
     root =
@@ -375,6 +387,11 @@ defmodule NccWorker.Tracer.FixturesTargetTest do
   test "a module the native build put in the package's ebin records nothing", ctx do
     assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, "fx_board_beam")
     assert v.reason =~ "fx_board_beam_gen"
+  end
+
+  test "a file the native build put in the package's ebin is no beam of its own compile", ctx do
+    assert %{status: :skip, compile_inputs: nil} = v = target_verdict(ctx, "fx_board_data")
+    assert v.reason =~ "mode.txt"
   end
 
   test "a natively built tree no verified tarball vouches for records nothing", ctx do
