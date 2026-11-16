@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -91,14 +92,105 @@ class PreflightTest(unittest.TestCase):
 
 
 class InstallTest(unittest.TestCase):
-    # The host runs what this installs as $NCC_INSTALL_DIR/deploy.sh: the
-    # deployed commit's bootstrap, which then runs that commit's deploy.sh.
-    # Installing a full deploy.sh there would overwrite the bootstrap the
-    # CI-deployed hosts rely on.
-    def test_the_deploy_installs_the_commits_bootstrap_as_deploy_sh(self):
+    """A real (not dry) run against one host, whose remote commands run
+    locally: the install against a scratch NCC_INSTALL_DIR, the rest
+    answered. The host runs what this installs as $NCC_INSTALL_DIR/deploy.sh,
+    and so does CI on the main builder: an empty or cut-short copy there
+    would make every later deploy of that host run nothing and exit 0."""
+
+    # Runs the install command the way the host would, with $TRUNCATE
+    # cutting the transfer short; answers preflight, the poll and verify.
+    SSH = """#!/bin/bash
+last=${!#}
+echo "ssh $last" >> "$EVENTS"
+case $last in
+  *"git rev-parse HEAD"*) printf '%b' "$STATE" ;;
+  *deploy.sh.new*)
+    head -c "${TRUNCATE:-100000000}" | NCC_INSTALL_DIR=$INSTALL bash -c "${last#*set +a; }" ;;
+  *"grep -m1"*) echo DEPLOY_EXIT=0 ;;
+  *"git log --oneline -1"*) printf '%s a commit\\nactive\\n' "${SHA:0:7}" ;;
+  *setsid*) ;;
+  *) echo "unexpected remote command" >&2; exit 99 ;;
+esac
+"""
+
+    # The commit's ops/deploy-bootstrap.sh is $BOOTSTRAP, absent when that
+    # file does not exist; hash-object is the real one.
+    GIT = """#!/bin/bash
+case $* in
+  "rev-parse --show-toplevel") pwd ;;
+  *ls-remote*) printf '%s\\trefs/heads/main\\n' "$SHA" ;;
+  *"log --oneline"*) echo "${SHA:0:7} a commit" ;;
+  *"show $SHA:ops/deploy-bootstrap.sh")
+    [[ -e $BOOTSTRAP ]] || { echo "fatal: path 'ops/deploy-bootstrap.sh' does not exist in '$SHA'" >&2; exit 128; }
+    cat "$BOOTSTRAP" ;;
+  *hash-object*) exec "$REAL_GIT" "$@" ;;
+esac
+"""
+
+    def deploy(self, bootstrap=True, truncate=None):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        root = Path(directory)
+        bindir = root / "bin"
+        bindir.mkdir()
+        for name, body in (("ssh", self.SSH), ("git", self.GIT), ("sleep", "#!/bin/bash\n")):
+            (bindir / name).write_text(body)
+            (bindir / name).chmod(0o755)
+        hosts = root / "hosts"
+        hosts.write_text("host-a root@host-a.example\n")
+        self.install = root / "install"
+        self.install.mkdir()
+        (self.install / "deploy.sh").write_text("the copy installed before\n")
+        self.bootstrap = root / "deploy-bootstrap.sh"
+        if bootstrap:
+            shutil.copy(SCRIPT.with_name("deploy-bootstrap.sh"), self.bootstrap)
+        events = root / "events"
+        env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+               "NCC_BUILDERS_FILE": str(hosts), "EVENTS": str(events),
+               "STATE": f"{'f' * 40}\nmain\nactive\n\n", "SHA": SHA,
+               "INSTALL": str(self.install), "BOOTSTRAP": str(self.bootstrap),
+               "REAL_GIT": shutil.which("git")}
+        if truncate is not None:
+            env["TRUNCATE"] = str(truncate)
+        result = subprocess.run(["bash", str(SCRIPT), "host-a"], env=env, cwd=root,
+                                capture_output=True, text=True, timeout=30)
+        self.remote = events.read_text().splitlines() if events.exists() else []
+        return result
+
+    def installed(self):
+        return (self.install / "deploy.sh").read_bytes()
+
+    def started(self):
+        return [line for line in self.remote if "setsid" in line]
+
+    def test_the_commits_bootstrap_is_installed_as_deploy_sh_and_run(self):
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.installed(), self.bootstrap.read_bytes())
+        self.assertEqual((self.install / "deploy.sh").stat().st_mode & 0o777, 0o755)
+        self.assertFalse((self.install / "deploy.sh.new").exists())
+        self.assertEqual(len(self.started()), 1, self.remote)
+
+    def test_a_commit_without_the_bootstrap_installs_and_starts_nothing(self):
+        result = self.deploy(bootstrap=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED: host-a", result.stderr)
+        self.assertEqual(self.installed(), b"the copy installed before\n")
+        self.assertEqual(self.started(), [], self.remote)
+
+    def test_a_transfer_cut_short_installs_and_starts_nothing(self):
+        # Cut at a line boundary: what is left still parses, and as the
+        # host's deploy.sh would end before running anything, with status 0.
+        text = SCRIPT.with_name("deploy-bootstrap.sh").read_bytes()
+        result = self.deploy(truncate=text.index(b"\nrun=") + 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.installed(), b"the copy installed before\n")
+        self.assertFalse((self.install / "deploy.sh.new").exists())
+        self.assertEqual(self.started(), [], self.remote)
+
+    def test_no_full_deploy_sh_or_build_release_sh_is_installed(self):
         text = SCRIPT.read_text()
-        self.assertIn('git -C "$repo" show "$sha:ops/deploy-bootstrap.sh" |', text)
-        self.assertIn('mv "$NCC_INSTALL_DIR/deploy.sh.new" "$NCC_INSTALL_DIR/deploy.sh"', text)
         self.assertNotIn(":ops/deploy.sh", text)
         self.assertNotIn(":ops/build-release.sh", text)
 

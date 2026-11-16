@@ -166,11 +166,29 @@ preflight() {
 # one file no deploy ships, so this installs it on every deploy: a host
 # deployed from here never runs an old one. Taken from the commit being
 # deployed, never from this working tree.
+#
+# The copy is checked before it replaces the host's deploy.sh, because CI
+# runs that file too: an empty one (a commit without the bootstrap) or one
+# cut short in transfer would make every later deploy of the host run
+# nothing and exit 0. The host compares the git blob id of what arrived with
+# the one sent, and keeps its old deploy.sh when they differ.
 install_bootstrap() {
-  local name=$1
+  local name=$1 copy blob rc=0
+  copy=$(mktemp "${TMPDIR:-/tmp}/ncc-deploy-bootstrap.XXXXXX")
+  if ! git -C "$repo" show "$sha:ops/deploy-bootstrap.sh" >"$copy" 2>/dev/null || [[ ! -s $copy ]]; then
+    rm -f "$copy"
+    log "$name" "${sha:0:7} has no ops/deploy-bootstrap.sh; not installing or deploying"
+    return 1
+  fi
+  blob=$(git -C "$repo" hash-object --no-filters "$copy")
+  [[ $blob =~ ^[0-9a-f]{40}$ ]] || { rm -f "$copy"; log "$name" "could not hash the bootstrap"; return 1; }
   # shellcheck disable=SC2016 # expanded on the host
-  git -C "$repo" show "$sha:ops/deploy-bootstrap.sh" |
-    on "$name" 'cat > "$NCC_INSTALL_DIR/deploy.sh.new" && chmod 0755 "$NCC_INSTALL_DIR/deploy.sh.new" && mv "$NCC_INSTALL_DIR/deploy.sh.new" "$NCC_INSTALL_DIR/deploy.sh"'
+  on "$name" '{ cat > "$NCC_INSTALL_DIR/deploy.sh.new" && test "$(git hash-object --no-filters "$NCC_INSTALL_DIR/deploy.sh.new")" = '"$blob"' && chmod 0755 "$NCC_INSTALL_DIR/deploy.sh.new" && mv "$NCC_INSTALL_DIR/deploy.sh.new" "$NCC_INSTALL_DIR/deploy.sh"; } || { rm -f "$NCC_INSTALL_DIR/deploy.sh.new"; exit 1; }' <"$copy" || rc=$?
+  rm -f "$copy"
+  if ((rc != 0)); then
+    log "$name" "installing the deploy bootstrap failed; its deploy.sh is unchanged, not deploying"
+    return 1
+  fi
   log "$name" "installed the deploy bootstrap from ${sha:0:7}"
 }
 
@@ -231,7 +249,7 @@ deploy_one() {
     log "$name" "dry run: would install the deploy bootstrap and run deploy.sh ${sha:0:7} builder"
     return 0
   fi
-  install_bootstrap "$name"
+  install_bootstrap "$name" || return 1
   logfile=$(start_deploy "$name")
   wait_deploy "$name" "$logfile" || code=$?
   if ((code == 124)); then
