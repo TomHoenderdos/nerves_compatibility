@@ -19,12 +19,14 @@ defmodule NccWorker.HostNative do
       verified Hex tarball carries (`Compatibility.StaticPriv`), and every
       ELF file is a 64-bit `ET_DYN` object of the triple's machine
       (`Compatibility.Elf`), at most 64 MiB;
-    * when that tarball ships checksum files (a downloader:
-      rustler_precompiled, elixir_make's precompilers), every ELF file is a
-      member of an archive in the run's own cache dirs whose bytes have the
-      sum a checksum file lists for its name (`Compatibility.NifOrigin`);
-      those archives are archived too, and `origins` names them. A package
-      with no checksum file compiled its native files itself, in this run.
+    * that tarball ships checksum files (a downloader: rustler_precompiled,
+      elixir_make's precompilers), and every ELF file is a member of an
+      archive in the run's own cache dirs whose bytes have the sum a
+      checksum file lists for its name (`Compatibility.NifOrigin`); those
+      archives are archived too, and `origins` names them. A package with
+      no checksum file compiled its native files in this run, and those are
+      refused (`Compatibility.NifOrigin.compiled_refusal/1`): nothing checks
+      the CPU features its build flags assumed of the builder.
 
   The beams and the native files ship as one build, so the pair is
   consistent by construction. `native_files` records each ELF file's facts
@@ -369,11 +371,12 @@ defmodule NccWorker.HostNative do
   defp sha256(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 
   # A downloader's native files must each come from an archive its checksum
-  # files pin (`Compatibility.NifOrigin`); a package with none compiled them.
-  defp origins(natives, tarball, opts) do
+  # files pin (`Compatibility.NifOrigin`); a package with none compiled them
+  # in the run, which is refused (`NifOrigin.compiled_refusal/1`).
+  defp origins([first | _] = natives, tarball, opts) do
     case NifOrigin.checksum_files(tarball) do
       {:ok, checksums} when map_size(checksums) == 0 ->
-        {:ok, [], []}
+        {:skip, NifOrigin.compiled_refusal(first["path"])}
 
       {:ok, checksums} ->
         verify(natives, checksums, Keyword.get_lazy(opts, :cache_dirs, &cache_dirs/0))

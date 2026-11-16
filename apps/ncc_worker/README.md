@@ -878,13 +878,17 @@ host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2:
   `Compatibility.NifOrigin`): every ELF file must be, byte for byte, a member of an archive in the run's cache dirs
   (`HostNative.cache_dirs/0`) whose bytes have the sum a checksum file lists for its name, else
   `native file not verified against the package's checksum file: <path>`. The archive is archived by SHA-256 too.
+- a package whose tarball ships no checksum file compiled its ELF files in the run, and those are refused:
+  `native file compiled in the run, not a checksum-pinned download: <path>`. Nothing checks what its build assumed of
+  the builder's CPU (`-march=native`, `-mavx2`, `-mcpu=native` give SIGILL on an older CPU), its run paths, or what it
+  downloaded without a checksum.
 
 `result.json` carries `host_native_build`: a toolchain build's fields (status, reason, elixir, otp, `deps_lock`,
 `package_checksum`, `declared`, `compile_env`, `compile_env_rule`, `compile_inputs`, `portability_rule`,
 `judge_revision`, `manager`, `compile_observations`, `file_manifest`) plus `triple`, `libc` ("glibc"), `glibc` (the
 builder's, informational), `otp_full`, `nif_version`, `native_files` (each ELF file's `path`, `sha256`, `size`,
 `class`, `machine`, `soname`, `needed`, `needs`) and `origins` (`path`, `checksum_file`, `archive`,
-`archive_sha256`; `[]` for a package that compiled its own). `scope` is `host_native` and `systems` is empty.
+`archive_sha256`). `scope` is `host_native` and `systems` is empty.
 
 ## Egress probe
 

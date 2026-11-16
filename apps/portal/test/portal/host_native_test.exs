@@ -113,6 +113,15 @@ defmodule Portal.HostNativeTest do
       "archive_sha256" => sha(archive)
     }
 
+  # A downloader: its tarball's checksum file pins the archive the NIF is a
+  # member of, and the run handed over both. `{tarball, origins, blobs}`.
+  defp downloader do
+    archive = archive()
+    checksum = ~s(%{"#{@archive}" => "sha256:#{sha(archive)}"}\n)
+    tarball = hex_tarball(%{"checksum-Elixir.Fx.Native.exs" => checksum})
+    {tarball, [origin(archive)], ["{application,fx,[]}.", nif(), archive]}
+  end
+
   describe "the setting" do
     test "off by default: nothing is queued" do
       refute HostNative.enabled?()
@@ -134,12 +143,29 @@ defmodule Portal.HostNativeTest do
   end
 
   describe "ingest" do
-    test "a NIF the package compiled is stored with the host's own ELF facts" do
+    # Nothing checks what a compile in the run assumed of the builder's CPU
+    # (`-march=native`), its run paths, or what it downloaded unchecked.
+    test "a NIF the package compiled in the run is refused, with no files" do
       name = unique()
       tarball = hex_tarball(%{})
-      assert {:ok, row} = ingest(name, tarball, [], ["{application,fx,[]}.", nif()])
 
-      assert %{status: :pass, triple: @triple, nif_version: "2.18", origins: []} = row
+      assert {:ok, %{status: :fail, reason: reason, file_manifest: nil, origins: nil} = row} =
+               ingest(name, tarball, [], ["{application,fx,[]}.", nif()])
+
+      assert reason ==
+               "refused at ingest: native file compiled in the run, " <>
+                 "not a checksum-pinned download: priv/native/libfx.so"
+
+      assert ArtifactMembership
+             |> Ash.Query.filter(host_native_build_id == ^row.id)
+             |> Ash.read!(domain: Catalog) == []
+    end
+
+    test "a downloader's NIF is stored with the host's own ELF facts" do
+      {tarball, origins, blobs} = downloader()
+      assert {:ok, row} = ingest(unique(), tarball, origins, blobs)
+
+      assert %{status: :pass, triple: @triple, nif_version: "2.18", origins: ^origins} = row
       assert row.elf_needs["libc.so.6"] == ["GLIBC_2.17"]
 
       shas =
@@ -149,26 +175,6 @@ defmodule Portal.HostNativeTest do
         |> Enum.map(& &1.sha256)
 
       assert sha(nif()) in shas
-    end
-
-    test "a downloader's NIF is stored only when its archive is the one its checksum file pins" do
-      archive = archive()
-      checksum = ~s(%{"#{@archive}" => "sha256:#{sha(archive)}"}\n)
-      tarball = hex_tarball(%{"checksum-Elixir.Fx.Native.exs" => checksum})
-      blobs = ["{application,fx,[]}.", nif(), archive]
-
-      assert {:ok, %{status: :pass, origins: [_]}} =
-               ingest(unique(), tarball, [origin(archive)], blobs)
-
-      # The archive the run handed over is not the pinned one.
-      other = tar([{~c"libfx.so", nif()}, {~c"x", "y"}], [:compressed])
-
-      assert {:ok, %{status: :fail, reason: "refused at ingest: native file not verified" <> _}} =
-               ingest(unique(), tarball, [origin(other)], ["{application,fx,[]}.", nif(), other])
-
-      # No origins reported for a downloader.
-      assert {:ok, %{status: :fail, file_manifest: nil}} =
-               ingest(unique(), tarball, [], ["{application,fx,[]}.", nif()])
     end
 
     test "a NIF of another machine is refused, with no files" do
@@ -211,9 +217,9 @@ defmodule Portal.HostNativeTest do
 
     test "stores a host-native result under the job's identity" do
       name = unique()
-      tarball = hex_tarball(%{})
-      dir = files_dir(["{application,fx,[]}.", nif()])
-      Process.put(:load_run, {:ok, %{result: result(name, tarball, []), files_dir: dir}})
+      {tarball, origins, blobs} = downloader()
+      dir = files_dir(blobs)
+      Process.put(:load_run, {:ok, %{result: result(name, tarball, origins), files_dir: dir}})
       Process.put({Portal.Test.FakeHexDeps, :tarball}, {:ok, tarball})
       Process.put({Portal.Test.FakeHexDeps, :outer_checksum}, {:ok, sha(tarball)})
 
@@ -236,7 +242,7 @@ defmodule Portal.HostNativeTest do
                |> Ash.read!(domain: Catalog)
 
       # The same result for a job of another triple is refused whole.
-      Process.put(:load_run, {:ok, %{result: result(name, tarball, []), files_dir: dir}})
+      Process.put(:load_run, {:ok, %{result: result(name, tarball, origins), files_dir: dir}})
       args = %{args | "triple" => "x86_64-linux-gnu", "run_id" => "hn-job-2"}
       assert {:cancel, _reason} = perform_job(Portal.Workers.Ingest, args)
     end
@@ -245,8 +251,8 @@ defmodule Portal.HostNativeTest do
   describe "publication" do
     setup do
       name = unique()
-      tarball = hex_tarball(%{})
-      {:ok, row} = ingest(name, tarball, [], ["{application,fx,[]}.", nif()])
+      {tarball, origins, blobs} = downloader()
+      {:ok, %{status: :pass} = row} = ingest(name, tarball, origins, blobs)
       %{name: name, row: row}
     end
 

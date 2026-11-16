@@ -15,11 +15,13 @@ defmodule Portal.HostNative.Ingest do
        `ET_DYN` object of the triple's machine, at most 64 MiB
        (`Compatibility.Elf`); every other priv file is static data of the
        tarball (`Compatibility.StaticPriv`);
-    3. when the tarball ships checksum files, every ELF file is, byte for
+    3. the tarball ships checksum files, and every ELF file is, byte for
        byte, a member of an archive the run handed over whose bytes have
        the sum the package's own checksum file lists for its name, and the
        origins this finds are exactly the ones the build reports
-       (`Compatibility.NifOrigin`); without checksum files it reports none;
+       (`Compatibility.NifOrigin`); a package without checksum files
+       compiled its ELF files in the run, which are refused
+       (`Compatibility.NifOrigin.compiled_refusal/1`);
     4. the ELF facts (`Portal.Precompiled.ElfFacts`): every library the
        files need and the symbol versions they need from it, read here.
 
@@ -295,9 +297,7 @@ defmodule Portal.HostNative.Ingest do
 
     case NifOrigin.checksum_files(tarball) do
       {:ok, none} when map_size(none) == 0 ->
-        if reported in [[], nil],
-          do: :ok,
-          else: {:refused, "names origins its package ships no checksum file for"}
+        {:refused, files |> Enum.map(& &1["path"]) |> Enum.min() |> NifOrigin.compiled_refusal()}
 
       {:ok, checksums} ->
         verify_origins(files, checksums, reported, files_dir)

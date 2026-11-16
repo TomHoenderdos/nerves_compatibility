@@ -692,7 +692,8 @@ What it lists:
   downloads its NIF at compile time (rustler_precompiled, elixir_make's precompilers), each priv
   ELF file's `path`, the package's own `checksum_file`, the upstream `archive` it is a member of
   and that archive's `archive_sha256`, which both the worker and the portal verified against
-  that checksum file in the package's Hex tarball; `[]` for a package that compiled its own.
+  that checksum file in the package's Hex tarball. A package that compiled its own NIF in the build
+  is not served: nothing checks the CPU features its build flags assumed of the builder.
   One per version, triple, toolchain and `deps`, the newest. A client takes one only when the
   host's normalised triple equals `triple`, its libc is glibc, the OTP major is equal and
   `otp_full` no newer than the host's (`toolchain_otp`, `toolchain_otp_minor`), `nif_version` is

@@ -30,6 +30,7 @@ defmodule Compatibility.NifOrigin do
   @checksum_file ~r/\Achecksum(-[A-Za-z0-9_.]+)?\.exs\z/
   @sum ~r/\Asha256:([0-9a-f]{64})\z/
   @refusal "native file not verified against the package's checksum file: "
+  @compiled "native file compiled in the run, not a checksum-pinned download: "
 
   @typedoc "A verified native file: its priv path and the archive it came from."
   @type origin :: %{String.t() => String.t()}
@@ -38,6 +39,18 @@ defmodule Compatibility.NifOrigin do
   @spec checksum_file?(term()) :: boolean()
   def checksum_file?(name) when is_binary(name), do: Regex.match?(@checksum_file, name)
   def checksum_file?(_name), do: false
+
+  @doc """
+  The refusal for the native files of a package with no checksum file,
+  which it compiled in the run: `path` is the first of them. Such a file is
+  not served. Nothing checks what its build assumed of the builder's CPU
+  (`-march=native`, `-mavx2` or `-mcpu=native` in a Makefile runs fine on
+  the builder and dies with SIGILL on an older CPU), its run paths, or what
+  its build downloaded without a checksum; an upstream file its checksum
+  file pins is the one a user's own compile would load.
+  """
+  @spec compiled_refusal(term()) :: String.t()
+  def compiled_refusal(path), do: @compiled <> to_string(path)
 
   @doc "The largest archive `members/1` reads."
   @spec max_archive_bytes() :: pos_integer()

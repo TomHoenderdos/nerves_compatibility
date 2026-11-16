@@ -83,25 +83,21 @@ defmodule NccWorker.HostNativeTest do
   end
 
   describe "build/6" do
-    test "a NIF compiled by the package itself passes with its facts", %{tmp_dir: dir} do
+    # Nothing checks what a compile in the run assumed of the builder's
+    # CPU (`-march=native`, `-mavx2`, `-mcpu=native` in a Makefile), its run
+    # paths, or what its Makefile downloaded without a checksum: only an
+    # upstream file a checksum file pins is the one a user's own compile
+    # would load.
+    test "a NIF the package compiled in the run is refused", %{tmp_dir: dir} do
       ctx = project(dir, "circuits_gpio-2.1.3")
-      build = build(ctx, "aarch64-linux-gnu")
 
-      assert %{status: "pass", reason: nil, triple: "aarch64-linux-gnu", libc: "glibc"} = build
-      assert %{otp: "28", otp_full: "28.5.0.2", nif_version: "2.17", glibc: "2.36"} = build
-      assert build.compile_inputs == @pass.compile_inputs
-      assert build.origins == []
-      assert build.archives == []
+      assert %{status: "skipped", file_manifest: nil, native_files: nil, origins: nil} =
+               build = build(ctx, "aarch64-linux-gnu")
 
-      assert [%{"path" => @nif, "machine" => "aarch64", "class" => 64} = native] =
-               build.native_files
+      assert build.reason ==
+               "native file compiled in the run, not a checksum-pinned download: " <> @nif
 
-      assert {:ok, nif} = ctx.nif
-      assert native["sha256"] == sha(nif)
-      assert "libc.so.6" in native["needed"]
-      assert Enum.any?(build.file_manifest["priv"], &(&1["path"] == @nif))
-      assert Enum.any?(build.file_manifest["ebin"], &(&1["path"] == "ebin/sample.app"))
-      assert is_integer(build.judge_revision)
+      refute Map.has_key?(build, :archives)
     end
 
     test "a NIF of another machine is refused", %{tmp_dir: dir} do
@@ -135,7 +131,19 @@ defmodule NccWorker.HostNativeTest do
         project(dir, "circuits_gpio-2.1.3", %{"checksum-Elixir.Sample.Native.exs" => checksum})
 
       build = build(ctx, "aarch64-linux-gnu", @pass, cache_dirs: [Path.join(dir, "cache")])
-      assert %{status: "pass"} = build
+      assert %{status: "pass", reason: nil, triple: "aarch64-linux-gnu", libc: "glibc"} = build
+      assert %{otp: "28", otp_full: "28.5.0.2", nif_version: "2.17", glibc: "2.36"} = build
+      assert build.compile_inputs == @pass.compile_inputs
+      assert is_integer(build.judge_revision)
+
+      assert [%{"path" => @nif, "machine" => "aarch64", "class" => 64} = native] =
+               build.native_files
+
+      assert {:ok, nif} = ctx.nif
+      assert native["sha256"] == sha(nif)
+      assert "libc.so.6" in native["needed"]
+      assert Enum.any?(build.file_manifest["priv"], &(&1["path"] == @nif))
+      assert Enum.any?(build.file_manifest["ebin"], &(&1["path"] == "ebin/sample.app"))
 
       assert build.origins == [
                %{
