@@ -191,6 +191,35 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     end
   end
 
+  # Natively built packages whose own compile embeds a file of their own
+  # priv, read through Mix's link from the build priv (judge revision 23):
+  # rustler's `Mix.Tasks.Rustler.New` embeds its templates. Every rustler
+  # build was refused for it, and so was every package with rustler in its
+  # closure. Built with item 1 on, as the fleet builds: under rule 1 the
+  # static rules count rustler's own name in its mix.exs as a native tool.
+  @own_priv_reads [{"rustler", "0.38.0"}]
+
+  for {package, version} <- @own_priv_reads do
+    @tag package: package, version: version, variant: "include"
+    test "own priv reads: #{package} #{version} passes", ctx do
+      %{package: package, version: version} = ctx
+      {golden, stats} = build(ctx, package, version, "include", %{makefile_rule2: true})
+      report(ctx, golden, stats)
+      compare(ctx.tag, golden)
+
+      assert golden["trace_verdict"] == "pass",
+             inspect(Map.take(golden, ["reason", "observations"]), pretty: true, limit: :infinity)
+
+      assert golden["status"] == "pass", inspect(Map.take(golden, ["status", "reason"]))
+
+      assert Enum.any?(
+               golden["observations"]["own_priv_reads"],
+               &(&1["owner"] == package and String.starts_with?(&1["source"], "priv/"))
+             ),
+             inspect(golden["observations"]["own_priv_reads"])
+    end
+  end
+
   # Packages rebar3 builds whose only platform_define regex sees nothing
   # but the OTP major (judge refinements, item 3): poolboy's `"^R"` decides
   # the same on every host of one OTP major, so it passes under rule 2. A
@@ -211,14 +240,14 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
   # --- the run -----------------------------------------------------------------
 
-  defp build(ctx, package, version, variant) do
+  defp build(ctx, package, version, variant, judge \\ nil) do
     work = Path.join(ctx.root, "run-#{System.os_time(:millisecond)}-#{package}-#{variant}")
     saved = Map.new(@env_vars, &{&1, System.get_env(&1)})
     System.put_env("HEX_HOME", ctx.seed)
     started = System.monotonic_time(:millisecond)
 
     try do
-      {:ok, result} = NccWorker.Worker.run(input(work, package, version, variant))
+      {:ok, result} = NccWorker.Worker.run(input(work, package, version, variant, judge))
       total_ms = System.monotonic_time(:millisecond) - started
       result = result |> JSON.encode!() |> JSON.decode!()
       tb = result["toolchain_build"]
@@ -242,8 +271,8 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     end
   end
 
-  defp input(work, package, version, variant) do
-    %{
+  defp input(work, package, version, variant, judge) do
+    input = %{
       run_id: "golden-#{package}-#{variant}",
       image: %{name: "golden", digest: "sha256:golden"},
       package: %{name: package, version: version},
@@ -251,6 +280,8 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       optional_deps: variant,
       paths: %{work_dir: Path.join(work, "work"), output_dir: Path.join(work, "out")}
     }
+
+    if judge, do: Map.put(input, :judge, judge), else: input
   end
 
   defp golden(result, tb, package, version, variant, tag) do
