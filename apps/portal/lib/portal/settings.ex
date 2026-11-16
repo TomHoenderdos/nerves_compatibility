@@ -22,7 +22,8 @@ defmodule Portal.Settings do
     remote_backlog_threshold: 10,
     remote_auto_on: false,
     world_variants_enabled: false,
-    firmware_world_enabled: false
+    firmware_world_enabled: false,
+    host_native_enabled: false
   }
 
   resources do

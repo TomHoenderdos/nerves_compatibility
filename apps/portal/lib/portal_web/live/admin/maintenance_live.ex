@@ -94,6 +94,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
       builder_version: Portal.Toolchains.builder_version(),
       worlds_enabled: Portal.Settings.get().world_variants_enabled,
       firmware_world_enabled: Portal.Settings.get().firmware_world_enabled,
+      host_native_enabled: Portal.Settings.get().host_native_enabled,
       worlds: Portal.Toolchains.worlds(),
       world_top_packages: Portal.Toolchains.world_top_packages(),
       rows:
@@ -177,6 +178,23 @@ defmodule PortalWeb.Admin.MaintenanceLive do
              :info,
              "Firmware world builds turned #{if enabled, do: "on", else: "off"}."
            )
+           |> load_panels()}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, AdminMessages.error(reason)) |> load_panels()}
+      end
+    end)
+  end
+
+  def handle_event("toggle_host_native", params, socket) do
+    as_admin(socket, fn socket, user ->
+      enabled = params["enabled"] == "true"
+
+      case Portal.Admin.set_host_native_enabled(enabled, user) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "Host-native builds turned #{if enabled, do: "on", else: "off"}.")
            |> load_panels()}
 
         {:error, reason} ->
@@ -766,6 +784,38 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               {if @toolchains.firmware_world_enabled,
                 do: "Turn firmware world builds off",
                 else: "Turn firmware world builds on"}
+            </button>
+          </div>
+
+          <div
+            id="host-native-builds"
+            class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <h3 class="font-semibold">Host-native builds</h3>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                <span id="host-native-state">
+                  Host-native builds are {if @toolchains.host_native_enabled, do: "on", else: "off"}.
+                </span>
+                NIF packages built for a glibc Linux triple on the toolchain images, queued,
+                listed under <code>builds_host_native</code>
+                and their files served only while
+                this is on. Clients use them only with <code>host_native: true</code>.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="host-native-toggle"
+              phx-click="toggle_host_native"
+              phx-value-enabled={to_string(not @toolchains.host_native_enabled)}
+              class={[
+                "btn btn-sm",
+                if(@toolchains.host_native_enabled, do: "btn-ghost", else: "btn-primary")
+              ]}
+            >
+              {if @toolchains.host_native_enabled,
+                do: "Turn host-native builds off",
+                else: "Turn host-native builds on"}
             </button>
           </div>
 

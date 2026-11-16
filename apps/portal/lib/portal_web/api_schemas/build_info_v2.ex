@@ -106,6 +106,43 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
           required: [:package, :version],
           additionalProperties: false
         },
+        triple: %Schema{
+          type: :string,
+          enum: Compatibility.HostTriple.all(),
+          description:
+            "Host-native builds only: the glibc Linux triple the build is for, as " <>
+              "`Compatibility.HostTriple` normalises `system_architecture`."
+        },
+        libc: %Schema{
+          type: :string,
+          enum: ["glibc"],
+          description: "Host-native builds only: the C library the triple names."
+        },
+        nif_version: %Schema{
+          type: :string,
+          description:
+            "Host-native builds only: the NIF version of the VM it was built on; a " <>
+              "client takes it only when its own is no older."
+        },
+        origins: %Schema{
+          type: :array,
+          description:
+            "Host-native builds only: each priv ELF file the package downloaded at " <>
+              "compile time, with the upstream archive it is a member of and that " <>
+              "archive's SHA-256 as the package's own checksum file lists it. Empty for a " <>
+              "package that compiled its own.",
+          items: %Schema{
+            type: :object,
+            properties: %{
+              path: %Schema{type: :string},
+              checksum_file: %Schema{type: :string},
+              archive: %Schema{type: :string},
+              archive_sha256: %Schema{type: :string}
+            },
+            required: [:path, :checksum_file, :archive, :archive_sha256],
+            additionalProperties: false
+          }
+        },
         elf: %Schema{
           type: :object,
           description:

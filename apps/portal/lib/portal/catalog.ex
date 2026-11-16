@@ -49,6 +49,7 @@ defmodule Portal.Catalog do
   }
 
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
+  alias Portal.HostNative
   alias Portal.Precompiled.Withheld
   alias Portal.Repo
 
@@ -143,6 +144,7 @@ defmodule Portal.Catalog do
     resource(FindingTriage)
     resource(BulkSweep)
     resource(ToolchainBuild)
+    resource(Portal.Catalog.HostNativeBuild)
     resource(ReleaseDownloads)
     resource(CoverageReport)
     resource(RunMemory)
@@ -1148,7 +1150,10 @@ defmodule Portal.Catalog do
   # system result's ABI facts are in it as values too: the ELF facts land
   # after the ingest commits, so a manifest rendered between the two must not
   # be vouched for once they arrive. Compile inputs are in it as values too:
-  # a raw SQL update in the writing transaction keeps `xmin`.
+  # a raw SQL update in the writing transaction keeps `xmin`. Host-native
+  # builds (`Portal.HostNative`) count only while the `host_native_enabled`
+  # setting is on, appended so every other package's fingerprint is the
+  # bytes it was.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1192,17 +1197,35 @@ defmodule Portal.Catalog do
     JOIN catalog_toolchain_builds t ON t.id = m.toolchain_build_id
     WHERE t.variant IN #{ToolchainBuild.variants_sql()}
     GROUP BY t.package_id
+  ), host_native AS (
+    SELECT h.package_id,
+           md5(string_agg(format('%s|%s|%s|%s|%s', h.id, h.xmin, h.updated_at, h.status,
+                                 h.revoked_at),
+                          ',' ORDER BY h.id)) AS fp
+    FROM catalog_host_native_builds h
+    WHERE EXISTS (SELECT 1 FROM settings st WHERE st.host_native_enabled)
+    GROUP BY h.package_id
+  ), host_native_files AS (
+    SELECT h.package_id, count(*) AS n,
+           sum(hashtextextended(format('%s|%s|%s|%s', m.id, m.xmin, m.host_native_build_id, m.sha256), 0)) AS h
+    FROM catalog_artifact_memberships m
+    JOIN catalog_host_native_builds h ON h.id = m.host_native_build_id
+    WHERE EXISTS (SELECT 1 FROM settings st WHERE st.host_native_enabled)
+    GROUP BY h.package_id
   )
   SELECT p.name,
          md5(format('%s/%s/%s/%s/%s/%s/%s/%s', p.id, runs.fp, results.fp, rf.n, rf.h,
-                    tc.fp, tf.n, tf.h))
+                    tc.fp, tf.n, tf.h)) ||
+           coalesce('|host_native:' || md5(format('%s/%s/%s', hn.fp, hf.n, hf.h)), '')
   FROM catalog_packages p
   LEFT JOIN runs ON runs.package_id = p.id
   LEFT JOIN results ON results.package_id = p.id
   LEFT JOIN result_files rf ON rf.package_id = p.id
   LEFT JOIN toolchain tc ON tc.package_id = p.id
   LEFT JOIN toolchain_files tf ON tf.package_id = p.id
-  WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL
+  LEFT JOIN host_native hn ON hn.package_id = p.id
+  LEFT JOIN host_native_files hf ON hf.package_id = p.id
+  WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL OR hn.package_id IS NOT NULL
   """
 
   @doc """
@@ -1219,6 +1242,7 @@ defmodule Portal.Catalog do
   def precompiled_fingerprints do
     %{rows: rows} = Repo.query!(@precompiled_fingerprints_sql, [], timeout: :timer.minutes(2))
     withheld = Enum.join(Withheld.packages(), ",")
+
     Map.new(rows, fn [name, fingerprint] -> {name, fingerprint <> "|withheld:" <> withheld} end)
   end
 
@@ -1335,6 +1359,16 @@ defmodule Portal.Catalog do
   """
   @served_toolchain_clause served_toolchain.("t")
 
+  # The one predicate that serves a host-native build aliased `h` of the
+  # package `p` (`Portal.HostNative`, `$W` the withheld list): the
+  # `host_native_enabled` setting on, a pass, not revoked, and not withheld.
+  # Its config reads are recorded by the write that records its run.
+  @served_host_native_clause """
+  EXISTS (SELECT 1 FROM settings st WHERE st.host_native_enabled)
+  AND h.status = 'pass' AND h.revoked_at IS NULL
+  AND #{withheld_lock_clause |> String.replace("$L", "h.deps_lock") |> String.replace("$E", "(h.compile_env_rule = 1 AND h.compile_env IS NOT NULL AND h.run_id IS NOT NULL)")}
+  """
+
   # Whether the toolchain build aliased `table` lists `sha` in its own file
   # manifest, under either key it publishes: a row's memberships also hold
   # its earlier builds' files, which only those builds publish.
@@ -1346,6 +1380,9 @@ defmodule Portal.Catalog do
   end
 
   @served_toolchain_file_clause in_own_manifest.("t", "m.sha256")
+
+  # Whether the host-native build `h` lists `sha` in its own file manifest.
+  @served_host_native_file_clause in_own_manifest.("h", "m.sha256")
 
   @packages_with_precompiled_files_sql_template """
   SELECT p.name
@@ -1369,6 +1406,13 @@ defmodule Portal.Catalog do
   WHERE #{@served_toolchain_clause}
     AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m
                 WHERE m.toolchain_build_id = r.id AND #{@served_toolchain_file_clause})
+  UNION
+  SELECT p.name
+  FROM catalog_packages p
+  JOIN catalog_host_native_builds h ON h.package_id = p.id
+  WHERE #{@served_host_native_clause}
+    AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m
+                WHERE m.host_native_build_id = h.id AND #{@served_host_native_file_clause})
   ORDER BY 1
   """
   @packages_with_precompiled_files_sql String.replace(
@@ -2594,6 +2638,14 @@ defmodule Portal.Catalog do
   WHERE m.sha256 = $1
     AND #{@served_toolchain_clause}
     AND #{@served_toolchain_file_clause}
+  UNION ALL
+  SELECT 1
+  FROM catalog_artifact_memberships m
+  JOIN catalog_host_native_builds h ON h.id = m.host_native_build_id
+  JOIN catalog_packages p ON p.id = h.package_id
+  WHERE m.sha256 = $1
+    AND #{@served_host_native_clause}
+    AND #{@served_host_native_file_clause}
   LIMIT 1
   """
   @published_sha256_sql String.replace(@published_sha256_sql_template, "$W", "$2")
@@ -3217,7 +3269,18 @@ defmodule Portal.Catalog do
         shas_by_toolchain_build_id =
           toolchain_builds |> Enum.map(& &1.id) |> manifest_shas_for_toolchain_builds()
 
-        stored = stored_shas(Map.merge(shas_by_system_result_id, shas_by_toolchain_build_id))
+        # Empty while the `host_native_enabled` setting is off (`Portal.HostNative`).
+        host_native_builds = HostNative.served(package.id, package.name, withheld)
+
+        shas_by_host_native_id =
+          host_native_builds |> Enum.map(& &1.id) |> HostNative.membership_shas()
+
+        stored =
+          shas_by_system_result_id
+          |> Map.merge(shas_by_toolchain_build_id)
+          |> Map.merge(shas_by_host_native_id)
+          |> stored_shas()
+
         present = MapSet.filter(stored, &ArtifactStore.present?/1)
 
         %{
@@ -3226,6 +3289,8 @@ defmodule Portal.Catalog do
           shas_by_system_result_id: shas_by_system_result_id,
           toolchain_builds: toolchain_builds,
           shas_by_toolchain_build_id: shas_by_toolchain_build_id,
+          host_native_builds: host_native_builds,
+          shas_by_host_native_id: shas_by_host_native_id,
           present_shas: present,
           absent_shas: stored |> MapSet.difference(present) |> Enum.sort()
         }
@@ -3326,7 +3391,9 @@ defmodule Portal.Catalog do
       end)
       |> Kernel.++(Enum.map(newest_per_key(closure), &{:closure, &1}))
 
-    if builds == [] do
+    host_native = host_native_v2(sources)
+
+    if builds == [] and host_native == [] do
       nil
     else
       %{
@@ -3334,9 +3401,10 @@ defmodule Portal.Catalog do
         "versions" =>
           builds
           |> Enum.group_by(fn {_list, {version, _at, _build}} -> version end)
-          |> Map.new(fn {version, list} -> {version, version_builds(list)} end),
+          |> Map.new(fn {version, list} -> {version, version_builds(list)} end)
+          |> put_host_native(host_native),
         "updated_at" =>
-          builds
+          (builds ++ Enum.map(host_native, &{:host_native, &1}))
           |> Enum.map(fn {_list, {_version, at, _build}} -> at end)
           |> Enum.reject(&is_nil/1)
           |> Enum.max(DateTime, fn -> nil end)
@@ -3365,6 +3433,72 @@ defmodule Portal.Catalog do
     %{"builds" => pick.(:plain)}
     |> put_list("builds_with_inputs", pick.(:checked))
     |> put_list("builds_closure", pick.(:closure))
+  end
+
+  # Host-native builds (`Portal.HostNative`, board #85) go under
+  # `builds_host_native` only: a client reads that list only when its
+  # project opted in (`host_native: true`), and a client before that never
+  # reads it at all. A version with nothing else keeps an empty `builds`.
+  defp put_host_native(versions, host_native) do
+    host_native
+    |> Enum.group_by(fn {version, _at, _build} -> version end)
+    |> Enum.reduce(versions, fn {version, list}, acc ->
+      entries = list |> Enum.map(&elem(&1, 2)) |> Enum.sort_by(&host_native_order/1)
+
+      Map.update(
+        acc,
+        version,
+        %{"builds" => [], "builds_host_native" => entries},
+        &Map.put(&1, "builds_host_native", entries)
+      )
+    end)
+  end
+
+  defp host_native_order(%{"build" => build}),
+    do: {build["triple"], build["elixir"], build["otp"], build["run_id"] || ""}
+
+  # A served host-native build whose files this host holds and a client can
+  # match: its triple, NIF version, full OTP version and ELF needs known.
+  # One per version, triple, toolchain and dependency lock, the newest.
+  defp host_native_v2(sources) do
+    for hn <- sources.host_native_builds,
+        stored = Map.get(sources.shas_by_host_native_id, hn.id, MapSet.new()),
+        files = toolchain_files(hn.file_manifest, stored, sources.present_shas),
+        files != nil,
+        is_binary(hn.otp_full) and is_binary(hn.nif_version) and is_map(hn.elf_needs) do
+      build =
+        %{
+          "triple" => hn.triple,
+          "libc" => hn.libc,
+          "elixir" => hn.elixir,
+          "otp" => hn.otp,
+          "otp_full" => hn.otp_full,
+          "nif_version" => hn.nif_version,
+          "dep_env" => "prod",
+          "mix_target" => "host",
+          "system_version" => nil,
+          "deps" => hn.deps_lock,
+          "compile_env" => hn.compile_env,
+          "package_checksum" => hn.package_checksum,
+          "run_id" => hn.run_id,
+          "image_digest" => hn.image_digest,
+          "native" => true,
+          "elf" => %{"needs" => hn.elf_needs},
+          "origins" => hn.origins || []
+        }
+        |> put_declared(hn.declared)
+        |> put_manager(hn.manager)
+        |> put_inputs(hn.compile_inputs)
+
+      {hn.version, hn.finished_at,
+       Map.merge(files, %{"target" => "host_native", "build" => build})}
+    end
+    |> Enum.filter(&matchable?/1)
+    |> Enum.group_by(fn {version, _at, %{"build" => build}} ->
+      {version, build["triple"], "#{elixir_minor(build["elixir"])}/#{build["otp"]}",
+       build["deps"]}
+    end)
+    |> Enum.map(fn {_key, group} -> Enum.max_by(group, &recency/1) end)
   end
 
   defp put_list(version, _key, []), do: version

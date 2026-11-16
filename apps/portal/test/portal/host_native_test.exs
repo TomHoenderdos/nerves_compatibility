@@ -1,0 +1,312 @@
+defmodule Portal.HostNativeTest do
+  # Host-native builds (board #85): queued, ingested and published only
+  # while the `host_native_enabled` setting is on, each file verified again
+  # on the host (`Portal.HostNative.Ingest`).
+  use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
+
+  require Ash.Query
+
+  alias Portal.Catalog
+  alias Portal.Catalog.{ArtifactMembership, HostNativeBuild}
+  alias Portal.HostNative
+  alias Portal.HostNative.Ingest
+
+  @elf Path.expand("../../../compatibility/test/fixtures/elf", __DIR__)
+  @triple "aarch64-linux-gnu"
+  @archive "libfx-v1.0.0-nif-2.17-aarch64-unknown-linux-gnu.so.tar.gz"
+
+  defp sha(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+  defp unique, do: "hnpkg_#{System.unique_integer([:positive])}"
+  defp nif, do: File.read!(Path.join(@elf, "nif_aarch64.so"))
+  defp on!, do: {:ok, _} = Portal.Settings.save(%{host_native_enabled: true})
+
+  defp tmp(name) do
+    dir = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  defp tar(entries, opts) do
+    path = Path.join(tmp("hn-tar"), "t")
+    :ok = :erl_tar.create(String.to_charlist(path), entries, opts)
+    File.read!(path)
+  end
+
+  defp archive, do: tar([{~c"libfx.so", nif()}], [:compressed])
+
+  # The package's Hex tarball: `files` at the root of its contents.
+  defp hex_tarball(files) do
+    contents =
+      tar(for({p, b} <- Map.put(files, "lib/fx.ex", "x"), do: {to_charlist(p), b}), [:compressed])
+
+    tar([{~c"VERSION", "3"}, {~c"CHECKSUM", "0"}, {~c"contents.tar.gz", contents}], [])
+  end
+
+  defp entry(path, bytes, mode),
+    do: %{"path" => path, "sha256" => sha(bytes), "size" => byte_size(bytes), "mode" => mode}
+
+  defp result(name, tarball, origins) do
+    %{
+      "scope" => "host_native",
+      "finished_at" => "2026-11-16T10:00:00Z",
+      "package" => %{"name" => name, "version" => "1.0.0"},
+      "systems" => %{},
+      "host_native_build" => %{
+        "status" => "pass",
+        "triple" => @triple,
+        "libc" => "glibc",
+        "elixir" => "1.20.5",
+        "otp" => "29",
+        "otp_full" => "29.0.1",
+        "nif_version" => "2.18",
+        "deps_lock" => %{},
+        "package_checksum" => sha(tarball),
+        "compile_env" => [],
+        "compile_env_rule" => 1,
+        "compile_inputs" => [],
+        "judge_revision" => 19,
+        "manager" => "mix",
+        "origins" => origins,
+        "file_manifest" => %{
+          "ebin" => [entry("ebin/fx.app", "{application,fx,[]}.", 33_188)],
+          "priv" => [entry("priv/native/libfx.so", nif(), 33_261)]
+        }
+      }
+    }
+  end
+
+  defp files_dir(blobs) do
+    dir = tmp("hn-files")
+    Enum.each(blobs, &File.write!(Path.join(dir, sha(&1)), &1))
+    dir
+  end
+
+  defp opts(name, files_dir, tarball, extra \\ %{}) do
+    Map.merge(
+      %{
+        run_id: "hn-#{System.unique_integer([:positive])}",
+        image_digest: "sha256:hn",
+        files_dir: files_dir,
+        package: name,
+        version: "1.0.0",
+        toolchain: "1.20/29",
+        triple: @triple,
+        builder_version: 1,
+        hex_tarball: fn _name, _version -> {:ok, tarball} end,
+        hex_outer_checksum: fn _name, _version -> {:ok, sha(tarball)} end
+      },
+      extra
+    )
+  end
+
+  defp ingest(name, tarball, origins, blobs) do
+    Ingest.ingest(result(name, tarball, origins), opts(name, files_dir(blobs), tarball))
+  end
+
+  defp origin(archive),
+    do: %{
+      "path" => "priv/native/libfx.so",
+      "checksum_file" => "checksum-Elixir.Fx.Native.exs",
+      "archive" => @archive,
+      "archive_sha256" => sha(archive)
+    }
+
+  describe "the setting" do
+    test "off by default: nothing is queued" do
+      refute HostNative.enabled?()
+      assert HostNative.enqueue("fx", "1.0.0") == {:error, :disabled}
+    end
+
+    test "on: a build is queued on its triple's architecture's queue" do
+      on!()
+
+      assert {:ok, job} = HostNative.enqueue("fx", "1.0.0", triple: "aarch64-linux-gnu")
+      assert job.queue == "host_native_aarch64"
+      assert %{"triple" => "aarch64-linux-gnu", "builder_version" => 1} = job.args
+
+      assert HostNative.enqueue("fx", "1.0.0", triple: "x86_64-linux-musl") ==
+               {:error, :unknown_triple}
+
+      assert HostNative.queue("x86_64-linux-gnu") == {:ok, "host_native_x86_64"}
+    end
+  end
+
+  describe "ingest" do
+    test "a NIF the package compiled is stored with the host's own ELF facts" do
+      name = unique()
+      tarball = hex_tarball(%{})
+      assert {:ok, row} = ingest(name, tarball, [], ["{application,fx,[]}.", nif()])
+
+      assert %{status: :pass, triple: @triple, nif_version: "2.18", origins: []} = row
+      assert row.elf_needs["libc.so.6"] == ["GLIBC_2.17"]
+
+      shas =
+        ArtifactMembership
+        |> Ash.Query.filter(host_native_build_id == ^row.id)
+        |> Ash.read!(domain: Catalog)
+        |> Enum.map(& &1.sha256)
+
+      assert sha(nif()) in shas
+    end
+
+    test "a downloader's NIF is stored only when its archive is the one its checksum file pins" do
+      archive = archive()
+      checksum = ~s(%{"#{@archive}" => "sha256:#{sha(archive)}"}\n)
+      tarball = hex_tarball(%{"checksum-Elixir.Fx.Native.exs" => checksum})
+      blobs = ["{application,fx,[]}.", nif(), archive]
+
+      assert {:ok, %{status: :pass, origins: [_]}} =
+               ingest(unique(), tarball, [origin(archive)], blobs)
+
+      # The archive the run handed over is not the pinned one.
+      other = tar([{~c"libfx.so", nif()}, {~c"x", "y"}], [:compressed])
+
+      assert {:ok, %{status: :fail, reason: "refused at ingest: native file not verified" <> _}} =
+               ingest(unique(), tarball, [origin(other)], ["{application,fx,[]}.", nif(), other])
+
+      # No origins reported for a downloader.
+      assert {:ok, %{status: :fail, file_manifest: nil}} =
+               ingest(unique(), tarball, [], ["{application,fx,[]}.", nif()])
+    end
+
+    test "a NIF of another machine is refused, with no files" do
+      name = unique()
+      tarball = hex_tarball(%{})
+
+      opts =
+        opts(name, files_dir(["{application,fx,[]}.", nif()]), tarball, %{
+          triple: "x86_64-linux-gnu"
+        })
+
+      result =
+        put_in(result(name, tarball, []), ["host_native_build", "triple"], "x86_64-linux-gnu")
+
+      assert {:ok, %{status: :fail, reason: reason, file_manifest: nil}} =
+               Ingest.ingest(result, opts)
+
+      assert reason =~ "x86_64-linux-gnu cannot load (priv/native/libfx.so)"
+    end
+
+    test "a result naming another triple than the job is refused whole" do
+      name = unique()
+      tarball = hex_tarball(%{})
+      opts = opts(name, files_dir([]), tarball, %{triple: "x86_64-linux-gnu"})
+
+      assert {:error, {:identity_mismatch, _job, %{triple: @triple}}} =
+               Ingest.ingest(result(name, tarball, []), opts)
+    end
+  end
+
+  defmodule LoadRunStub do
+    def load_run(_run_id), do: Process.get(:load_run)
+  end
+
+  describe "the ingest job" do
+    setup do
+      Application.put_env(:portal, :build_runner, LoadRunStub)
+      on_exit(fn -> Application.delete_env(:portal, :build_runner) end)
+    end
+
+    test "stores a host-native result under the job's identity" do
+      name = unique()
+      tarball = hex_tarball(%{})
+      dir = files_dir(["{application,fx,[]}.", nif()])
+      Process.put(:load_run, {:ok, %{result: result(name, tarball, []), files_dir: dir}})
+      Process.put({Portal.Test.FakeHexDeps, :tarball}, {:ok, tarball})
+      Process.put({Portal.Test.FakeHexDeps, :outer_checksum}, {:ok, sha(tarball)})
+
+      args = %{
+        "kind" => "host_native",
+        "run_id" => "hn-job",
+        "image_digest" => "sha256:hn",
+        "package" => name,
+        "version" => "1.0.0",
+        "toolchain" => "1.20/29",
+        "triple" => @triple,
+        "builder_version" => 1
+      }
+
+      assert :ok = perform_job(Portal.Workers.Ingest, args)
+
+      assert [%{status: :pass, run_id: "hn-job"}] =
+               HostNativeBuild
+               |> Ash.Query.filter(package.name == ^name)
+               |> Ash.read!(domain: Catalog)
+
+      # The same result for a job of another triple is refused whole.
+      Process.put(:load_run, {:ok, %{result: result(name, tarball, []), files_dir: dir}})
+      args = %{args | "triple" => "x86_64-linux-gnu", "run_id" => "hn-job-2"}
+      assert {:cancel, _reason} = perform_job(Portal.Workers.Ingest, args)
+    end
+  end
+
+  describe "publication" do
+    setup do
+      name = unique()
+      tarball = hex_tarball(%{})
+      {:ok, row} = ingest(name, tarball, [], ["{application,fx,[]}.", nif()])
+      %{name: name, row: row}
+    end
+
+    test "listed under builds_host_native and served only while the setting is on", %{name: name} do
+      refute Catalog.published_sha256?(sha(nif()))
+      assert Catalog.precompiled_manifest_v2(name) == nil
+      refute Map.has_key?(Catalog.precompiled_fingerprints(), name)
+      refute name in Catalog.packages_with_precompiled_files()
+
+      on!()
+
+      assert %{"versions" => %{"1.0.0" => version}} = Catalog.precompiled_manifest_v2(name)
+      assert version["builds"] == []
+
+      assert [%{"target" => "host_native", "build" => build, "priv" => [priv]}] =
+               version["builds_host_native"]
+
+      assert %{"triple" => @triple, "libc" => "glibc", "nif_version" => "2.18", "native" => true} =
+               build
+
+      assert build["elf"]["needs"]["libc.so.6"] == ["GLIBC_2.17"]
+      assert priv["sha256"] == sha(nif())
+      assert Catalog.published_sha256?(sha(nif()))
+      assert name in Catalog.packages_with_precompiled_files()
+      assert Map.has_key?(Catalog.precompiled_fingerprints(), name)
+    end
+
+    test "the manifest route serves the documented shape", %{name: name} do
+      on!()
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> Phoenix.ConnTest.dispatch(
+          PortalWeb.Endpoint,
+          :get,
+          "/api/precompiled/v2/manifests/#{name}.json"
+        )
+
+      assert conn.status == 200
+      PortalWeb.ApiSpecAssertions.assert_documented_response(conn, "getManifestV2")
+
+      blob =
+        Phoenix.ConnTest.build_conn()
+        |> Phoenix.ConnTest.dispatch(
+          PortalWeb.Endpoint,
+          :get,
+          "/api/precompiled/files/#{sha(nif())}"
+        )
+
+      assert blob.status in [200, 404]
+    end
+
+    test "a revoked build is not served", %{name: name, row: row} do
+      on!()
+      row |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Catalog)
+      assert Catalog.precompiled_manifest_v2(name) == nil
+      refute Catalog.published_sha256?(sha(nif()))
+
+      assert [%HostNativeBuild{}] =
+               Ash.read!(HostNativeBuild, domain: Catalog) |> Enum.filter(&(&1.id == row.id))
+    end
+  end
+end

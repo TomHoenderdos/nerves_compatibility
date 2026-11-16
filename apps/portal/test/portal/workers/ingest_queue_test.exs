@@ -85,6 +85,25 @@ defmodule Portal.Workers.IngestQueueTest do
     end
   end
 
+  describe "builder_queues/1 and host_native" do
+    setup do
+      Application.put_env(:portal, Portal.HostNative, triple: "aarch64-linux-gnu")
+      on_exit(fn -> Application.delete_env(:portal, Portal.HostNative) end)
+    end
+
+    test "a node running its own architecture's host-native queue drains it" do
+      assert List.last(Ingest.builder_queues(:"portal@host-c", builds: 1, host_native_aarch64: 1)) ==
+               "host_native_aarch64"
+
+      refute "host_native_x86_64" in Ingest.builder_queues(:"portal@host-c",
+               builds: 1,
+               host_native_x86_64: 1
+             )
+
+      refute "host_native_aarch64" in Ingest.builder_queues(:"portal@host-c", builds: 1)
+    end
+  end
+
   describe "with_local_queue/2" do
     test "a build node's Oban config gains its own ingest queue" do
       config = [repo: Portal.Repo, queues: [builds: 3, ingest: 3]]

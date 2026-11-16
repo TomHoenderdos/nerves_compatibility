@@ -680,6 +680,28 @@ What it lists:
   locks, so it would take one in a project that has, say, `decimal` only in `:test`, where Mix
   compiles the package against a closure without it. A world build whose `deps` came out equal
   to the version's build with or without its optional dependencies is not listed at all.
+- `versions[v].builds_host_native` — host-native builds (board #85): a NIF package built on a
+  toolchain image for one glibc Linux triple, `target: "host_native"`, read only by a client
+  whose project opted in (`config :precompiled, host_native: true`, clients after 0.7.1) on a
+  host that is not a Nerves target. Listed only while the portal's `host_native_enabled` setting
+  is on; absent otherwise, and absent when a version has none (a version with only host-native
+  builds keeps `"builds": []`). Besides the toolchain build fields, `build` carries `triple`
+  (`x86_64-linux-gnu` or `aarch64-linux-gnu`), `libc` (`"glibc"`), `otp_full`, `nif_version`,
+  `native: true`, `elf.needs` (every soname the priv ELF files need and the symbol versions they
+  need from it, read by the portal from the stored files) and `origins`: for a package that
+  downloads its NIF at compile time (rustler_precompiled, elixir_make's precompilers), each priv
+  ELF file's `path`, the package's own `checksum_file`, the upstream `archive` it is a member of
+  and that archive's `archive_sha256`, which both the worker and the portal verified against
+  that checksum file in the package's Hex tarball; `[]` for a package that compiled its own.
+  One per version, triple, toolchain and `deps`, the newest. A client takes one only when the
+  host's normalised triple equals `triple`, its libc is glibc, the OTP major is equal and
+  `otp_full` no newer than the host's (`toolchain_otp`, `toolchain_otp_minor`), `nif_version` is
+  no newer than the host's (`nif_version_newer`), every soname in `elf.needs` resolves on the
+  host and defines every needed version (`needed_lib_missing`, `symbol_version_missing`), every
+  origin's archive is listed with that sum in its own `deps/<package>/<checksum_file>`
+  (`origin_unverified`), and every rule any other build has passes (lock checksum, closure,
+  `compile_env`, `compile_inputs`). Another triple or libc misses as `triple_differs`. The build
+  is ABI-compatible with what the host would compile, not byte-identical to it.
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
   build with and one without the package's optional dependencies differ in

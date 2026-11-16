@@ -397,6 +397,30 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
     end
   end
 
+  describe "host-native builds" do
+    test "the toggle turns host-native builds on and off", %{conn: conn} do
+      {view, html} = live_maintenance(conn)
+
+      refute Portal.Settings.get().host_native_enabled
+      assert html =~ "Host-native builds are off"
+
+      html = view |> element("#host-native-toggle") |> render_click()
+      assert html =~ "Host-native builds are on"
+      assert Portal.Settings.get().host_native_enabled
+
+      view |> element("#host-native-toggle") |> render_click()
+      refute Portal.Settings.get().host_native_enabled
+    end
+
+    test "a demoted admin cannot turn it on", %{conn: conn, admin: admin} do
+      {view, _html} = live_maintenance(conn)
+      demote!(admin)
+
+      view |> element("#host-native-toggle") |> render_click()
+      refute Portal.Settings.get().host_native_enabled
+    end
+  end
+
   describe "world builds" do
     test "the toggle turns world builds on and off and the counts show beside the backlog",
          %{conn: conn} do

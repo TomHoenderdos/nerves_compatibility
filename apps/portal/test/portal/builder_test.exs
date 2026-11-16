@@ -283,6 +283,18 @@ defmodule Portal.BuilderTest do
       assert Builder.worker_input(Map.put(@input_job, :argus, argus))["argus"] == argus
     end
 
+    test "a host-native build carries its mode and triple" do
+      job = Map.merge(@input_job, %{mode: "host_native", triple: "x86_64-linux-gnu"})
+
+      assert %{"mode" => "host_native", "triple" => "x86_64-linux-gnu"} =
+               Builder.worker_input(job)
+
+      refute Map.has_key?(Builder.worker_input(@input_job), "triple")
+
+      assert Builder.memory_for(%{mode: "host_native"}) ==
+               Builder.memory_for(%{mode: "toolchain"})
+    end
+
     test "omits argus when off" do
       refute Map.has_key?(Builder.worker_input(Map.put(@input_job, :argus, nil)), "argus")
       refute Map.has_key?(Builder.worker_input(@input_job), "argus")

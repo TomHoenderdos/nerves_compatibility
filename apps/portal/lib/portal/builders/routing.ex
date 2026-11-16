@@ -24,7 +24,7 @@ defmodule Portal.Builders.Routing do
   # the stored `remote_auto_on`, so a builder's brief silence does not flap it.
   @seen_on_seconds 5 * 60
   @seen_off_seconds 15 * 60
-  @local_modes ["toolchain", "warm_nerves"]
+  @local_modes ["toolchain", "host_native", "warm_nerves"]
   @waiting_states ["available", "scheduled", "retryable"]
 
   @doc """

@@ -123,6 +123,22 @@ if portal_available? do
        do: parsed_queues ++ [reports: 1],
        else: parsed_queues
 
+  # `host_native_<arch>` (`Portal.Workers.HostNativeBuild`, board #85) runs
+  # wherever `toolchain` does, for this node's own architecture only: a
+  # host-native build is never emulated, so an x86_64 node never takes an
+  # aarch64 job, and a node that is no glibc Linux (a Mac) runs none. It stays
+  # idle while the `host_native_enabled` setting is off.
+  parsed_queues =
+    with true <- is_list(parsed_queues) and Keyword.keyword?(parsed_queues),
+         true <- Keyword.get(parsed_queues, :toolchain, 0) > 0,
+         {:ok, triple} <- Compatibility.HostTriple.current(),
+         {:ok, machine} <- Compatibility.HostTriple.elf_machine(triple) do
+      queue = String.to_atom("host_native_#{machine}")
+      Keyword.put_new(parsed_queues, queue, 1)
+    else
+      _ -> parsed_queues
+    end
+
   config :portal, Oban, queues: parsed_queues
 
   # Which toolchains to build on, as comma-separated `toolchain=image` pairs:

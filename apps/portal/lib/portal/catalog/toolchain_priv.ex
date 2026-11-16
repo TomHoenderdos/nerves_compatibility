@@ -71,6 +71,36 @@ defmodule Portal.Catalog.ToolchainPriv do
     end
   end
 
+  @doc """
+  Steps 1 and 2 alone, for a build whose priv another rule judges
+  (`Portal.HostNative.Ingest`): the job's release's tarball as the host
+  fetched it, `{:ok, bytes}` only when its checksum is the signed
+  registry's and the build's own `package_checksum`. Refusals and Hex
+  errors as `verify/3`'s.
+  """
+  @spec signed_tarball(map(), map()) ::
+          {:ok, binary()} | {:refused, String.t()} | {:error, term()}
+  def signed_tarball(build, opts) do
+    case release(opts) do
+      {:ok, {name, version}} ->
+        checked =
+          with {:ok, checksum} <- registry_checksum(name, version, opts),
+               :ok <- same_as_lock(build["package_checksum"], checksum),
+               {:ok, tarball} <- tarball(name, version, opts),
+               :ok <- served_is_signed(tarball, checksum) do
+            {:ok, tarball}
+          end
+
+        case checked do
+          {:ok, tarball} -> {:ok, tarball}
+          other -> outcome(other, name, version)
+        end
+
+      :error ->
+        {:refused, "names no Hex release to check its files against"}
+    end
+  end
+
   # Every entry listed under `priv`, and every entry whose path is a priv
   # file under whichever other key lists it: a client writes a file at its
   # path, so a `priv/` path under `ebin` lands in priv like any other.

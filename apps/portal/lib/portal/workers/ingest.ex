@@ -163,8 +163,22 @@ defmodule Portal.Workers.Ingest do
     ["builds", "ingest", local_queue(node), Portal.Workers.WarmNerves.local_queue(node)] ++
       if(local_queue_limit(queues) != nil, do: ["system_abi"], else: []) ++
       if(runs_queue?(queues, :toolchain), do: ["toolchain"], else: []) ++
-      if runs_queue?(queues, :toolchain_big), do: ["toolchain_big"], else: []
+      if(runs_queue?(queues, :toolchain_big), do: ["toolchain_big"], else: []) ++
+      host_native_queues(queues)
   end
+
+  # A node's own architecture's host-native queue, when it runs it.
+  defp host_native_queues(queues) when is_list(queues) do
+    with queue when is_binary(queue) <- Portal.HostNative.local_queue(),
+         {name, _limit} <- Enum.find(queues, fn {key, _} -> to_string(key) == queue end),
+         true <- runs_queue?(queues, name) do
+      [queue]
+    else
+      _ -> []
+    end
+  end
+
+  defp host_native_queues(_queues), do: []
 
   defp configured_queues, do: :portal |> Application.get_env(Oban, []) |> Keyword.get(:queues)
 
@@ -198,6 +212,19 @@ defmodule Portal.Workers.Ingest do
 
       {:error, reason} ->
         Logger.error("Ingest found no toolchain build output for #{run_id}: #{inspect(reason)}")
+        {:cancel, "build output missing: #{inspect(reason)}"}
+    end
+  end
+
+  def perform(%Oban.Job{args: %{"kind" => "host_native"} = args} = job) do
+    run_id = args["run_id"]
+
+    case builder().load_run(run_id) do
+      {:ok, build} ->
+        ingest_host_native(build, args, job)
+
+      {:error, reason} ->
+        Logger.error("Ingest found no host-native build output for #{run_id}: #{inspect(reason)}")
         {:cancel, "build output missing: #{inspect(reason)}"}
     end
   end
@@ -485,6 +512,40 @@ defmodule Portal.Workers.Ingest do
     end
   end
 
+  # A host-native build (`Portal.HostNative.Ingest`), keyed on the job's
+  # identity as a toolchain build is.
+  defp ingest_host_native(build, args, %Oban.Job{} = job) do
+    run_id = args["run_id"]
+
+    opts = %{
+      run_id: run_id,
+      image_digest: args["image_digest"],
+      files_dir: build.files_dir,
+      package: args["package"],
+      version: args["version"],
+      toolchain: args["toolchain"],
+      triple: args["triple"],
+      builder_version: args["builder_version"]
+    }
+
+    case safe_ingest(&Portal.HostNative.Ingest.ingest/2, build.result, opts) do
+      {:ok, _row} ->
+        Builder.cleanup(run_id)
+        :ok
+
+      {:error, {:identity_mismatch, job_identity, reported}} ->
+        refuse_mismatch(%{kind: :local}, run_id, nil, job_identity, reported)
+
+      {:error, {:identity_missing, _keys}} ->
+        refuse_unidentified(%{kind: :local}, run_id, nil, build.result)
+
+      {:error, reason} ->
+        Logger.error("Host-native ingestion failed for #{run_id}: #{inspect(reason)}")
+        if job.attempt >= job.max_attempts, do: Builder.cleanup(run_id)
+        {:error, reason}
+    end
+  end
+
   # Refusals. Retrying cannot change what the result or the job says, so the
   # job is cancelled; the output goes with it, as on a last attempt.
   defp refuse_unidentified(source, run_id, scan_request_id, result) do
@@ -532,6 +593,12 @@ defmodule Portal.Workers.Ingest do
     base =
       case Map.fetch(identity, :variant) do
         {:ok, variant} -> "#{base} (variant #{inspect(variant)})"
+        :error -> base
+      end
+
+    base =
+      case Map.fetch(identity, :triple) do
+        {:ok, triple} -> "#{base} for #{inspect(triple)}"
         :error -> base
       end
 

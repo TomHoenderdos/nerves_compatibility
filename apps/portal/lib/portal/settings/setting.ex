@@ -56,7 +56,8 @@ defmodule Portal.Settings.Setting do
         :remote_backlog_threshold,
         :remote_auto_on,
         :world_variants_enabled,
-        :firmware_world_enabled
+        :firmware_world_enabled,
+        :host_native_enabled
       ])
 
       upsert?(true)
@@ -153,6 +154,15 @@ defmodule Portal.Settings.Setting do
     # web host runs a release that ingests world variants and every firmware
     # builder runs a worker image that builds them.
     attribute :firmware_world_enabled, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Whether host-native builds (board #85, `Portal.HostNative`) are queued
+    # and published: their manifest list, `builds_host_native`, and their
+    # files. Off by default; stored rows stay when it is turned off, unserved.
+    attribute :host_native_enabled, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)

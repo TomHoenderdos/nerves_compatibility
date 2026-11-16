@@ -35,6 +35,17 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
                     "depth, that a common application shape (a world) has. Only clients " <>
                     "0.7.0 and later, which require a build's whole `deps` closure to equal " <>
                     "their env closure, read this key. Absent when empty."
+              },
+              builds_host_native: %Schema{
+                type: :array,
+                items: ManifestBuild,
+                description:
+                  "Host-native builds (`target: \"host_native\"`): a NIF package built for " <>
+                    "one glibc Linux `triple`, beams and priv ELF files together. Only a " <>
+                    "client whose project opted in (`host_native: true`) reads this key, " <>
+                    "and only on a host of the same triple whose libraries define every " <>
+                    "`elf.needs` version. Absent when empty or while the portal's " <>
+                    "`host_native_enabled` setting is off."
               }
             },
             required: [:builds],

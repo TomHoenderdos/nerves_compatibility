@@ -68,6 +68,9 @@ defmodule Portal.Builder do
           # For `mode: "toolchain"`: the toolchain the run was queued for,
           # e.g. `%{elixir: "1.19", otp: "28"}`.
           optional(:toolchain) => %{elixir: String.t(), otp: String.t()} | nil,
+          # For `mode: "host_native"`: the glibc Linux triple the build is
+          # for (`Compatibility.HostTriple`), `NCC_INPUT.triple`.
+          optional(:triple) => String.t() | nil,
           # For `mode: "toolchain"`: `"include"` runs the worker's optional
           # dependencies pass, `"exclude"` builds without it, `"world"`
           # resolves the closure of `:world_members`.
@@ -227,6 +230,7 @@ defmodule Portal.Builder do
   """
   @spec memory_for(map()) :: String.t() | pos_integer() | nil
   def memory_for(%{memory: memory}) when not is_nil(memory), do: memory
+  def memory_for(%{mode: "host_native"}), do: memory_for(%{mode: "toolchain"})
   def memory_for(%{mode: "toolchain"}), do: config(:toolchain_memory, nil) || config(:memory, nil)
   def memory_for(%{mode: "warm_nerves"}), do: config(:warm_memory, nil) || config(:memory, nil)
   def memory_for(_job), do: config(:memory, nil)
@@ -411,6 +415,7 @@ defmodule Portal.Builder do
       systems_filter: Map.get(args, :systems_filter),
       mode: mode,
       toolchain: Map.get(args, :toolchain),
+      triple: Map.get(args, :triple),
       optional_deps: Map.get(args, :optional_deps),
       config_variant: Map.get(args, :config_variant),
       world: Map.get(args, :world),
@@ -1021,6 +1026,7 @@ defmodule Portal.Builder do
     |> maybe_put("systems_filter", job.systems_filter)
     |> maybe_put("mode", Map.get(job, :mode))
     |> maybe_put("toolchain", Map.get(job, :toolchain))
+    |> maybe_put("triple", Map.get(job, :triple))
     |> maybe_put("optional_deps", Map.get(job, :optional_deps))
     |> maybe_put("config_variant", Map.get(job, :config_variant))
     |> maybe_put("world", Map.get(job, :world))

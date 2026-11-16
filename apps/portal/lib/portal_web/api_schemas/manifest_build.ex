@@ -12,7 +12,8 @@ defmodule PortalWeb.ApiSchemas.ManifestBuild do
         target: %Schema{
           type: :string,
           description:
-            "A Nerves system package, or `pure_elixir` for files that fit every target."
+            "A Nerves system package, `pure_elixir` for files that fit every target, or " <>
+              "`host_native` for a build of one glibc Linux `triple`."
         },
         ebin: %Schema{type: :array, items: FileEntry},
         priv: %Schema{type: :array, items: FileEntry},

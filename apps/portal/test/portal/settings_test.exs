@@ -51,6 +51,14 @@ defmodule Portal.SettingsTest do
     assert {:error, _} = Settings.save(%{argus_min_severity: "fatal"})
   end
 
+  test "host-native builds are off until saved on" do
+    refute Settings.get().host_native_enabled
+    {:ok, _} = Settings.save(%{host_native_enabled: true})
+    assert Settings.get().host_native_enabled
+    {:ok, _} = Settings.save(%{argus_timeout_seconds: 120})
+    assert Settings.get().host_native_enabled
+  end
+
   test "worker_firmware_world is nil while off and the nerves world while on" do
     refute Settings.get().firmware_world_enabled
     assert Settings.worker_firmware_world(Settings.get()) == nil
