@@ -116,6 +116,33 @@ defmodule NccWorker.Portability.TarTimesTest do
     refute TarTimes.same?("x.tar", a, pax_tar([{"path", "a.js"}, {"uid", "1"}], "x"))
   end
 
+  # A pax `size` record, not the ustar size field, frames the member's data
+  # for a POSIX reader (bsdtar, GNU tar; `:erl_tar` ignores it): an archive
+  # whose ustar size says 0 hides a 512-byte data block that, read as a
+  # header, may differ in its "mtime" and "checksum" bytes, which bsdtar
+  # extracts as `a.js`'s content. Such an archive refuses.
+  test "a pax size record refuses: it frames the data the header does not" do
+    hidden = header("hidden", 0, ?0)
+    a = pax_framed(retimed(hidden, 0, 1))
+    b = pax_framed(retimed(hidden, 0, 2))
+    assert a != b
+
+    refute TarTimes.same?("x.tar", a, b)
+    refute TarTimes.same?("x.tar", a, a)
+
+    # Solaris's `X` header, which bsdtar and GNU tar read as pax.
+    refute TarTimes.same?("x.tar", pax_framed(retimed(hidden, 0, 1), ?X), a)
+    x = pax_framed(retimed(hidden, 0, 1), ?X)
+    refute TarTimes.same?("x.tar", x, pax_framed(retimed(hidden, 0, 2), ?X))
+  end
+
+  defp pax_framed(block, type \\ ?x) do
+    data = pax_record({"size", "512"})
+
+    header("PaxHeaders/a.js", byte_size(data), type) <>
+      pad(data) <> header("a.js", 0, ?0) <> block <> <<0::size(1024 * 8)>>
+  end
+
   # --- hand-made archives ------------------------------------------------------
 
   # A ustar archive of one pax header with `records`, then `a.js` holding `body`.

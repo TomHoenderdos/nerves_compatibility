@@ -21,10 +21,14 @@ defmodule NccWorker.Portability.TarTimes do
       checksum) and the other's byte for byte except `mtime` and the
       checksum (name, mode, uid, gid, size, type, link name, magic, uname,
       gname, device numbers, prefix all compared), and the same data bytes,
-      padding included. A pax extended header (`x`, `g`) may also differ
+      padding included. A pax extended header (`x`, `g`, or Solaris's
+      `X`, which bsdtar and GNU tar read as one) may also differ
       in its size, as long as its records are the other's in order once
-      the `mtime`, `atime` and `ctime` records are left out. After the end
-      of the archive (its first zero block) both hold the same bytes.
+      the `mtime`, `atime` and `ctime` records are left out, and neither
+      holds a `size` record (which frames the next member's data for a
+      POSIX reader where the ustar size, and `:erl_tar`, frame it
+      otherwise). After the end of the archive (its first zero block) both
+      hold the same bytes.
 
   Any other name, anything that does not parse, a size in base-256 and
   any other difference is `false`. Never raises.
@@ -35,6 +39,8 @@ defmodule NccWorker.Portability.TarTimes do
   @max_tar_bytes 64 * 1024 * 1024
   @block 512
   @time_keys ["mtime", "atime", "ctime"]
+  # pax extended headers; Solaris's `X` is one to bsdtar and GNU tar.
+  @pax_types [?x, ?g, ?X]
 
   @doc "Whether `a` and `b`, both named `name`, differ in their times alone."
   @spec same?(String.t(), binary(), binary()) :: boolean()
@@ -156,7 +162,7 @@ defmodule NccWorker.Portability.TarTimes do
       zero?(ha) and zero?(hb) -> ra == rb
       zero?(ha) or zero?(hb) -> false
       not (checksum_ok?(ha) and checksum_ok?(hb)) -> false
-      :binary.at(ha, 156) in [?x, ?g] -> pax_same?(ha, ra, hb, rb)
+      :binary.at(ha, 156) in @pax_types -> pax_same?(ha, ra, hb, rb)
       true -> member_same?(ha, ra, hb, rb)
     end
   end
@@ -184,6 +190,7 @@ defmodule NccWorker.Portability.TarTimes do
          {:ok, db, rb} <- data(rb, size_b),
          {:ok, records_a} <- pax_records(binary_part(da, 0, size_a), []),
          {:ok, records_b} <- pax_records(binary_part(db, 0, size_b), []),
+         false <- framing?(records_a) or framing?(records_b),
          true <- untimed(records_a) == untimed(records_b) do
       tar_same?(ra, rb)
     else
@@ -244,4 +251,10 @@ defmodule NccWorker.Portability.TarTimes do
   end
 
   defp untimed(records), do: Enum.reject(records, fn {key, _value} -> key in @time_keys end)
+
+  # A `size` record frames the next member's data for a POSIX reader
+  # (bsdtar, GNU tar) where the ustar size field, which this walk follows
+  # (as `:erl_tar` does), frames it otherwise: the two would read different
+  # members out of the same bytes.
+  defp framing?(records), do: Enum.any?(records, &match?({"size", _value}, &1))
 end
