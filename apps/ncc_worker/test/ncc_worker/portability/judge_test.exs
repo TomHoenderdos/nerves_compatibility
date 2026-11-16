@@ -298,6 +298,81 @@ defmodule NccWorker.Portability.JudgeTest do
              ]
     end
 
+    # A firmware target's trace sets elixir_make's own activity apart, and
+    # the `make` it runs is no traced process: it may rewrite a file of the
+    # tarball in priv (or relink the build priv) before the compile reads
+    # it and put the tarball's bytes back before the window closes, or
+    # regenerate it with the bytes the tarball happens to hold on this
+    # builder. Neither the tree check after the compile nor the digest at
+    # window close can tell, so a read in a window `make` ran in keeps its
+    # refusal, as any non-beam file `make` may have written does.
+    test "a window the native build tool ran in keeps the refusal in a firmware target's trace",
+         %{proj: proj, dir: dir} do
+      File.mkdir_p!(Path.join([proj, "deps/elixir_make/lib"]))
+      File.write!(Path.join([proj, "deps/elixir_make/lib/elixir_make.ex"]), "")
+      File.write!(Path.join([proj, "deps/elixir_make/mix.exs"]), "")
+      File.mkdir_p!(Path.join([proj, "_build/host/lib/elixir_make/ebin"]))
+
+      File.write!(
+        Path.join([proj, "_build/host/lib/elixir_make/ebin/elixir_make.app"]),
+        "{application,elixir_make,[{modules,['Elixir.ElixirMake.Compiler']}]}.\n"
+      )
+
+      opts = linked_priv(proj, dir, ["dep", "pkg", "elixir_make"])
+
+      make = %{
+        event(14, "erlang:open_port/2", "lib/elixir_make/compiler.ex", "programs")
+        | "arg" => %{"port" => "{spawn_executable,\"make\"}"},
+          "first" => %{"module" => "Elixir.ElixirMake.Compiler"},
+          "user" => %{
+            "module" => "Elixir.ElixirMake.Compiler",
+            "function" => "compile",
+            "arity" => 0,
+            "file" => "lib/elixir_make/compiler.ex",
+            "line" => 2
+          }
+      }
+
+      base = report(proj)
+
+      r =
+        report(proj, %{
+          closure: %{
+            "packages" => ["pkg"],
+            "deps" => [
+              dep(proj, "elixir_make", []),
+              dep(proj, "dep", ["elixir_make"]),
+              dep(proj, "other", []),
+              dep(proj, "pkg", ["dep"])
+            ]
+          },
+          windows: [window("elixir_make", 5, 9) | base.windows],
+          sentinels: [%{app: "elixir_make", ts: 6, integrity_ok: true} | base.sentinels]
+        })
+
+      tjudge = fn events ->
+        Portability.judge(
+          proj,
+          "pkg",
+          %{r | events: events},
+          ["dep", "pkg", "elixir_make"],
+          Keyword.merge(opts, built_check: false, target: "rpi4")
+        )
+      end
+
+      read = priv_read(proj, 15, "dep", "lib/dep.ex")
+
+      # make alone, set apart, and the read alone pass.
+      assert %{status: :pass, observations: %{"native_build" => [_]}} = tjudge.([make])
+      assert %{status: :pass} = tjudge.([read])
+
+      # Together, in dep's window, the read is the host read it was.
+      assert_priv_refused(tjudge.([make, read]), "dep", priv_refusal(proj, "dep", "lib/dep.ex"))
+
+      # make in another window leaves dep's own read alone.
+      assert %{status: :pass} = tjudge.([%{make | "ts" => 7}, read])
+    end
+
     test "the package reading a dependency's priv refuses as before", %{proj: proj, dir: dir} do
       opts = linked_priv(proj, dir, ["dep", "pkg"])
       r = report(proj, %{events: [priv_read(proj, 35, "dep", "lib/pkg.ex")]})

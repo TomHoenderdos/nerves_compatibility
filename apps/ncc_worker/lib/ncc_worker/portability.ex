@@ -42,7 +42,8 @@ defmodule NccWorker.Portability do
   `priv` through Mix's link (`Events`' `own_priv_reads`): allowed when that
   dependency's source tree is exactly its verified tarball's after the
   compile and holds the file, otherwise the refusal of its window
-  (`own_priv_reads/2`, judge revision 23), in a firmware target's trace too.
+  (`own_priv_reads/2`, judge revision 23), in a firmware target's trace too,
+  where a read in a window the native build tool ran in always refuses.
 
   The package's own compile writing into its own build `priv`, and the
   probes `File.mkdir_p/1` makes of the directories above it (`Events`'
@@ -1845,15 +1846,26 @@ defmodule NccWorker.Portability do
   # window, before its R3 result, so a refused read taints it. A firmware
   # target's trace is judged the same: the same tree check is what it
   # already asks of every natively built dependency (`native_output/2`).
+  # Except in a window the native build tool ran in (`native_build`): the
+  # `make` it runs is no traced process, and may rewrite a file of the
+  # tarball in `priv`, or relink the build `priv`, before the read and put
+  # the tarball's bytes back before the window closes (the digest taken
+  # then and the tree check after the compile both see the tarball), or
+  # regenerate it with the bytes the tarball happens to hold on this
+  # builder. What it wrote may not reach the beams (`native_file_read/1`),
+  # so such a read keeps its refusal.
   defp own_priv_reads(decided, ctx) do
+    built =
+      for {owner, {:observe, "native_build", _item}} <- decided, into: MapSet.new(), do: owner
+
     {decided, _memo} =
       Enum.map_reduce(decided, %{}, fn
         {owner, {:observe, "own_priv_reads", item}} = entry, memo ->
           {members, memo} = clean_members(ctx, item["app"], memo)
 
           allowed? =
-            owner == item["app"] and is_map(members) and is_binary(item["source"]) and
-              Map.has_key?(members, item["source"])
+            owner == item["app"] and not MapSet.member?(built, owner) and is_map(members) and
+              is_binary(item["source"]) and Map.has_key?(members, item["source"])
 
           {if(allowed?, do: entry, else: {owner, {:refuse, own_priv_refusal(item)}}), memo}
 

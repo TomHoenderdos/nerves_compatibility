@@ -594,8 +594,10 @@ was, in that dependency's window, so a refused one taints it. Another
 package reading that `priv` (a dependent embedding rustler's templates), a build `priv` of the package's own (a
 directory, which revision 21 lets its compile write first) and a link out of the package's tree keep their refusal.
 A firmware target's trace and a host-native build judge it the same: the same tree check is what they already ask
-of every natively built closure dependency, so rustler in tokenizers' closure no longer refuses there. The allowed
-reads are listed as `own_priv_reads`. A non-native dependency's own `priv` read through the link was already a
+of every natively built closure dependency, so rustler in tokenizers' closure no longer refuses there. A read in a
+window the native build tool ran in keeps its refusal there: the `make` it runs is no traced process, and may rewrite
+the file (or relink the build `priv`) and put the tarball's bytes back before the window closes, which neither the tree
+check nor the digest at window close sees. The allowed reads are listed as `own_priv_reads`. A non-native dependency's own `priv` read through the link was already a
 read of its Hex-listed sources, re-checked against the tree snapshot taken before the compile (item 5e), and is
 unchanged.
 
