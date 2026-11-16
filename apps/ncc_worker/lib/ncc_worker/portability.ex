@@ -204,8 +204,9 @@ defmodule NccWorker.Portability do
   # are directories (kino's `Kino.JS.__before_compile__/1`), when a second
   # traced build at a build path that shares no directory with the first
   # writes that `priv` the same (`PrivRepro`: byte for byte, or a tar
-  # archive whose members' times alone differ); its files are the verdict's
-  # `built_priv`, which the static priv rules take without a tarball entry.
+  # archive whose members' times alone differ) and no file there holds one
+  # of R2's roots (`PrivRoots`); its files are the verdict's `built_priv`,
+  # which the static priv rules take without a tarball entry.
   # Also 21: with `makefile_rule2`, a target read in a doc file of the
   # package under test (fledex's README naming `MIX_TARGET`) no longer
   # makes it natively built in the trace (`NativeBuild.split/4`), as it does
@@ -1805,7 +1806,8 @@ defmodule NccWorker.Portability do
   # Judge revision 21: what the package's own compile did in its own build
   # `priv` and above it (`Events`' `priv_writes` and `priv_probes`). `built`
   # is every file a write set the bytes of that is a regular file in that
-  # `priv` now, relative to it.
+  # `priv` now, relative to it; `roots` are R2's, which no file there may
+  # hold (`PrivRoots`).
   defp own_priv(%{ctx: ctx, decided: decided}) do
     items =
       for {owner, {:observe, kind, item}} <- decided,
@@ -1826,7 +1828,8 @@ defmodule NccWorker.Portability do
       observed?: items != [],
       dir: dir,
       build: Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build,
-      built: Enum.sort(built)
+      built: Enum.sort(built),
+      roots: Context.roots(ctx)
     }
   end
 

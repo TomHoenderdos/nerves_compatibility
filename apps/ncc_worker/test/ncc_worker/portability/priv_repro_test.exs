@@ -23,8 +23,15 @@ defmodule NccWorker.Portability.PrivReproTest do
       manager: "mix"
     }
 
-    own = %{observed?: true, dir: Path.join(build, "priv"), build: build, built: ["assets/a.txt"]}
-    %{dir: dir, build: build, held: PrivRepro.hold(pass, own)}
+    own = %{
+      observed?: true,
+      dir: Path.join(build, "priv"),
+      build: build,
+      built: ["assets/a.txt"],
+      roots: [Path.join(dir, "proj")]
+    }
+
+    %{dir: dir, build: build, pass: pass, own: own, held: PrivRepro.hold(pass, own)}
   end
 
   # A second build that writes `files` (`rel => bytes`) into its own priv and
@@ -202,5 +209,37 @@ defmodule NccWorker.Portability.PrivReproTest do
 
     pass = %{status: :pass, built_priv: []}
     assert PrivRepro.settle(pass, ctx.dir, "pkg", [env: []], run, & &1) == pass
+  end
+
+  # R2 for priv (`NccWorker.Portability.PrivRoots`): a root both builds
+  # share (the project dir, so every source path under it) refuses before
+  # any second build, in a plain file and inside a gzip.
+  test "a priv file that holds a root refuses before any second build", ctx do
+    root = Path.join(ctx.dir, "proj")
+    file = Path.join(ctx.build, "priv/assets/a.txt")
+
+    File.write!(file, "from " <> Path.join(root, "deps/pkg/lib/pkg.ex"))
+    v = PrivRepro.hold(ctx.pass, ctx.own)
+    assert %{status: :skip, reason: "bakes the build path: priv/assets/a.txt"} = v
+    assert v.compile_env == nil and v.compile_inputs == nil
+    refute Map.has_key?(v, :priv_repro)
+    refute Map.has_key?(v, :built_priv)
+
+    File.write!(file, :zlib.gzip("x" <> root <> "/deps/pkg/lib/pkg.ex"))
+
+    assert %{reason: "bakes the build path: priv/assets/a.txt"} =
+             PrivRepro.hold(ctx.pass, ctx.own)
+  end
+
+  test "a priv that cannot be searched for the roots cannot be judged", ctx do
+    v = PrivRepro.hold(ctx.pass, Map.delete(ctx.own, :roots))
+    assert %{status: :skip, compile_env: nil, compile_inputs: nil} = v
+    assert v.reason == Reasons.could_not_judge()
+    refute Map.has_key?(v, :priv_repro)
+
+    File.write!(Path.join(ctx.build, "priv/assets/a.txt"), <<0x1F, 0x8B, "not gzip">>)
+    v = PrivRepro.hold(ctx.pass, ctx.own)
+    assert v.reason == Reasons.could_not_judge()
+    assert "priv/assets/a.txt: does not inflate" in v.observations["problems"]
   end
 end

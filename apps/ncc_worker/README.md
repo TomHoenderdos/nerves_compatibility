@@ -558,8 +558,12 @@ never another package's) writing into its own build `priv` when that is a direct
 `deps/<package>/priv`, together with the probes Elixir 1.20's `File.mkdir_p/1` makes of the directories above it (the
 toolchain's `File.do_mkdir_p/1` calling `:file.make_dir/1`, and `elixir_utils:read_file_type/2`, which returns the
 file type alone). kino's `Kino.JS.__before_compile__/1` packing each module's assets into `priv/assets` is the case.
-The trace cannot see the clock, a random number or the path it was built at, so the package's closure is built a
-second time, traced, in judge mode, into a fresh build path under the system temp dir (which shares no directory with
+No file in that `priv` may hold one of the roots R2 searches beams for (the project dir, so every source path and the
+build path, the OTP root, the Elixir install, `HOME`, `MIX_HOME`, `HEX_HOME`), searched as it is and, for a file with
+the gzip magic, inflated (`NccWorker.Portability.PrivRoots`): a source path a `__before_compile__/1` hook writes from
+`env.file` is in no beam and no read, and is the same in both builds below, so it refuses as `bakes the build path:
+priv/<path>` before any second build. The trace cannot see the clock, a random number or the path it was built at, so
+the package's closure is built a second time, traced, in judge mode, into a fresh build path under the system temp dir (which shares no directory with
 `/work` but `/`), at least a second later (`NccWorker.Portability.PrivRepro`). That trace must pass on its own, so a
 path the package named itself (the first build's `priv`, a directory above it) refuses there; both `priv` trees must
 hold the same paths, only directories and regular files, with the same permission bits and bytes; and the first

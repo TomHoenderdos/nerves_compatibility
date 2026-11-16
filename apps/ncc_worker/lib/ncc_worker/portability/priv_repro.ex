@@ -50,11 +50,13 @@ defmodule NccWorker.Portability.PrivRepro do
 
   Clock values coarser than the gap (a date) and values the same on every
   build of one machine are not caught by building twice; the trace already
-  refuses or records every read of the host.
+  refuses or records every read of the host, and a root both builds share
+  (a source path under the project dir, the OTP install) refuses first
+  (`hold/2`, `NccWorker.Portability.PrivRoots`).
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.Portability.{Context, TarTimes}
+  alias NccWorker.Portability.{Context, PrivRoots, TarTimes}
 
   @gap_ms 1_100
   @hold_problem "own priv writes wait for a second build"
@@ -68,14 +70,35 @@ defmodule NccWorker.Portability.PrivRepro do
   @doc """
   A passing `verdict` as it stands when the package's own compile did
   nothing in or above its own build `priv` (`own.observed?` false), with
-  `built_priv: []`. Otherwise could-not-judge, holding the pass's
-  `compile_env`, `compile_inputs` and `built_priv` (`own.built`) and the
-  package's `priv` and build dirs in `priv_repro` for `settle/6`.
+  `built_priv: []`. Otherwise R2 first (`PrivRoots`, with `own.roots`): a
+  file in that `priv` that holds a root refuses as a baked build path, and
+  one that cannot be searched is could-not-judge, before any second build.
+  Else could-not-judge, holding the pass's `compile_env`, `compile_inputs`
+  and `built_priv` (`own.built`) and the package's `priv` and build dirs in
+  `priv_repro` for `settle/6`.
   """
   @spec hold(map(), map()) :: map()
   def hold(verdict, %{observed?: false}), do: Map.put(verdict, :built_priv, [])
 
   def hold(verdict, own) do
+    case PrivRoots.check(own.dir, Map.get(own, :roots)) do
+      :ok ->
+        held(verdict, own)
+
+      {:refuse, reason} ->
+        unpassed(verdict, reason)
+
+      {:error, why} ->
+        verdict |> unpassed(Reasons.could_not_judge()) |> update_problems(&(&1 ++ [why]))
+    end
+  end
+
+  defp unpassed(verdict, reason) do
+    %{verdict | status: :skip, reason: reason, compile_env: nil}
+    |> Map.put(:compile_inputs, nil)
+  end
+
+  defp held(verdict, own) do
     held = %{
       compile_env: verdict.compile_env,
       compile_inputs: verdict.compile_inputs,

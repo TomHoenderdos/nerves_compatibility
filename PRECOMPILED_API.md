@@ -584,7 +584,7 @@ What it lists:
   compile-time trace and skips any build whose compile read the build host
   (its OS, environment, programs or files outside the dependency closure),
   wrote anything outside its own `ebin` (its own `priv` aside, as above),
-  baked the build path into code, or
+  baked the build path into code or into such a priv file, or
   depends on a package whose own compile did, and any build whose trace did
   not finish; its beams are the traced compile's. What the package does at
   runtime does not count: a package that runs programs, opens ports, looks

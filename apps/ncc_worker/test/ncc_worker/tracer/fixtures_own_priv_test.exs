@@ -5,9 +5,8 @@ defmodule NccWorker.Tracer.FixturesOwnPrivTest do
   # Shaped like kino's `Kino.JS.__before_compile__/1`: `:code.priv_dir/1`,
   # `File.rm_rf!/1` and `File.mkdir_p!/1`, which on Elixir 1.20 probes every
   # directory from `/` down. Deterministic bytes publish, with the files in
-  # `built_priv`; the time, a host read, a value that differs between two
-  # builds, a path only the first build has, and a write into another
-  # package's priv do not. Starts real `elixir` VMs (the :real_vm group).
+  # `built_priv`; the time, a host read, the build path, a path only the
+  # first build has, and a write into another package's priv do not. Starts real `elixir` VMs (the :real_vm group).
   use ExUnit.Case, async: true, group: :real_vm
 
   alias Compatibility.Portability, as: Reasons
@@ -209,12 +208,13 @@ defmodule NccWorker.Tracer.FixturesOwnPrivTest do
     assert Enum.any?(v.compile_inputs, &match?(%{"kind" => "env", "name" => "FX_PRIV_ENV"}, &1))
   end
 
-  test "a value that differs between two builds (the build path) refuses", ctx do
+  # The build path is under the project dir, one of R2's roots
+  # (`NccWorker.Portability.PrivRoots`): refused before the second build,
+  # whose own build path would differ.
+  test "the build path in a priv file refuses as a baked build path", ctx do
     v = ctx.verdicts["fx_priv_build"]
-
-    assert v.reason ==
-             Reasons.priv_not_reproduced() <>
-               "priv/assets/FxPrivBuild/main.txt differs between two builds"
+    assert v.reason == "bakes the build path: priv/assets/FxPrivBuild/main.txt"
+    assert v.observations["trace_stats"]["priv_repro"] == nil
   end
 
   test "the first build's priv named by its path refuses in the second build", ctx do
