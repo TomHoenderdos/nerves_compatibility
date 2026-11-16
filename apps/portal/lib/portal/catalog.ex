@@ -1153,7 +1153,8 @@ defmodule Portal.Catalog do
   # a raw SQL update in the writing transaction keeps `xmin`. Host-native
   # builds (`Portal.HostNative`) count only while the `host_native_enabled`
   # setting is on, appended so every other package's fingerprint is the
-  # bytes it was.
+  # bytes it was (`format/2` reads a NULL as '', so the suffix is decided by
+  # whether the package has a counted row, never by `coalesce`).
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1216,7 +1217,8 @@ defmodule Portal.Catalog do
   SELECT p.name,
          md5(format('%s/%s/%s/%s/%s/%s/%s/%s', p.id, runs.fp, results.fp, rf.n, rf.h,
                     tc.fp, tf.n, tf.h)) ||
-           coalesce('|host_native:' || md5(format('%s/%s/%s', hn.fp, hf.n, hf.h)), '')
+           CASE WHEN hn.package_id IS NULL THEN ''
+                ELSE '|host_native:' || md5(format('%s/%s/%s', hn.fp, hf.n, hf.h)) END
   FROM catalog_packages p
   LEFT JOIN runs ON runs.package_id = p.id
   LEFT JOIN results ON results.package_id = p.id

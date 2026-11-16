@@ -305,6 +305,18 @@ defmodule Portal.HostNativeTest do
       assert blob.status in [200, 404]
     end
 
+    # A batch reuses a package's manifests while its fingerprint holds, and
+    # the setting changes no manifest of a package with no host-native row.
+    test "a package without host-native builds keeps its fingerprint bytes" do
+      other = "hn_fp_#{System.unique_integer([:positive])}"
+      Portal.PrecompiledFixtures.ingest_toolchain_build(other, "0.1.0", deps_lock: %{})
+      off = Map.fetch!(Catalog.precompiled_fingerprints(), other)
+      refute off =~ "host_native"
+
+      on!()
+      assert Map.fetch!(Catalog.precompiled_fingerprints(), other) == off
+    end
+
     test "a revoked build is not served", %{name: name, row: row} do
       on!()
       row |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Catalog)
