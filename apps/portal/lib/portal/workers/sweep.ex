@@ -1,7 +1,9 @@
 defmodule Portal.Workers.Sweep do
   @moduledoc """
-  Oban worker (queue `:ingest`) that reclaims disk left behind by builds which
-  died without running any Elixir.
+  Oban worker that reclaims the disk of the node it runs on, left behind by
+  builds which died without running any Elixir. It runs on that node's own
+  queue (`Portal.NodeQueue`), queued there every hour by the node itself
+  (`Portal.Oban.NodeSweep`).
 
   `Portal.Workers.Build` cleans up on every path it can reach — a returned error,
   and since `ecc3408` an exception too. None of that helps when the node is
@@ -72,16 +74,18 @@ defmodule Portal.Workers.Sweep do
   build ceiling plus a grace (`Portal.Builder.Stop.overdue/2`): a container
   whose stop failed or whose builder died. It kills none of them.
 
-  ## Why queue `:ingest`
+  ## Where it runs
 
-  Only the build host has these directories, and it is the only host running
-  `:ingest`. `:maintenance` runs on the *web* host, where this would find no
-  scratch root and report a clean disk forever. `:builds` has a limit of 3 and a
-  two-hour wall clock, so a sweep could queue behind three long builds — starving
+  Every build node has its own scratch root and caches, so every build node
+  sweeps itself: `Portal.Oban.NodeSweep` puts one sweep an hour on the node's
+  own queue, where it runs beside the node's ingests, one sweep at a time.
+  While this was an `Oban.Plugins.Cron` entry on the shared `:ingest` queue,
+  the leader's insert ran on whichever builder fetched it first, so a
+  builder's disk could go unswept for days, and one filled. Not `:maintenance`, which runs on the *web* host: it has none of
+  these directories and would report a clean disk forever (a node without a
+  node queue never sweeps). Not `:builds`: it has a limit of 3 and a two-hour
+  wall clock, so a sweep could queue behind three long builds, starving
   exactly when the disk is most likely to be full.
-
-  `Oban.Plugins.Cron` inserts only on the leader, but the inserted row carries
-  this worker's queue, so it runs on the build host whichever node leads.
   """
 
   use Oban.Worker,
@@ -96,7 +100,12 @@ defmodule Portal.Workers.Sweep do
     # A sweep stranded `executing` by a dead node would block every later one
     # forever, except that `Oban.Plugins.Lifeline` discards it after three hours
     # (it is past `max_attempts`), and `discarded` is not an incomplete state.
-    queue: :ingest,
+    #
+    # The default unique `fields` include the queue, so this is per node: one
+    # node's outstanding sweep never holds off another's.
+    #
+    # No `queue:`: `new/2` puts the job on this node's own queue unless the
+    # caller names one.
     max_attempts: 1,
     unique: [period: :infinity, states: :incomplete]
 
@@ -121,6 +130,10 @@ defmodule Portal.Workers.Sweep do
   # Everything Oban has not finished with. A job in one of these states may still
   # read the directory its args name.
   @live_states ["available", "scheduled", "executing", "retryable"]
+
+  @impl Oban.Worker
+  def new(args, opts) when is_map(args) and is_list(opts),
+    do: super(args, Keyword.put_new_lazy(opts, :queue, &Portal.NodeQueue.name/0))
 
   @impl Oban.Worker
   def perform(%Oban.Job{}), do: run()

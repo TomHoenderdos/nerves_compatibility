@@ -186,7 +186,7 @@ defmodule Portal.Workers.ToolchainBuildTest do
 
     assert_enqueued(
       worker: Ingest,
-      queue: Ingest.local_queue(),
+      queue: Portal.NodeQueue.name(),
       args: %{
         "kind" => "toolchain",
         "run_id" => run_id,

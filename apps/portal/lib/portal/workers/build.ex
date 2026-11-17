@@ -71,6 +71,7 @@ defmodule Portal.Workers.Build do
   alias Portal.Catalog.ToolingSkip
   alias Portal.HexCache
   alias Portal.NervesCache
+  alias Portal.NodeQueue
   alias Portal.Repo
   alias Portal.Workers.{Ingest, OomRetry, Progress}
 
@@ -579,7 +580,7 @@ defmodule Portal.Workers.Build do
     meta = if sweep_id, do: %{announce_sweep: sweep_id}, else: %{}
 
     # This node's own queue: the scratch dir the ingest reads is on this disk.
-    case args |> Ingest.new(queue: Ingest.local_queue(), meta: meta) |> Oban.insert() do
+    case args |> Ingest.new(queue: NodeQueue.name(), meta: meta) |> Oban.insert() do
       {:ok, _job} ->
         # Nothing after this point may raise. The ingest job now owns the
         # scratch dir, and `with_crash_cleanup/5` deletes it on the way out of

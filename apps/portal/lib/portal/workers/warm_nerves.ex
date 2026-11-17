@@ -9,12 +9,15 @@ defmodule Portal.Workers.WarmNerves do
   read-write; it runs only the template project and `nerves`-owned packages,
   and renames complete artifacts into place (`NccWorker.WarmNerves`).
 
-  It runs on this node's own queue, `local_queue/0`, with concurrency 1: on
-  the host whose cache missed, and never beside another warm. Jobs are unique
-  on digest and pairs for a day over every state but discarded and cancelled
-  (Oban's `:successful` group), which is the repeat bound: a run that reports
-  the same misses again cannot churn the download, while a warm that failed
-  can be retried at once. The default `fields` include the queue, so two hosts
+  It runs on this node's own warm queue, `local_queue/0`, with concurrency 1:
+  on the host whose cache missed, and never beside another warm. Not on the
+  node queue (`Portal.NodeQueue`) beside the ingests and the sweep: Oban
+  without Pro has no per-worker limit inside a queue, so there several warms
+  could run at once, and each, a container minutes long, would hold an
+  ingest's slot. Jobs are unique on digest and pairs for a day over every
+  state but discarded and cancelled (Oban's `:successful` group), which is the
+  repeat bound: a run that reports the same misses again cannot churn the
+  download, while a warm that failed can be retried at once. The default `fields` include the queue, so two hosts
   warm their own caches.
   """
 
@@ -28,16 +31,15 @@ defmodule Portal.Workers.WarmNerves do
 
   alias Portal.Builder
   alias Portal.Catalog.RunMemory
-  alias Portal.Workers.Ingest
+  alias Portal.NodeQueue
 
   @doc "This node's own warm queue."
   @spec local_queue(node()) :: String.t()
-  def local_queue(node \\ node()),
-    do: String.replace_prefix(Ingest.local_queue(node), "ingest_", "warm_nerves_")
+  def local_queue(node \\ node()), do: "warm_nerves_" <> NodeQueue.slug(node)
 
   @doc """
   `oban_config` with `node`'s warm queue added, limit 1, when the node runs
-  builds (`Portal.Workers.Ingest.local_queue_limit/1`).
+  builds (`Portal.NodeQueue.build_node?/1`).
   """
   @spec with_local_queue(keyword(), node()) :: keyword()
   # The atom comes from the node name the release was started with, not from
@@ -46,14 +48,12 @@ defmodule Portal.Workers.WarmNerves do
   def with_local_queue(oban_config, node \\ node()) do
     queues = Keyword.get(oban_config, :queues)
 
-    case Ingest.local_queue_limit(queues) do
-      nil ->
-        oban_config
-
-      _limit ->
-        name = node |> local_queue() |> String.to_atom()
-        queues = if Keyword.has_key?(queues, name), do: queues, else: queues ++ [{name, 1}]
-        Keyword.put(oban_config, :queues, queues)
+    if NodeQueue.build_node?(queues) do
+      name = node |> local_queue() |> String.to_atom()
+      queues = if Keyword.has_key?(queues, name), do: queues, else: queues ++ [{name, 1}]
+      Keyword.put(oban_config, :queues, queues)
+    else
+      oban_config
     end
   end
 

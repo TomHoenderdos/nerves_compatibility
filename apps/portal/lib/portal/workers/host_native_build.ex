@@ -36,6 +36,7 @@ defmodule Portal.Workers.HostNativeBuild do
   alias Compatibility.HostTriple
   alias Portal.Builder
   alias Portal.Catalog.HostNativeBuild
+  alias Portal.NodeQueue
   alias Portal.Workers.{Ingest, ToolchainBuild}
 
   @zero_digest "sha256:" <> String.duplicate("0", 64)
@@ -132,7 +133,7 @@ defmodule Portal.Workers.HostNativeBuild do
       |> Map.merge(%{"kind" => "host_native", "run_id" => run_id, "image_digest" => digest})
 
     # This node's own queue: the scratch dir the ingest reads is on this disk.
-    case ingest_args |> Ingest.new(queue: Ingest.local_queue()) |> Oban.insert() do
+    case ingest_args |> Ingest.new(queue: NodeQueue.name()) |> Oban.insert() do
       {:ok, _job} ->
         :ok
 

@@ -74,7 +74,7 @@ defmodule Portal.Catalog.LogSanitizer do
   in-memory `system_log/1` needs the whole log as a binary first, which meant a
   runaway build that emitted gigabytes allocated all of it inside the ingest
   transaction only for the truncation below to throw away everything but 800 KB
-  — on `ingest:3`, three of those at once.
+  — on a three-wide ingest queue, three of those at once.
 
   `{:error, {:not_regular, type}}` for anything that is not a regular file. /out
   is a read-write bind mount and the container runs as the invoking host user,

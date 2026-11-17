@@ -78,17 +78,20 @@ if portal_available? do
         socket_options: maybe_ipv6
   end
 
-  # Which Oban queues this node runs, e.g. "builds:1,ingest:2". Unset means the
+  # Which Oban queues this node runs, e.g. "builds:1,node:2". Unset means the
   # full set, so a single-node deploy needs nothing here.
   #
   # This is how the work splits across hosts: the web box runs the light queues,
-  # the build boxes run `builds`, `ingest` and `toolchain` (limit 1, so toolchain
-  # builds never take a firmware slot), and Postgres is the only thing they
-  # share. A build hands off to its ingest through the run's scratch directory
-  # on local disk, not through the database, so each build node also runs a
-  # queue of its own for those ingests (`Portal.Workers.Ingest.local_queue/0`),
-  # as wide as `ingest`. Nothing to list here for it. `remote` belongs on the
-  # web box: it only writes `builder_leases` rows for remote builders to claim.
+  # the build boxes run `builds` and `toolchain` (limit 1, so toolchain builds
+  # never take a firmware slot), and Postgres is the only thing they share. A
+  # build hands off to its ingest through the run's scratch directory on local
+  # disk, not through the database, and each node's disks need their own sweep,
+  # so each build node runs a queue of its own for both, `node_<node>`
+  # (`Portal.NodeQueue`), as wide as `node` here (default 2). `node` is not a
+  # queue itself, and neither is `ingest`, which no node runs any more: an
+  # `ingest:N` left here from before is read as `node:N`, with a warning at
+  # boot. `remote` belongs on the web box: it only writes `builder_leases` rows
+  # for remote builders to claim.
   # `toolchain_big` goes only on the build boxes with memory to spare: it runs
   # the toolchain builds of the packages that need more than a `toolchain`
   # slot, each at NCC_TOOLCHAIN_BIG_MEMORY (`Portal.Toolchains.MemoryRouting`).
@@ -96,7 +99,7 @@ if portal_available? do
   parsed_queues =
     case System.get_env("OBAN_QUEUES") do
       nil ->
-        [builds: 1, ingest: 2, intake: 5, maintenance: 1, toolchain: 1, remote: 2, reports: 1]
+        [builds: 1, node: 2, intake: 5, maintenance: 1, toolchain: 1, remote: 2, reports: 1]
 
       queues ->
         queues

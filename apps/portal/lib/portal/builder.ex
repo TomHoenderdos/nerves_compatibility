@@ -1520,8 +1520,9 @@ defmodule Portal.Builder do
   # nothing in the app reads — and `runner.log` is written by streaming docker's
   # output, so its size is decided by a third-party build rather than by us. A
   # package stuck in a retry loop can emit gigabytes; `File.read/1` allocated
-  # every byte of that inside the ingest transaction, three at a time on
-  # `ingest:3`, only for both consumers to throw nearly all of it away.
+  # every byte of that inside the ingest transaction, three at a time on a
+  # three-wide ingest queue, only for both consumers to throw nearly all of it
+  # away.
   #
   # 1 MB is far above any honest log — production averages ~41 KB per run — and
   # it is the end that matters: whatever killed the runner is the last thing it

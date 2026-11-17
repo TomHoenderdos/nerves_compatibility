@@ -33,7 +33,7 @@ defmodule Portal.Workers.SystemAbiRun do
   alias Portal.Builder
   alias Portal.Catalog.SystemAbi
   alias Portal.Repo
-  alias Portal.Workers.{Ingest, SystemAbiBackfill}
+  alias Portal.Workers.SystemAbiBackfill
 
   @max_pairs 8
   @retry_after_s 86_400
@@ -56,22 +56,20 @@ defmodule Portal.Workers.SystemAbiRun do
 
   @doc """
   `oban_config` with `:system_abi` added, limit 1, when the node runs builds
-  (`Portal.Workers.Ingest.local_queue_limit/1`): one system ABI run at a time
+  (`Portal.NodeQueue.build_node?/1`): one system ABI run at a time
   beside the node's builds.
   """
   @spec with_queue(keyword()) :: keyword()
   def with_queue(oban_config) do
     queues = Keyword.get(oban_config, :queues)
 
-    case Ingest.local_queue_limit(queues) do
-      nil ->
-        oban_config
+    if Portal.NodeQueue.build_node?(queues) do
+      queues =
+        if Keyword.has_key?(queues, :system_abi), do: queues, else: queues ++ [system_abi: 1]
 
-      _limit ->
-        queues =
-          if Keyword.has_key?(queues, :system_abi), do: queues, else: queues ++ [system_abi: 1]
-
-        Keyword.put(oban_config, :queues, queues)
+      Keyword.put(oban_config, :queues, queues)
+    else
+      oban_config
     end
   end
 

@@ -78,6 +78,7 @@ defmodule Portal.Workers.ToolchainBuild do
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Package
   alias Portal.Catalog.RunMemory
+  alias Portal.NodeQueue
   alias Portal.Toolchains.MemoryRouting
   alias Portal.Workers.{Ingest, OomRetry}
 
@@ -340,7 +341,7 @@ defmodule Portal.Workers.ToolchainBuild do
     }
 
     # This node's own queue: the scratch dir the ingest reads is on this disk.
-    case ingest_args |> Ingest.new(queue: Ingest.local_queue()) |> Oban.insert() do
+    case ingest_args |> Ingest.new(queue: NodeQueue.name()) |> Oban.insert() do
       {:ok, _job} ->
         :ok
 

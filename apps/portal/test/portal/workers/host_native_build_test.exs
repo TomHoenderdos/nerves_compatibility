@@ -73,7 +73,7 @@ defmodule Portal.Workers.HostNativeBuildTest do
     assert build.image == "tc:1.20-29"
 
     assert [%{args: args, queue: queue}] = all_enqueued(worker: Ingest)
-    assert queue == Ingest.local_queue()
+    assert queue == Portal.NodeQueue.name()
 
     assert %{"kind" => "host_native", "triple" => "x86_64-linux-gnu", "toolchain" => "1.20/29"} =
              args

@@ -92,10 +92,10 @@ defmodule Portal.Workers.WarmNervesTest do
     end
 
     test "a build node gets it with concurrency 1" do
-      config = [queues: [builds: 3, ingest: 2]]
+      config = [queues: [builds: 3, node_portal_host_c: 2]]
 
       assert WarmNerves.with_local_queue(config, :"portal@host-c")[:queues] ==
-               [builds: 3, ingest: 2, warm_nerves_portal_host_c: 1]
+               [builds: 3, node_portal_host_c: 2, warm_nerves_portal_host_c: 1]
     end
 
     test "a web-only node and test mode are left alone" do

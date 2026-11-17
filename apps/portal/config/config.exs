@@ -65,19 +65,20 @@ config :portal, Oban,
     # matches `Portal.Workers.Sweep`'s scratch retention, so the two agree on
     # when a build is definitely over.
     {Oban.Plugins.Lifeline, rescue_after: :timer.hours(3)},
-    # Hourly, off the :00 mark. The plugin inserts only on the Oban leader, but
-    # the row it inserts carries `Sweep`'s own `:ingest` queue — which only the
-    # build host runs — so it executes on the machine that actually has the
-    # disks, whichever node holds leadership.
+    # Hourly at :23, off the :00 mark: every build node queues its own
+    # `Portal.Workers.Sweep` on its own node queue (`Portal.NodeQueue`), so
+    # each node's disks are swept. Not a Cron entry: Cron inserts only on the
+    # leader, with one queue for every node, and the sweep then ran on
+    # whichever builder fetched it. A node without a node queue (the web
+    # host) starts nothing.
+    {Portal.Oban.NodeSweep, minute: 23},
     {Oban.Plugins.Cron,
      crontab: [
-       {"23 * * * *", Portal.Workers.Sweep},
-       # Daily, well off the hour and off the sweep. Retention deletes rows
-       # rather than files, so it carries `:maintenance` — the web host's queue
-       # — while `Sweep` carries `:ingest` to land on the machine with the
-       # disks. Once a day is often enough: the budget is sized with a day of
-       # slack in it, and the deletes take an exclusive lock on rows a page may
-       # be reading.
+       # Daily, well off the hour and off the :23 sweep. Retention deletes
+       # rows rather than files, so it carries `:maintenance` — the web host's
+       # queue — while each build node sweeps its own disks. Once a day is
+       # often enough: the budget is sized with a day of slack in it, and the
+       # deletes take an exclusive lock on rows a page may be reading.
        {"41 3 * * *", Portal.Workers.LogRetention},
        # Hourly, off every other entry here. Carries `:intake` — the web host's
        # queue — because this is an HTTP call to hex.pm, not a compile, and a

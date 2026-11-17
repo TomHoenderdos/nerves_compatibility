@@ -139,6 +139,29 @@ defmodule Portal.Workers.SweepTest do
       assert :ok = Sweep.run(opts("/nonexistent/ncc-scratch"))
     end
 
+    # A node with none of the build directories (the web host, were a sweep
+    # ever queued there) reclaims nothing and does not fail.
+    test "a node with none of the directories reclaims nothing" do
+      Logger.put_module_level(Sweep, :info)
+      on_exit(fn -> Logger.delete_module_level(Sweep) end)
+
+      log =
+        capture_log([level: :info], fn ->
+          assert :ok =
+                   Sweep.run(
+                     opts("/nonexistent/ncc-scratch",
+                       build_cache: "/nonexistent/ncc-build-cache",
+                       hex_cache: "/nonexistent/ncc-hex-cache",
+                       nerves_cache: "/nonexistent/ncc-nerves-cache",
+                       current_digest: "sha256:0b9beb41",
+                       nerves_template: :error
+                     )
+                   )
+        end)
+
+      assert log =~ "Sweep reclaimed 0 entries"
+    end
+
     test "one undeletable dir does not stop the others", %{root: root} do
       keep = scratch(root, "blocked-1.0.0-#{age(9)}")
       other = scratch(root, "fine-1.0.0-#{age(9)}")

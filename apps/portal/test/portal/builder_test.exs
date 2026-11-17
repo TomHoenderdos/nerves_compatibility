@@ -78,7 +78,7 @@ defmodule Portal.BuilderTest do
 
   describe "load_run/1 log reading" do
     # `read_log/1` is private; `load_run/1` is the reachable path through it,
-    # and it is the path that runs on `ingest:3` for every finished build.
+    # and it is the path every finished build's ingest runs.
     defp seed_run do
       root = Path.join(System.tmp_dir!(), "builder-log-#{System.unique_integer([:positive])}")
       run_id = "pkg-1.0.0-#{System.unique_integer([:positive])}"

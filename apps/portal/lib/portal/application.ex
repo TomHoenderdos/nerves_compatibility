@@ -80,15 +80,15 @@ defmodule Portal.Application do
       # jobs still `executing` under this node's name were orphaned by its
       # last shutdown, and would block their own schedule until Lifeline.
       Portal.OrphanRescue,
-      # A build node also runs its own ingest queue, its own Nerves cache
-      # warm queue and the shared system ABI queue; see
-      # `Portal.Workers.Ingest`, `Portal.Workers.WarmNerves` and
+      # A build node also runs its own node queue (its ingests and its
+      # sweep), its own Nerves cache warm queue and the shared system ABI
+      # queue; see `Portal.NodeQueue`, `Portal.Workers.WarmNerves` and
       # `Portal.Workers.SystemAbiRun`. It drops `toolchain_big` when its slot
       # is no bigger than a toolchain one (`Portal.Toolchains.MemoryRouting`).
       {Oban,
        :portal
        |> Application.fetch_env!(Oban)
-       |> Portal.Workers.Ingest.with_local_queue()
+       |> Portal.NodeQueue.with_queue()
        |> Portal.Workers.WarmNerves.with_local_queue()
        |> Portal.Workers.SystemAbiRun.with_queue()
        |> Portal.Toolchains.MemoryRouting.with_checked_queue()},
@@ -126,7 +126,7 @@ defmodule Portal.Application do
     oban = Application.fetch_env!(:portal, Oban)
 
     if Keyword.get(oban, :testing, :disabled) == :disabled and
-         Portal.Workers.Ingest.local_queue_limit(Keyword.get(oban, :queues)) != nil do
+         Portal.NodeQueue.build_node?(Keyword.get(oban, :queues)) do
       {:ok, _pid} = Task.start(&Portal.Builder.boot_egress_check/0)
     end
 

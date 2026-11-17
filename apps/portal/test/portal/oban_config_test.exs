@@ -52,15 +52,38 @@ defmodule Portal.ObanConfigTest do
              Portal.Workers.ClosureDrift.budget_ms() + :timer.minutes(5)
   end
 
-  test "the sweeper is scheduled, and on a queue the build host actually runs" do
-    {_mod, opts} = plugin(Oban.Plugins.Cron)
+  # `Oban.Plugins.Cron` inserts on the leader only, with one queue for every
+  # node. While that queue was the shared `:ingest` one, each hour's sweep ran
+  # on whichever builder fetched it first and the other disks went unswept.
+  test "every build node queues its own hourly sweep, on its own node queue" do
+    {_mod, opts} = plugin(Portal.Oban.NodeSweep)
+    assert opts[:minute] in 0..59
 
-    assert {_expr, Portal.Workers.Sweep} =
-             Enum.find(opts[:crontab], &match?({_e, Portal.Workers.Sweep}, &1))
+    {_mod, cron} = plugin(Oban.Plugins.Cron)
+    refute Enum.any?(cron[:crontab], &match?({_e, Portal.Workers.Sweep}, &1))
 
     # `:maintenance` runs on the web host, which has none of these directories:
-    # the sweep would report a clean disk forever while the build host filled up.
-    assert Portal.Workers.Sweep.__opts__()[:queue] == :ingest
+    # the sweep would report a clean disk forever while the builders filled up.
+    assert Ecto.Changeset.get_field(Portal.Workers.Sweep.new(%{}), :queue) ==
+             Portal.NodeQueue.name()
+  end
+
+  # No node runs the shared `:ingest` queue any more, so a job put there
+  # would wait forever.
+  test "no worker defaults to the shared ingest queue" do
+    {:ok, modules} = :application.get_key(:portal, :modules)
+
+    workers =
+      Enum.filter(modules, fn module ->
+        Code.ensure_loaded?(module) and function_exported?(module, :__opts__, 0) and
+          function_exported?(module, :perform, 1)
+      end)
+
+    assert Portal.Workers.Ingest in workers
+
+    for worker <- workers do
+      refute Ecto.Changeset.get_field(worker.new(%{}), :queue) == "ingest", inspect(worker)
+    end
   end
 
   test "request sync is scheduled, on the queue the web host runs" do
@@ -196,16 +219,19 @@ defmodule Portal.ObanConfigTest do
 
   # One warm at a time per host, on the host whose cache missed: two warms
   # renaming into the same cache would race, and a warm taking a `:builds`
-  # slot would run on whichever host polled first.
-  test "the Nerves cache warm runs one at a time, on the build node's own queue" do
+  # slot would run on whichever host polled first. Not on the node queue:
+  # Oban has no per-worker limit inside a queue, so there two warms could run
+  # side by side, each holding an ingest's slot.
+  test "the Nerves cache warm runs one at a time, on the build node's own warm queue" do
     queues =
-      [queues: [builds: 3, ingest: 2]]
-      |> Portal.Workers.Ingest.with_local_queue(:"portal@host-c")
+      [queues: [builds: 3, node: 2]]
+      |> Portal.NodeQueue.with_queue(:"portal@host-c")
       |> Portal.Workers.WarmNerves.with_local_queue(:"portal@host-c")
       |> Keyword.fetch!(:queues)
 
     assert queues[:warm_nerves_portal_host_c] == 1
-    assert queues[:ingest_portal_host_c] == 2
+    assert queues[:node_portal_host_c] == 2
+    refute Keyword.has_key?(queues, :node)
   end
 
   # Hourly, at :13, which no other entry uses: rows and a Hex read, on the
@@ -227,7 +253,7 @@ defmodule Portal.ObanConfigTest do
     assert Portal.Workers.SystemAbiBackfill.__opts__()[:queue] == :maintenance
     assert Portal.Workers.SystemAbiRun.__opts__()[:queue] == :system_abi
 
-    queues = Portal.Workers.SystemAbiRun.with_queue(queues: [builds: 3, ingest: 2])[:queues]
+    queues = Portal.Workers.SystemAbiRun.with_queue(queues: [builds: 3, node: 2])[:queues]
     assert queues[:system_abi] == 1
   end
 

@@ -46,8 +46,8 @@ defmodule Portal.Workers.LogRetention do
 
   ## Why queue `:maintenance`
 
-  Purely database work, so unlike `Portal.Workers.Sweep` — which must run on the
-  build host because only that machine has the directories — this belongs on the
+  Purely database work, so unlike `Portal.Workers.Sweep` — which runs on each
+  build node because only that node has its directories — this belongs on the
   web host, where `:maintenance` runs. Both hosts share one database, so it does
   not matter which of them does the deleting; it matters that it is not the
   machine with three builds on it.
