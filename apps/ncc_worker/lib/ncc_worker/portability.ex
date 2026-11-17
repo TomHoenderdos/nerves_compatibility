@@ -236,7 +236,7 @@ defmodule NccWorker.Portability do
   # archive (`@reviewed_unpacks`), both in the package's own window only
   # (`tool_events/2`), and the libraries the package's own priv library's
   # `DT_NEEDED` makes the loader map with it from the C library's dir
-  # (`needed_libs/3`: glibc's `libdl.so.2` and `libpthread.so.0` for
+  # (`needed_libs/2`: glibc's `libdl.so.2` and `libpthread.so.0` for
   # tokenizers' NIF); firmware target and toolchain verdicts do not change
   # (bumped by two while `makefile_rule2` exists).
   @judge_revision 25
@@ -1523,14 +1523,16 @@ defmodule NccWorker.Portability do
     snapshots = main_snapshots(report)
 
     needed =
-      if host_native, do: needed_libs(report.start, snapshots, own), else: MapSet.new()
+      if host_native,
+        do: needed_libs(report.start, own),
+        else: fn _prev, _snap -> MapSet.new() end
 
     children =
       for {app, child} <- Enum.sort(report.children), Context.dep?(ctx, app) do
         {app, MappedLibs.check(child.start, child_snapshots(child), allowed?)}
       end
 
-    main = main_libs(report.start, snapshots, &(allowed?.(&1) or MapSet.member?(needed, &1)))
+    main = main_libs(report.start, snapshots, allowed?, needed)
     results = Enum.filter(main ++ children, &in_scope?(elem(&1, 0), scope))
     by_owner = Enum.group_by(results, &elem(&1, 0), &elem(&1, 1))
     acc = %{decided: [], problems: [], native: [], waived: false, by_owner: by_owner}
@@ -1568,10 +1570,14 @@ defmodule NccWorker.Portability do
     closes ++ [{:outside, report.ending}]
   end
 
-  defp main_libs(start, snapshots, allowed?) do
+  # Each snapshot against the one before it, with what `needed` lets
+  # through in that snapshot alone.
+  defp main_libs(start, snapshots, allowed?, needed) do
     {_last, results} =
       Enum.reduce(snapshots, {start, []}, fn {owner, snap}, {prev, acc} ->
-        {snap, [{owner, MappedLibs.check(prev, [snap], allowed?)} | acc]}
+        here = needed.(prev, snap)
+        check = MappedLibs.check(prev, [snap], &(allowed?.(&1) or MapSet.member?(here, &1)))
+        {snap, [{owner, check} | acc]}
       end)
 
     Enum.reverse(results)
@@ -1590,28 +1596,24 @@ defmodule NccWorker.Portability do
   # is read to decide it: the published NIF's bytes (checksum-pinned,
   # `NccWorker.HostNative`) name these libraries, and a client resolves the
   # same sonames (`elf.needs`). One mapped earlier, anywhere else, or not
-  # named so keeps its refusal.
-  defp needed_libs(start, snapshots, own) do
-    case MappedLibs.libs(start) do
-      {:ok, before} ->
-        dirs = libc_dirs(before)
+  # named so keeps its refusal: what a snapshot lets through holds for that
+  # snapshot only, so one first mapped in another window, unmapped and
+  # mapped again with the NIF, still refuses where it first showed.
+  defp needed_libs(start, own) do
+    dirs =
+      case MappedLibs.libs(start) do
+        {:ok, before} -> libc_dirs(before)
+        :error -> MapSet.new()
+      end
 
-        {_last, needed} =
-          Enum.reduce(snapshots, {before, MapSet.new()}, &needed_in(&1, &2, own, dirs))
-
-        needed
-
-      :error ->
-        MapSet.new()
-    end
-  end
-
-  # What one snapshot adds to the one before it, as `MappedLibs.check/3`
-  # compares them.
-  defp needed_in({_owner, snap}, {prev, acc}, own, dirs) do
-    case MappedLibs.libs(snap) do
-      {:ok, libs} -> {libs, MapSet.union(acc, needed_by_own(Enum.uniq(libs) -- prev, own, dirs))}
-      :error -> {prev, acc}
+    # What `snap` adds to `prev`, as `MappedLibs.check/3` compares them.
+    fn prev, snap ->
+      with {:ok, before} <- MappedLibs.libs(prev),
+           {:ok, libs} <- MappedLibs.libs(snap) do
+        needed_by_own(Enum.uniq(libs) -- before, own, dirs)
+      else
+        :error -> MapSet.new()
+      end
     end
   end
 

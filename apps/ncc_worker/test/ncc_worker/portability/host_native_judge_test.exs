@@ -230,6 +230,18 @@ defmodule NccWorker.Portability.HostNativeJudgeTest do
         assert reason =~ refused, reason
       end
     end
+
+    test "let through only in the snapshot it shows with the NIF in", ctx do
+      # libq mapped in dep's window, gone by pkg's, mapped again at the end
+      # with the NIF that names it: dep's window keeps its refusal.
+      report = libs_report(ctx, [ctx.libq], [])
+      ending = Map.merge(report.ending, snap(ctx.start, [ctx.nif, ctx.libq, ctx.libr]))
+
+      assert %{status: :skip, reason: reason} =
+               judge(ctx.proj, %{report | ending: ending}, @host_native)
+
+      assert reason =~ @load <> ctx.libq, reason
+    end
   end
 
   describe "rustler_precompiled's normal path (tokenizers 0.5.2)" do
