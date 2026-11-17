@@ -183,6 +183,175 @@ defmodule NccWorker.Portability.JudgeTest do
     end
   end
 
+  # Judge revision 27: a Mix alias of a closure dependency's own project
+  # copying a file of its own source tree onto another, phoenix's
+  # `compile: [&copy_core_components/1, "compile"]`. dep and pkg each ship
+  # `installer/a.eex` and `priv/t/a.eex`, with a verified Hex release whose
+  # files are exactly its source dir's unless `priv:` says otherwise.
+  describe "a dependency's copies within its own tree" do
+    defp tree_releases(proj, dir, apps, priv \\ "a") do
+      home = Path.join(dir, "hex")
+
+      releases =
+        for app <- apps, into: %{} do
+          for rel <- ["installer/a.eex", "priv/t/a.eex"] do
+            File.mkdir_p!(Path.dirname(Path.join([proj, "deps", app, rel])))
+          end
+
+          File.write!(Path.join([proj, "deps", app, "installer/a.eex"]), "a")
+          File.write!(Path.join([proj, "deps", app, "priv/t/a.eex"]), priv)
+
+          File.ln_s!(
+            "../../../../deps/#{app}/priv",
+            Path.join([proj, "_build/host/lib", app, "priv"])
+          )
+
+          contents = %{
+            "lib/#{app}.ex" => "",
+            "mix.exs" => "",
+            "installer/a.eex" => "a",
+            "priv/t/a.eex" => priv
+          }
+
+          NccWorker.TracerFixtures.hex_release(home, app, Map.keys(contents), contents)
+        end
+
+      [releases: releases, hex_home: home, nif_waiver: true]
+    end
+
+    # What `File.cp!/2` traces when a fun of the app's own aliases tail-calls
+    # it: Mix's alias runner the first frame, in Mix's own process.
+    defp tree_copy(proj, ts, app, mfa, path \\ "priv/t/a.eex") do
+      dest = Path.join([proj, "deps", app, path])
+
+      arg =
+        if mfa == "file:write_file_info/3",
+          do: %{"path" => dest},
+          else: %{
+            "path" => dest,
+            "from" => Path.join([proj, "deps", app, "installer/a.eex"]),
+            "from_kind" => "read"
+          }
+
+      %{
+        event(ts, mfa, nil, "file_write")
+        | "arg" => arg,
+          "extent" => "dispatcher",
+          "user" => nil,
+          "first" => %{"module" => "Elixir.Mix.Task", "function" => "run_alias", "arity" => 6}
+      }
+      |> Map.put("bottom", %{"module" => "Elixir.Kernel.CLI", "function" => "-exec_fun/2-fun-0-"})
+    end
+
+    defp cp_events(proj, ts, app),
+      do:
+        for(
+          mfa <- ~w(file:copy/2 file:copy/3 file:write_file_info/3),
+          do: tree_copy(proj, ts, app, mfa)
+        )
+
+    defp cp_refusal(proj, app, mfa \\ "file:copy/2"),
+      do:
+        "compile-time write outside ebin: #{mfa} " <>
+          Path.join([proj, "deps", app, "priv/t/a.eex"])
+
+    test "the package's own copy passes when the tarball holds both bytes the same",
+         %{proj: proj, dir: dir} do
+      opts = tree_releases(proj, dir, ["dep", "pkg"])
+      r = report(proj, %{events: cp_events(proj, 35, "pkg")})
+      assert %{status: :pass, reason: nil, observations: obs} = v = judge(proj, r, opts)
+      assert v.built_priv == []
+      assert length(obs["own_tree_copies"]) == 3
+
+      for item <- obs["own_tree_copies"] do
+        assert %{"owner" => "pkg", "app" => "pkg", "path" => "priv/t/a.eex"} = item
+        refute Map.has_key?(item, "refusal")
+      end
+
+      assert %{status: :pass} = judge(proj, r, Keyword.put(opts, :target, "rpi4"))
+    end
+
+    test "a dependency's own copy in its window leaves it clean", %{proj: proj, dir: dir} do
+      opts = tree_releases(proj, dir, ["dep", "pkg"])
+      r = report(proj, %{events: cp_events(proj, 15, "dep")})
+
+      assert %{status: :pass, observations: %{"own_tree_copies" => [_, _, _], "taint" => taint}} =
+               judge(proj, r, opts)
+
+      assert taint == %{}
+    end
+
+    test "refuses as before when the tree is not the tarball's", %{proj: proj, dir: dir} do
+      opts = tree_releases(proj, dir, ["dep", "pkg"])
+
+      for {app, ts} <- [{"pkg", 35}, {"dep", 15}] do
+        r = report(proj, %{events: cp_events(proj, ts, app)})
+        assert %{status: :pass} = judge(proj, r, opts)
+
+        # A file beside it, the copy's destination changed, no verified
+        # tarball: the copy is the write it always was.
+        generated = Path.join([proj, "deps", app, "priv/t/b.eex"])
+        dest = Path.join([proj, "deps", app, "priv/t/a.eex"])
+
+        for {change, undo} <- [
+              {fn -> File.write!(generated, "x") end, fn -> File.rm!(generated) end},
+              {fn -> File.write!(dest, "changed") end, fn -> File.write!(dest, "a") end}
+            ] do
+          change.()
+          v = judge(proj, r, opts)
+          undo.()
+          assert_copy_refused(v, app, cp_refusal(proj, app))
+        end
+
+        assert_copy_refused(
+          judge(proj, r, Keyword.put(opts, :releases, %{})),
+          app,
+          cp_refusal(proj, app)
+        )
+      end
+    end
+
+    test "refuses a copy the tarball does not hold the same bytes for", %{proj: proj, dir: dir} do
+      # The tree is the tarball's, but the tarball's priv/t/a.eex is not
+      # installer/a.eex: copying one onto the other changes it.
+      opts = tree_releases(proj, dir, ["dep", "pkg"], "b")
+      r = report(proj, %{events: cp_events(proj, 35, "pkg")})
+      assert %{status: :skip, reason: reason} = judge(proj, r, opts)
+      assert reason == cp_refusal(proj, "pkg")
+    end
+
+    test "refuses the mode write on anything but such a copy", %{proj: proj, dir: dir} do
+      opts = tree_releases(proj, dir, ["dep", "pkg"])
+      mode = "file:write_file_info/3"
+
+      # Alone, and onto another file of the tarball than the copy's.
+      for events <- [
+            [tree_copy(proj, 35, "pkg", mode)],
+            [
+              tree_copy(proj, 35, "pkg", "file:copy/2"),
+              tree_copy(proj, 36, "pkg", mode, "installer/a.eex")
+            ]
+          ] do
+        v = judge(proj, report(proj, %{events: events}), opts)
+        assert v.status == :skip
+        assert v.reason =~ "compile-time write outside ebin: #{mode} "
+      end
+
+      # Onto another app's copy.
+      events = [tree_copy(proj, 15, "dep", "file:copy/2"), tree_copy(proj, 35, "pkg", mode)]
+      assert %{status: :skip, reason: reason} = judge(proj, report(proj, %{events: events}), opts)
+      assert reason == cp_refusal(proj, "pkg", mode)
+    end
+
+    defp assert_copy_refused(v, "pkg", refusal),
+      do: assert(%{status: :skip, reason: ^refusal} = v)
+
+    defp assert_copy_refused(v, "dep", refusal),
+      do:
+        assert(%{status: :skip, reason: "closure dependency observed the host: dep (" <> _} = v) &&
+          assert(v.reason == "closure dependency observed the host: dep (#{refusal})")
+  end
+
   # Judge revision 23: a closure dependency's own compile reading a file in
   # its own source priv through Mix's link, rustler's
   # `Mix.Tasks.Rustler.New` embedding its templates. dep and pkg are both
@@ -2806,9 +2975,9 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [config_event(35, "fx", "k")], snap))
     end
 
-    test "the judge revision is 23, 24 with item 1 on" do
-      assert NccWorker.Portability.judge_revision() == 25
-      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 26
+    test "the judge revision is 27, 28 with item 1 on" do
+      assert NccWorker.Portability.judge_revision() == 27
+      assert NccWorker.Portability.judge_revision(makefile_rule2: true) == 28
 
       # The portal withdraws only on refusals of a judge at least this new.
       # Revision 5 only loosens what revision 3 refused, so a revision 3 or 4

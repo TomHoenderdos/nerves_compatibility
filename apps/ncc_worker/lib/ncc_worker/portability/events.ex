@@ -99,7 +99,14 @@ defmodule NccWorker.Portability.Events do
       toolchain's `File.do_mkdir_p/1`, and `file:read_file_info/2` from the
       toolchain's `elixir_utils:read_file_type/2`, which hands its caller the
       file type alone. Anywhere else these refuse as before, and a write
-      into another package's `priv` always does.
+      into another package's `priv` always does. A Mix alias of a
+      dependency's own project, in the process Mix runs its tasks in,
+      copying one file of its own source tree onto another, and the mode
+      `File.cp/3` writes onto the copy, are observed as `own_tree_copies`
+      (phoenix's `copy_core_components/1`), carrying the refusal they would
+      otherwise be: `NccWorker.Portability` refuses each unless the copy
+      changed no byte of that dependency's verified tree (judge revision
+      27).
     * A user `set_cwd` refuses: it changes what every later relative path
       names.
     * A call into a natively built dependency refuses in the package's
@@ -174,6 +181,16 @@ defmodule NccWorker.Portability.Events do
                   prim_file:del_dir/1 file:delete/1 prim_file:delete/1 file:write_file_info/2
                   file:write_file_info/3 prim_file:write_file_info/2 prim_file:write_file_info/3
                   file:change_mode/2 file:change_time/2 file:change_time/3)
+  # Judge revision 27: the copies that set one file's bytes to another's,
+  # the write `File.cp/3` then makes of the source's mode onto the copy
+  # (`File.write_stat/3`), the frame Mix's alias runner leaves when a fun
+  # of the project's aliases tail-called one, and the bottom frame of the
+  # process `elixir -S mix` runs its tasks in (`Kernel.CLI`'s exec fun),
+  # Elixir 1.17 to 1.20.
+  @copies ~w(file:copy/2 file:copy/3 prim_file:copy/3)
+  @copy_modes ~w(file:write_file_info/2 file:write_file_info/3)
+  @run_alias {"Elixir.Mix.Task", "run_alias", 6}
+  @mix_main {"Elixir.Kernel.CLI", "-exec_fun/2-fun-0-"}
 
   # Compile-time env reads are build inputs (compile-time inputs spec):
   # observed with what they returned, never refused. os:getenv/2 reaches
@@ -591,10 +608,88 @@ defmodule NccWorker.Portability.Events do
             own_priv_write(e, ctx, owner, outside)
 
           true ->
-            {:refuse, outside_ebin(e, outside)}
+            own_tree_copy(e, ctx, owner, outside)
         end
     end
   end
+
+  # Judge revision 27: a Mix alias of the dependency's own project copying
+  # one file of its own source tree onto another (phoenix's `compile:
+  # [&copy_core_components/1, "compile"]`, which copies
+  # `installer/templates/phx_web/components/core_components.ex.eex` onto
+  # `priv/templates/phx.gen.live/core_components.ex.eex`), and the source's
+  # mode `File.cp/3` writes onto the copy after it. Only in the process Mix
+  # runs the dependency's tasks in (`mix_alias?/3`), so the copy is done
+  # before Mix goes on, and never in a natively built dependency
+  # (`Context.own_tree_path/3`). Observed, with the refusal it was before:
+  # the judge allows a copy only when the verified tarball holds both files
+  # with the same bytes and the whole tree is still exactly the tarball's
+  # after the compile, and the mode write only onto such a copy
+  # (`NccWorker.Portability`), so no byte of the tree ever changed. `"path"`
+  # and `"source"` (the copy's, `nil` for the mode write) are relative to
+  # the dependency's source dir. Anything else refuses.
+  defp own_tree_copy(%{"mfa" => mfa} = e, ctx, owner, [target])
+       when mfa in @copies or mfa in @copy_modes do
+    with true <- mix_alias?(e, ctx, owner),
+         path when is_binary(path) <- Context.own_tree_path(ctx, target, owner),
+         {:ok, source} <- copied_from(e, ctx, owner) do
+      {:observe, "own_tree_copies",
+       Map.merge(summary(e), %{
+         "app" => owner,
+         "path" => path,
+         "source" => source,
+         "ts" => e["ts"],
+         "refusal" => outside_ebin(e, [target])
+       })}
+    else
+      _ -> {:refuse, outside_ebin(e, [target])}
+    end
+  end
+
+  defp own_tree_copy(e, _ctx, _owner, outside), do: {:refuse, outside_ebin(e, outside)}
+
+  # A copy's source, in the dependency's own tree and readable as a read of
+  # it (`copy_source/3`); the mode write has none.
+  defp copied_from(
+         %{"mfa" => mfa, "arg" => %{"from_kind" => "read", "from" => from}} = e,
+         ctx,
+         owner
+       )
+       when mfa in @copies do
+    with source when is_binary(source) <- Context.own_tree_path(ctx, from, owner),
+         :ignore <- copy_source(e, ctx, owner),
+         do: {:ok, source}
+  end
+
+  defp copied_from(%{"mfa" => mfa}, _ctx, _owner) when mfa in @copy_modes, do: {:ok, nil}
+
+  defp copied_from(_e, _ctx, _owner), do: nil
+
+  # Made in the process `elixir -S mix` runs its tasks in (its stack seen
+  # whole, so the bottom frame is where it started), by a fun of the
+  # window's own project aliases Mix's alias runner called: one that
+  # tail-called the call (Mix's runner the first frame, no package frame
+  # left), or one whose frame is in that dependency's own `mix.exs`.
+  defp mix_alias?(%{"bottom" => %{"module" => m, "function" => f}} = e, ctx, owner)
+       when {m, f} == @mix_main,
+       do: Context.dep?(ctx, owner) and (alias_runner?(e) or own_mix_exs?(e, ctx, owner))
+
+  defp mix_alias?(_e, _ctx, _owner), do: false
+
+  defp alias_runner?(%{"extent" => "dispatcher", "user" => nil, "first" => first})
+       when is_map(first),
+       do: {first["module"], first["function"], first["arity"]} == @run_alias
+
+  defp alias_runner?(_e), do: false
+
+  defp own_mix_exs?(%{"extent" => "frame"} = e, ctx, owner) do
+    case Context.mix_exs(ctx, e, owner) do
+      path when is_binary(path) -> Path.dirname(path) == Context.dest(ctx, owner)
+      _ -> false
+    end
+  end
+
+  defp own_mix_exs?(_e, _ctx, _owner), do: false
 
   defp outside_ebin(e, [bad | _]), do: "compile-time write outside ebin: #{e["mfa"]} #{show(bad)}"
 

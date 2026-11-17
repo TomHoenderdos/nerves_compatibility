@@ -634,6 +634,27 @@ check nor the digest at window close sees. The allowed reads are listed as `own_
 read of its Hex-listed sources, re-checked against the tree snapshot taken before the compile (item 5e), and is
 unchanged.
 
+One copy is let through as well (judge revision 27): a Mix alias of a closure dependency's own project copying one
+file of its own source tree onto another, and the source's mode `File.cp/3` then writes onto the copy. That is
+phoenix's `compile: [&copy_core_components/1, "compile"]`, which copies
+`installer/templates/phx_web/components/core_components.ex.eex` onto
+`priv/templates/phx.gen.live/core_components.ex.eex` (`compile-time write outside ebin: file:copy/2
+.../deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex`), and which refused phoenix 1.8 and every
+package with it in its closure (phoenix_live_view and phoenix_live_dashboard among them). The
+call must be made in the process `elixir -S mix` runs its tasks in (`Kernel.CLI`'s exec fun at the bottom of a stack
+seen whole), by a fun of the aliases Mix's alias runner called: one that tail-called the copy (`Mix.Task.run_alias/6`
+the first frame) or one whose own frame is in that dependency's own `mix.exs`. So the copy returns before Mix goes on
+to compile it: one the alias spawns, or the dependency's compiled code makes, keeps its refusal. Both paths must
+resolve, after every link (Mix's from the build `priv` included), under the dependency's own source dir, the source
+must be a readable source file, and the dependency must not be natively built (its untraced build tool may write the
+tree). The judge then allows the copy only when the verified tarball holds both files with the same bytes and the
+dependency's whole source tree, checked after the compile, is still exactly that tarball's, so the copy wrote the
+bytes that were already there and every user's compile reads the same; the mode write only onto the destination of
+such a copy in the same window. Anything else is the write it always was, in that dependency's window, so a refused
+one taints it: a copy that changes a file or adds one, into another package's tree, or with no verified tarball. The
+allowed copies are listed as `own_tree_copies`. Nothing is published for them: the files are the tarball's, which
+every user's `deps/<d>` holds already.
+
 A host-read reason names the `system_info` key or environment variable, the path, and with `via` the function that
 made the call when it is not the package's own (`compile-time host read: erlang:system_info/1 (system_architecture)
 via CCPrecompiler.current_target/0 in ...`). `erlang:system_info/1` of `otp_release`, `machine`, `smp_support`, `threads` or

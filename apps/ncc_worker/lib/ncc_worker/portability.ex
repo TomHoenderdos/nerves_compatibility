@@ -44,6 +44,12 @@ defmodule NccWorker.Portability do
   compile and holds the file, otherwise the refusal of its window
   (`own_priv_reads/2`, judge revision 23), in a firmware target's trace too,
   where a read in a window the native build tool ran in always refuses.
+  And so is a Mix alias of a closure dependency's own project copying a
+  file of its own source tree onto another (`Events`' `own_tree_copies`,
+  phoenix's `copy_core_components/1`): allowed when its verified tarball
+  holds both files with the same bytes and the tree is still exactly that
+  tarball's after the compile, otherwise the refusal of its window
+  (`own_tree_copies/2`, judge revision 27).
 
   The package's own compile writing into its own build `priv`, and the
   probes `File.mkdir_p/1` makes of the directories above it (`Events`'
@@ -143,7 +149,8 @@ defmodule NccWorker.Portability do
     "target_reads" => 50,
     "priv_writes" => 50,
     "priv_probes" => 50,
-    "own_priv_reads" => 50
+    "own_priv_reads" => 50,
+    "own_tree_copies" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -242,8 +249,16 @@ defmodule NccWorker.Portability do
   # its own reads of the env that overrides its triple are inputs
   # (`@tool_env_inputs`);
   # firmware target and toolchain verdicts do not change (bumped by two
-  # while `makefile_rule2` exists).
-  @judge_revision 25
+  # while `makefile_rule2` exists). 27: a Mix alias of a closure
+  # dependency's own project, in the process Mix runs its tasks in, may copy
+  # a file of its own source tree onto another (and `File.cp/3` the
+  # source's mode onto it) when its verified tarball holds both with the
+  # same bytes and the tree is still exactly that tarball's after the
+  # compile (`own_tree_copies/2`): phoenix's `compile:
+  # [&copy_core_components/1, "compile"]`, which refused phoenix and every
+  # package with it in its closure (bumped by two while `makefile_rule2`
+  # exists).
+  @judge_revision 27
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on
@@ -891,7 +906,11 @@ defmodule NccWorker.Portability do
         ElixirVersion.reviewed_apps(elem(ctx.hex, 1), ctx.trees)
       )
 
-    decided = own_priv_reads(decided ++ config.refusals ++ version.refusals, ctx)
+    decided =
+      (decided ++ config.refusals ++ version.refusals)
+      |> own_priv_reads(ctx)
+      |> own_tree_copies(ctx)
+
     package_r2 = package_build_root(ctx)
     {decided, deps} = dep_results(ctx, report, decided, libs, target(opts) != nil)
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
@@ -2265,6 +2284,61 @@ defmodule NccWorker.Portability do
 
   defp own_priv_refusal(%{"refusal" => refusal}) when is_binary(refusal), do: refusal
   defp own_priv_refusal(item), do: "compile-time host read: #{item["mfa"]}"
+
+  # Judge revision 27. A Mix alias of a dependency's own project copying one
+  # file of its own source tree onto another (`Events`, `own_tree_copies`:
+  # phoenix's `copy_core_components/1`, run before its compile) changed no
+  # byte when that dependency's verified tarball holds both files with the
+  # same bytes and its whole tree is still exactly that tarball's after the
+  # compile (`clean_tree/2`): the copy wrote the bytes that were there, so
+  # every read of either file, before or after it, read what every user's
+  # compile of it reads. The copy ran in the process Mix runs its tasks in
+  # and returned before Mix went on, so no compile of it ran while the file
+  # was being written; and `Events` never observes one in a natively built
+  # dependency, whose untraced build tool may. The mode `File.cp/3` writes
+  # onto the copy after it is allowed only onto the destination of such a
+  # copy in the same window. Anything else is the write it always was, in
+  # that dependency's window, so a refused one taints it.
+  defp own_tree_copies(decided, ctx) do
+    items = for {owner, {:observe, "own_tree_copies", item}} <- decided, do: {owner, item}
+
+    trees =
+      for app <- Enum.uniq(for({_owner, %{"app" => app}} <- items, do: app)),
+          into: %{},
+          do: {app, if(Context.dep?(ctx, app), do: clean_tree(ctx, app))}
+
+    copied =
+      for {owner, item} <- items,
+          unchanged_copy?(owner, item, trees),
+          into: MapSet.new(),
+          do: {owner, item["path"]}
+
+    Enum.map(decided, fn
+      {owner, {:observe, "own_tree_copies", item}} = entry ->
+        allowed? =
+          if is_binary(item["source"]),
+            do: unchanged_copy?(owner, item, trees),
+            else: owner == item["app"] and MapSet.member?(copied, {owner, item["path"]})
+
+        if allowed?, do: entry, else: {owner, {:refuse, copy_refusal(item)}}
+
+      entry ->
+        entry
+    end)
+  end
+
+  defp unchanged_copy?(owner, %{"app" => app, "path" => path, "source" => source}, trees)
+       when owner == app and is_binary(path) and is_binary(source) do
+    case Map.get(trees, app) do
+      %{^path => sha, ^source => sha} -> true
+      _ -> false
+    end
+  end
+
+  defp unchanged_copy?(_owner, _item, _trees), do: false
+
+  defp copy_refusal(%{"refusal" => refusal}) when is_binary(refusal), do: refusal
+  defp copy_refusal(item), do: "compile-time write outside ebin: #{item["mfa"]}"
 
   defp libs_clean?(libs, app) do
     case Map.get(libs.by_owner, app, []) do

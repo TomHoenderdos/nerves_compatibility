@@ -540,6 +540,27 @@ defmodule NccWorker.Portability.Context do
 
   def linked_priv_file(_ctx, _owner, _real), do: nil
 
+  @doc """
+  `path`, named in `owner`'s window, relative to `owner`'s source dir
+  (`deps/<d>`) when it resolves, after every link, under that directory and
+  is not the directory itself; `nil` otherwise, and for a natively built
+  dependency, whose untraced build tool may write its tree. A write through
+  Mix's link from the build `priv` lands here too. Judge revision 27
+  (`NccWorker.Portability.Events`).
+  """
+  @spec own_tree_path(t(), term(), term()) :: String.t() | nil
+  def own_tree_path(ctx, path, owner) when is_binary(path) do
+    with %{native?: false, dest: dest} when is_binary(dest) <- Map.get(ctx.deps, owner),
+         real when is_binary(real) <- resolve(ctx, path, owner),
+         true <- real != dest and under?(real, dest) do
+      real |> Path.split() |> Enum.drop(length(Path.split(dest))) |> rel_path()
+    else
+      _ -> nil
+    end
+  end
+
+  def own_tree_path(_ctx, _path, _owner), do: nil
+
   @doc "An absolute path to a regular file in some closure dependency's source dir."
   @spec closure_file?(t(), term()) :: boolean()
   def closure_file?(ctx, string) when is_binary(string) do

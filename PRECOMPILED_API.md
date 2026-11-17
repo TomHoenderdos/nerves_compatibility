@@ -589,7 +589,12 @@ What it lists:
   not finish; its beams are the traced compile's. A package's own compile
   reading a file its own Hex tarball ships in its `priv` (rustler embedding
   its templates) reads no host, when the package's source tree is still
-  exactly that tarball's after the compile (judge revision 23). What the package does at
+  exactly that tarball's after the compile (judge revision 23). Nor does a
+  Mix alias of a package's own project copying one file its tarball ships
+  onto another the tarball ships with the same bytes (phoenix copying its
+  `core_components.ex.eex` template into `priv`), when it runs before Mix
+  goes on and the package's source tree is still exactly that tarball's
+  after the compile (judge revision 27). What the package does at
   runtime does not count: a package that runs programs, opens ports, looks
   up executables or reads the OS type when it runs is built and served like
   any other, since those calls run the same from a precompiled build. Native

@@ -1686,4 +1686,138 @@ defmodule NccWorker.Portability.EventsTest do
       assert :ignore = Events.decide(read(file), ctx, "pkg")
     end
   end
+
+  describe "a Mix alias copying a file of its own tree onto another (judge revision 27)" do
+    # pkg (no native build) ships `installer/a.eex` and `priv/t/a.eex`, and
+    # its build priv is Mix's link to `deps/pkg/priv`. phoenix's
+    # `compile: [&copy_core_components/1, "compile"]`: a fun of its own
+    # aliases that tail-calls `File.cp!/2`, run by Mix's alias runner in
+    # the process `elixir -S mix` runs its tasks in.
+    defp tree_ctx(dir, proj, pkg, opts \\ []) do
+      File.mkdir_p!(Path.join(pkg, "installer"))
+      File.mkdir_p!(Path.join(pkg, "priv/t"))
+      File.write!(Path.join(pkg, "installer/a.eex"), "a")
+      File.write!(Path.join(pkg, "priv/t/a.eex"), "a")
+      build_priv = Path.join(proj, "_build/host/lib/pkg/priv")
+      File.ln_s!("../../../../deps/pkg/priv", build_priv)
+      files = ~w(lib README.md mix.exs installer priv)
+      opts = Keyword.put(opts, :hex_files, files)
+      %{ctx: build(dir, proj, report(dir, proj, pkg, []), opts), build_priv: build_priv}
+    end
+
+    @mix_main %{"module" => "Elixir.Kernel.CLI", "function" => "-exec_fun/2-fun-0-"}
+
+    defp copy(pkg, mfa \\ "file:copy/2", opts \\ []) do
+      dest = Keyword.get(opts, :path, Path.join(pkg, "priv/t/a.eex"))
+
+      arg =
+        if mfa in ~w(file:copy/2 file:copy/3 prim_file:copy/3),
+          do: %{
+            "path" => dest,
+            "from" => Keyword.get(opts, :from, Path.join(pkg, "installer/a.eex")),
+            "from_kind" => "read"
+          },
+          else: %{"path" => dest}
+
+      "file_write"
+      |> ev(mfa, arg,
+        extent: "dispatcher",
+        user: nil,
+        first: Keyword.get(opts, :first, {"Elixir.Mix.Task", "run_alias", 6})
+      )
+      |> Map.put("bottom", Keyword.get(opts, :bottom, @mix_main))
+    end
+
+    test "is observed with the refusal it would be", %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx, build_priv: build_priv} = tree_ctx(dir, proj, pkg)
+      dest = Path.join(pkg, "priv/t/a.eex")
+
+      for mfa <- ~w(file:copy/2 file:copy/3 prim_file:copy/3) do
+        assert {:observe, "own_tree_copies", item} = Events.decide(copy(pkg, mfa), ctx, "pkg")
+
+        assert %{"app" => "pkg", "path" => "priv/t/a.eex", "source" => "installer/a.eex"} =
+                 item
+
+        assert item["refusal"] == "compile-time write outside ebin: #{mfa} #{dest}"
+      end
+
+      # The mode File.cp/3 writes onto the copy: no source.
+      assert {:observe, "own_tree_copies", %{"path" => "priv/t/a.eex", "source" => nil}} =
+               Events.decide(copy(pkg, "file:write_file_info/3"), ctx, "pkg")
+
+      # Through Mix's link from the build priv, and relative in its window.
+      for path <- [Path.join(build_priv, "t/a.eex"), "priv/t/a.eex"] do
+        assert {:observe, "own_tree_copies", %{"path" => "priv/t/a.eex"}} =
+                 Events.decide(copy(pkg, "file:copy/2", path: path), ctx, "pkg")
+      end
+
+      # An alias fun whose own frame, in pkg's own mix.exs, stays on the stack.
+      framed = %{in_mix_exs(copy(pkg), pkg, 9) | "extent" => "frame"}
+
+      assert {:observe, "own_tree_copies", %{"source" => "installer/a.eex"}} =
+               Events.decide(framed, ctx, "pkg")
+    end
+
+    test "keeps its refusal made anywhere else", %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx} = tree_ctx(dir, proj, pkg)
+      framed = %{in_mix_exs(copy(pkg), pkg, 9) | "extent" => "frame"}
+      task = %{"module" => "Elixir.Task.Supervised", "function" => "reply"}
+
+      for event <- [
+            # Another process: one the alias spawned, or a compiler worker.
+            copy(pkg, "file:copy/2", bottom: task),
+            Map.delete(copy(pkg), "bottom"),
+            %{framed | "bottom" => task},
+            # Not Mix's alias runner: its task runner, or a module body.
+            copy(pkg, "file:copy/2", first: {"Elixir.Mix.Task", "run_task", 5}),
+            copy(pkg, "file:copy/2", first: {"Elixir.Mix.Task", "run_alias", 5}),
+            %{copy(pkg) | "extent" => "lineage"},
+            %{copy(pkg) | "extent" => "frame", "user" => @user},
+            %{in_mix_exs(copy(pkg), proj, 9) | "extent" => "frame"},
+            %{framed | "extent" => "dispatcher"}
+          ] do
+        assert {:refuse, "compile-time write outside ebin: file:copy/2 " <> _} =
+                 Events.decide(event, ctx, "pkg"),
+               inspect(event)
+      end
+
+      for owner <- ["other", :outside, :quiet] do
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(copy(pkg), ctx, owner),
+               inspect(owner)
+      end
+    end
+
+    test "keeps its refusal out of its own tree, or for any other write",
+         %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx} = tree_ctx(dir, proj, pkg)
+      elsewhere = Path.join(dir, "elsewhere")
+      File.mkdir_p!(elsewhere)
+      File.write!(Path.join(elsewhere, "a.eex"), "a")
+
+      for event <- [
+            copy(pkg, "file:copy/2", path: Path.join(elsewhere, "a.eex")),
+            copy(pkg, "file:copy/2", path: pkg),
+            copy(pkg, "file:copy/2", path: Path.join(pkg, "../elsewhere/a.eex")),
+            copy(pkg, "file:copy/2", from: Path.join(elsewhere, "a.eex")),
+            copy(pkg, "file:write_file/3"),
+            copy(pkg, "file:change_mode/2"),
+            copy(pkg, "file:delete/1"),
+            copy(pkg, "file:make_symlink/2")
+          ] do
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(event, ctx, "pkg"),
+               inspect(event)
+      end
+    end
+
+    test "keeps its refusal in a natively built dependency", %{dir: dir, proj: proj, pkg: pkg} do
+      %{ctx: ctx} = tree_ctx(dir, proj, pkg, native: ["pkg"])
+
+      for mfa <- ~w(file:copy/2 file:write_file_info/3) do
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(copy(pkg, mfa), ctx, "pkg")
+      end
+    end
+  end
 end
