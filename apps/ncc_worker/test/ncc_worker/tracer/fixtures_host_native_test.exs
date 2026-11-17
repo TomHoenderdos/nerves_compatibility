@@ -54,6 +54,8 @@ defmodule NccWorker.Tracer.FixturesHostNativeTest do
 
           def __using__(_module, opts) do
             _ = System.get_env("RUSTLER_PRECOMPILED_FORCE_BUILD_ALL")
+            # The real tool's maybe_override_with_env_vars/2: overrides the triple.
+            _ = System.get_env("TARGET_ARCH")
             arch = List.to_string(:erlang.system_info(:system_architecture))
             nif = List.to_string(:erlang.system_info(:nif_version))
 
@@ -249,6 +251,8 @@ defmodule NccWorker.Tracer.FixturesHostNativeTest do
 
     assert Enum.any?(v.compile_inputs, &match?(%{"kind" => "env", "name" => "FX_NIF_BUILD"}, &1))
     refute Enum.any?(v.compile_inputs, &(&1["name"] == "RUSTLER_PRECOMPILED_FORCE_BUILD_ALL"))
+    # The tool's read of an env var that overrides its triple is an input.
+    assert Enum.any?(v.compile_inputs, &match?(%{"kind" => "env", "name" => "TARGET_ARCH"}, &1))
     assert Compatibility.CompileInputs.validate(v.compile_inputs) == {:ok, v.compile_inputs}
 
     # Rustler's macro the expander called for the tool's quote, and the

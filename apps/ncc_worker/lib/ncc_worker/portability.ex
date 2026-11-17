@@ -238,7 +238,9 @@ defmodule NccWorker.Portability do
   # `DT_NEEDED` makes the loader map with it from the C library's dir
   # (`needed_libs/2`: glibc's `libdl.so.2` and `libpthread.so.0` for
   # tokenizers' NIF); a read a package's variant fun tail-calls from the
-  # tool's `variant_suffix/2` is the package's (`@package_fun_frames`);
+  # tool's `variant_suffix/2` is the package's (`@package_fun_frames`), and
+  # its own reads of the env that overrides its triple are inputs
+  # (`@tool_env_inputs`);
   # firmware target and toolchain verdicts do not change (bumped by two
   # while `makefile_rule2` exists).
   @judge_revision 25
@@ -1175,6 +1177,15 @@ defmodule NccWorker.Portability do
 
   @tool_never_writes ["env_write", "config_write"]
 
+  # The env a host-native tool reads that overrides the triple it picks the
+  # NIF by: rustler_precompiled's `maybe_override_with_env_vars/2` (set for
+  # a cross build, Nerves's or by hand). Each read is the `compile_inputs`
+  # item a package's own read is (unset on a builder, so a client that sets
+  # one misses), not set apart. Its other env reads (proxies, cache dirs,
+  # CA certs, the IP family) choose only how the checksum-pinned archive is
+  # fetched.
+  @tool_env_inputs ~w(TARGET_ARCH TARGET_VENDOR TARGET_OS TARGET_ABI)
+
   @doc "The native build tools whose activity a firmware target's trace sets apart."
   @spec native_tools() :: [String.t()]
   def native_tools, do: @native_tools
@@ -1350,6 +1361,9 @@ defmodule NccWorker.Portability do
       host_tool?(event, mode) and reviewed_unpack?(event) ->
         held("tool_unpacks", event, vm, decision)
 
+      host_tool?(event, mode) and tool_env_input?(event) ->
+        decision
+
       unreviewed_host_read?(event, mode) ->
         decision
 
@@ -1475,6 +1489,11 @@ defmodule NccWorker.Portability do
        do: {module, fun, arity} in @reviewed_unpacks
 
   defp reviewed_unpack?(_event), do: false
+
+  defp tool_env_input?(%{"channel" => "env", "arg" => %{"name" => name}}),
+    do: name in @tool_env_inputs
+
+  defp tool_env_input?(_event), do: false
 
   defp reviewed_host_read?(%{"mfa" => "os:type/0"}), do: true
 

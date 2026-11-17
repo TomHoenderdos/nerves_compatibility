@@ -574,6 +574,34 @@ defmodule NccWorker.Portability.HostNativeJudgeTest do
       end
     end
 
+    test "the tool's TARGET_* reads, which override the triple, are inputs", ctx do
+      # `maybe_override_with_env_vars/2` reads them from a fun of its own;
+      # a client that sets one would download another target's NIF.
+      override = %{
+        @variant
+        | "function" => "-maybe_override_with_env_vars/2-fun-0-",
+          "line" => 596
+      }
+
+      for name <- ~w(TARGET_ARCH TARGET_VENDOR TARGET_OS TARGET_ABI) do
+        read = tool_read(35, "env", "os:getenv/1", %{"name" => name}, override)
+
+        assert %{status: :pass, compile_inputs: inputs} =
+                 tjudge(ctx, [tool_fun(34), read], @host_native)
+
+        assert Enum.any?(inputs, &match?(%{"kind" => "env", "name" => ^name}, &1)),
+               inspect({name, inputs})
+      end
+
+      # Its download's env reads (proxies, the IP family) stay set apart.
+      for name <- ~w(HTTPS_PROXY RUSTLER_PRECOMPILED_IPFAMILY) do
+        read = tool_read(35, "env", "os:getenv/1", %{"name" => name}, @download)
+
+        assert %{status: :pass, compile_inputs: []} =
+                 tjudge(ctx, [tool_fun(34), read], @host_native)
+      end
+    end
+
     test "in a dependency's window both keep their decision: the dependency is tainted", ctx do
       # `dep`'s window is 10..20 (pkg depends on it).
       for {events, taint} <- [
