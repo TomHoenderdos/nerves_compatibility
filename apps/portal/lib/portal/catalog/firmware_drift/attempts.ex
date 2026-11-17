@@ -85,6 +85,33 @@ defmodule Portal.Catalog.FirmwareDrift.Attempts do
     )
   end
 
+  @doc """
+  The rebuilds queued before `before` (naive UTC) whose remote lease is
+  still waiting or building: a lease of the same package and version, at
+  `priority` with a systems filter, written at or after the attempt. Their
+  `Portal.Workers.RemoteBuild` jobs finished once the lease was written and
+  Oban prunes those after 12 hours, while a lease can wait for days.
+  """
+  @spec waiting_leases(NaiveDateTime.t(), integer()) :: non_neg_integer()
+  def waiting_leases(before, priority) do
+    %{rows: [[count]]} =
+      Repo.query!(
+        """
+        SELECT count(DISTINCT a.id)
+        FROM firmware_drift_attempts a
+        JOIN builder_leases l
+          ON l.package = a.package AND l.version = a.version AND l.inserted_at >= a.inserted_at
+        WHERE a.inserted_at < $1
+          AND l.state IN ('queued', 'leased', 'uploading')
+          AND l.priority = $2
+          AND jsonb_typeof(l.args->'systems_filter') = 'array'
+        """,
+        [before, priority]
+      )
+
+    count
+  end
+
   @doc "Records that a rebuild of `run` with `fingerprint` was queued now."
   @spec record(map(), [String.t()], String.t()) :: :ok
   def record(run, systems, fingerprint) do

@@ -381,21 +381,25 @@ defmodule Portal.Workers.ClosureDrift do
   # second run the same day queues no more than the cap in all, and drift
   # builds that have waited since an earlier day hold back new ones rather
   # than pile up. Oban keeps a finished job 12 hours (`Oban.Plugins.Pruner`),
-  # so a run late in the day finds fewer of the morning's; and a remote
-  # build's job finishes once its lease is written, so a lease still waiting
-  # for a builder from an earlier day is not counted.
+  # so a run late in the day finds fewer of the morning's. A remote build's
+  # job finishes once its lease is written, so a lease from an earlier day
+  # still waiting for a builder is counted from the attempts
+  # (`FirmwareDrift.Attempts.waiting_leases/2`).
   defp firmware_spent do
     today = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
 
-    Repo.one(
-      from(j in Oban.Job,
-        where:
-          j.worker in ^@build_workers and fragment("?->>'reason'", j.args) == ^@reason and
-            fragment("?->>'scope'", j.args) == "targets" and
-            (j.state in ^@incomplete or j.inserted_at >= ^today),
-        select: count()
+    jobs =
+      Repo.one(
+        from(j in Oban.Job,
+          where:
+            j.worker in ^@build_workers and fragment("?->>'reason'", j.args) == ^@reason and
+              fragment("?->>'scope'", j.args) == "targets" and
+              (j.state in ^@incomplete or j.inserted_at >= ^today),
+          select: count()
+        )
       )
-    )
+
+    jobs + Attempts.waiting_leases(DateTime.to_naive(today), @firmware_priority)
   end
 
   # Page by page, most downloaded first, until the cap is reached, the runs

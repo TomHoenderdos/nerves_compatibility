@@ -274,6 +274,42 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
     assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
   end
 
+  # Routed to a remote builder, a rebuild's job finishes once its lease is
+  # written and is pruned after 12 hours, while the lease may wait for days.
+  test "a lease from an earlier day still waiting counts against the cap" do
+    [obscure, popular] = [name(), name()]
+    world([obscure, popular])
+    run!(obscure, "0.4.0")
+    run!(popular, "0.4.0")
+    downloads!(obscure, 10)
+    downloads!(popular, 1_000_000)
+    Application.put_env(:portal, ClosureDrift, enabled: true, firmware_max_per_run: 1)
+
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+
+    yesterday = NaiveDateTime.add(NaiveDateTime.utc_now(), -1, :day)
+    Repo.delete_all(from(j in Oban.Job, where: j.worker == "Portal.Workers.Build"))
+    Repo.update_all("firmware_drift_attempts", set: [inserted_at: yesterday])
+
+    {:ok, _lease} =
+      Portal.Builders.Leases.enqueue(
+        %{
+          package: popular,
+          version: "0.4.0",
+          image_name: "ghcr.io/x/ncc-worker",
+          image_digest: "sha256:" <> String.duplicate("a", 64),
+          args: %{"systems_filter" => ["nerves_system_rpi4"]},
+          priority: 8
+        },
+        notify: false
+      )
+
+    Repo.update_all("builder_leases", set: [inserted_at: NaiveDateTime.add(yesterday, 60)])
+
+    assert {:ok, %{firmware: %{enqueued: 0, earlier: 1}}} = ClosureDrift.run()
+    assert firmware_jobs() == []
+  end
+
   # A build that keeps failing (a worker error, a lease no builder finishes)
   # lands no run, so the run it would replace stays the latest and drifted:
   # each day would queue it again, and such builds could fill the cap.
