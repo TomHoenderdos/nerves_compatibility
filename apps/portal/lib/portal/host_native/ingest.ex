@@ -8,6 +8,9 @@ defmodule Portal.HostNative.Ingest do
   again before any file of it is published, on the files the run handed over
   and a tarball it fetched itself (`Portal.Catalog.ToolchainPriv.signed_tarball/2`):
 
+    0. the build records its compile inputs (a list, even empty): the env
+       its native tool picks the library by is only there, and a client
+       takes a build without one;
     1. every manifest entry names a plain `ebin/` or `priv/` path and a
        SHA-256 the run's files hash to; the priv files together at most
        128 MiB;
@@ -173,7 +176,8 @@ defmodule Portal.HostNative.Ingest do
 
   # Steps 1 to 4: `{:ok, needs}`, `{:refused, reason}` or `{:error, reason}`.
   defp verify(build, opts) do
-    with {:ok, entries} <- entries(build["file_manifest"]),
+    with :ok <- inputs_recorded(build["compile_inputs"]),
+         {:ok, entries} <- entries(build["file_manifest"]),
          :ok <- outside_priv(entries, opts.files_dir),
          {:ok, priv} <- read_priv(entries, opts.files_dir),
          {elf, static} = Enum.split_with(priv, &elf?(&1.bytes)),
@@ -185,6 +189,13 @@ defmodule Portal.HostNative.Ingest do
       needs(priv)
     end
   end
+
+  # The env a native tool reads that picks the library (rustler_precompiled's
+  # TARGET_* overrides, a force-build variable) is only in the build's
+  # compile inputs, and a client takes a build without that list (builds from
+  # before 0.6.0 have none): a pass without it is not served.
+  defp inputs_recorded(inputs) when is_list(inputs), do: :ok
+  defp inputs_recorded(_inputs), do: {:refused, "records no compile inputs"}
 
   defp entries(%{} = manifest) do
     entries =

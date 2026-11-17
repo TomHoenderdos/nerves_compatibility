@@ -212,6 +212,28 @@ defmodule Portal.HostNativeTest do
       assert reason =~ "x86_64-linux-gnu cannot load (priv/native/libfx.so)"
     end
 
+    # The library a user's own compile loads is picked by env its native
+    # tool reads (rustler_precompiled's TARGET_* overrides, a force-build
+    # variable), which only the build's compile inputs carry: a client takes
+    # a build without that list (as builds from before 0.6.0 have none), so
+    # a pass without it would reach a user whose env picks another library.
+    test "a pass that records no compile inputs is refused, with no files" do
+      {tarball, origins, blobs} = downloader()
+      name = unique()
+
+      result =
+        update_in(
+          result(name, tarball, origins),
+          ["host_native_build"],
+          &Map.delete(&1, "compile_inputs")
+        )
+
+      assert {:ok, %{status: :fail, reason: reason, file_manifest: nil, origins: nil}} =
+               Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
+
+      assert reason == "refused at ingest: records no compile inputs"
+    end
+
     test "a result naming another triple than the job is refused whole" do
       name = unique()
       tarball = hex_tarball(%{})
