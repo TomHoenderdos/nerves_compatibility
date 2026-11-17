@@ -407,10 +407,10 @@ defmodule NccWorker.Portability.JudgeTest do
     defp assert_copy_refused(v, "pkg", refusal),
       do: assert(%{status: :skip, reason: ^refusal} = v)
 
-    defp assert_copy_refused(v, "dep", refusal),
-      do:
-        assert(%{status: :skip, reason: "closure dependency observed the host: dep (" <> _} = v) &&
-          assert(v.reason == "closure dependency observed the host: dep (#{refusal})")
+    defp assert_copy_refused(v, "dep", refusal) do
+      assert %{status: :skip} = v
+      assert v.reason == "closure dependency observed the host: dep (#{refusal})"
+    end
   end
 
   # Judge revision 23: a closure dependency's own compile reading a file in
