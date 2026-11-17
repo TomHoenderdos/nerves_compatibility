@@ -1367,19 +1367,21 @@ defmodule NccWorker.Portability do
       host_tool?(event, mode) and reviewed_unpack?(event) ->
         held("tool_unpacks", event, vm, decision)
 
-      host_tool?(event, mode) and tool_env_input?(event) ->
-        decision
-
-      unreviewed_host_read?(event, mode) ->
-        decision
-
-      tool_config_read?(event, mode) ->
+      kept?(event, mode) ->
         decision
 
       true ->
         native_build(event, vm)
     end
   end
+
+  # A native tool's own event that keeps the decision it had instead of being
+  # set apart: a host-native tool's read of the env that overrides its
+  # triple, an unreviewed host read, and in a host-native build a config read.
+  defp kept?(event, mode),
+    do:
+      (host_tool?(event, mode) and tool_env_input?(event)) or
+        unreviewed_host_read?(event, mode) or tool_config_read?(event, mode)
 
   defp native_build(event, vm),
     do:
