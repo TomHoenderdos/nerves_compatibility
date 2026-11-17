@@ -164,6 +164,13 @@ defmodule Portal.Workers.Build do
       ToolingSkip.tooling?(package) ->
         record_tooling_skip(package, version, scan_request_id, attempt, max_attempts)
 
+      superseded_drift?(args) ->
+        Logger.info(
+          "Build of #{package} #{version}: a drift rebuild of a version no longer the latest tested; dropped"
+        )
+
+        {:cancel, :superseded}
+
       not force and run_exists?(package, version, image_digest) ->
         Logger.info("Build dedup: run already exists for #{package} #{version}")
         Progress.mark(scan_request_id, :built)
@@ -658,6 +665,26 @@ defmodule Portal.Workers.Build do
       )
     )
   end
+
+  @doc """
+  Whether `args` are a targets rebuild that `Portal.Workers.ClosureDrift`
+  queued (`reason` `"closure_drift"`) of a version that is no longer the
+  package's latest tested one (`latest_version_tested/1`). Such a job waits
+  at a low priority, behind the build of a new release, and `scope_args/3`
+  would build the old version in full instead: its run would become the
+  package's latest, set `latest_version` back and have `UpdateCheck` build
+  the new release again. The next drift run judges the new release's run.
+  """
+  @spec superseded_drift?(map()) :: boolean()
+  def superseded_drift?(%{
+        "reason" => "closure_drift",
+        "scope" => "targets",
+        "package" => package,
+        "version" => version
+      }),
+      do: latest_version_tested(package) != version
+
+  def superseded_drift?(_args), do: false
 
   @doc """
   The version of the package's latest run, the run `Portal.Catalog.Ingestion`

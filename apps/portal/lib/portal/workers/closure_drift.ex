@@ -73,7 +73,9 @@ defmodule Portal.Workers.ClosureDrift do
   tracked package, above bulk sweeps. Its args carry `reason` and `drift`
   as above, a system bump naming the system as its `dep`. A package with a
   build or lease already on the way is not queued again (`pending`), since
-  such a build's unique window is a minute and it may wait for days.
+  such a build's unique window is a minute and it may wait for days. One
+  that waited past the run of a newer release is dropped rather than built
+  in full (`Portal.Workers.Build.superseded_drift?/1`).
 
   A firmware rebuild is a container run of minutes, so its cap is separate
   and smaller (`firmware_max_per_run/0`). Nothing has to be kept for the old

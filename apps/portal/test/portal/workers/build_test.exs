@@ -160,6 +160,32 @@ defmodule Portal.Workers.BuildTest do
              }) == %{systems_filter: nil, mode: nil}
     end
 
+    # A closure drift rebuild waits at priority 8, behind the build of a new
+    # release (`UpdateCheck`, 7). Built in full, the old version's run would
+    # become the package's latest and set its `latest_version` back, so
+    # `UpdateCheck` would build the new release again.
+    test "a drift rebuild of a version no longer the latest tested is dropped" do
+      previous_run!("drifted", "1.0.0")
+      previous_run!("drifted", "2.0.0")
+
+      args = %{
+        "package" => "drifted",
+        "version" => "1.0.0",
+        "force" => true,
+        "scope" => "targets",
+        "systems" => ["nerves_system_rpi4"],
+        "reason" => "closure_drift"
+      }
+
+      assert {:cancel, _} = perform_job(Build, args)
+      refute_received :stub_build_called
+
+      # Any other targets build of an older version still builds in full.
+      ok_response()
+      assert :ok = perform_job(Build, Map.delete(args, "reason"))
+      assert_received {:stub_build_args, %{systems_filter: nil}}
+    end
+
     test "a targets scope with no systems builds everything" do
       previous_run!("scoped4", "1.0.0")
 

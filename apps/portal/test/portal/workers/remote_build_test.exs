@@ -112,6 +112,40 @@ defmodule Portal.Workers.RemoteBuildTest do
     assert [_, _] = Ash.read!(Lease, domain: Portal.Builders)
   end
 
+  # As `Portal.Workers.Build`: a closure drift rebuild that waited past a
+  # newer release's run would lease a full build of the old version.
+  test "drops a drift rebuild of a version no longer the latest tested" do
+    for version <- ["1.4.3", "1.4.4"] do
+      {:ok, _} =
+        Portal.Catalog.Ingestion.ingest(
+          %{
+            "package" => %{"name" => "jason", "version" => version},
+            "finished_at" => "2026-10-10T10:00:00Z",
+            "systems" => %{"host" => %{"status" => "pass"}}
+          },
+          %{
+            package: "jason",
+            version: version,
+            run_id: "r-#{version}",
+            image_digest: "sha256:old",
+            files_dir: System.tmp_dir!()
+          }
+        )
+    end
+
+    args = %{
+      "package" => "jason",
+      "version" => "1.4.3",
+      "force" => true,
+      "scope" => "targets",
+      "systems" => ["nerves_system_rpi4"],
+      "reason" => "closure_drift"
+    }
+
+    assert {:cancel, _} = perform_job(RemoteBuild, args)
+    assert [] = Ash.read!(Lease, domain: Portal.Builders)
+  end
+
   # A lease handed to a local build (`Leases.requeue_locally/2`) is failed,
   # so a job snoozed on it would otherwise wake and lease the build again.
   test "waits on a pinned-local build of the same version unless forced" do

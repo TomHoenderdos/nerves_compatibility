@@ -103,6 +103,13 @@ defmodule Portal.Workers.RemoteBuild do
     digests = Map.values(platforms)
 
     cond do
+      Build.superseded_drift?(job.args) ->
+        Logger.info(
+          "RemoteBuild of #{package} #{version}: a drift rebuild of a version no longer the latest tested; dropped"
+        )
+
+        {:cancel, :superseded}
+
       not force and run_exists?(package, version, digests) ->
         Logger.info("RemoteBuild dedup: run already exists for #{package} #{version}")
         Progress.mark(scan_request_id, :built)
