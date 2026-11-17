@@ -144,14 +144,25 @@ builder_queues='(if Code.ensure_loaded?(Portal.Workers.Ingest) and
   do: Portal.Workers.Ingest.builder_queues(),
   else: [:builds, :ingest])'
 
+# The queues the running release paused by itself because a host check
+# failed (Portal.Builder.AutoPause), which it resumes once the check passes.
+# One from before Portal.Builder.AutoPause pauses nothing by itself.
+builder_auto_paused='(if Code.ensure_loaded?(Portal.Builder.AutoPause) and
+    function_exported?(Portal.Builder.AutoPause, :held_queues, 0),
+  do: Portal.Builder.AutoPause.held_queues(),
+  else: [])'
+
 # `true` when every builder queue runs, `paused` when every one exists and
 # at least one is paused, anything else (`false`, an error, nothing) when a
-# queue is missing or the release does not answer.
+# queue is missing or the release does not answer. A queue the release
+# paused by itself counts as running: it is no operator's pause, and the
+# drain below takes it over.
 builder_queues_available() {
-  builder_rpc "states = Enum.map($builder_queues, fn queue ->
+  builder_rpc "auto_paused = $builder_auto_paused
+  states = Enum.map($builder_queues, fn queue ->
     case Oban.check_queue(queue: queue) do
       %{paused: false} -> :running
-      %{paused: true} -> :paused
+      %{paused: true} -> if to_string(queue) in auto_paused, do: :running, else: :paused
       _ -> :missing
     end
   end)
@@ -214,8 +225,16 @@ builder_own_pause() {
   esac
 }
 
+# The release lets go of every pause of its own on these queues first, in
+# its own order: a resume it decided on before is sent by then, so none can
+# land after this pause, and it never resumes them afterwards
+# (Portal.Builder.AutoPause.let_go/1).
 builder_pause() {
-  builder_rpc "Enum.each($builder_queues, fn queue ->
+  builder_rpc "queues = $builder_queues
+  if Code.ensure_loaded?(Portal.Builder.AutoPause) and
+       function_exported?(Portal.Builder.AutoPause, :let_go, 1),
+     do: :ok = Portal.Builder.AutoPause.let_go(queues)
+  Enum.each(queues, fn queue ->
     :ok = Oban.pause_queue(queue: queue, local_only: true)
   end)"
 }

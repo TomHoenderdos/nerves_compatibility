@@ -1024,6 +1024,49 @@ defmodule Portal.Workers.BuildTest do
       assert updated.status == :queued
     end
 
+    test "with the auto-pause running, a full disk takes this node off the queue" do
+      Portal.AutoPauseStub.start!()
+
+      {:ok, request} =
+        ScanRequests.create_once(%{
+          package_name: "cramped",
+          source: :hex_owner,
+          status: :accepted
+        })
+
+      root = Path.join(System.tmp_dir!(), "build-scratch-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+      previous_builder = Application.get_env(:portal, Portal.Builder)
+      Application.put_env(:portal, Portal.Builder, scratch_root: root)
+      on_exit(fn -> restore_builder_env(previous_builder) end)
+      Process.put(:stub_scratch_root, root)
+
+      set_response({:error, {:insufficient_disk, 1_000_000, 20_000_000_000}})
+
+      job = %Oban.Job{
+        queue: "builds",
+        args: %{
+          "package" => "cramped",
+          "version" => "1.0.0",
+          "image_digest" => "sha256:x",
+          "scan_request_id" => request.id
+        },
+        attempt: 1,
+        max_attempts: 3
+      }
+
+      # Snoozed briefly: with this node off the queue, another takes it.
+      capture_log(fn -> assert {:snooze, 60} = Build.perform(job) end)
+
+      assert_received {:auto_pause, :pause, "builds"}
+      assert Portal.AutoPauseStub.held_check("builds") == {:disk, nil}
+      assert File.ls!(root) == []
+
+      {:ok, updated} = ScanRequests.get_request(request.id)
+      assert updated.status == :queued
+    end
+
     test "a host without a build memory limit snoozes on the last attempt" do
       {:ok, request} =
         ScanRequests.create_once(%{

@@ -1,7 +1,8 @@
 defmodule PortalWeb.Admin.BuildersLive do
   @moduledoc """
   Admin Builders tab: the remote routing policy, enrolment tokens, the
-  enrolled builders with their publishing switch and revoke, and the recent
+  enrolled builders with their publishing switch and revoke, the queues a
+  node paused by itself (`Portal.Builder.AutoPause`), and the recent
   remote leases with, for the failed ones, a requeue to the remote queue and
   a "Requeue locally" that builds the package on this host instead.
 
@@ -83,6 +84,7 @@ defmodule PortalWeb.Admin.BuildersLive do
         image: Images.worker_image()
       },
       listener: PortalWeb.BuilderEndpoint.Starter.status(),
+      auto_paused: Portal.Builder.AutoPause.cluster(),
       now: DateTime.utc_now()
     )
   end
@@ -451,6 +453,38 @@ defmodule PortalWeb.Admin.BuildersLive do
                       {if b.status == :revoked, do: "Finish revoke", else: "Revoke"}
                     </button>
                   </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="auto-paused" class="card border border-base-300 bg-base-100 shadow-sm">
+        <div class="card-body">
+          <h2 class="card-title text-lg">Auto-paused queues</h2>
+          <p class="text-sm text-base-content/70">
+            Queues a node took itself off because a host check failed. Each resumes on its own once the check passes; a queue an operator or a deploy paused is not listed.
+          </p>
+          <p :if={@auto_paused == []} class="text-sm text-base-content/60">
+            No node has paused a build queue by itself.
+          </p>
+          <div :if={@auto_paused != []} class="overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Queue</th>
+                  <th>Reason</th>
+                  <th>Since</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr :for={p <- @auto_paused}>
+                  <td class="font-mono text-xs">{p.node}</td>
+                  <td class="font-mono text-xs">{p.queue}</td>
+                  <td class="text-sm">{p.reason}</td>
+                  <td class="whitespace-nowrap">{age(p.since, @now)}</td>
                 </tr>
               </tbody>
             </table>

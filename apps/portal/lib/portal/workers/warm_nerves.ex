@@ -30,6 +30,7 @@ defmodule Portal.Workers.WarmNerves do
   require Logger
 
   alias Portal.Builder
+  alias Portal.Builder.AutoPause
   alias Portal.Catalog.RunMemory
   alias Portal.NodeQueue
 
@@ -66,7 +67,9 @@ defmodule Portal.Workers.WarmNerves do
   end
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"image_digest" => digest, "pairs" => pairs}, attempt: attempt})
+  def perform(
+        %Oban.Job{args: %{"image_digest" => digest, "pairs" => pairs}, attempt: attempt} = job
+      )
       when is_binary(digest) and is_list(pairs) do
     run_id = "warm_nerves-#{System.system_time(:millisecond)}"
 
@@ -81,7 +84,7 @@ defmodule Portal.Workers.WarmNerves do
       started_at = DateTime.utc_now()
       result = builder().build(build_args)
       RunMemory.record(:warm, build_args, result, %{attempt: attempt, started_at: started_at})
-      outcome(result, pairs)
+      outcome(result, pairs, job)
     after
       builder().cleanup(run_id)
     end
@@ -89,7 +92,8 @@ defmodule Portal.Workers.WarmNerves do
 
   def perform(%Oban.Job{args: args}), do: {:cancel, "malformed warm args: #{inspect(args)}"}
 
-  defp outcome({:ok, %{exit_code: 0, result: %{"warm" => warm}}}, pairs) when is_map(warm) do
+  defp outcome({:ok, %{exit_code: 0, result: %{"warm" => warm}}}, pairs, _job)
+       when is_map(warm) do
     Logger.info(
       "Nerves cache warm of #{describe(pairs)}: installed #{inspect(warm["installed"])}, " <>
         "replaced #{inspect(warm["replaced"])}, not warmed #{inspect(warm["not_warmed"])}"
@@ -98,16 +102,21 @@ defmodule Portal.Workers.WarmNerves do
     :ok
   end
 
-  defp outcome({:ok, %{exit_code: 0}}, _pairs), do: {:error, :missing_warm_result}
-  defp outcome({:ok, %{exit_code: code}}, _pairs), do: {:error, "warm container exited #{code}"}
+  defp outcome({:ok, %{exit_code: 0}}, _pairs, _job), do: {:error, :missing_warm_result}
 
-  # Host conditions that resolve themselves, as for a build.
-  defp outcome({:error, {:insufficient_disk, _free, _needed}}, _pairs), do: {:snooze, 900}
-  defp outcome({:error, :scratch_noexec}, _pairs), do: {:snooze, 900}
-  defp outcome({:error, :egress_filter_missing}, _pairs), do: {:snooze, 900}
-  # Not one that resolves itself, but an operator's to fix, as for the filter.
-  defp outcome({:error, :build_memory_limit_missing}, _pairs), do: {:snooze, 900}
-  defp outcome({:error, reason}, _pairs), do: {:error, reason}
+  defp outcome({:ok, %{exit_code: code}}, _pairs, _job),
+    do: {:error, "warm container exited #{code}"}
+
+  # Host conditions, as for a build: the disk and the scratch root resolve
+  # themselves, the filter and the memory limit are an operator's to fix.
+  # Either way the job waits and this node's warm queue pauses until they
+  # pass (`Portal.Builder.AutoPause`).
+  defp outcome({:error, reason}, _pairs, job) do
+    case AutoPause.check_for(reason, "warm_nerves") do
+      nil -> {:error, reason}
+      check -> AutoPause.defer(job.queue, check)
+    end
+  end
 
   defp describe([]), do: "the template"
   defp describe(pairs), do: Enum.map_join(pairs, ", ", &"#{&1["name"]} #{&1["version"]}")

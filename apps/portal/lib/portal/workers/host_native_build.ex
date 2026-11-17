@@ -18,7 +18,9 @@ defmodule Portal.Workers.HostNativeBuild do
   ingested on this node's queue; 11 (lock policy) writes a `fail` row and
   cancels; anything else retries, and the last attempt writes an `error`
   row. Host-side refusals (disk, scratch, egress filter, memory limit) and an
-  image without a digest snooze.
+  image without a digest snooze; all but a missing image with docker up
+  also take this node off the queue until they pass
+  (`Portal.Builder.AutoPause`).
   """
 
   use Oban.Worker,
@@ -35,6 +37,7 @@ defmodule Portal.Workers.HostNativeBuild do
 
   alias Compatibility.HostTriple
   alias Portal.Builder
+  alias Portal.Builder.AutoPause
   alias Portal.Catalog.HostNativeBuild
   alias Portal.NodeQueue
   alias Portal.Workers.{Ingest, ToolchainBuild}
@@ -76,7 +79,7 @@ defmodule Portal.Workers.HostNativeBuild do
     case builder().image_digest(image) do
       @zero_digest ->
         Logger.warning("Host-native build #{describe(job)} waiting: #{image} has no digest")
-        {:snooze, 900}
+        AutoPause.defer_image(job.queue)
 
       digest ->
         run_id = run_id(args["package"], args["version"])
@@ -113,7 +116,7 @@ defmodule Portal.Workers.HostNativeBuild do
               (is_tuple(reason) and elem(reason, 0) == :insufficient_disk) do
     Logger.error("Host-native build #{describe(job)} deferred: #{inspect(reason)}")
     builder().cleanup(run_id)
-    {:snooze, 900}
+    AutoPause.defer(job.queue, AutoPause.check_for(reason, "host_native"))
   end
 
   defp handle({:error, reason}, job, run_id, digest),

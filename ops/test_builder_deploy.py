@@ -298,6 +298,41 @@ builder_queues_drained
         self.assertIn("function_exported?(Portal.BuilderDrain, :report, 1)", expression)
         self.assertIn("%{paused: true, running: []}", expression)
 
+    def rendered_rpc(self, function):
+        script = r'''
+set -euo pipefail
+source "$HELPER"
+builder_rpc() { printf '%s' "$1" > "$OUT"; }
+"$FUNCTION"
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "rpc"
+            result = subprocess.run(
+                ["bash", "-c", script],
+                env={**BASE_ENV, "HELPER": str(HELPER), "OUT": str(out), "FUNCTION": function},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return out.read_text()
+
+    # A queue the running release paused by itself, because a host check
+    # failed (Portal.Builder.AutoPause), is no operator's pause: it must not
+    # refuse the deploy. A release from before the module pauses nothing.
+    def test_a_queue_the_release_paused_by_itself_counts_as_running(self):
+        expression = self.rendered_rpc("builder_queues_available")
+        self.assertIn("function_exported?(Portal.Builder.AutoPause, :held_queues, 0)", expression)
+        self.assertIn("Portal.Builder.AutoPause.held_queues()", expression)
+        self.assertIn("else: []", expression)
+        self.assertIn("if to_string(queue) in auto_paused, do: :running, else: :paused", expression)
+
+    # The release lets go of its own pauses before the deploy pauses, so it
+    # can never resume a queue the deploy paused.
+    def test_the_release_lets_go_of_its_own_pauses_before_the_deploy_pauses(self):
+        expression = self.rendered_rpc("builder_pause")
+        self.assertIn("function_exported?(Portal.Builder.AutoPause, :let_go, 1)", expression)
+        let_go = expression.index("Portal.Builder.AutoPause.let_go(queues)")
+        self.assertLess(let_go, expression.index("Oban.pause_queue(queue: queue, local_only: true)"))
+
     SHA = "0123456789abcdef0123456789abcdef01234567"
 
     def run_build_image(self, pull_status="0", inspect_status="0", toolchain_pull_status="0",

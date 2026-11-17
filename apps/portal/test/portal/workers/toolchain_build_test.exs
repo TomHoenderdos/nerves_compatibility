@@ -136,6 +136,44 @@ defmodule Portal.Workers.ToolchainBuildTest do
     assert_received {:cleanup, _run_id}
   end
 
+  describe "with the auto-pause running" do
+    setup do
+      Portal.AutoPauseStub.start!()
+      :ok
+    end
+
+    test "a full disk takes this node off the job's queue and snoozes the job briefly" do
+      Process.put(:stub_build_response, {:error, {:insufficient_disk, 1, 2}})
+
+      capture_log(fn -> assert {:snooze, 60} = perform_job(ToolchainBuild, @args) end)
+
+      assert_received {:cleanup, _run_id}
+      assert_received {:auto_pause, :pause, "toolchain"}
+      assert Portal.AutoPauseStub.held_check("toolchain") == {:disk, "toolchain"}
+    end
+
+    test "an image without a digest pauses the queue only while docker does not answer" do
+      Process.put(:stub_image_digest, "sha256:" <> String.duplicate("0", 64))
+      Portal.AutoPauseStub.docker_answers(false)
+
+      capture_log(fn ->
+        assert {:snooze, 60} = perform_job(ToolchainBuild, @args, queue: "toolchain_big")
+      end)
+
+      assert_received {:auto_pause, :pause, "toolchain_big"}
+      assert Portal.AutoPauseStub.held_check("toolchain_big") == :docker
+    end
+
+    test "one image missing while docker answers leaves the queue running" do
+      Process.put(:stub_image_digest, "sha256:" <> String.duplicate("0", 64))
+      Portal.AutoPauseStub.docker_answers(true)
+
+      capture_log(fn -> assert {:snooze, 900} = perform_job(ToolchainBuild, @args) end)
+
+      refute_received {:auto_pause, _, _}
+    end
+  end
+
   test "a missing egress filter snoozes and cleans up" do
     Process.put(:stub_build_response, {:error, :egress_filter_missing})
 

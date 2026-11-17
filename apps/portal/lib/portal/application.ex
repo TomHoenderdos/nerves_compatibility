@@ -102,6 +102,11 @@ defmodule Portal.Application do
       # Owns the ETS table of recent hex.pm search answers the scan form's
       # typeahead reads; see `PortalWeb.PageController`.
       Portal.HexSearchCache,
+      # Takes this node off a build queue while a host check fails, and
+      # collects what every node has paused for the admin Builders tab; after
+      # Oban, whose notifier it listens to, and PubSub, which it tells. Not
+      # started in Oban's testing mode.
+      Portal.Builder.AutoPause,
       # Off-process work a LiveView starts and does not wait on, e.g. the
       # admin Queue page's bulk actions (`PortalWeb.Admin.QueueLive`): a
       # per-row hex.pm lookup must not run inside the LiveView itself, where

@@ -2,6 +2,8 @@ defmodule Portal.Workers.HostNativeBuildTest do
   use Portal.DataCase, async: false
   use Oban.Testing, repo: Portal.Repo
 
+  import ExUnit.CaptureLog
+
   require Ash.Query
 
   alias Portal.Catalog
@@ -77,6 +79,16 @@ defmodule Portal.Workers.HostNativeBuildTest do
 
     assert %{"kind" => "host_native", "triple" => "x86_64-linux-gnu", "toolchain" => "1.20/29"} =
              args
+  end
+
+  test "a host refusal with the auto-pause running pauses this node's queue" do
+    Portal.AutoPauseStub.start!()
+    Process.put(:stub_build_response, {:error, :egress_filter_missing})
+
+    capture_log(fn -> assert {:snooze, 60} = perform_job(HostNativeBuild, @args) end)
+
+    assert_received {:auto_pause, :pause, "host_native_x86_64"}
+    assert Portal.AutoPauseStub.held_check("host_native_x86_64") == :egress
   end
 
   test "nothing is built while the setting is off" do

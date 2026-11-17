@@ -74,6 +74,7 @@ defmodule Portal.Workers.ToolchainBuild do
 
   alias Compatibility.ConfigVariants
   alias Portal.Builder
+  alias Portal.Builder.AutoPause
   alias Portal.Catalog.Ingestion
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Package
@@ -123,13 +124,14 @@ defmodule Portal.Workers.ToolchainBuild do
   # `Builder.image_digest/1` answers with the zero digest when it cannot
   # inspect the image: it is missing on this host or docker is not answering.
   # Neither is news about the package, so wait for the image rather than spend
-  # an attempt or write a row.
+  # an attempt or write a row; with docker down, off the queue until it
+  # answers (`Portal.Builder.AutoPause.defer_image/2`).
   defp build_on(job, _toolchain, image, @zero_digest) do
     Logger.warning(
       "Toolchain build #{describe(job)} waiting: image #{inspect(image)} has no digest"
     )
 
-    {:snooze, 900}
+    AutoPause.defer_image(job.queue)
   end
 
   defp build_on(%Oban.Job{args: args} = job, toolchain, image, image_digest) do
@@ -267,35 +269,36 @@ defmodule Portal.Workers.ToolchainBuild do
 
   # A full disk or a noexec scratch root is the host's problem and clears up
   # on its own or not at all; as in `Portal.Workers.Build`, wait rather than
-  # spend the attempts.
-  defp handle({:error, {:insufficient_disk, _free, _needed}}, %Oban.Job{} = job, run_id, _digest) do
+  # spend the attempts, with this node off the queue meanwhile.
+  defp handle({:error, {:insufficient_disk, _free, _needed} = reason}, job, run_id, _digest) do
     Logger.error("Toolchain build deferred for #{describe(job)}: not enough disk")
-    builder().cleanup(run_id)
-    {:snooze, 900}
+    defer(job, run_id, reason)
   end
 
   defp handle({:error, :scratch_noexec}, job, run_id, _digest) do
     Logger.error("Scratch root cannot execute files; refusing toolchain build #{describe(job)}")
-    builder().cleanup(run_id)
-    {:snooze, 900}
+    defer(job, run_id, :scratch_noexec)
   end
 
   defp handle({:error, :egress_filter_missing}, job, run_id, _digest) do
     Logger.error("Build egress filter missing; refusing toolchain build #{describe(job)}")
-    builder().cleanup(run_id)
-    {:snooze, 900}
+    defer(job, run_id, :egress_filter_missing)
   end
 
   defp handle({:error, :build_memory_limit_missing}, job, run_id, _digest) do
     Logger.error("No build memory limit on this host; refusing toolchain build #{describe(job)}")
-    builder().cleanup(run_id)
-    {:snooze, 900}
+    defer(job, run_id, :build_memory_limit_missing)
   end
 
   defp handle({:error, reason}, job, run_id, image_digest) do
     # Read before cleanup removes it.
     log = excerpt_from_file(Builder.runner_log_path(run_id))
     retry(job, run_id, image_digest, "builder error: #{inspect(reason)}", log, reason)
+  end
+
+  defp defer(job, run_id, reason) do
+    builder().cleanup(run_id)
+    AutoPause.defer(job.queue, AutoPause.check_for(reason, "toolchain"))
   end
 
   # An OOM-killed run with an attempt left retries on `:toolchain_big` rather

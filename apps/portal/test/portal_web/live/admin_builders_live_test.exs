@@ -47,6 +47,40 @@ defmodule PortalWeb.Admin.BuildersLiveTest do
       })
   end
 
+  describe "auto-paused queues" do
+    test "says when no node has paused a queue by itself", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/admin/builders")
+      assert view |> element("#auto-paused") |> render() =~ "No node has paused a build queue"
+    end
+
+    test "lists every queue a node paused by itself, with the reason", %{conn: conn} do
+      server = Portal.AutoPauseStub.start!()
+
+      send(
+        server,
+        {:notification, :ncc_auto_pause,
+         %{
+           "node" => "portal@builder-b",
+           "held" => [
+             %{
+               "queue" => "toolchain",
+               "reason" => "less than 5.0 GB free on the scratch disk",
+               "since" => "2026-11-17T10:00:00Z"
+             }
+           ]
+         }}
+      )
+
+      {:ok, view, _html} = live(conn, ~p"/admin/builders")
+      html = view |> element("#auto-paused") |> render()
+
+      assert html =~ "portal@builder-b"
+      assert html =~ "toolchain"
+      assert html =~ "less than 5.0 GB free on the scratch disk"
+      refute html =~ "No node has paused"
+    end
+  end
+
   test "shows each builder's architecture and whether the image has it", %{conn: conn} do
     path = Path.join(System.tmp_dir!(), "images-#{System.unique_integer([:positive])}.json")
     previous = Application.get_env(:portal, Portal.Builders.Images, [])

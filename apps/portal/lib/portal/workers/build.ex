@@ -63,6 +63,7 @@ defmodule Portal.Workers.Build do
 
   alias Portal.BuildCache.Promotion
   alias Portal.Builder
+  alias Portal.Builder.AutoPause
   alias Portal.BulkRebuild
   alias Portal.Catalog.BuildTimeout
   alias Portal.Catalog.LogSanitizer
@@ -77,12 +78,15 @@ defmodule Portal.Workers.Build do
 
   # The attempt this process runs, for `stale_attempt?/0`.
   @attempt_key {__MODULE__, :attempt}
+  # And its queue, which a host refusal pauses (`defer/2`).
+  @queue_key {__MODULE__, :queue}
 
   @impl Oban.Worker
   def perform(
         %Oban.Job{meta: meta, args: args, attempt: attempt, max_attempts: max_attempts} = job
       ) do
     Process.put(@attempt_key, {job.id, attempt, job.attempted_by})
+    Process.put(@queue_key, job.queue)
     do_perform(args, attempt, max_attempts, meta["sweep_id"], oom_overrides(job))
   end
 
@@ -275,8 +279,7 @@ defmodule Portal.Workers.Build do
             "#{gb(free)} GB free, need #{gb(needed)} GB"
         )
 
-        Builder.cleanup(run_id)
-        {:snooze, 900}
+        defer(run_id, {:disk, nil})
 
       {:error, :scratch_noexec} ->
         # A host misconfiguration, not a package failure, and not one that
@@ -287,8 +290,7 @@ defmodule Portal.Workers.Build do
           "Scratch root cannot execute files (noexec?); refusing to build #{package} #{version}"
         )
 
-        Builder.cleanup(run_id)
-        {:snooze, 900}
+        defer(run_id, :scratch_exec)
 
       {:error, :egress_filter_missing} ->
         # The host's egress filter is not loaded (`Portal.Builder.check_egress/0`
@@ -300,8 +302,7 @@ defmodule Portal.Workers.Build do
           "Build egress filter missing on this host; refusing to build #{package} #{version}"
         )
 
-        Builder.cleanup(run_id)
-        {:snooze, 900}
+        defer(run_id, :egress)
 
       {:error, :build_memory_limit_missing} ->
         # `NCC_BUILD_MEMORY` is unset (`Portal.Builder.check_memory_limit/0`
@@ -311,12 +312,19 @@ defmodule Portal.Workers.Build do
           "No build memory limit on this host; refusing to build #{package} #{version}"
         )
 
-        Builder.cleanup(run_id)
-        {:snooze, 900}
+        defer(run_id, :memory_limit)
 
       {:error, reason} ->
         handle_error(reason, ctx, build_args, started_at)
     end
+  end
+
+  # A host refusal: the request stays `:queued`, and this node leaves the
+  # queue until the check passes again (`Portal.Builder.AutoPause`), so the
+  # job, snoozed briefly, goes to a node that can build it.
+  defp defer(run_id, check) do
+    Builder.cleanup(run_id)
+    AutoPause.defer(Process.get(@queue_key), check)
   end
 
   defp handle_error({:build_timeout, seconds, _container}, ctx, build_args, started_at),

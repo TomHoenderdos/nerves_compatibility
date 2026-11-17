@@ -2,6 +2,8 @@ defmodule Portal.Workers.WarmNervesTest do
   use Portal.DataCase, async: false
   use Oban.Testing, repo: Portal.Repo
 
+  import ExUnit.CaptureLog
+
   import Ecto.Query, only: [from: 2]
 
   alias Portal.Workers.WarmNerves
@@ -155,6 +157,21 @@ defmodule Portal.Workers.WarmNervesTest do
                perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs})
 
       assert_received {:cleanup, _run_id}
+    end
+
+    test "with the auto-pause running, this node's warm queue pauses and the job waits briefly" do
+      Portal.AutoPauseStub.start!()
+      Process.put(:warm_response, {:error, {:insufficient_disk, 1, 2}})
+
+      capture_log(fn ->
+        assert {:snooze, 60} =
+                 perform_job(WarmNerves, %{"image_digest" => "sha256:x", "pairs" => @pairs},
+                   queue: "warm_nerves_test"
+                 )
+      end)
+
+      assert_received {:auto_pause, :pause, "warm_nerves_test"}
+      assert Portal.AutoPauseStub.held_check("warm_nerves_test") == {:disk, "warm_nerves"}
     end
 
     test "malformed args are cancelled" do
