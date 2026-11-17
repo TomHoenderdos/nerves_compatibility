@@ -78,7 +78,9 @@ defmodule Portal.Workers.ClosureDrift do
   in full (`Portal.Workers.Build.superseded_drift?/1`).
 
   A firmware rebuild is a container run of minutes, so its cap is separate
-  and smaller (`firmware_max_per_run/0`). Nothing has to be kept for the old
+  and smaller (`firmware_max_per_run/0`), and counts the drift builds still
+  waiting and those queued earlier the same day, so a retry or a second run
+  does not queue past it. Nothing has to be kept for the old
   lock: every run is its own row, the manifest lists one build per target,
   system release and lock across all of a package's runs, and the rebuild
   carries the targets it leaves out, so the replaced build keeps serving
@@ -318,7 +320,8 @@ defmodule Portal.Workers.ClosureDrift do
       Logger.info(
         "Firmware drift: #{firmware.candidates} runs behind a release, #{firmware.drifted} " <>
           "drifted (#{firmware.targets} targets), #{firmware.enqueued} queued, " <>
-          "#{firmware.pending} already on the way, #{firmware.unknown} unread"
+          "#{firmware.pending} already on the way, #{firmware.unknown} unread, " <>
+          "#{firmware.earlier} queued earlier against the cap"
       )
 
       Map.put(summary, :firmware, firmware)
@@ -327,15 +330,42 @@ defmodule Portal.Workers.ClosureDrift do
     end
   end
 
+  # A dry run judges as far as the cap would reach on an empty day.
   defp firmware(index, releases, dry_run?) do
+    earlier = if dry_run?, do: 0, else: firmware_spent()
+
     context = %{
       judge: {index, releases, SystemAbi.table()},
       dry_run?: dry_run?,
-      max: firmware_max_per_run(),
+      max: max(firmware_max_per_run() - earlier, 0),
       page: firmware_scan_limit()
     }
 
-    scan_firmware(nil, Map.merge(%{candidates: 0, drifted: 0, targets: 0}, @outcomes), context)
+    summary = Map.merge(%{candidates: 0, drifted: 0, targets: 0, earlier: earlier}, @outcomes)
+    scan_firmware(nil, summary, context)
+  end
+
+  # The firmware rebuilds the cap has already spent: drift builds still
+  # waiting or running, queued on any day, and those queued since midnight
+  # UTC whatever became of them. So a retry of this job, a manual run or a
+  # second run the same day queues no more than the cap in all, and drift
+  # builds that have waited since an earlier day hold back new ones rather
+  # than pile up. Oban keeps a finished job 12 hours (`Oban.Plugins.Pruner`),
+  # so a run late in the day finds fewer of the morning's; and a remote
+  # build's job finishes once its lease is written, so a lease still waiting
+  # for a builder from an earlier day is not counted.
+  defp firmware_spent do
+    today = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+
+    Repo.one(
+      from(j in Oban.Job,
+        where:
+          j.worker in ^@build_workers and fragment("?->>'reason'", j.args) == ^@reason and
+            fragment("?->>'scope'", j.args) == "targets" and
+            (j.state in ^@incomplete or j.inserted_at >= ^today),
+        select: count()
+      )
+    )
   end
 
   # Page by page, most downloaded first, until the cap is reached or the
@@ -471,7 +501,10 @@ defmodule Portal.Workers.ClosureDrift do
   @spec firmware_enabled?() :: boolean()
   def firmware_enabled?, do: Keyword.get(config(), :firmware, true) == true
 
-  @doc "At most this many firmware rebuilds per run (`NCC_FIRMWARE_DRIFT_MAX`), one run a day."
+  @doc """
+  At most this many firmware drift rebuilds waiting or queued the same UTC
+  day, across runs (`NCC_FIRMWARE_DRIFT_MAX`).
+  """
   @spec firmware_max_per_run() :: non_neg_integer()
   def firmware_max_per_run, do: Keyword.get(config(), :firmware_max_per_run, 100)
 

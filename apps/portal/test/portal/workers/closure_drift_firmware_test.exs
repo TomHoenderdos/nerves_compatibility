@@ -229,6 +229,44 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
     assert [%{args: %{"package" => ^popular}}] = firmware_jobs()
   end
 
+  # A retry of the job (`max_attempts: 2`), a manual run or a second run the
+  # same day finds the first run's builds pending and would queue the next
+  # ones: the cap counts the drift builds still waiting, and today's.
+  test "the cap holds across a second run while the first run's builds wait" do
+    [obscure, popular] = [name(), name()]
+    world([obscure, popular])
+    run!(obscure, "0.4.0")
+    run!(popular, "0.4.0")
+    downloads!(obscure, 10)
+    downloads!(popular, 1_000_000)
+    Application.put_env(:portal, ClosureDrift, enabled: true, firmware_max_per_run: 1)
+
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+    assert {:ok, %{firmware: %{enqueued: 0}}} = ClosureDrift.run()
+    assert [%{args: %{"package" => ^popular}}] = firmware_jobs()
+
+    # Built and gone the same day, it still counts until the day is over.
+    Repo.update_all(from(j in Oban.Job, where: j.worker == "Portal.Workers.Build"),
+      set: [state: "completed", completed_at: DateTime.utc_now()]
+    )
+
+    assert {:ok, %{firmware: %{enqueued: 0}}} = ClosureDrift.run()
+
+    # A build still waiting from an earlier day counts too.
+    Repo.update_all(from(j in Oban.Job, where: j.worker == "Portal.Workers.Build"),
+      set: [state: "available", inserted_at: DateTime.add(DateTime.utc_now(), -2, :day)]
+    )
+
+    assert {:ok, %{firmware: %{enqueued: 0}}} = ClosureDrift.run()
+
+    # Built on an earlier day, it no longer does.
+    Repo.update_all(from(j in Oban.Job, where: j.worker == "Portal.Workers.Build"),
+      set: [state: "completed"]
+    )
+
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+  end
+
   # Nearly every latest run on production locks some dependency, or sits on
   # a system release, that is not the newest (a beam-only target on an older
   # release, a dependency held back by a requirement), so the runs read first
