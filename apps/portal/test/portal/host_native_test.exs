@@ -297,6 +297,42 @@ defmodule Portal.HostNativeTest do
       assert Map.has_key?(Catalog.precompiled_fingerprints(), name)
     end
 
+    # Withdrawing one build: the setting and `Withheld` act per feature and
+    # per package; a build found unsafe (a judge refinement rolled back, a
+    # bad upstream archive) needs a lever of its own.
+    test "revoke/1 lists, then takes a build out of the manifest, files and fingerprint",
+         %{name: name, row: row} do
+      alias Portal.Precompiled.HostNativeRevocation, as: Revocation
+
+      on!()
+      before = Map.fetch!(Catalog.precompiled_fingerprints(), name)
+
+      assert {:dry_run, [listed]} = Revocation.revoke(package: name)
+      assert listed.id == row.id and listed.package == name and listed.triple == @triple
+      assert Catalog.published_sha256?(sha(nif()))
+
+      assert {:error, :filter_required} = Revocation.revoke(dry_run: false)
+      assert {:error, :filter_required} = Revocation.revoke(package: nil, dry_run: false)
+      assert {:dry_run, []} = Revocation.revoke(package: name, judge_revision: 10_000)
+
+      assert {:revoked, 1, [_], at} = Revocation.revoke(package: name, dry_run: false)
+      assert Catalog.precompiled_manifest_v2(name) == nil
+      refute Catalog.published_sha256?(sha(nif()))
+      refute name in Catalog.packages_with_precompiled_files()
+      refute Map.get(Catalog.precompiled_fingerprints(), name) == before
+      assert {at, 1} in Revocation.revocations()
+
+      # A rebuild of the same identity stays revoked.
+      {tarball, origins, blobs} = downloader()
+      assert {:ok, %{revoked_at: %DateTime{}}} = ingest(name, tarball, origins, blobs)
+      assert Catalog.precompiled_manifest_v2(name) == nil
+
+      assert {:ok, 1} = Revocation.undo(at)
+
+      assert %{"versions" => %{"1.0.0" => %{"builds_host_native" => [_]}}} =
+               Catalog.precompiled_manifest_v2(name)
+    end
+
     test "the manifest route serves the documented shape", %{name: name} do
       on!()
 

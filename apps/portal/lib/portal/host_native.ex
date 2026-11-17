@@ -19,7 +19,8 @@ defmodule Portal.HostNative do
   (`config/runtime.exs`). The worker reports the triple of the VM it ran
   in, and the ingest refuses one the job did not ask for.
 
-  A build is served when it passed, is not revoked, is not withheld
+  A build is served when it passed, is not revoked
+  (`Portal.Precompiled.HostNativeRevocation`), is not withheld
   (`Portal.Precompiled.Withheld`, as for any build), and every file its
   manifest lists is a stored membership of it.
   """
