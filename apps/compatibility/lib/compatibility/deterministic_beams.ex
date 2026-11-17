@@ -22,14 +22,25 @@ defmodule Compatibility.DeterministicBeams do
       option is known to touch, by the module's language (its `Dbgi`
       backend, the same in both):
       * an Elixir module (`elixir_erl`): `CInf`, `Dbgi`, `Docs` and `ExCk`
-        alone, and the same `beam_lib:md5/1`. Its code, literals, line
-        table and attributes are those of the build without the option;
+        alone. Its code, literals, line table and attributes are those of
+        the build without the option, and so is its `beam_lib:md5/1`, which
+        covers no chunk outside them;
       * an Erlang module (`erl_abstract_code`): `CInf`, `Dbgi`, `Docs`,
         `Line`, `LitT` and `Attr`. The option gives epp the source's base
         name, which is the line table's file and `?FILE`, so the literal
         table, the md5 and with it the default `vsn` change; the code does
         not;
       * any other backend, or no `Dbgi`: held to the Elixir rule.
+
+  The beams are untrusted: package code wrote them, and the portal checks
+  them on its own node, which lives on across ingests. So no `:beam_lib`
+  reads them (it inflates a gzip-compressed beam without a bound, and makes
+  atoms of the module's name and of every atom in its debug info, which a
+  node never frees), and nothing here creates an atom. The chunks come from
+  this module's own IFF reader (an uncompressed beam, each chunk once), the
+  module's name is the atom table's first entry as bytes, the sibling's
+  `CInf` is decoded `[:safe]` only when small and uncompressed, and of the
+  `Dbgi` only its backend's name is read, from a bounded prefix.
 
   Never raises.
   """
@@ -40,6 +51,11 @@ defmodule Compatibility.DeterministicBeams do
 
   @elixir_chunks ~w(CInf Dbgi Docs ExCk)
   @erlang_chunks ~w(CInf Dbgi Docs Line LitT Attr)
+
+  # A deterministic compile info is `[{version, _}]`; far below this.
+  @max_info_bytes 64 * 1024
+  # Enough of a debug info term for its tag and backend.
+  @head_bytes 64
 
   @doc "The `build.erl_compiler_options` a deterministic sibling carries."
   @spec options() :: [String.t()]
@@ -93,15 +109,15 @@ defmodule Compatibility.DeterministicBeams do
   @doc "Checks one sibling beam against its build's (see the moduledoc)."
   @spec compare_beam(binary(), binary()) :: :ok | {:error, String.t()}
   def compare_beam(normal, sibling) when is_binary(normal) and is_binary(sibling) do
-    with {:ok, module, a} <- chunks(normal),
-         {:ok, ^module, b} <- chunks(sibling) |> same_module(module),
-         :ok <- deterministic_info(sibling),
+    with {:ok, a} <- chunks(normal),
+         {:ok, b} <- chunks(sibling),
+         :ok <- same_module(a, b),
+         :ok <- deterministic_info(b),
          :ok <- same_ids(a, b) do
-      kind = kind(normal, sibling)
       differ = for {id, bytes} <- a, List.keyfind(b, id, 0) != {id, bytes}, do: id
 
-      case differ -- allowed(kind) do
-        [] -> md5(kind, normal, sibling)
+      case differ -- allowed(kind(a, b)) do
+        [] -> :ok
         ids -> {:error, "chunks #{Enum.join(ids, ", ")} differ"}
       end
     end
@@ -111,31 +127,99 @@ defmodule Compatibility.DeterministicBeams do
 
   def compare_beam(_normal, _sibling), do: {:error, "unreadable beam"}
 
-  defp chunks(bytes) do
-    case :beam_lib.all_chunks(bytes) do
-      {:ok, module, chunks} ->
-        ids = for {id, data} <- chunks, do: {List.to_string(id), data}
-        {:ok, module, ids}
-
-      _ ->
-        {:error, "unreadable beam"}
+  # The beam's chunks, `[{id, bytes}]`, read by this module's own IFF
+  # reader: an uncompressed `FOR1 ... BEAM` file whose chunks fill it
+  # exactly, each id once. No `:beam_lib`, which inflates a gzip-compressed
+  # beam without a bound and makes an atom of the module's name.
+  defp chunks(<<"FOR1", size::32, "BEAM", rest::binary>>)
+       when size >= 4 and size - 4 <= byte_size(rest) do
+    with {:ok, chunks} <- read_chunks(binary_part(rest, 0, size - 4), []),
+         ids = Enum.map(chunks, &elem(&1, 0)),
+         true <- ids == Enum.uniq(ids) do
+      {:ok, chunks}
+    else
+      _ -> {:error, "unreadable beam"}
     end
   end
 
-  defp same_module({:ok, module, _} = ok, module), do: ok
-  defp same_module({:ok, _other, _}, _module), do: {:error, "another module"}
-  defp same_module(error, _module), do: error
+  defp chunks(_bytes), do: {:error, "unreadable beam"}
 
-  defp deterministic_info(bytes) do
-    case :beam_lib.chunks(bytes, [:compile_info]) do
-      {:ok, {_, [compile_info: info]}} when is_list(info) ->
-        if Keyword.has_key?(info, :source) or Keyword.has_key?(info, :options),
-          do: {:error, "not compiled with the option"},
-          else: :ok
+  defp read_chunks(<<>>, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp read_chunks(<<id::binary-size(4), len::32, data::binary-size(len), rest::binary>>, acc) do
+    pad = rem(4 - rem(len, 4), 4)
+
+    case rest do
+      <<_pad::binary-size(^pad), rest::binary>> -> read_chunks(rest, [{id, data} | acc])
+      <<>> -> read_chunks(<<>>, [{id, data} | acc])
+      _ -> :error
+    end
+  end
+
+  defp read_chunks(_bytes, _acc), do: :error
+
+  # The first atom of the atom table is the module's name; it is compared
+  # as bytes, never made an atom.
+  defp same_module(a, b) do
+    case {module_name(a), module_name(b)} do
+      {{:ok, name}, {:ok, name}} -> :ok
+      {{:ok, _}, {:ok, _}} -> {:error, "another module"}
+      _ -> {:error, "unreadable beam"}
+    end
+  end
+
+  defp module_name(chunks) do
+    case List.keyfind(chunks, "AtU8", 0) || List.keyfind(chunks, "Atom", 0) do
+      {_, <<count::signed-32, rest::binary>>} when count != 0 -> first_atom(count, rest)
+      _ -> :error
+    end
+  end
+
+  defp first_atom(count, <<len::8, name::binary-size(len), _::binary>>) when count > 0,
+    do: {:ok, name}
+
+  # A negative count (OTP 28's long atoms): each length is a compact-term
+  # `u`, one byte below 16, two below 2048, which covers every atom.
+  defp first_atom(_count, <<len::4, 0::1, 0::3, name::binary-size(len), _::binary>>),
+    do: {:ok, name}
+
+  defp first_atom(_count, <<hi::3, 0::1, 1::1, 0::3, lo::8, rest::binary>>) do
+    len = hi * 256 + lo
+
+    case rest do
+      <<name::binary-size(^len), _::binary>> -> {:ok, name}
+      _ -> :error
+    end
+  end
+
+  defp first_atom(_count, _rest), do: :error
+
+  # The sibling's `CInf`, a small uncompressed term decoded `[:safe]`: one
+  # that names an atom this VM does not have is no deterministic compile
+  # info, and none is created.
+  # Misc.BinToTerm, reviewed: the bytes are untrusted, so only an
+  # uncompressed term (no inflation) of at most @max_info_bytes is decoded,
+  # `[:safe]` (no atom, no external fun reference created), and only its
+  # top-level keys are looked at; nothing in it is ever called.
+  # sobelow_skip ["Misc.BinToTerm"]
+  defp deterministic_info(chunks) do
+    case List.keyfind(chunks, "CInf", 0) do
+      {_, <<131, tag, _::binary>> = bytes}
+      when tag != 80 and byte_size(bytes) <= @max_info_bytes ->
+        info = :erlang.binary_to_term(bytes, [:safe])
+
+        cond do
+          not is_list(info) -> {:error, "no compile info"}
+          List.keymember?(info, :source, 0) -> {:error, "not compiled with the option"}
+          List.keymember?(info, :options, 0) -> {:error, "not compiled with the option"}
+          true -> :ok
+        end
 
       _ ->
         {:error, "no compile info"}
     end
+  rescue
+    ArgumentError -> {:error, "unreadable compile info"}
   end
 
   defp same_ids(a, b) do
@@ -144,29 +228,64 @@ defmodule Compatibility.DeterministicBeams do
       else: {:error, "other chunks"}
   end
 
-  defp kind(normal, sibling) do
-    case {backend(normal), backend(sibling)} do
-      {:elixir_erl, :elixir_erl} -> :elixir
-      {:erl_abstract_code, :erl_abstract_code} -> :erlang
+  defp kind(a, b) do
+    case {backend(a), backend(b)} do
+      {"elixir_erl", "elixir_erl"} -> :elixir
+      {"erl_abstract_code", "erl_abstract_code"} -> :erlang
       _ -> :other
     end
   end
 
-  defp backend(bytes) do
-    case :beam_lib.chunks(bytes, [:debug_info]) do
-      {:ok, {_, [debug_info: {:debug_info_v1, backend, _}]}} -> backend
+  # The `Dbgi` backend's name, `{debug_info_v1, Backend, _}`, read from the
+  # first bytes of the term alone (inflated a bounded step at most when the
+  # term is compressed): the rest, the module's whole debug info, is never
+  # decoded.
+  defp backend(chunks) do
+    with {_, bytes} <- List.keyfind(chunks, "Dbgi", 0),
+         {:ok, <<104, 3, rest::binary>>} <- term_head(bytes),
+         {:ok, "debug_info_v1", rest} <- atom_name(rest),
+         {:ok, backend, _rest} <- atom_name(rest) do
+      backend
+    else
       _ -> nil
     end
   end
 
+  defp term_head(<<131, 80, _size::32, compressed::binary>>), do: inflate_head(compressed)
+  defp term_head(<<131, rest::binary>>), do: {:ok, rest}
+  defp term_head(_bytes), do: :error
+
+  defp inflate_head(compressed) do
+    z = :zlib.open()
+
+    try do
+      :ok = :zlib.inflateInit(z)
+      {:ok, inflate_steps(z, :zlib.safeInflate(z, compressed), [], 8)}
+    catch
+      _, _ -> :error
+    after
+      :zlib.close(z)
+    end
+  end
+
+  # `:zlib.safeInflate/2` returns after a small, bounded amount of output;
+  # a few steps give the head, never the whole term.
+  defp inflate_steps(z, {:continue, out}, acc, steps) when steps > 1 do
+    acc = [acc | out]
+
+    if IO.iodata_length(acc) >= @head_bytes,
+      do: IO.iodata_to_binary(acc),
+      else: inflate_steps(z, :zlib.safeInflate(z, []), acc, steps - 1)
+  end
+
+  defp inflate_steps(_z, {_status, out}, acc, _steps), do: IO.iodata_to_binary([acc | out])
+
+  defp atom_name(<<119, len::8, name::binary-size(len), rest::binary>>), do: {:ok, name, rest}
+  defp atom_name(<<118, len::16, name::binary-size(len), rest::binary>>), do: {:ok, name, rest}
+  defp atom_name(<<115, len::8, name::binary-size(len), rest::binary>>), do: {:ok, name, rest}
+  defp atom_name(<<100, len::16, name::binary-size(len), rest::binary>>), do: {:ok, name, rest}
+  defp atom_name(_bytes), do: :error
+
   defp allowed(:erlang), do: @erlang_chunks
   defp allowed(_kind), do: @elixir_chunks
-
-  defp md5(:erlang, _normal, _sibling), do: :ok
-
-  defp md5(_kind, normal, sibling) do
-    if :beam_lib.md5(normal) == :beam_lib.md5(sibling),
-      do: :ok,
-      else: {:error, "md5 differs"}
-  end
 end

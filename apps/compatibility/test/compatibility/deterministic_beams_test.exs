@@ -86,6 +86,82 @@ defmodule Compatibility.DeterministicBeamsTest do
     assert DeterministicBeams.compare_beam(a, nil) == {:error, "unreadable beam"}
   end
 
+  describe "untrusted beams (the portal checks them on its own long-lived node)" do
+    # A name no module of this VM has, so its atom does not exist yet.
+    defp fresh_name(prefix),
+      do: prefix <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
+    # A deterministic beam of `Fresh000000000000`, rebuilt with its first
+    # atom (the module's name) renamed to `module_name`, a name of the same
+    # length, and its `Dbgi` replaced by `dbgi`; `cinf` replaces its `CInf`
+    # when given. Built with `:beam_lib.build_module/1`, which reads no term.
+    defp rebuilt(module_name, dbgi, cinf \\ nil) do
+      placeholder = "Elixir.DeterministicBeamsTest.Fresh000000000000"
+      true = byte_size(placeholder) == byte_size(module_name)
+      module = String.to_atom(placeholder)
+      sibling = compile_elixir(module, "@compile :deterministic", "def f(v), do: v")
+      {:ok, _, chunks} = :beam_lib.all_chunks(sibling)
+
+      chunks =
+        for {id, data} <- chunks do
+          case id do
+            ~c"AtU8" -> {id, :binary.replace(data, placeholder, module_name)}
+            ~c"Dbgi" -> {id, dbgi}
+            ~c"CInf" when is_binary(cinf) -> {id, cinf}
+            _ -> {id, data}
+          end
+        end
+
+      {:ok, beam} = :beam_lib.build_module(chunks)
+      beam
+    end
+
+    defp atom(name), do: <<119, byte_size(name)>> <> name
+
+    test "checking a beam creates no atom, its module's name or its debug info's" do
+      module_name = fresh_name("Elixir.DeterministicBeamsTest.Fresh")
+      inner = fresh_name("ncc_fresh_")
+      dbgi = <<131, 104, 3>> <> atom("debug_info_v1") <> atom("elixir_erl") <> atom(inner)
+      beam = rebuilt(module_name, dbgi)
+
+      assert DeterministicBeams.compare_beam(beam, beam) == :ok
+      assert_raise ArgumentError, fn -> String.to_existing_atom(module_name) end
+      assert_raise ArgumentError, fn -> String.to_existing_atom(inner) end
+    end
+
+    test "a compile info naming an atom this VM lacks is refused, and creates none" do
+      module_name = fresh_name("Elixir.DeterministicBeamsTest.Fresh")
+      inner = fresh_name("ncc_fresh_")
+      dbgi = <<131, 104, 3>> <> atom("debug_info_v1") <> atom("elixir_erl") <> atom("none")
+
+      cinf =
+        <<131, 108, 2::32, 104, 2>> <>
+          atom("version") <> <<107, 1::16, ?9, 104, 2>> <> atom(inner) <> <<97, 1, 106>>
+
+      beam = rebuilt(module_name, dbgi, cinf)
+
+      assert {:error, _} = DeterministicBeams.compare_beam(beam, beam)
+      assert_raise ArgumentError, fn -> String.to_existing_atom(inner) end
+    end
+
+    test "a gzip-compressed beam is refused, never inflated" do
+      {normal, sibling} = elixir_pair(Gzipped, "def f, do: 1")
+
+      assert DeterministicBeams.compare_beam(:zlib.gzip(normal), :zlib.gzip(sibling)) ==
+               {:error, "unreadable beam"}
+    end
+
+    test "a compressed debug info is read for its backend alone", %{tmp_dir: dir} do
+      # Only an Erlang module may differ in Line and LitT, so this passes
+      # only when the backend is read out of the compressed Dbgi.
+      {normal, sibling} = erlang_pair(dir, "fx_dbgi", "f() -> ?FILE.\n")
+
+      {:ok, _, chunks} = :beam_lib.all_chunks(sibling)
+      assert <<131, 80, _::binary>> = :proplists.get_value(~c"Dbgi", chunks)
+      assert DeterministicBeams.compare_beam(normal, sibling) == :ok
+    end
+  end
+
   describe "compare_ebin/2" do
     setup %{tmp_dir: dir} do
       {normal, sibling} = erlang_pair(dir, "fx_ebin", "f() -> ?FILE.\n")
