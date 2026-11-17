@@ -108,6 +108,20 @@ defmodule NccWorker.Portability.HostNativeJudgeTest do
     assert %{status: :skip} = judge(proj, report(proj, libs), host_native: true)
   end
 
+  test "a library of the package's priv that is gone by the judge refuses", %{proj: proj} do
+    # A library loaded and then removed or replaced (`/proc/self/maps` names
+    # it `<path> (deleted)`) is none of the files the build publishes.
+    nif = "_build/host/lib/pkg/priv/native/libpkg.so"
+    File.write!(Path.join(proj, nif), "x")
+
+    for path <- [nif <> " (deleted)", "_build/host/lib/pkg/priv/native/libgone.so"] do
+      assert %{status: :skip, reason: "compile-time native library load: " <> lib} =
+               judge(proj, report(proj, mapped(proj, path)), @host_native)
+
+      assert lib == Path.join(proj, path)
+    end
+  end
+
   test "a library outside the package's priv still refuses", %{proj: proj} do
     for path <- ["_build/host/lib/pkg/ebin/libpkg.so", "_build/host/lib/dep/priv/libdep.so"] do
       libs = mapped(proj, path)

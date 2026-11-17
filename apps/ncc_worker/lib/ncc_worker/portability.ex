@@ -1664,17 +1664,27 @@ defmodule NccWorker.Portability do
 
   defp lib_allowed?(ctx, scope, own, path) do
     real = Context.realpath(path) || path
+    under? = &(is_binary(&1) and String.starts_with?(real, &1 <> "/"))
 
     dirs =
-      [ctx.otp_root, ctx.elixir_root | own] ++
+      [ctx.otp_root, ctx.elixir_root] ++
         for app <- scope,
             app != ctx.package,
             Context.dep?(ctx, app),
             ctx.deps[app].native?,
             do: [ctx.deps[app].build, ctx.deps[app].dest]
 
-    dirs |> List.flatten() |> Enum.any?(&(is_binary(&1) and String.starts_with?(real, &1 <> "/")))
+    dirs |> List.flatten() |> Enum.any?(under?) or own_published?(own, real, under?)
   end
+
+  # A host-native build's own priv library only while the file it was
+  # mapped from is still there for the judge, which `NccWorker.HostNative`
+  # then holds to a checksum-pinned archive. One removed or replaced since
+  # (the map names it `<path> (deleted)`) is none of the files the build
+  # publishes. The path is the run's own build or source tree.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp own_published?(own, real, under?),
+    do: Enum.any?(own, under?) and File.regular?(real)
 
   # A host-native build publishes the package's own priv libraries, and
   # loading one is what its compile does (rustler's `@on_load` runs in the

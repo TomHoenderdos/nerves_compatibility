@@ -934,7 +934,9 @@ host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2:
   force-build branch is recorded: the package's env read (`TOKENIZERS_BUILD`) and
   `RUSTLER_PRECOMPILED_FORCE_BUILD_ALL` are `compile_inputs`, `:rustler_precompiled`'s `force_build` and
   `force_build_all` are `compile_env`. The package's own priv libraries may be mapped (rustler's `@on_load` runs in the
-  compiler VM), and so may the libraries the loader maps with one (judge revision 25): first seen in the same snapshot,
+  compiler VM) while the file each was mapped from is still there when the judge runs (one removed or replaced since,
+  `<path> (deleted)` in the map, refuses), and so may the libraries the loader maps with one (judge revision 25): first
+  seen in the same snapshot, and let through in that snapshot only,
   named by its `DT_NEEDED` by `DT_SONAME` (or through another so named), from the directory the VM's own C library was
   mapped from (tokenizers' NIF needs glibc's `libdl.so.2` and `libpthread.so.0`); a client resolves the same sonames
   (`elf.needs`). R2 (a baked build path) applies to the package's ebin, as do the tree, rebar3, closure-taint and
