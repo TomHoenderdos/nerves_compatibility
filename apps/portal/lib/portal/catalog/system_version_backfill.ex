@@ -45,18 +45,22 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     3. **Corroboration.** Every resolution the catalog did record for the
        system whose own window (rule 1) places it on `V`, built by a run
        whose closure passes rule 2, chose `V`, and there is at least one.
-       A value this backfill wrote is not a recorded resolution, so an
-       earlier call's fills never vouch for a later call's.
        That checks the parts of the argument the portal cannot read back
        per row: the template's requirement, the Hex registry the build
-       fetched, the worker's pins.
+       fetched, the worker's pins. A value this backfill wrote is not a
+       recorded resolution, so an earlier call's fills never vouch for a
+       later call's.
+    4. **No release facts.** The row records no `toolchain_pkg`,
+       `toolchain_version` or `otp_full`. After a fill the only writer of
+       those is `Portal.Workers.SystemAbiBackfill`, which reads them from
+       the release the version names, so `undo/1` clears them with it.
 
   The building run is the run a carried copy was carried from
   (`carried_from_run_id`), else the row's own. Every row that fails a rule
   stays NULL and is counted under its reason in `left_null`:
   `:hex_unavailable`, `:release_in_window`, `:newest_release_unusable`,
   `:no_closure`, `:closure_names_nerves`, `:uncorroborated`,
-  `:contradicted`.
+  `:contradicted`, `:facts_recorded`.
 
   ## Safety
 
@@ -69,7 +73,8 @@ defmodule Portal.Catalog.SystemVersionBackfill do
       row with the value, its evidence and the call's `filled_at`;
       `backfills/0` lists them and `undo/1` sets the rows one call filled
       back to NULL, only where they still hold the value it wrote, with
-      the copies a partial run carried from them since.
+      the copies a partial run carried from them since and the release
+      facts (rule 4) read from that value.
 
   A filled row changes its package's precompiled fingerprint, so the next
   signed batch (`Portal.Workers.PrecompiledBatch`) renders it.
@@ -103,13 +108,18 @@ defmodule Portal.Catalog.SystemVersionBackfill do
                     String.replace(@names_nerves, "$X", "b.deps_lock") <>
                     " OR " <> String.replace(@names_nerves, "$X", "s.deps_lock") <> ")"
 
+  @release_facts "(s.toolchain_pkg IS NOT NULL OR s.toolchain_version IS NOT NULL OR " <>
+                   "s.otp_full IS NOT NULL)"
+
   # Passing target results without a version, with the window of the run
-  # that built them and what their closure says.
+  # that built them, what their closure says and whether they record any
+  # release fact (rule 4).
   @candidates_sql """
   SELECT s.id, s.system_pkg,
          least(b.finished_at, b.inserted_at), greatest(b.finished_at, b.inserted_at),
          coalesce(jsonb_typeof(b.deps_lock) = 'object', false),
-         #{@nerves_closure}
+         #{@nerves_closure},
+         #{@release_facts}
   FROM catalog_system_results s
   JOIN catalog_runs b ON b.id = coalesce(s.carried_from_run_id, s.run_id)
   JOIN catalog_packages p ON p.id = b.package_id
@@ -146,6 +156,7 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     SET system_version = picked.version, updated_at = $4
     FROM picked
     WHERE s.id = picked.id AND s.system_version IS NULL AND s.status = 'pass'
+      AND NOT #{@release_facts}
     RETURNING s.id, s.system_pkg, s.system_version, picked.evidence
   )
   INSERT INTO catalog_system_version_backfills
@@ -165,7 +176,8 @@ defmodule Portal.Catalog.SystemVersionBackfill do
   # one of them since (`Portal.Catalog.Ingestion` copies the version with
   # the row): a copy of the same build and system, holding the value, with
   # no audit row of its own. A build's rows were all NULL before a fill, so
-  # such a copy has the value only from the fill.
+  # such a copy has the value only from the fill. Each loses the release
+  # facts too, which no row had before the fill (rule 4).
   @undo_sql """
   WITH filled AS (
     SELECT a.system_result_id, a.system_pkg, a.system_version,
@@ -175,7 +187,8 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     WHERE a.filled_at = $1 AND a.undone_at IS NULL
   ), restored AS (
     UPDATE catalog_system_results s
-    SET system_version = NULL, updated_at = $2
+    SET system_version = NULL, toolchain_pkg = NULL, toolchain_version = NULL,
+        otp_full = NULL, updated_at = $2
     FROM filled f
     WHERE s.system_pkg = f.system_pkg AND s.system_version = f.system_version
       AND (s.id = f.system_result_id OR
@@ -201,6 +214,7 @@ defmodule Portal.Catalog.SystemVersionBackfill do
           | :closure_names_nerves
           | :uncorroborated
           | :contradicted
+          | :facts_recorded
 
   @type report :: %{
           candidates: non_neg_integer(),
@@ -297,8 +311,8 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     timelines = Map.new(systems, &{&1, releases.(&1)})
 
     judged =
-      Enum.map(candidates, fn [id, system, lo, hi, closure?, names_nerves?] ->
-        {id, system, judge(timelines[system], lo, hi, closure?, names_nerves?)}
+      Enum.map(candidates, fn [id, system, lo, hi, closure?, names_nerves?, facts?] ->
+        {id, system, judge(timelines[system], lo, hi, {closure?, names_nerves?, facts?})}
       end)
 
     corroboration = corroborate(judged, timelines)
@@ -335,17 +349,18 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     {report, Enum.map(proven, fn {id, _s, v, e} -> {id, v, e} end)}
   end
 
-  defp judge({:ok, releases}, lo, hi, closure?, names_nerves?) do
+  defp judge({:ok, releases}, lo, hi, {closure?, names_nerves?, facts?}) do
     with {:ok, version, evidence} <- timeline(releases, lo, hi) do
       cond do
         not closure? -> {:error, :no_closure}
         names_nerves? -> {:error, :closure_names_nerves}
+        facts? -> {:error, :facts_recorded}
         true -> {:ok, version, evidence}
       end
     end
   end
 
-  defp judge(_unavailable, _lo, _hi, _closure?, _names_nerves?), do: {:error, :hex_unavailable}
+  defp judge(_unavailable, _lo, _hi, _row), do: {:error, :hex_unavailable}
 
   # The release a resolution between `lo` and `hi` picked, when only one
   # can have been the newest throughout.

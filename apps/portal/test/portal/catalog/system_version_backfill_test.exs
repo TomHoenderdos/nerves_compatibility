@@ -328,6 +328,58 @@ defmodule Portal.Catalog.SystemVersionBackfillTest do
     assert {:dry_run, %{candidates: 0}} = SystemVersionBackfill.fill(releases: releases())
   end
 
+  test "undo also clears the release facts read from the version it filled" do
+    recorded!(@rpi4, "2.2.1")
+    id = null_row!()
+    abi_row!(@rpi4, "2.2.1")
+
+    {:filled, 1, %{filled_at: filled_at}} =
+      SystemVersionBackfill.fill(dry_run: false, releases: releases())
+
+    # The admin's "Backfill system ABI" reads the release's toolchain and
+    # OTP for every passing result with a version, this one now included.
+    :ok = Portal.Workers.SystemAbiBackfill.fill_release_facts()
+    assert facts_of(id) == ["nerves_toolchain_aarch64_nerves_linux_gnu", "15.3.1", "29.1.2"]
+
+    assert {:restored, 1} = SystemVersionBackfill.undo(filled_at)
+    assert version_of(id) == nil
+    assert facts_of(id) == [nil, nil, nil]
+  end
+
+  test "leaves a row NULL when it already has release facts, which undo would clear" do
+    recorded!(@rpi4, "2.2.1")
+    id = null_row!()
+
+    Repo.query!("UPDATE catalog_system_results SET otp_full = '29.1.2' WHERE id = $1", [
+      Ecto.UUID.dump!(id)
+    ])
+
+    assert {:dry_run, %{provable: 0, left_null: %{facts_recorded: 1}}} =
+             SystemVersionBackfill.fill(releases: releases())
+  end
+
+  defp abi_row!(system_pkg, version) do
+    Repo.query!(
+      """
+      INSERT INTO catalog_system_abi
+        (system_pkg, version, toolchain_pkg, toolchain_version, series, source, otp)
+      VALUES ($1, $2, 'nerves_toolchain_aarch64_nerves_linux_gnu', '15.3.1', '15.3', 'lock',
+              '29.1.2')
+      """,
+      [system_pkg, version]
+    )
+  end
+
+  defp facts_of(id) do
+    %{rows: [facts]} =
+      Repo.query!(
+        "SELECT toolchain_pkg, toolchain_version, otp_full FROM catalog_system_results WHERE id = $1",
+        [Ecto.UUID.dump!(id)]
+      )
+
+    facts
+  end
+
   defp set_own_lock(id, lock) do
     Repo.query!("UPDATE catalog_system_results SET deps_lock = $1 WHERE id = $2", [
       lock,
