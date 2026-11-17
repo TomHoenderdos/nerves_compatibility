@@ -237,8 +237,10 @@ defmodule NccWorker.Portability do
   # (`tool_events/2`), and the libraries the package's own priv library's
   # `DT_NEEDED` makes the loader map with it from the C library's dir
   # (`needed_libs/2`: glibc's `libdl.so.2` and `libpthread.so.0` for
-  # tokenizers' NIF); firmware target and toolchain verdicts do not change
-  # (bumped by two while `makefile_rule2` exists).
+  # tokenizers' NIF); a read a package's variant fun tail-calls from the
+  # tool's `variant_suffix/2` is the package's (`@package_fun_frames`);
+  # firmware target and toolchain verdicts do not change (bumped by two
+  # while `makefile_rule2` exists).
   @judge_revision 25
 
   @doc "The judge revision a toolchain build made with `opts` records."
@@ -1261,10 +1263,30 @@ defmodule NccWorker.Portability do
   defp targeted(:ignore, _event, _vm, _mode), do: :ignore
 
   defp targeted(decision, event, vm, %{tool_modules: tools} = mode) do
-    if tool_event?(event, tools),
+    if tool_event?(event, tools) and not package_fun_frame?(event),
       do: tool_decision(decision, event, vm, mode),
       else: package_decision(decision, event, vm, mode)
   end
+
+  # The tool frames that run nothing of the tool's own but a package fun
+  # (`@package_fun_frames`): rustler_precompiled's `variant_suffix/2` calls
+  # each of the package's variant funs from a callback that tail-calls it,
+  # so a variant fun that tail-calls a read (`fn -> System.get_env("X")
+  # end`, `fn -> File.exists?(path) end`) leaves that frame first, and what
+  # it reads picks the NIF. Such a read is the package's, as it would be with
+  # the fun's own frame on top.
+  @package_fun_frames [{"Elixir.RustlerPrecompiled", "variant_suffix", 2}]
+
+  defp package_fun_frame?(%{"user" => %{"module" => module, "function" => fun}})
+       when is_binary(module) and is_binary(fun),
+       do: Enum.any?(@package_fun_frames, &package_fun_frame?(&1, module, fun))
+
+  defp package_fun_frame?(_event), do: false
+
+  defp package_fun_frame?({module, name, arity}, module, fun),
+    do: fun == name or String.starts_with?(fun, "-#{name}/#{arity}-")
+
+  defp package_fun_frame?(_frame, _module, _fun), do: false
 
   defp package_decision(decision, event, vm, mode) do
     cond do

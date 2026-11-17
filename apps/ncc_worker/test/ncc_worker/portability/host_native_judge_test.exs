@@ -512,6 +512,68 @@ defmodule NccWorker.Portability.HostNativeJudgeTest do
                tjudge(ctx, [tool_macro(32), %{other | "arg" => %{}}], @host_native)
     end
 
+    # rustler_precompiled's `variant_suffix/2` runs each variant fun of the
+    # package's (`fn -> ... end`) from a callback that tail-calls it, under
+    # `Enum.find/3`: a variant fun that tail-calls a read leaves the tool's
+    # frame first, though the read is the package's and picks the NIF.
+    @variant %{
+      "module" => "Elixir.RustlerPrecompiled",
+      "function" => "variant_suffix",
+      "arity" => 2,
+      "line" => 725,
+      "file" => "lib/rustler_precompiled.ex"
+    }
+    @find %{
+      "module" => "Elixir.Enum",
+      "function" => "find_list",
+      "arity" => 3,
+      "line" => 4300,
+      "file" => "lib/enum.ex"
+    }
+
+    defp tool_read(ts, channel, mfa, arg, user),
+      do: %{
+        "ts" => ts,
+        "pid" => "<0.463.0>",
+        "channel" => channel,
+        "mfa" => mfa,
+        "arg" => arg,
+        "extent" => "frame",
+        "first" => @find,
+        "caller" => @find,
+        "user" => user,
+        "first_kind" => "glue",
+        "caller_kind" => "toolchain"
+      }
+
+    test "a variant fun's tail-called read is the package's, not the tool's", ctx do
+      env = tool_read(35, "env", "os:getenv/1", %{"name" => "FX_LEGACY"}, @variant)
+      path = "/sys/devices/system/cpu/fx_legacy"
+      file = tool_read(35, "file_read", "file:read_file_info/2", %{"path" => path}, @variant)
+      callback = %{@variant | "function" => "-variant_suffix/2-fun-0-"}
+
+      # The env read is a compile input, as the package's own is.
+      for user <- [@variant, callback] do
+        assert %{status: :pass, compile_inputs: inputs} =
+                 tjudge(ctx, [tool_fun(34), %{env | "user" => user}], @host_native)
+
+        assert Enum.any?(inputs, &match?(%{"kind" => "env", "name" => "FX_LEGACY"}, &1)),
+               inspect(inputs)
+      end
+
+      # A host read refuses.
+      assert %{status: :skip, reason: "compile-time host read: " <> reason} =
+               tjudge(ctx, [tool_fun(34), file], @host_native)
+
+      assert reason =~ path
+
+      # The same reads from the tool's own code (its download) stay set apart.
+      for event <- [env, file] do
+        assert %{status: :pass, compile_inputs: []} =
+                 tjudge(ctx, [tool_fun(34), %{event | "user" => @download}], @host_native)
+      end
+    end
+
     test "in a dependency's window both keep their decision: the dependency is tainted", ctx do
       # `dep`'s window is 10..20 (pkg depends on it).
       for {events, taint} <- [

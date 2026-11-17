@@ -67,8 +67,21 @@ defmodule NccWorker.Tracer.FixturesHostNativeTest do
             if opts[:force_build] do
               {:force_build, Keyword.drop(opts, [:force_build])}
             else
-              name = "lib" <> opts[:crate] <> "-nif-" <> nif <> "-" <> arch <> ".so"
-              download_or_reuse_nif_file(opts, name)
+              name = "lib" <> opts[:crate] <> "-nif-" <> nif <> "-" <> arch
+              download_or_reuse_nif_file(opts, name <> variant_suffix(opts) <> ".so")
+            end
+          end
+
+          # rustler_precompiled 0.10's shape: each variant fun of the
+          # package's from a callback that tail-calls it, under Enum.find/2.
+          defp variant_suffix(opts) do
+            callback = fn {_name, func} ->
+              if is_function(func, 1), do: func.(opts), else: func.()
+            end
+
+            case Enum.find(opts[:variants] || [], callback) do
+              {name, _} -> "--" <> Atom.to_string(name)
+              nil -> ""
             end
           end
 
@@ -143,6 +156,14 @@ defmodule NccWorker.Tracer.FixturesHostNativeTest do
       "fx_nif" => nif("fx_nif", ""),
       # A variant fun the tool runs: the package's own code reading the host.
       "fx_nif_cpu" => nif("fx_nif_cpu", ",\n    variant: fn -> :os.version() end"),
+      # Variant funs that tail-call a read: the package's reads.
+      "fx_nif_venv" =>
+        nif("fx_nif_venv", ",\n    variants: [legacy: fn -> System.get_env(\"FX_LEGACY\") end]"),
+      "fx_nif_vfile" =>
+        nif(
+          "fx_nif_vfile",
+          ",\n    variants: [legacy: fn -> File.exists?(\"/fx_legacy_cpu\") end]"
+        ),
       # The force-build branch: Rustler's code runs.
       "fx_nif_force" => nif("fx_nif_force", "", "", "true"),
       # The tool's ram_file port outside its download.
@@ -176,8 +197,8 @@ defmodule NccWorker.Tracer.FixturesHostNativeTest do
     }
   end
 
-  @apps ~w(rustler rustler_precompiled fx_nif fx_nif_cpu fx_nif_force fx_nif_peek
-           fx_nif_twice fx_rustler fx_unpack)
+  @apps ~w(rustler rustler_precompiled fx_nif fx_nif_cpu fx_nif_venv fx_nif_vfile
+           fx_nif_force fx_nif_peek fx_nif_twice fx_rustler fx_unpack)
 
   setup_all do
     root =
@@ -248,6 +269,18 @@ defmodule NccWorker.Tracer.FixturesHostNativeTest do
              verdict(ctx, "fx_nif_cpu", target: "host", host_native: true)
 
     assert reason =~ "os:version/0"
+  end
+
+  test "a variant fun's tail-called read is the package's, not the tool's", ctx do
+    # The variant fun's frame is gone; the tool's `variant_suffix/2` is first.
+    v = verdict(ctx, "fx_nif_venv", target: "host", host_native: true)
+    assert %{status: :pass} = v, inspect(v.observations["refusals"])
+    assert Enum.any?(v.compile_inputs, &match?(%{"kind" => "env", "name" => "FX_LEGACY"}, &1))
+
+    assert %{status: :skip, compile_inputs: nil, reason: reason} =
+             verdict(ctx, "fx_nif_vfile", target: "host", host_native: true)
+
+    assert reason =~ "/fx_legacy_cpu", reason
   end
 
   @rustler_call "calls natively built dependency at compile time: "

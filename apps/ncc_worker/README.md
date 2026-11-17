@@ -922,7 +922,9 @@ host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2:
   reviewed native tools' own activity is set apart: elixir_make, and rustler_precompiled (its target triple, NIF
   version, OTP release and OS type reads, its download and its writes into the package's priv; any other OS identity
   read or program run from its frame still refuses, and so does the package's own code, `use RustlerPrecompiled` and
-  its `__using__/2` call excepted). Two more of its normal path's events pass (judge revision 25, tokenizers 0.5.2):
+  its `__using__/2` call excepted, including a read a variant fun of the package's tail-calls, which leaves the tool's
+  `variant_suffix/2` frame first: an env read is a `compile_inputs` item, a host read refuses). Two more of its normal
+  path's events pass (judge revision 25, tokenizers 0.5.2):
   the expander calling `Rustler.MACRO-__using__/2` with no package frame, once per `RustlerPrecompiled` macro before
   it in the same window and process (the tool's quote holds `use Rustler` in its force-build branch whenever the
   optional rustler is loaded; Rustler's macro is a `bind_quoted` quote that reads and runs nothing, and the branch
