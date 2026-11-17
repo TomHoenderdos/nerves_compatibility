@@ -394,6 +394,86 @@ defmodule Portal.HexPm do
   defp release_download_count(count) when is_integer(count) and count >= 0, do: count
   defp release_download_count(_count), do: nil
 
+  @type release_time :: %{version: String.t(), published_at: DateTime.t(), retired: boolean()}
+
+  @doc """
+  Every release of one package with the time hex.pm published it and
+  whether it is retired (`GET /api/packages/:name`), for
+  `Portal.Catalog.SystemVersionBackfill`, which reads from it which release
+  a resolution at a given time could have picked. Not cached.
+
+  The answer is all or nothing: a release whose version or publication time
+  does not parse makes it `:hex_api_unavailable`, since a timeline with a
+  release missing would place a resolution with a certainty it does not
+  have. Options: `:base_url` (default hex.pm's API) and `:receive_timeout`
+  (default 15 s), for tests.
+  """
+  @spec release_times(String.t(), keyword()) ::
+          {:ok, [release_time()]} | {:error, :unknown_package | :hex_api_unavailable}
+  def release_times(name, opts \\ []) when is_binary(name) do
+    base_url = Keyword.get(opts, :base_url, @api_url)
+    url = "#{base_url}/packages/#{URI.encode(name, &URI.char_unreserved?/1)}"
+
+    request = [
+      retry: false,
+      decode_body: false,
+      receive_timeout: Keyword.get(opts, :receive_timeout, 15_000),
+      connect_options: [timeout: 5_000]
+    ]
+
+    case Req.get(url, request) do
+      {:ok, %{status: 200, body: body}} ->
+        case Jason.decode(body) do
+          {:ok, package} -> release_times_from_body(package)
+          _ -> {:error, :hex_api_unavailable}
+        end
+
+      {:ok, %{status: 404}} ->
+        {:error, :unknown_package}
+
+      {:ok, %{status: status}} ->
+        Logger.warning("Hex release times for #{name} failed: HTTP #{status}")
+        {:error, :hex_api_unavailable}
+
+      {:error, reason} ->
+        Logger.warning("Hex release times for #{name} failed: #{inspect(reason)}")
+        {:error, :hex_api_unavailable}
+    end
+  end
+
+  @doc "`release_times/2`'s reading of a decoded `GET /api/packages/:name` body."
+  @spec release_times_from_body(term()) ::
+          {:ok, [release_time()]} | {:error, :hex_api_unavailable}
+  def release_times_from_body(%{"releases" => releases} = package) when is_list(releases) do
+    retired =
+      case Map.get(package, "retirements") do
+        %{} = retirements -> retirements
+        _ -> %{}
+      end
+
+    Enum.reduce_while(releases, {:ok, []}, fn release, {:ok, acc} ->
+      case release_time(release, retired) do
+        {:ok, time} -> {:cont, {:ok, [time | acc]}}
+        :error -> {:halt, {:error, :hex_api_unavailable}}
+      end
+    end)
+  end
+
+  def release_times_from_body(_package), do: {:error, :hex_api_unavailable}
+
+  defp release_time(%{"version" => version, "inserted_at" => at}, retired)
+       when is_binary(version) and is_binary(at) do
+    with {:ok, _} <- Version.parse(version),
+         {:ok, published_at, _offset} <- DateTime.from_iso8601(at) do
+      {:ok,
+       %{version: version, published_at: published_at, retired: Map.has_key?(retired, version)}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp release_time(_release, _retired), do: :error
+
   # A package's `meta.links` is a free-form map the package author writes in
   # their own mix.exs, and it arrives here as whatever they put there. Both
   # halves of that are load-bearing:
