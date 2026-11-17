@@ -366,6 +366,20 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
     end
   end
 
+  test "the alias copies in the process that fired the window's sentinel", ctx do
+    dest = Path.join(ctx.proj, "deps/fx_cp/priv/templates/gen/core.ex.eex")
+    assert [%{pid: driver}] = Enum.filter(ctx.traced.report.sentinels, &(&1.app == "fx_cp"))
+    assert is_binary(driver)
+
+    pids =
+      for %{"channel" => "file_write", "arg" => %{"path" => ^dest}} = e <-
+            ctx.traced.report.events,
+          uniq: true,
+          do: e["pid"]
+
+    assert pids == [driver]
+  end
+
   test "a copy that empties a file refuses, though a later copy puts its bytes back", ctx do
     # The compile saw lib/extra.ex empty (no FxCpTrunc.Extra), and the tree
     # is the tarball's again.

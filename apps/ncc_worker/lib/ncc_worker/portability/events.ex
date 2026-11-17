@@ -683,7 +683,10 @@ defmodule NccWorker.Portability.Events do
   defp copied_from(_e, _ctx, _owner), do: nil
 
   # Made in the process `elixir -S mix` runs its tasks in (its stack seen
-  # whole, so the bottom frame is where it started), by a fun of the
+  # whole, so the bottom frame is where it started, and the very process
+  # the window's sentinel fired in, `Context.driver/2`: `Kernel.CLI.run/1`
+  # is public, so package code can start another process with that bottom
+  # frame and run it beside the compiler's workers), by a fun of the
   # window's own project aliases Mix's alias runner called: one that
   # tail-called the call (Mix's runner the first frame, no package frame
   # left), or one whose frame is in that dependency's own `mix.exs`. Only
@@ -696,6 +699,7 @@ defmodule NccWorker.Portability.Events do
        when {m, f} == @mix_main,
        do:
          Context.dep?(ctx, owner) and Context.window_of(ctx, e["ts"]) == owner and
+           is_binary(e["pid"]) and e["pid"] == Context.driver(ctx, owner) and
            (alias_runner?(e) or own_mix_exs?(e, ctx, owner))
 
   defp mix_alias?(_e, _ctx, _owner), do: false

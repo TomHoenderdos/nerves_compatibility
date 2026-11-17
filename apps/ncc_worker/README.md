@@ -646,7 +646,8 @@ the trace keeps neither a copy's byte count nor the modes it opens either file w
 or `:file.copy/3` (cutting a file short, appending, writing it compressed) or `File.write_stat/3` (any mode) keeps its
 refusal. The
 call must be made in the process `elixir -S mix` runs its tasks in (`Kernel.CLI`'s exec fun at the bottom of a stack
-seen whole), by a fun of the aliases Mix's alias runner called: one that tail-called the copy (`Mix.Task.run_alias/6`
+seen whole, and the very process the window's sentinel fired in: `Kernel.CLI.run/1` is public, so package code can start
+another process with that bottom frame), by a fun of the aliases Mix's alias runner called: one that tail-called the copy (`Mix.Task.run_alias/6`
 the first frame) or one whose own frame is in that dependency's own `mix.exs`, and in that dependency's own window,
 where Mix runs it in that dependency's source dir (a fun of another dependency's `mix.exs` that its alias runs copies by
 a relative path in its tree, not the other's). So the copy never runs beside the compiler's workers, though it may run

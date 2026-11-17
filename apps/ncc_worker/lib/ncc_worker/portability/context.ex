@@ -68,7 +68,8 @@ defmodule NccWorker.Portability.Context do
     nested: %{},
     ensured: %{},
     trees: %{},
-    hook_scripts: %{}
+    hook_scripts: %{},
+    drivers: %{}
   ]
 
   @type dep :: %{
@@ -96,7 +97,8 @@ defmodule NccWorker.Portability.Context do
           ensured: %{{term(), String.t(), String.t()} => integer()},
           trees: %{String.t() => Trees.tree()},
           hook_scripts: %{String.t() => String.t()},
-          deps_path: String.t() | nil
+          deps_path: String.t() | nil,
+          drivers: %{String.t() => String.t()}
         }
 
   @max_hops 40
@@ -142,7 +144,8 @@ defmodule NccWorker.Portability.Context do
       preloaded: preloaded(start["preloaded"]),
       trees: trees(Keyword.get(opts, :trees)),
       hook_scripts: trees(Keyword.get(opts, :hook_scripts)),
-      deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps"))
+      deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")),
+      drivers: drivers(report.sentinels)
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
@@ -150,6 +153,30 @@ defmodule NccWorker.Portability.Context do
 
   defp trees(trees) when is_map(trees), do: trees
   defp trees(_trees), do: %{}
+
+  # The process each window's sentinel fired in: the driver's, which
+  # compiles every dependency in turn (`Mix.Tasks.Deps.Compile.compile_single/3`),
+  # so the process Mix runs that dependency's tasks and aliases in. An app
+  # with two sentinels, or one with no pid, has none.
+  defp drivers(sentinels) when is_list(sentinels) do
+    sentinels
+    |> Enum.group_by(&Map.get(&1, :app), &Map.get(&1, :pid))
+    |> Enum.flat_map(fn
+      {app, [pid]} when is_binary(app) and is_binary(pid) -> [{app, pid}]
+      _ -> []
+    end)
+    |> Map.new()
+  end
+
+  defp drivers(_sentinels), do: %{}
+
+  @doc """
+  The pid (as the trace writes it) of the process the driver compiled
+  `app` in, the one its window's sentinel fired in; `nil` when there is no
+  single one.
+  """
+  @spec driver(t(), term()) :: String.t() | nil
+  def driver(%__MODULE__{drivers: drivers}, app), do: Map.get(drivers, app)
 
   # The windows a nested compile or diagnostics capture was started in
   # (channel `nested_compile`), each with the first such call: by owner for

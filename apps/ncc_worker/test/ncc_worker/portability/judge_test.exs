@@ -61,9 +61,9 @@ defmodule NccWorker.Portability.JudgeTest do
         },
         windows: [window("dep", 10, 20), window("other", 21, 29), window("pkg", 30, 40)],
         sentinels: [
-          %{app: "dep", ts: 11, integrity_ok: true},
-          %{app: "other", ts: 22, integrity_ok: true},
-          %{app: "pkg", ts: 31, integrity_ok: true}
+          %{app: "dep", ts: 11, integrity_ok: true, pid: "<0.95.0>"},
+          %{app: "other", ts: 22, integrity_ok: true, pid: "<0.95.0>"},
+          %{app: "pkg", ts: 31, integrity_ok: true, pid: "<0.95.0>"}
         ],
         stats: %{"kind" => "stats", "calls" => 10, "unjudged" => 0},
         ending:
@@ -241,6 +241,7 @@ defmodule NccWorker.Portability.JudgeTest do
           "first" => %{"module" => "Elixir.Mix.Task", "function" => "run_alias", "arity" => 6}
       }
       |> Map.put("bottom", %{"module" => "Elixir.Kernel.CLI", "function" => "-exec_fun/2-fun-0-"})
+      |> Map.put("pid", "<0.95.0>")
       |> Map.put("caller", %{"module" => "Elixir.File", "function" => "do_cp_file", "arity" => 4})
       |> Map.put("caller_kind", "toolchain")
     end

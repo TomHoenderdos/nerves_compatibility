@@ -1693,6 +1693,10 @@ defmodule NccWorker.Portability.EventsTest do
     # `compile: [&copy_core_components/1, "compile"]`: a fun of its own
     # aliases that tail-calls `File.cp!/2`, run by Mix's alias runner in
     # the process `elixir -S mix` runs its tasks in.
+
+    # The process the driver compiles pkg in, which fires its sentinel.
+    @driver "<0.95.0>"
+
     defp tree_ctx(dir, proj, pkg, opts \\ []) do
       File.mkdir_p!(Path.join(pkg, "installer"))
       File.mkdir_p!(Path.join(pkg, "priv/t"))
@@ -1702,7 +1706,8 @@ defmodule NccWorker.Portability.EventsTest do
       File.ln_s!("../../../../deps/pkg/priv", build_priv)
       files = ~w(lib README.md mix.exs installer priv)
       opts = Keyword.put(opts, :hex_files, files)
-      %{ctx: build(dir, proj, report(dir, proj, pkg, []), opts), build_priv: build_priv}
+      report = %{report(dir, proj, pkg, []) | sentinels: [%{app: "pkg", ts: 1, pid: @driver}]}
+      %{ctx: build(dir, proj, report, opts), build_priv: build_priv}
     end
 
     @mix_main %{"module" => "Elixir.Kernel.CLI", "function" => "-exec_fun/2-fun-0-"}
@@ -1728,6 +1733,7 @@ defmodule NccWorker.Portability.EventsTest do
         first: Keyword.get(opts, :first, {"Elixir.Mix.Task", "run_alias", 6})
       )
       |> Map.put("bottom", Keyword.get(opts, :bottom, @mix_main))
+      |> Map.put("pid", Keyword.get(opts, :pid, @driver))
       |> Map.put("caller", Keyword.get(opts, :caller, @cp_file))
       |> Map.put("caller_kind", Keyword.get(opts, :caller_kind, "toolchain"))
     end
@@ -1820,6 +1826,22 @@ defmodule NccWorker.Portability.EventsTest do
         assert {:refuse, "compile-time write outside ebin: " <> _} =
                  Events.decide(copy(pkg, mfa), ctx, "pkg"),
                mfa
+      end
+    end
+
+    test "keeps its refusal in any process but the one Mix builds it in",
+         %{dir: dir, proj: proj, pkg: pkg} do
+      # `Kernel.CLI.run/1` is public: package code that sets
+      # `System.no_halt(true)` gets a process of its own whose bottom frame
+      # is the one Mix's own process has, and it can run beside the
+      # compiler's workers while they read the file being copied.
+      %{ctx: ctx} = tree_ctx(dir, proj, pkg)
+      framed = %{in_mix_exs(copy(pkg), pkg, 9) | "extent" => "frame"}
+
+      for event <- [copy(pkg), framed], pid <- ["<0.96.0>", nil] do
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(%{event | "pid" => pid}, ctx, "pkg"),
+               inspect({event["extent"], pid})
       end
     end
 

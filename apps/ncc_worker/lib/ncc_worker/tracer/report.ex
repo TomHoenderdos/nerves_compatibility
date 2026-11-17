@@ -122,7 +122,7 @@ defmodule NccWorker.Tracer.Report do
           closure: map() | nil,
           windows: [window()],
           quiet: [%{app: String.t() | nil, open: integer() | nil, close: integer() | nil}],
-          sentinels: [%{app: String.t() | nil, ts: integer() | nil}],
+          sentinels: [%{app: String.t() | nil, ts: integer() | nil, pid: String.t() | nil}],
           events: [map()],
           config_env:
             nil
@@ -272,7 +272,7 @@ defmodule NccWorker.Tracer.Report do
   end
 
   defp main_line({:line, %{"kind" => "sentinel"} = l}, r) do
-    sentinel = %{app: l["app"], ts: l["ts"], integrity_ok: l["integrity_ok"]}
+    sentinel = %{app: l["app"], ts: l["ts"], integrity_ok: l["integrity_ok"], pid: l["pid"]}
     %{r | sentinels: [sentinel | r.sentinels]} |> sentinel_checks(l, &problem/2)
   end
 
