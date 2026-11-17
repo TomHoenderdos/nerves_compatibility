@@ -1823,6 +1823,20 @@ defmodule NccWorker.Portability.EventsTest do
       end
     end
 
+    test "keeps its refusal outside its own window", %{dir: dir, proj: proj, pkg: pkg} do
+      # A fun of pkg's own mix.exs run while another dependency's window is
+      # open, or none is: Mix runs it in that dependency's source dir, or
+      # wherever it is, not pkg's, which a relative path resolves against.
+      %{ctx: ctx} = tree_ctx(dir, proj, pkg)
+      framed = %{in_mix_exs(copy(pkg), pkg, 9) | "extent" => "frame"}
+
+      for event <- [framed, copy(pkg)], ts <- [150, nil] do
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(%{event | "ts" => ts}, ctx, "pkg"),
+               inspect({event["extent"], ts})
+      end
+    end
+
     test "keeps its refusal for a copy onto its own source", %{dir: dir, proj: proj, pkg: pkg} do
       # `File.cp/3` tells the two apart by `Path.expand/1` alone: through
       # Mix's link from the build priv it copies the file onto itself, and

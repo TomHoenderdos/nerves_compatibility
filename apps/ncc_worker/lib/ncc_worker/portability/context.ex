@@ -655,6 +655,14 @@ defmodule NccWorker.Portability.Context do
 
   defp dep_mix_exs_app(_dep, _real), do: nil
 
+  @doc """
+  The dependency whose window `ts` falls in, else `:quiet` or `:outside`:
+  `owner/2` without its `mix.exs` attribution. Mix runs a dependency's
+  tasks, and so its aliases, in its source dir, inside its window.
+  """
+  @spec window_of(t(), term()) :: String.t() | :outside | :quiet
+  def window_of(ctx, ts), do: by_time(ctx, ts)
+
   defp by_time(_ctx, ts) when not is_integer(ts), do: :outside
 
   defp by_time(ctx, ts) do

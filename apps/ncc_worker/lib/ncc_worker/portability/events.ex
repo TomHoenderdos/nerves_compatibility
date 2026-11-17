@@ -686,10 +686,17 @@ defmodule NccWorker.Portability.Events do
   # whole, so the bottom frame is where it started), by a fun of the
   # window's own project aliases Mix's alias runner called: one that
   # tail-called the call (Mix's runner the first frame, no package frame
-  # left), or one whose frame is in that dependency's own `mix.exs`.
+  # left), or one whose frame is in that dependency's own `mix.exs`. Only
+  # in that dependency's own window (`Context.window_of/2`), where Mix
+  # runs it in that dependency's source dir: a fun of one dependency's
+  # `mix.exs` (its owner) that another's alias runs copies, by a relative
+  # path, in the other's tree, which `Context.own_tree_path/3` would
+  # resolve in the owner's.
   defp mix_alias?(%{"bottom" => %{"module" => m, "function" => f}} = e, ctx, owner)
        when {m, f} == @mix_main,
-       do: Context.dep?(ctx, owner) and (alias_runner?(e) or own_mix_exs?(e, ctx, owner))
+       do:
+         Context.dep?(ctx, owner) and Context.window_of(ctx, e["ts"]) == owner and
+           (alias_runner?(e) or own_mix_exs?(e, ctx, owner))
 
   defp mix_alias?(_e, _ctx, _owner), do: false
 

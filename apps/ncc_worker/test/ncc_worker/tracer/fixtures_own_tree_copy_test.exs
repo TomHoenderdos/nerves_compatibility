@@ -21,6 +21,8 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
 
   @tpl "<%= @name %> components\n"
   @extra "defmodule FxCpTrunc.Extra do\n  def x, do: :x\nend\n"
+  @good "defmodule FxCpXb do\n  def v, do: :tarball\nend\n"
+  @evil "defmodule FxCpXb do\n  def v, do: :swapped\nend\n"
 
   # Phoenix's shape: the alias copies a file the tarball ships twice.
   defp copying(app, body, from, to) do
@@ -155,6 +157,53 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
         "lib/extra.ex" => @extra,
         "backup/extra.ex" => @extra
       },
+      # Its mix.exs holds the copies fx_cp_xb's alias runs, with relative
+      # paths: they land in fx_cp_xb's tree, the directory Mix runs that
+      # alias in, where the files differ. fx_cp_xa's own three are the same.
+      "fx_cp_xa" => %{
+        "mix.exs" => """
+        defmodule FxCpXa.MixProject do
+          use Mix.Project
+
+          def project, do: [app: :fx_cp_xa, version: "0.1.0", deps: []]
+
+          def swap(_) do
+            File.cp!("installer/m.ex", "src_ex/m.ex")
+            :ok
+          end
+
+          def put_back(_) do
+            File.cp!("backup/m.ex", "src_ex/m.ex")
+            :ok
+          end
+        end
+        """,
+        "lib/fx_cp_xa.ex" => "defmodule FxCpXa do\n  def x, do: :x\nend\n",
+        "installer/m.ex" => "# m\n",
+        "src_ex/m.ex" => "# m\n",
+        "backup/m.ex" => "# m\n"
+      },
+      "fx_cp_xb" => %{
+        "mix.exs" => """
+        defmodule FxCpXb.MixProject do
+          use Mix.Project
+
+          def project,
+            do: [
+              app: :fx_cp_xb,
+              version: "0.1.0",
+              elixirc_paths: ["src_ex"],
+              deps: [{:fx_cp_xa, path: "../fx_cp_xa"}],
+              aliases: [
+                compile: [&FxCpXa.MixProject.swap/1, "compile", &FxCpXa.MixProject.put_back/1]
+              ]
+            ]
+        end
+        """,
+        "src_ex/m.ex" => @good,
+        "backup/m.ex" => @good,
+        "installer/m.ex" => @evil
+      },
       # Its alias makes fx_cp's own copy, in fx_cp's tree.
       "fx_cp_other" =>
         package(
@@ -202,7 +251,7 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
       )
 
     top = ~w(fx_cp fx_cp_user fx_cp_frame fx_cp_diff fx_cp_new fx_cp_spawn fx_cp_task fx_cp_lib
-               fx_cp_other fx_cp_trunc)
+               fx_cp_other fx_cp_trunc fx_cp_xa fx_cp_xb)
     proj = TracerFixtures.project(root, top, deps)
     traced = TracerFixtures.trace(proj, top)
 
@@ -331,5 +380,18 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
     assert v.reason ==
              "compile-time write outside ebin: file:copy/3 " <>
                Path.join(ctx.proj, "deps/fx_cp_trunc/lib/extra.ex")
+  end
+
+  test "a copy another dependency's mix.exs makes in the window's tree refuses", ctx do
+    # The relative copies landed in fx_cp_xb's tree, where installer/m.ex is
+    # not src_ex/m.ex: its compile saw the swapped source, and the tree is
+    # the tarball's again.
+    beam = Path.join(ctx.proj, "_build/host/lib/fx_cp_xb/ebin/Elixir.FxCpXb.beam")
+    assert :binary.match(File.read!(beam), "swapped") != :nomatch
+    assert File.read!(Path.join(ctx.proj, "deps/fx_cp_xb/src_ex/m.ex")) == @good
+
+    v = verdict(ctx, "fx_cp_xb")
+    assert v.status == :skip, show(v)
+    assert v.reason =~ "compile-time write outside ebin: file:copy/"
   end
 end

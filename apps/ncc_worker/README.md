@@ -647,12 +647,15 @@ or `:file.copy/3` (cutting a file short, appending, writing it compressed) or `F
 refusal. The
 call must be made in the process `elixir -S mix` runs its tasks in (`Kernel.CLI`'s exec fun at the bottom of a stack
 seen whole), by a fun of the aliases Mix's alias runner called: one that tail-called the copy (`Mix.Task.run_alias/6`
-the first frame) or one whose own frame is in that dependency's own `mix.exs`. So the copy returns before Mix goes on
-to compile it: one the alias spawns, or the dependency's compiled code makes, keeps its refusal. Both paths must
-resolve, after every link (Mix's from the build `priv` included), under the dependency's own source dir, the source
-must be a readable source file and another file than the destination (not the same one through Mix's link, which
-`File.cp/3` would empty, nor, at judge time, a hard link of it), and the dependency must not be natively built (its untraced build tool may write the
-tree). The judge then allows the copy only when the verified tarball holds both files with the same bytes and the
+the first frame) or one whose own frame is in that dependency's own `mix.exs`, and in that dependency's own window,
+where Mix runs it in that dependency's source dir (a fun of another dependency's `mix.exs` that its alias runs copies by
+a relative path in its tree, not the other's). So the copy never runs beside the compiler's workers, though it may run
+after them (an alias step after `"compile"`, a compiler the `mix.exs` defines): every allowed step writes the bytes
+already there, so none changes what a read sees. One the alias spawns, or the dependency's compiled code makes, keeps
+its refusal. Both paths must resolve, after every link (Mix's from the build `priv` included), under the dependency's
+own source dir, the source must be a readable source file and another file than the destination (not the same one
+through Mix's link, which `File.cp/3` would empty, nor, at judge time, a hard link of it), and the dependency must not
+be natively built (its untraced build tool may write the tree). The judge then allows the copy only when the verified tarball holds both files with the same bytes and the
 dependency's whole source tree, checked after the compile, is still exactly that tarball's, so the copy wrote the
 bytes that were already there and every user's compile reads the same; the mode write only onto the destination of
 such a copy in the same window. Anything else is the write it always was, in that dependency's window, so a refused

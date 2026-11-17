@@ -330,6 +330,48 @@ defmodule NccWorker.Portability.JudgeTest do
       assert reason == cp_refusal(proj, "pkg")
     end
 
+    test "refuses a copy another dependency's mix.exs makes in the window", %{
+      proj: proj,
+      dir: dir
+    } do
+      # pkg's alias runs a fun of dep's own mix.exs (`&Dep.MixProject.swap/1`)
+      # that copies by relative paths: Mix runs it in pkg's source dir, so
+      # the copy lands in pkg's tree, while its frame names dep's mix.exs.
+      opts = tree_releases(proj, dir, ["dep", "pkg"])
+      root = Path.join(proj, "deps/dep")
+
+      swap = %{
+        "module" => "Elixir.Dep.MixProject",
+        "function" => "swap",
+        "arity" => 1,
+        "file" => Path.join(root, "mix.exs"),
+        "line" => 5
+      }
+
+      events =
+        for mfa <- ~w(file:copy/2 file:copy/3 file:write_file_info/3) do
+          e = tree_copy(proj, 35, "dep", mfa)
+
+          arg =
+            Map.new(e["arg"], fn
+              {k, v} when k in ["path", "from"] -> {k, Path.relative_to(v, root)}
+              kv -> kv
+            end)
+
+          %{e | "arg" => arg, "extent" => "frame", "user" => swap}
+        end
+
+      # In dep's own window the same copies are dep's own.
+      assert %{status: :pass} =
+               judge(proj, report(proj, %{events: Enum.map(events, &%{&1 | "ts" => 15})}), opts)
+
+      assert %{status: :skip, reason: reason} = judge(proj, report(proj, %{events: events}), opts)
+
+      assert reason ==
+               "closure dependency observed the host: dep " <>
+                 "(compile-time write outside ebin: file:copy/2 priv/t/a.eex)"
+    end
+
     test "refuses a copy the tarball does not hold the same bytes for", %{proj: proj, dir: dir} do
       # The tree is the tarball's, but the tarball's priv/t/a.eex is not
       # installer/a.eex: copying one onto the other changes it.
