@@ -197,15 +197,17 @@ config :portal, Portal.Workers.UpdateCheck, enabled: true
 # at most `firmware_max_per_run` runs a day (a container each, about 3
 # minutes for the ~5 targets a typical rebuild names), reading the runs to
 # judge `firmware_scan_limit` at a time, each with every target's lock.
-# `NCC_FIRMWARE_DRIFT=0` and `NCC_FIRMWARE_DRIFT_MAX` override it. See
-# `Portal.Workers.ClosureDrift`.
+# `NCC_FIRMWARE_DRIFT=0` and `NCC_FIRMWARE_DRIFT_MAX` override it. A run
+# stops after `budget_ms` (an hour; it takes minutes), well before Lifeline
+# would rescue it. See `Portal.Workers.ClosureDrift`.
 config :portal, Portal.Workers.ClosureDrift,
   enabled: true,
   max_per_run: 500,
   scan_limit: 5_000,
   firmware: true,
   firmware_max_per_run: 100,
-  firmware_scan_limit: 1_000
+  firmware_scan_limit: 1_000,
+  budget_ms: :timer.minutes(60)
 
 # Registry-based native-code filter for bulk intake (`catalog_seed`,
 # `backfill`). Off by default so a deploy changes nothing until

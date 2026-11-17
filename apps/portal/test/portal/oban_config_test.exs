@@ -39,6 +39,19 @@ defmodule Portal.ObanConfigTest do
                Compatibility.HexCache.max_overrun_ms()
   end
 
+  # The closure drift run reads Hex once per closure member, up to 15 s a
+  # read and nearly two thousand members a day. Rescued while still reading,
+  # it would run a second time beside the first, queueing its rebuilds
+  # again. Past its budget it reads and judges nothing more; what is in
+  # flight then (one Hex read, one candidates query of at most 2 minutes)
+  # fits in the margin.
+  test "Lifeline rescues the closure drift run only well after its time budget" do
+    {_mod, opts} = plugin(Oban.Plugins.Lifeline)
+
+    assert opts[:rescue_after] >
+             Portal.Workers.ClosureDrift.budget_ms() + :timer.minutes(5)
+  end
+
   test "the sweeper is scheduled, and on a queue the build host actually runs" do
     {_mod, opts} = plugin(Oban.Plugins.Cron)
 

@@ -292,6 +292,16 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
     assert [%{args: %{"package" => ^obscure}}] = firmware_jobs()
   end
 
+  test "a run past its time budget judges and reads nothing more" do
+    name = name()
+    world([name])
+    run!(name, "0.4.0")
+    Application.put_env(:portal, ClosureDrift, enabled: true, budget_ms: 0)
+
+    assert {:ok, %{firmware: %{drifted: 0, enqueued: 0}}} = ClosureDrift.run()
+    assert firmware_jobs() == []
+  end
+
   test "a package with a build on the way is not queued again" do
     name = name()
     world([name])

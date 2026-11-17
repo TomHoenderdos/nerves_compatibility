@@ -42,8 +42,10 @@ defmodule Portal.Workers.ClosureDrift do
   A run asks Hex about each closure member at most once, a failed read
   included, and never retries one: a build whose closure could not be read
   is judged again tomorrow. So its Hex reads are bounded by the packages the
-  judged closures name (about 400 on production), not by the builds, and a
-  slow `repo.hex.pm` costs at most the read timeout per package. It runs on
+  judged closures name (about 400 on production, about 1,800 with the
+  firmware phase), not by the builds, and a slow `repo.hex.pm` costs at most
+  the read timeout per package, and the whole run at most `budget_ms/0`,
+  after which it reads, judges and queues nothing more. It runs on
   `:intake`, the web host's HTTP queue, as `Portal.Workers.CoverageRefresh`
   does, rather than on the single `:maintenance` slot that signs the
   precompiled batch and reaps builder leases.
@@ -160,6 +162,7 @@ defmodule Portal.Workers.ClosureDrift do
   @spec run(keyword()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) do
     dry_run? = Keyword.get(opts, :dry_run, false)
+    deadline = System.monotonic_time(:millisecond) + budget_ms()
 
     with {:ok, registry} <- registry_source().snapshot(all_versions: true) do
       index = ClosureDrift.index(registry)
@@ -175,13 +178,14 @@ defmodule Portal.Workers.ClosureDrift do
         )
 
       queue_for = MemoryRouting.router(candidates |> Enum.map(& &1.package) |> Enum.uniq())
-      {memo, releases} = memoized_releases()
+      {memo, releases} = memoized_releases(deadline)
 
       context = %{
         images: images,
         builder_version: builder_version,
         queue_for: queue_for,
-        releases: releases
+        releases: releases,
+        deadline: deadline
       }
 
       summary =
@@ -189,24 +193,46 @@ defmodule Portal.Workers.ClosureDrift do
           candidates
           |> judge_all(index, context, dry_run?)
           |> log_summary()
-          |> put_firmware(index, releases, dry_run?)
+          |> put_firmware(index, releases, dry_run?, deadline)
         after
           Process.delete(memo)
         end
 
-      {:ok, summary}
+      {:ok, put_out_of_time(summary, deadline)}
     end
   end
 
-  # In candidate order, until `max_per_run/0` are queued.
+  # In candidate order, until `max_per_run/0` are queued or the run's time
+  # budget is spent.
   defp judge_all(candidates, index, context, dry_run?) do
     max = max_per_run()
     summary = %{candidates: length(candidates), drifted: 0, enqueued: 0, pending: 0, unknown: 0}
 
     Enum.reduce_while(candidates, summary, fn
-      _candidate, %{enqueued: enqueued} = acc when enqueued >= max -> {:halt, acc}
-      candidate, acc -> {:cont, judge(candidate, index, context, dry_run?, acc)}
+      _candidate, %{enqueued: enqueued} = acc when enqueued >= max ->
+        {:halt, acc}
+
+      candidate, acc ->
+        if out_of_time?(context.deadline),
+          do: {:halt, acc},
+          else: {:cont, judge(candidate, index, context, dry_run?, acc)}
     end)
+  end
+
+  # A run reads Hex once per closure member, up to 15 s a read and about two
+  # thousand members a day across both phases, so a slow `repo.hex.pm` could
+  # keep it going for hours: past `Oban.Plugins.Lifeline`'s `rescue_after`
+  # it would be rescued and run again beside itself. Past `budget_ms/0` it
+  # judges, reads and queues nothing more; tomorrow's run picks up the rest.
+  defp out_of_time?(deadline), do: System.monotonic_time(:millisecond) >= deadline
+
+  defp put_out_of_time(summary, deadline) do
+    if out_of_time?(deadline) do
+      Logger.warning("Closure drift: stopped at its time budget of #{budget_ms()} ms")
+      Map.put(summary, :out_of_time, true)
+    else
+      summary
+    end
   end
 
   defp judge(candidate, index, context, dry_run?, acc) do
@@ -313,9 +339,9 @@ defmodule Portal.Workers.ClosureDrift do
   end
 
   # The firmware phase (moduledoc), with the run's registry and Hex reads.
-  defp put_firmware(summary, index, releases, dry_run?) do
+  defp put_firmware(summary, index, releases, dry_run?, deadline) do
     if firmware_enabled?() do
-      firmware = firmware(index, releases, dry_run?)
+      firmware = firmware(index, releases, dry_run?, deadline)
 
       Logger.info(
         "Firmware drift: #{firmware.candidates} runs behind a release, #{firmware.drifted} " <>
@@ -331,14 +357,15 @@ defmodule Portal.Workers.ClosureDrift do
   end
 
   # A dry run judges as far as the cap would reach on an empty day.
-  defp firmware(index, releases, dry_run?) do
+  defp firmware(index, releases, dry_run?, deadline) do
     earlier = if dry_run?, do: 0, else: firmware_spent()
 
     context = %{
       judge: {index, releases, SystemAbi.table()},
       dry_run?: dry_run?,
       max: max(firmware_max_per_run() - earlier, 0),
-      page: firmware_scan_limit()
+      page: firmware_scan_limit(),
+      deadline: deadline
     }
 
     summary = Map.merge(%{candidates: 0, drifted: 0, targets: 0, earlier: earlier}, @outcomes)
@@ -368,11 +395,17 @@ defmodule Portal.Workers.ClosureDrift do
     )
   end
 
-  # Page by page, most downloaded first, until the cap is reached or the
-  # runs run out: a page can hold only runs that are current
-  # (`FirmwareDrift.candidates/2`), and the drifted ones below it must still
-  # be reached.
+  # Page by page, most downloaded first, until the cap is reached, the runs
+  # run out or the time budget is spent: a page can hold only runs that are
+  # current (`FirmwareDrift.candidates/2`), and the drifted ones below it
+  # must still be reached.
   defp scan_firmware(cursor, acc, context) do
+    if out_of_time?(context.deadline),
+      do: acc,
+      else: scan_firmware_page(cursor, acc, context)
+  end
+
+  defp scan_firmware_page(cursor, acc, context) do
     {index, _releases, _systems} = context.judge
 
     page =
@@ -383,14 +416,21 @@ defmodule Portal.Workers.ClosureDrift do
       )
 
     acc =
-      Enum.reduce_while(page, %{acc | candidates: acc.candidates + length(page)}, fn
-        _run, %{enqueued: enqueued} = acc when enqueued >= context.max -> {:halt, acc}
-        run, acc -> {:cont, judge_firmware(run, context.judge, context.dry_run?, acc)}
-      end)
+      Enum.reduce_while(
+        page,
+        %{acc | candidates: acc.candidates + length(page)},
+        &judge_firmware_next(&1, &2, context)
+      )
 
     if page == [] or length(page) < context.page or acc.enqueued >= context.max,
       do: acc,
       else: scan_firmware(page |> List.last() |> FirmwareDrift.cursor(), acc, context)
+  end
+
+  defp judge_firmware_next(run, acc, context) do
+    if acc.enqueued >= context.max or out_of_time?(context.deadline),
+      do: {:halt, acc},
+      else: {:cont, judge_firmware(run, context.judge, context.dry_run?, acc)}
   end
 
   defp judge_firmware(run, {index, releases, systems}, dry_run?, acc) do
@@ -468,23 +508,30 @@ defmodule Portal.Workers.ClosureDrift do
 
   # `Portal.HexDeps.releases/2` once per package for the run, its answer
   # (an error too) kept in this process until the run ends (moduledoc).
-  defp memoized_releases do
+  # Past the deadline it reads nothing more (`out_of_time?/1`).
+  defp memoized_releases(deadline) do
     memo = {__MODULE__, :releases, make_ref()}
     Process.put(memo, %{})
 
-    releases = fn name ->
-      case Map.fetch(Process.get(memo), name) do
-        {:ok, answer} ->
-          answer
+    {memo, &memoized_release(memo, &1, deadline)}
+  end
 
-        :error ->
-          answer = hex_deps().releases(name, receive_timeout: 15_000, retry: false)
-          Process.put(memo, Map.put(Process.get(memo), name, answer))
-          answer
-      end
+  defp memoized_release(memo, name, deadline) do
+    case Map.fetch(Process.get(memo), name) do
+      {:ok, answer} ->
+        answer
+
+      :error ->
+        if out_of_time?(deadline),
+          do: {:error, :out_of_time},
+          else: read_releases(memo, name)
     end
+  end
 
-    {memo, releases}
+  defp read_releases(memo, name) do
+    answer = hex_deps().releases(name, receive_timeout: 15_000, retry: false)
+    Process.put(memo, Map.put(Process.get(memo), name, answer))
+    answer
   end
 
   @doc "Whether the scheduled run is switched on (`NCC_CLOSURE_DRIFT`)."
@@ -496,6 +543,15 @@ defmodule Portal.Workers.ClosureDrift do
   def max_per_run, do: Keyword.get(config(), :max_per_run, 500)
 
   defp scan_limit, do: Keyword.get(config(), :scan_limit, 5_000)
+
+  @doc """
+  How long a run may judge, read Hex and queue, in milliseconds; past it a
+  run stops and the next one picks up the rest. Well under
+  `Oban.Plugins.Lifeline`'s `rescue_after`, so the run is never rescued and
+  run a second time while it is still working.
+  """
+  @spec budget_ms() :: non_neg_integer()
+  def budget_ms, do: Keyword.get(config(), :budget_ms, :timer.minutes(60))
 
   @doc "Whether a run also rebuilds drifted firmware targets (`NCC_FIRMWARE_DRIFT`)."
   @spec firmware_enabled?() :: boolean()
