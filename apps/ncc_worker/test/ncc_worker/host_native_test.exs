@@ -242,13 +242,22 @@ defmodule NccWorker.HostNativeTest do
                  @toolchain,
                  "aarch64-linux-gnu",
                  host_trace: trace,
-                 optional_deps: fn _, _ -> {[], []} end,
+                 optional_deps: fn _, _ ->
+                   send(test_pid, :optional_deps_resolved)
+                   {[], []}
+                 end,
                  facts: Map.new(@facts),
                  hex_home: ctx.home,
                  cache_dirs: [Path.join(dir, "cache")]
                )
 
       assert_received {:trace_opts, [target: "host", host_native: true]}
+      # No optional dependency is added: a client matches a build only in an
+      # env whose closure is exactly the build's, and a NIF package's optional
+      # dependency is rustler (tokenizers, rustler_precompiled), which almost
+      # no application locks. A build with it would miss for all of them.
+      refute_received :optional_deps_resolved
+      assert %{optional_deps: %{added: [], reason: "not_requested"}} = result
       assert %{scope: "host_native", systems: %{}, host_native_build: build} = result
       assert %{status: "pass", triple: "aarch64-linux-gnu"} = build
       refute Map.has_key?(build, :archives)

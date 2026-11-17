@@ -914,8 +914,10 @@ With `"mode": "host_native"` (and optionally `"triple": "x86_64-linux-gnu"`, the
 builds a NIF package on a toolchain image for its own glibc Linux triple (`Compatibility.HostTriple`: x86_64 or
 aarch64, `-linux-gnu` only), so a client on the same triple that opted in can install its beams and priv native files
 (design addendum for board #85). A builder of another triple, or of none (musl, darwin), fails the run before any
-`mix` (exit 10). The run is the toolchain run's (plain project, lock policy, optional dependencies added, one traced
-host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2:
+`mix` (exit 10). The run is the toolchain run's (plain project, lock policy, no optional dependency added, as
+`optional_deps: "exclude"`, one traced host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2.
+No optional dependency because a client takes a build only where its env's closure of the package is exactly the
+build's `deps`, and a NIF package's optional dependency is rustler, which almost no application locks:
 
 - the trace in target mode (`target: "host"`, `host_native: true`, `NccWorker.Portability`): every compile-time read
   must be a recorded input (env, config, `mix_target` "host", byte order, OS type), as for a firmware target. The

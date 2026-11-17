@@ -1895,8 +1895,12 @@ defmodule NccWorker.Worker do
   # A host-native run (`mode: "host_native"`, `NccWorker.HostNative`): the
   # toolchain run's project and its one traced host compile, judged as a
   # build for this builder's own glibc Linux triple (`target: "host"`,
-  # `host_native: true`), the package's unresolved optional dependencies
-  # added as a toolchain run's default build adds them. A builder whose
+  # `host_native: true`), with no optional dependency added (a toolchain
+  # run's "exclude"). A client takes a build only in an env whose closure of
+  # the package is exactly the build's `deps`, and the optional dependency
+  # of a NIF package is rustler (tokenizers, rustler_precompiled), which
+  # almost no application locks: a build with it misses for all of them,
+  # and a host-native build has no second variant. A builder whose
   # triple is not the one the job names fails before anything runs (exit
   # 10), so the job is retried on another builder.
   defp host_native_run(input, paths, toolchain) do
@@ -1934,7 +1938,7 @@ defmodule NccWorker.Worker do
       ] ++ Keyword.drop(opts, [:facts, :hex_home, :cache_dirs])
 
     with {:ok, compiled} <-
-           toolchain_compile(project_dir, "include", package_name, paths, compile_opts) do
+           toolchain_compile(project_dir, "exclude", package_name, paths, compile_opts) do
       build_opts =
         [triple: triple] ++ Map.to_list(facts) ++ Keyword.take(opts, [:hex_home, :cache_dirs])
 

@@ -1138,8 +1138,8 @@ defmodule NccWorker.Portability do
 
   # Judge revision 25. The tool's macro returns a quote whose
   # `{:force_build, only_rustler_opts}` branch is `use Rustler,
-  # only_rustler_opts` whenever Rustler is loaded (the optional dependency a
-  # host-native run adds), so the expander calls Rustler's macro while it
+  # only_rustler_opts` whenever Rustler is loaded (a closure that has the
+  # optional rustler), so the expander calls Rustler's macro while it
   # expands that quote, whichever branch the module body then takes.
   # Rustler's `__using__/2` (rustler 0.37, 0.38) is a `bind_quoted` quote:
   # calling it reads nothing and runs nothing. What it returns runs only in
