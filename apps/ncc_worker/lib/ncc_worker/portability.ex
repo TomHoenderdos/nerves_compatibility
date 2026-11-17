@@ -1224,7 +1224,13 @@ defmodule NccWorker.Portability do
           do: traced_tool_modules(ctx, scope, @expanded_tools),
           else: MapSet.new()
 
-      %{tool_modules: tools, entries: entries, host_tools: host_tools, expanded: expanded}
+      %{
+        tool_modules: tools,
+        entries: entries,
+        host_tools: host_tools,
+        expanded: expanded,
+        host_native: host_native
+      }
     end
   end
 
@@ -1367,6 +1373,9 @@ defmodule NccWorker.Portability do
       unreviewed_host_read?(event, mode) ->
         decision
 
+      tool_config_read?(event, mode) ->
+        decision
+
       true ->
         native_build(event, vm)
     end
@@ -1465,11 +1474,28 @@ defmodule NccWorker.Portability do
 
   defp tool_build(item), do: {:observe, "native_build", Map.drop(item, ["pid", "decision"])}
 
+  # In a host-native build this holds for every native tool, elixir_make
+  # too: a firmware target's system match covers whatever its `make` writes
+  # to priv, but a host-native build serves a priv library only when the
+  # package's checksum file pins it, and which of the archives listed there
+  # ends up in priv is then up to a process the tracer does not follow (a
+  # `make` that picks one by the builder's CPU and fetches it itself).
   defp unreviewed_host_read?(event, mode) do
-    host_tool?(event, mode) and
+    (host_tool?(event, mode) or Map.get(mode, :host_native) == true) and
       (event["channel"] == "programs" or
          (event["channel"] == "os_identity" and not reviewed_host_read?(event)))
   end
+
+  # A host-native build: an application config read a native tool's own code
+  # makes (elixir_make's `config :elixir_make, :force_build, app: true`) is
+  # judged as any closure read (`ConfigReads`), so it is a `compile_env` item
+  # the client compares: a user whose config makes their own compile build
+  # from source never gets the downloaded library. A read OTP's code makes
+  # under the tool (inets and ssl starting for its download) stays set apart.
+  defp tool_config_read?(%{"channel" => "config", "first_kind" => kind}, %{host_native: true}),
+    do: kind != "toolchain"
+
+  defp tool_config_read?(_event, _mode), do: false
 
   defp host_tool?(event, %{host_tools: host_tools}) do
     module = user_module(event) || mfa_module(event["mfa"])

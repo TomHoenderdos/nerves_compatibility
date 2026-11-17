@@ -648,6 +648,150 @@ defmodule NccWorker.Portability.HostNativeJudgeTest do
     end
   end
 
+  describe "elixir_make in a host-native build" do
+    # A firmware target's trace sets elixir_make's own activity apart, the
+    # `make` it runs included, because its system match covers what that
+    # build writes to priv. A host-native build serves a priv library only
+    # when it is a member of an archive the package's checksum file pins,
+    # but which of the listed archives lands in priv is then up to `make`, a
+    # process the tracer does not follow: it may pick one by the builder's
+    # CPU (an AVX-512 build where the user's own compile picks the generic
+    # one) and fetch and unpack it itself.
+    @make_user %{
+      "module" => "Elixir.ElixirMake.Compiler",
+      "function" => "compile",
+      "arity" => 1,
+      "file" => "lib/elixir_make/compiler.ex",
+      "line" => 117
+    }
+
+    setup %{proj: proj, tmp_dir: dir} do
+      home = Path.join(dir, "make_hex")
+      contents = %{"lib/elixir_make.ex" => "", "mix.exs" => ""}
+
+      for {path, body} <- contents do
+        File.mkdir_p!(Path.dirname(Path.join([proj, "deps/elixir_make", path])))
+        File.write!(Path.join([proj, "deps/elixir_make", path]), body)
+      end
+
+      ebin = Path.join([proj, "_build/host/lib/elixir_make/ebin"])
+      File.mkdir_p!(ebin)
+
+      File.write!(
+        Path.join(ebin, "elixir_make.app"),
+        "{application,elixir_make,[{modules,['Elixir.ElixirMake.Compiler'," <>
+          "'Elixir.Mix.Tasks.Compile.ElixirMake']}]}.\n"
+      )
+
+      release =
+        NccWorker.TracerFixtures.hex_release(home, "elixir_make", Map.keys(contents), contents)
+
+      %{make_hex: [releases: Map.new([release]), hex_home: home]}
+    end
+
+    defp make_report(proj, events, snapshot) do
+      base = report(proj)
+
+      %{
+        base
+        | events: events,
+          config_env: snapshot,
+          start: Map.put(base.start, "elixir", "1.19.5"),
+          closure: %{
+            "packages" => ["pkg"],
+            "deps" => [
+              dep(proj, "elixir_make", []),
+              dep(proj, "dep", []),
+              dep(proj, "pkg", ["dep", "elixir_make"])
+            ]
+          },
+          windows: [window("elixir_make", 5, 9, @libs) | base.windows],
+          sentinels: [%{app: "elixir_make", ts: 6, integrity_ok: true} | base.sentinels]
+      }
+    end
+
+    defp mjudge(ctx, events, opts, snapshot \\ %{entries: %{}, truncated: false}),
+      do:
+        Portability.judge(
+          ctx.proj,
+          "pkg",
+          make_report(ctx.proj, events, snapshot),
+          ["elixir_make"],
+          [built_check: false, nif_waiver: false] ++ ctx.make_hex ++ opts
+        )
+
+    defp make_event(ts, channel, mfa, arg),
+      do: %{
+        "ts" => ts,
+        "pid" => "<0.463.0>",
+        "channel" => channel,
+        "mfa" => mfa,
+        "arg" => arg,
+        "extent" => "frame",
+        "first" => %{"module" => "Elixir.ElixirMake.Compiler"},
+        "caller" => %{"module" => "Elixir.ElixirMake.Compiler"},
+        "user" => @make_user,
+        "first_kind" => "toolchain",
+        "caller_kind" => "toolchain"
+      }
+
+    test "the make it runs refuses; a firmware target's trace sets it apart", ctx do
+      make =
+        make_event(35, "programs", "erlang:open_port/2", %{
+          "port" => "{spawn_executable,\"/usr/bin/make\"}"
+        })
+
+      assert %{status: :pass, observations: %{"native_build" => [_]}} =
+               mjudge(ctx, [make], target: "host")
+
+      assert %{status: :skip, reason: "compile-time host read: erlang:open_port/2" <> _} =
+               mjudge(ctx, [make], @host_native)
+    end
+
+    test "its own host reads refuse as rustler_precompiled's do", ctx do
+      read = make_event(35, "os_identity", "erlang:system_info/1", %{"key" => "cpu_topology"})
+
+      assert %{status: :pass} = mjudge(ctx, [read], target: "host")
+
+      assert %{status: :skip, reason: "compile-time host read: erlang:system_info/1" <> _} =
+               mjudge(ctx, [read], @host_native)
+    end
+
+    test "its read of the force-build config is a compile_env item", ctx do
+      # `config :elixir_make, :force_build, pkg: true` makes the user's own
+      # compile build from source; served the download instead, that user
+      # would run a library they chose not to.
+      user = %{@make_user | "module" => "Elixir.Mix.Tasks.Compile.ElixirMake", "line" => 142}
+
+      read = %{
+        make_event(35, "config", "application:get_env/3", %{
+          "app" => "elixir_make",
+          "key" => "force_build",
+          "app_name" => "elixir_make",
+          "key_name" => "force_build",
+          "atoms" => true
+        })
+        | "first" => user,
+          "caller" => user,
+          "user" => user,
+          "first_kind" => "user",
+          "caller_kind" => "user"
+      }
+
+      value =
+        :undefined
+        |> :erlang.term_to_binary([:deterministic])
+        |> Base.url_encode64(padding: false)
+
+      snap = %{entries: %{{"elixir_make", "force_build"} => value}, truncated: false}
+
+      assert %{status: :pass, compile_env: []} = mjudge(ctx, [read], [target: "host"], snap)
+
+      assert %{status: :pass, compile_env: [%{app: "elixir_make", path: ["force_build"]}]} =
+               mjudge(ctx, [read], @host_native, snap)
+    end
+  end
+
   test "the tools a host-native build sets apart" do
     assert Portability.native_tools() == ["elixir_make"]
     assert Portability.host_native_tools() == ["rustler_precompiled"]

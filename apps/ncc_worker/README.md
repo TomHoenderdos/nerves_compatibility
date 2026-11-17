@@ -919,7 +919,10 @@ host compile in `prod`), judged by `NccWorker.HostNative` instead of rule 2:
 
 - the trace in target mode (`target: "host"`, `host_native: true`, `NccWorker.Portability`): every compile-time read
   must be a recorded input (env, config, `mix_target` "host", byte order, OS type), as for a firmware target. The
-  reviewed native tools' own activity is set apart: elixir_make, and rustler_precompiled (its target triple, NIF
+  reviewed native tools' own activity is set apart: elixir_make (but a program it runs, `make` included, and an OS
+  identity read rustler_precompiled's frame would refuse refuse from its frame too, since which pinned archive lands in
+  priv must not be up to an untraced process; and an application config read its own code makes, such as
+  `config :elixir_make, :force_build`, is a `compile_env` item), and rustler_precompiled (its target triple, NIF
   version, OTP release and OS type reads, its download and its writes into the package's priv; any other OS identity
   read or program run from its frame still refuses, and so does the package's own code, `use RustlerPrecompiled` and
   its `__using__/2` call excepted, including a read a variant fun of the package's tail-calls, which leaves the tool's
