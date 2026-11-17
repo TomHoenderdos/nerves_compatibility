@@ -65,7 +65,9 @@ defmodule Portal.Workers.ClosureDrift do
   their system releases a version their build is not used on. After the
   toolchain builds, a run asks `Portal.Catalog.FirmwareDrift` about each
   package's latest run of its newest release, with the same registry and
-  Hex reads, most downloaded package first, and queues one forced targets
+  Hex reads, most downloaded package first, `firmware_scan_limit` runs a
+  page, reading on past pages whose runs are all current until the cap is
+  reached or the runs run out, and queues one forced targets
   build (`Portal.Workers.Build.scope_args/3`) of only the targets it names,
   through `Portal.Builders.Routing`, at priority 8: below a new release of a
   tracked package, above bulk sweeps. Its args carry `reason` and `drift`
@@ -324,21 +326,39 @@ defmodule Portal.Workers.ClosureDrift do
   end
 
   defp firmware(index, releases, dry_run?) do
-    candidates =
+    context = %{
+      judge: {index, releases, SystemAbi.table()},
+      dry_run?: dry_run?,
+      max: firmware_max_per_run(),
+      page: firmware_scan_limit()
+    }
+
+    scan_firmware(nil, Map.merge(%{candidates: 0, drifted: 0, targets: 0}, @outcomes), context)
+  end
+
+  # Page by page, most downloaded first, until the cap is reached or the
+  # runs run out: a page can hold only runs that are current
+  # (`FirmwareDrift.candidates/2`), and the drifted ones below it must still
+  # be reached.
+  defp scan_firmware(cursor, acc, context) do
+    {index, _releases, _systems} = context.judge
+
+    page =
       FirmwareDrift.candidates(index,
         systems: BulkRebuild.targets(),
-        limit: firmware_scan_limit()
+        limit: context.page,
+        after: cursor
       )
 
-    systems = SystemAbi.table()
-    max = firmware_max_per_run()
+    acc =
+      Enum.reduce_while(page, %{acc | candidates: acc.candidates + length(page)}, fn
+        _run, %{enqueued: enqueued} = acc when enqueued >= context.max -> {:halt, acc}
+        run, acc -> {:cont, judge_firmware(run, context.judge, context.dry_run?, acc)}
+      end)
 
-    summary = Map.merge(%{candidates: length(candidates), drifted: 0, targets: 0}, @outcomes)
-
-    Enum.reduce_while(candidates, summary, fn
-      _run, %{enqueued: enqueued} = acc when enqueued >= max -> {:halt, acc}
-      run, acc -> {:cont, judge_firmware(run, {index, releases, systems}, dry_run?, acc)}
-    end)
+    if page == [] or length(page) < context.page or acc.enqueued >= context.max,
+      do: acc,
+      else: scan_firmware(page |> List.last() |> FirmwareDrift.cursor(), acc, context)
   end
 
   defp judge_firmware(run, {index, releases, systems}, dry_run?, acc) do

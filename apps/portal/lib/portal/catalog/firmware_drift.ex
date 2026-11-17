@@ -236,19 +236,21 @@ defmodule Portal.Catalog.FirmwareDrift do
   ), behind AS (
     SELECT DISTINCT s.run_id, s.name, s.downloads
     FROM served s
-    WHERE EXISTS (SELECT 1 FROM newest n
-                  WHERE n.name = s.system_pkg AND n.version IS DISTINCT FROM s.system_version)
-       OR (jsonb_typeof(s.deps_lock) = 'object'
-           AND EXISTS (SELECT 1 FROM jsonb_each(s.deps_lock) d
-                       JOIN newest n ON n.name = d.key
-                       WHERE d.value->>'version' IS DISTINCT FROM n.version))
-       OR (s.deps_lock IS NULL AND s.built_at < $5)
+    WHERE (EXISTS (SELECT 1 FROM newest n
+                   WHERE n.name = s.system_pkg AND n.version IS DISTINCT FROM s.system_version)
+           OR (jsonb_typeof(s.deps_lock) = 'object'
+               AND EXISTS (SELECT 1 FROM jsonb_each(s.deps_lock) d
+                           JOIN newest n ON n.name = d.key
+                           WHERE d.value->>'version' IS DISTINCT FROM n.version))
+           OR (s.deps_lock IS NULL AND s.built_at < $5))
+      AND ($6::bigint IS NULL OR s.downloads < $6
+           OR (s.downloads = $6 AND s.name > $7::text))
     ORDER BY s.downloads DESC, s.name
     LIMIT $4
   )
-  SELECT s.run_id, s.name, s.version, s.system_pkg, s.system_version, s.native, s.portable,
-         s.toolchain_pkg, s.toolchain_version, s.otp_full, s.elf_needs, s.deps_lock, s.built_at,
-         s.host_served
+  SELECT s.run_id, s.name, s.version, b.downloads, s.system_pkg, s.system_version, s.native,
+         s.portable, s.toolchain_pkg, s.toolchain_version, s.otp_full, s.elf_needs, s.deps_lock,
+         s.built_at, s.host_served
   FROM served s
   JOIN behind b ON b.run_id = s.run_id
   ORDER BY b.downloads DESC, b.name, s.system_pkg
@@ -261,7 +263,13 @@ defmodule Portal.Catalog.FirmwareDrift do
   targets on one of `:systems`, for runs where some such target locks a
   dependency, or is on a release of its system, that is not the newest, or
   has no lock from before locks were recorded. Each is `%{run_id, package,
-  version, targets}`.
+  version, downloads, targets}`.
+
+  That filter only says a run may have drifted, and most runs pass it for
+  good (a beam-only target on an older release, a dependency a requirement
+  holds back), so one page can hold only current runs, day after day. The
+  next page starts after `:after`, the `cursor/1` of the last run of the
+  previous one.
   """
   @spec candidates(%{String.t() => ClosureDrift.package()}, keyword()) :: [run()]
   def candidates(index, opts) do
@@ -272,6 +280,8 @@ defmodule Portal.Catalog.FirmwareDrift do
       end)
       |> Enum.unzip()
 
+    {after_downloads, after_name} = Keyword.get(opts, :after) || {nil, nil}
+
     %{rows: rows} =
       Repo.query!(
         @candidates_sql,
@@ -280,24 +290,31 @@ defmodule Portal.Catalog.FirmwareDrift do
           versions,
           Keyword.fetch!(opts, :systems),
           Keyword.fetch!(opts, :limit),
-          DateTime.to_naive(@locks_recorded_from)
+          DateTime.to_naive(@locks_recorded_from),
+          after_downloads,
+          after_name
         ],
         timeout: :timer.minutes(2)
       )
 
     rows
     |> Enum.chunk_by(&hd/1)
-    |> Enum.map(fn [[id, name, version | _] | _] = group ->
+    |> Enum.map(fn [[id, name, version, downloads | _] | _] = group ->
       %{
         run_id: Ecto.UUID.cast!(id),
         package: name,
         version: version,
+        downloads: downloads,
         targets: Enum.map(group, &target/1)
       }
     end)
   end
 
-  defp target([_id, _name, _version, system, system_version | facts]) do
+  @doc "Where the page after `run`, the last of its page, starts (`candidates/2`'s `:after`)."
+  @spec cursor(run()) :: {non_neg_integer(), String.t()}
+  def cursor(%{downloads: downloads, package: package}), do: {downloads, package}
+
+  defp target([_id, _name, _version, _downloads, system, system_version | facts]) do
     [
       native,
       portable,

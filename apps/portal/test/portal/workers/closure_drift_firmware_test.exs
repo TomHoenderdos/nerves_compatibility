@@ -229,6 +229,31 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
     assert [%{args: %{"package" => ^popular}}] = firmware_jobs()
   end
 
+  # Nearly every latest run on production locks some dependency, or sits on
+  # a system release, that is not the newest (a beam-only target on an older
+  # release, a dependency held back by a requirement), so the runs read first
+  # can all be current, and stay so after their rebuilds.
+  test "reads past a page of current runs to the drifted ones below it" do
+    [popular, obscure] = [name(), name()]
+    world([popular, obscure])
+
+    # Current: its lock is, and its beam-only rpi4 build is used on 2.2.2.
+    current =
+      run!(popular, "0.4.0",
+        telemetry: "1.4.3",
+        systems: %{"nerves_system_rpi4" => system("pass", "2.2.1")}
+      )
+
+    facts!(current, native: false, portable: true)
+    run!(obscure, "0.4.0")
+    downloads!(popular, 1_000_000)
+    downloads!(obscure, 10)
+    Application.put_env(:portal, ClosureDrift, enabled: true, firmware_scan_limit: 1)
+
+    assert {:ok, %{firmware: %{candidates: 2, enqueued: 1}}} = ClosureDrift.run()
+    assert [%{args: %{"package" => ^obscure}}] = firmware_jobs()
+  end
+
   test "a package with a build on the way is not queued again" do
     name = name()
     world([name])
