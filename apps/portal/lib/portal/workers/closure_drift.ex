@@ -110,6 +110,7 @@ defmodule Portal.Workers.ClosureDrift do
   alias Portal.BulkRebuild
   alias Portal.Catalog.ClosureDrift
   alias Portal.Catalog.FirmwareDrift
+  alias Portal.Catalog.FirmwareDrift.Attempts
   alias Portal.Catalog.Ingestion
   alias Portal.Catalog.ToolchainBuild, as: ToolchainRow
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
@@ -127,7 +128,7 @@ defmodule Portal.Workers.ClosureDrift do
   @build_workers ~w(Portal.Workers.Build Portal.Workers.RemoteBuild)
   @incomplete ~w(available scheduled executing retryable)
   @lease_in_flight ~w(queued leased uploading)
-  @outcomes %{enqueued: 0, pending: 0, unknown: 0}
+  @outcomes %{enqueued: 0, pending: 0, failed: 0, unknown: 0}
   # At most this many changes ride in a job's args, which Oban Web shows.
   @changes_shown 10
 
@@ -346,7 +347,8 @@ defmodule Portal.Workers.ClosureDrift do
       Logger.info(
         "Firmware drift: #{firmware.candidates} runs behind a release, #{firmware.drifted} " <>
           "drifted (#{firmware.targets} targets), #{firmware.enqueued} queued, " <>
-          "#{firmware.pending} already on the way, #{firmware.unknown} unread, " <>
+          "#{firmware.pending} already on the way, " <>
+          "#{firmware.failed} held after a rebuild that landed no run, #{firmware.unknown} unread, " <>
           "#{firmware.earlier} queued earlier against the cap"
       )
 
@@ -362,6 +364,7 @@ defmodule Portal.Workers.ClosureDrift do
 
     context = %{
       judge: {index, releases, SystemAbi.table()},
+      worker_revision: Attempts.worker_revision(),
       dry_run?: dry_run?,
       max: max(firmware_max_per_run() - earlier, 0),
       page: firmware_scan_limit(),
@@ -430,18 +433,21 @@ defmodule Portal.Workers.ClosureDrift do
   defp judge_firmware_next(run, acc, context) do
     if acc.enqueued >= context.max or out_of_time?(context.deadline),
       do: {:halt, acc},
-      else: {:cont, judge_firmware(run, context.judge, context.dry_run?, acc)}
+      else: {:cont, judge_firmware(run, context, acc)}
   end
 
-  defp judge_firmware(run, {index, releases, systems}, dry_run?, acc) do
+  defp judge_firmware(run, context, acc) do
+    {index, releases, systems} = context.judge
+
     case FirmwareDrift.judge(run, index, releases, systems) do
       {:rebuild, targets, changes} ->
         log_drift(%{package: run.package, version: run.version, targets: targets}, changes)
         acc = %{acc | drifted: acc.drifted + 1, targets: acc.targets + length(targets)}
+        fingerprint = Attempts.fingerprint(targets, changes, context.worker_revision)
 
-        if dry_run?,
+        if context.dry_run?,
           do: acc,
-          else: Map.update!(acc, rebuild_firmware(run, targets, changes), &(&1 + 1))
+          else: Map.update!(acc, rebuild_firmware(run, targets, changes, fingerprint), &(&1 + 1))
 
       :current ->
         acc
@@ -459,35 +465,42 @@ defmodule Portal.Workers.ClosureDrift do
   # `Portal.Workers.Build.scope_args/3` honours, through the routing every
   # build takes. Its unique window is a minute, so a build of the package
   # already waiting (any version, local or leased) is what dedupes it: one
-  # queued yesterday at this priority may still be waiting.
-  defp rebuild_firmware(run, targets, changes) do
-    if firmware_pending?(run.package) do
-      :pending
-    else
-      args = %{
-        package: run.package,
-        version: run.version,
-        force: true,
-        scope: "targets",
-        systems: targets,
-        reason: @reason,
-        drift: Enum.take(changes, @changes_shown)
-      }
+  # queued yesterday at this priority may still be waiting. With nothing on
+  # the way, an attempt on this same run with the same inputs landed no run,
+  # and is not queued again until they change (`FirmwareDrift.Attempts`).
+  defp rebuild_firmware(run, targets, changes, fingerprint) do
+    cond do
+      firmware_pending?(run.package) -> :pending
+      Attempts.failed?(run.run_id, fingerprint) -> :failed
+      true -> queue_firmware(run, targets, changes, fingerprint)
+    end
+  end
 
-      case args |> Routing.build_job(priority: @firmware_priority) |> Oban.insert() do
-        {:ok, %Oban.Job{conflict?: true}} ->
-          :pending
+  defp queue_firmware(run, targets, changes, fingerprint) do
+    args = %{
+      package: run.package,
+      version: run.version,
+      force: true,
+      scope: "targets",
+      systems: targets,
+      reason: @reason,
+      drift: Enum.take(changes, @changes_shown)
+    }
 
-        {:ok, _job} ->
-          :enqueued
+    case args |> Routing.build_job(priority: @firmware_priority) |> Oban.insert() do
+      {:ok, %Oban.Job{conflict?: true}} ->
+        :pending
 
-        {:error, reason} ->
-          Logger.error(
-            "Firmware drift could not queue #{run.package} #{run.version}: #{inspect(reason)}"
-          )
+      {:ok, _job} ->
+        :ok = Attempts.record(run, targets, fingerprint)
+        :enqueued
 
-          :unknown
-      end
+      {:error, reason} ->
+        Logger.error(
+          "Firmware drift could not queue #{run.package} #{run.version}: #{inspect(reason)}"
+        )
+
+        :unknown
     end
   end
 

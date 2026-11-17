@@ -51,10 +51,10 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
 
   # `name` 0.3.0 and 0.4.0 on Hex, each `telemetry ~> 1.0`; telemetry 1.4.3
   # and nerves_system_rpi4 2.2.2 are out.
-  defp world(names) do
+  defp world(names, telemetry \\ ["1.4.2", "1.4.3"]) do
     entries =
       [
-        entry("telemetry", ["1.4.2", "1.4.3"]),
+        entry("telemetry", telemetry),
         entry("nerves_system_rpi4", ["2.2.1", "2.2.2"]),
         entry("nerves_system_x86_64", ["1.35.2"])
       ] ++ Enum.map(names, &entry(&1, ["0.3.0", "0.4.0"]))
@@ -71,7 +71,7 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
            release("0.4.0", [{"telemetry", "~> 1.0"}])
          ]}
       end)
-      |> Map.put("telemetry", [release("1.4.2", []), release("1.4.3", [])])
+      |> Map.put("telemetry", Enum.map(telemetry, &release(&1, [])))
     )
   end
 
@@ -135,6 +135,13 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
   defp name, do: "fw_drift_#{System.unique_integer([:positive])}"
 
   defp firmware_jobs, do: all_enqueued(worker: Build)
+
+  # What exhausting its attempts `days` ago leaves: a discarded job, no run.
+  defp discard_builds!(days) do
+    Repo.update_all(from(j in Oban.Job, where: j.worker == "Portal.Workers.Build"),
+      set: [state: "discarded", inserted_at: DateTime.add(DateTime.utc_now(), -days, :day)]
+    )
+  end
 
   test "queues a targets rebuild of the drifted passing targets, low priority, saying why" do
     name = name()
@@ -262,6 +269,41 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
     # Built on an earlier day, it no longer does.
     Repo.update_all(from(j in Oban.Job, where: j.worker == "Portal.Workers.Build"),
       set: [state: "completed"]
+    )
+
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+  end
+
+  # A build that keeps failing (a worker error, a lease no builder finishes)
+  # lands no run, so the run it would replace stays the latest and drifted:
+  # each day would queue it again, and such builds could fill the cap.
+  test "a rebuild that landed no run waits until its inputs change" do
+    name = name()
+    world([name])
+    run!(name, "0.4.0")
+
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+    discard_builds!(1)
+    assert {:ok, %{firmware: %{enqueued: 0, failed: 1}}} = ClosureDrift.run()
+    assert firmware_jobs() == []
+
+    # A newer release of a dependency it would lock.
+    world([name], ["1.4.2", "1.4.3", "1.4.4"])
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+    assert [%{args: %{"drift" => [%{"to" => "1.4.4"}]}}] = firmware_jobs()
+    discard_builds!(1)
+    assert {:ok, %{firmware: %{enqueued: 0, failed: 1}}} = ClosureDrift.run()
+
+    # A worker whose judge changed.
+    ingest_toolchain_build(name, "0.4.0", toolchain: "1.20/29", elixir: "1.20.3", otp: "29")
+    Repo.update_all("catalog_toolchain_builds", set: [judge_revision: 1_000])
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+    discard_builds!(1)
+    assert {:ok, %{firmware: %{enqueued: 0, failed: 1}}} = ClosureDrift.run()
+
+    # Nothing changed for a week: a failure that was the host's is retried.
+    Repo.update_all("firmware_drift_attempts",
+      set: [inserted_at: NaiveDateTime.add(NaiveDateTime.utc_now(), -8, :day)]
     )
 
     assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()

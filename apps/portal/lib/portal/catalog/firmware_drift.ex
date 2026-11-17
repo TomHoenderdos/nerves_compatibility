@@ -58,6 +58,15 @@ defmodule Portal.Catalog.FirmwareDrift do
   # read, which a rebuild would not read either.
   @locks_recorded_from ~U[2026-10-22 00:00:00Z]
 
+  # Bumped whenever `judge/4` changes what it names, so a rebuild held back
+  # after it landed no run (`Portal.Catalog.FirmwareDrift.Attempts`) is
+  # tried again under the new rules.
+  @revision 1
+
+  @doc "This judge's revision, part of a rebuild's fingerprint (`FirmwareDrift.Attempts`)."
+  @spec revision() :: pos_integer()
+  def revision, do: @revision
+
   @typedoc "One passing target of a run, as `candidates/2` reads it."
   @type target :: %{
           system: String.t(),
