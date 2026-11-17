@@ -54,11 +54,42 @@ defmodule Portal.Oban.NodeSweepTest do
     end
   end
 
-  describe "next_tick_ms/2" do
+  describe "next_tick_ms/3" do
     test "waits for the minute this hour, or the next hour once it has passed" do
       assert NodeSweep.next_tick_ms(~U[2026-11-17 10:00:00Z], 23) == :timer.minutes(23)
       assert NodeSweep.next_tick_ms(~U[2026-11-17 10:23:00Z], 23) == :timer.minutes(60)
       assert NodeSweep.next_tick_ms(~U[2026-11-17 10:30:30Z], 23) == :timer.seconds(52 * 60 + 30)
+    end
+
+    # The timer runs on monotonic time and the target is wall-clock time, so a
+    # wall clock stepped back (an NTP step, a resumed VM) fires the :23 tick at
+    # :22:59. Counted from there, the next tick would come a second later,
+    # find this hour's sweep still outstanding and warn of a skipped hour.
+    test "after a tick, counts from the time it was aimed at, so an early fire does not tick twice" do
+      aimed = ~U[2026-11-17 10:23:00Z]
+
+      assert NodeSweep.next_tick_ms(~U[2026-11-17 10:22:59Z], 23, aimed) == :timer.seconds(3601)
+      assert NodeSweep.next_tick_ms(~U[2026-11-17 10:22:59.999Z], 23, aimed) == 3_600_001
+      # A late fire counts from now, as before.
+      assert NodeSweep.next_tick_ms(~U[2026-11-17 10:23:02Z], 23, aimed) == :timer.seconds(3598)
+    end
+  end
+
+  describe "a tick" do
+    test "that fires early schedules the next hour's, not this hour's again" do
+      queue = String.to_atom(NodeQueue.name())
+      now = DateTime.utc_now()
+      # The next whole minute, up to a minute ahead: the tick below fires early.
+      aimed = %{DateTime.add(now, 60, :second) | second: 0, microsecond: {0, 0}}
+
+      {:ok, pid} =
+        NodeSweep.start_link(conf: conf([{queue, [limit: 2]}]), name: nil, minute: aimed.minute)
+
+      :sys.replace_state(pid, &Map.put(&1, :at, aimed))
+      send(pid, :tick)
+
+      assert :sys.get_state(pid).at == DateTime.add(aimed, 3600, :second)
+      GenServer.stop(pid)
     end
   end
 

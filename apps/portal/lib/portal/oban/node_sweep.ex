@@ -79,16 +79,12 @@ defmodule Portal.Oban.NodeSweep do
   end
 
   @impl GenServer
-  def init(state) do
-    schedule(state.minute)
-    {:ok, state}
-  end
+  def init(state), do: {:ok, schedule(state, nil)}
 
   @impl GenServer
   def handle_info(:tick, state) do
     tick(state.oban, state.queue)
-    schedule(state.minute)
-    {:noreply, state}
+    {:noreply, schedule(state, state.at)}
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -104,16 +100,29 @@ defmodule Portal.Oban.NodeSweep do
     cancel_legacy(oban)
   end
 
-  @doc "Milliseconds from `now` to the next `minute` past the hour."
-  @spec next_tick_ms(DateTime.t(), 0..59) :: pos_integer()
-  def next_tick_ms(%DateTime{} = now, minute) do
-    at = %{now | minute: minute, second: 0, microsecond: {0, 0}}
-    at = if DateTime.compare(at, now) == :gt, do: at, else: DateTime.add(at, 3600, :second)
-    DateTime.diff(at, now, :millisecond)
+  @doc """
+  Milliseconds from `now` to the next `minute` past the hour after both `now`
+  and `last`, the time the tick that just ran was aimed at (nil before the
+  first). The timer runs on monotonic time and the target is on the wall
+  clock, so a wall clock stepped back fires a tick early: counted from `now`
+  alone, the next one would come seconds later, for the same hour.
+  """
+  @spec next_tick_ms(DateTime.t(), 0..59, DateTime.t() | nil) :: non_neg_integer()
+  def next_tick_ms(%DateTime{} = now, minute, last \\ nil),
+    do: DateTime.diff(next_tick(now, minute, last), now, :millisecond)
+
+  defp next_tick(now, minute, last) do
+    from = if last != nil and DateTime.compare(last, now) == :gt, do: last, else: now
+    at = %{from | minute: minute, second: 0, microsecond: {0, 0}}
+    if DateTime.compare(at, from) == :gt, do: at, else: DateTime.add(at, 3600, :second)
   end
 
-  defp schedule(minute),
-    do: Process.send_after(self(), :tick, next_tick_ms(DateTime.utc_now(), minute))
+  defp schedule(state, last) do
+    now = DateTime.utc_now()
+    at = next_tick(now, state.minute, last)
+    Process.send_after(self(), :tick, DateTime.diff(at, now, :millisecond))
+    Map.put(state, :at, at)
+  end
 
   defp runs_queue?(conf, queue),
     do: Enum.any?(conf.queues, fn {name, _opts} -> to_string(name) == queue end)
