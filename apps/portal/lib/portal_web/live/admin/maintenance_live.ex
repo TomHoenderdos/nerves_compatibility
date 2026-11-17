@@ -95,6 +95,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
       worlds_enabled: Portal.Settings.get().world_variants_enabled,
       firmware_world_enabled: Portal.Settings.get().firmware_world_enabled,
       host_native_enabled: Portal.Settings.get().host_native_enabled,
+      deterministic_enabled: Portal.Settings.get().deterministic_builds_enabled,
       worlds: Portal.Toolchains.worlds(),
       world_top_packages: Portal.Toolchains.world_top_packages(),
       rows:
@@ -195,6 +196,26 @@ defmodule PortalWeb.Admin.MaintenanceLive do
           {:noreply,
            socket
            |> put_flash(:info, "Host-native builds turned #{if enabled, do: "on", else: "off"}.")
+           |> load_panels()}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, AdminMessages.error(reason)) |> load_panels()}
+      end
+    end)
+  end
+
+  def handle_event("toggle_deterministic", params, socket) do
+    as_admin(socket, fn socket, user ->
+      enabled = params["enabled"] == "true"
+
+      case Portal.Admin.set_deterministic_builds_enabled(enabled, user) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_flash(
+             :info,
+             "Deterministic builds turned #{if enabled, do: "on", else: "off"}."
+           )
            |> load_panels()}
 
         {:error, reason} ->
@@ -816,6 +837,41 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               {if @toolchains.host_native_enabled,
                 do: "Turn host-native builds off",
                 else: "Turn host-native builds on"}
+            </button>
+          </div>
+
+          <div
+            id="deterministic-builds"
+            class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <h3 class="font-semibold">Deterministic builds</h3>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                <span id="deterministic-state">
+                  Deterministic builds are {if @toolchains.deterministic_enabled,
+                    do: "on",
+                    else: "off"}.
+                </span>
+                Each toolchain build is compiled again with
+                <code>ERL_COMPILER_OPTIONS=deterministic</code>
+                and judged, and these siblings are listed under a version's <code>deterministic</code>
+                key and their files served, only while this is on. Only clients whose project sets
+                exactly that option use them.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="deterministic-toggle"
+              phx-click="toggle_deterministic"
+              phx-value-enabled={to_string(not @toolchains.deterministic_enabled)}
+              class={[
+                "btn btn-sm",
+                if(@toolchains.deterministic_enabled, do: "btn-ghost", else: "btn-primary")
+              ]}
+            >
+              {if @toolchains.deterministic_enabled,
+                do: "Turn deterministic builds off",
+                else: "Turn deterministic builds on"}
             </button>
           </div>
 

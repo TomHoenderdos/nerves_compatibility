@@ -59,6 +59,14 @@ defmodule Portal.SettingsTest do
     assert Settings.get().host_native_enabled
   end
 
+  test "deterministic builds are off until saved on" do
+    refute Settings.get().deterministic_builds_enabled
+    {:ok, _} = Settings.save(%{deterministic_builds_enabled: true})
+    assert Settings.get().deterministic_builds_enabled
+    {:ok, _} = Settings.save(%{argus_timeout_seconds: 120})
+    assert Settings.get().deterministic_builds_enabled
+  end
+
   test "worker_firmware_world is nil while off and the nerves world while on" do
     refute Settings.get().firmware_world_enabled
     assert Settings.worker_firmware_world(Settings.get()) == nil

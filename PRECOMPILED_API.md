@@ -715,6 +715,41 @@ What it lists:
   installs one, the client reads every staged priv ELF file back: a 64-bit library of the host's
   machine that an origin names, or it is not installed. The build
   is ABI-compatible with what the host would compile, not byte-identical to it.
+- `versions[v].deterministic` — deterministic siblings: toolchain builds compiled again, in the same
+  run and on the same toolchain and lock, with `ERL_COMPILER_OPTIONS=deterministic`, read only by a
+  client whose project's `ERL_COMPILER_OPTIONS` parses (as `compile:env_default_opts/0` parses it) to
+  exactly `[deterministic]` (clients after 0.7.2), which then reads this object **in place of** the
+  version's other lists and never takes a build from those. It is an object of the same lists as the
+  version itself, `builds` (always present), `builds_with_inputs` and `builds_closure`, each holding
+  the siblings of the builds the version lists there, split, picked (newest per key) and matched by
+  the same rules. A sibling is its toolchain build's entry (the same `build` fields: `deps`,
+  `compile_env`, `compile_inputs`, `run_id`, ...) with its own `ebin` and `priv` and
+  `build.erl_compiler_options: ["deterministic"]`. Listed only while the portal's
+  `deterministic_builds_enabled` setting is on, only beside its toolchain build while that build is
+  served (so every lever that withdraws a toolchain build withdraws its sibling, and
+  `Portal.Precompiled.DeterministicRevocation` withdraws a sibling alone), and only when every file
+  it lists is held; absent otherwise, so a version without siblings renders the bytes it always did,
+  and a version with siblings alone keeps `"builds": []`. A client before this never reads it, and
+  takes no build carrying `erl_compiler_options` anyway: a deterministic build in a project without
+  the option would differ from the project's own compile (`module_info(:compile)` has no `options`
+  or `source`).
+
+  The builder (`NccWorker.Deterministic`, judge revision 29) builds a sibling only after its build
+  passed and when the build's own compile neither read nor set `ERL_COMPILER_OPTIONS`. It is a real
+  compile of the package's whole closure with the option, in its own traced VM at its own build
+  path, judged by every rule the build was judged by on the lock and source-tree snapshots the build
+  was judged on, so its Erlang modules carry what the option changes there (`?FILE` and the line
+  table's file names become the source's base name, which changes their literals and md5). It is
+  kept only when it is the build but for what the option changes: the same lock, checksum,
+  declared dependencies, manager, `compile_env`, `compile_inputs` and own-priv list, the same
+  `priv` bytes, every beam compiled with the option (`CInf` without `options` and `source`), each
+  Elixir module's code and md5 its build's (only `CInf`, `Dbgi`, `Docs` and `ExCk` differ) and each
+  Erlang module's changes confined to `CInf`, `Dbgi`, `Docs`, `Line`, `LitT` and `Attr`
+  (`Compatibility.DeterministicBeams`). The portal checks all of it again at ingest on the blobs it
+  stores (`Portal.Deterministic.Ingest`), its `priv` as for the build. Firmware targets and
+  host-native builds have no siblings yet.
+- `build.erl_compiler_options` — only on a build under `versions[v].deterministic`:
+  `["deterministic"]`, the `ERL_COMPILER_OPTIONS` it was compiled with.
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
   build with and one without the package's optional dependencies differ in

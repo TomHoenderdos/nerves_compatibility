@@ -95,6 +95,14 @@ defmodule Portal.Workers.ToolchainBuildTest do
            } = build_args
 
     assert "tc-jason-1.4.4-" <> _ = build_args.run_id
+    assert build_args.deterministic == false
+  end
+
+  test "asks for the deterministic sibling while the setting is on" do
+    {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
+    respond(0)
+    assert :ok = perform_job(ToolchainBuild, @args)
+    assert_received {:build_args, %{deterministic: true}}
   end
 
   test "follows the run id's millisecond with a node-unique integer" do

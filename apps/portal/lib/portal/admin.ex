@@ -627,6 +627,25 @@ defmodule Portal.Admin do
     end
   end
 
+  @doc """
+  Turns deterministic siblings (`Portal.Deterministic`) on or off: the
+  `deterministic_builds_enabled` setting under which toolchain runs are asked
+  for them, they are listed under a version's `deterministic` key and their
+  files served. Off stops all three at once; the rows already stored stay,
+  unserved.
+  """
+  @spec set_deterministic_builds_enabled(boolean(), %{username: String.t()}) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, term()}
+  def set_deterministic_builds_enabled(enabled, actor) when is_boolean(enabled) do
+    with {:ok, setting} <- Portal.Settings.save(%{deterministic_builds_enabled: enabled}) do
+      Logger.warning(
+        "Deterministic builds turned #{if enabled, do: "on", else: "off"} by #{actor.username}"
+      )
+
+      {:ok, setting}
+    end
+  end
+
   defp remote_mode(mode) when mode in ~w(auto on off), do: {:ok, String.to_existing_atom(mode)}
   defp remote_mode(_mode), do: :error
 

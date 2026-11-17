@@ -3,9 +3,11 @@ defmodule Portal.Catalog.ArtifactMembership do
   Records that one build's file manifest includes one stored blob. The build
   is either a `Portal.Catalog.SystemResult` (one Nerves target of a run) or a
   `Portal.Catalog.ToolchainBuild` (one host toolchain) or a
-  `Portal.Catalog.HostNativeBuild` (one glibc Linux triple): every row has
-  exactly one of `system_result_id`, `toolchain_build_id` and
-  `host_native_build_id`, which the `one_owner` check constraint enforces.
+  `Portal.Catalog.HostNativeBuild` (one glibc Linux triple) or a
+  `Portal.Catalog.DeterministicBuild` (a toolchain build's deterministic
+  sibling): every row has exactly one of `system_result_id`,
+  `toolchain_build_id`, `host_native_build_id` and `deterministic_build_id`,
+  which the `one_owner` check constraint enforces.
 
   `Portal.Catalog.Artifact` is a *registry*: one row per distinct sha256, saying
   "these bytes are on disk". This table is the *membership*: one row per
@@ -61,12 +63,15 @@ defmodule Portal.Catalog.ArtifactMembership do
       index([:system_result_id])
       index([:toolchain_build_id])
       index([:host_native_build_id])
+      index([:deterministic_build_id])
       index([:sha256])
     end
 
     check_constraints do
       check_constraint(:toolchain_build_id, "one_owner",
-        check: "num_nonnulls(system_result_id, toolchain_build_id, host_native_build_id) = 1",
+        check:
+          "num_nonnulls(system_result_id, toolchain_build_id, host_native_build_id, " <>
+            "deterministic_build_id) = 1",
         message: "exactly one owner"
       )
     end
@@ -76,7 +81,9 @@ defmodule Portal.Catalog.ArtifactMembership do
     identity_index_names(
       unique_toolchain_build_sha256: "catalog_artifact_memberships_toolchain_build_sha256_index",
       unique_host_native_build_sha256:
-        "catalog_artifact_memberships_host_native_build_sha256_index"
+        "catalog_artifact_memberships_host_native_build_sha256_index",
+      unique_deterministic_build_sha256:
+        "catalog_artifact_memberships_deterministic_build_sha256_index"
     )
   end
 
@@ -109,6 +116,13 @@ defmodule Portal.Catalog.ArtifactMembership do
       upsert_identity(:unique_host_native_build_sha256)
       upsert_fields([:sha256])
     end
+
+    create :upsert_deterministic do
+      accept([:sha256, :deterministic_build_id])
+      upsert?(true)
+      upsert_identity(:unique_deterministic_build_sha256)
+      upsert_fields([:sha256])
+    end
   end
 
   identities do
@@ -124,6 +138,8 @@ defmodule Portal.Catalog.ArtifactMembership do
     identity(:unique_toolchain_build_sha256, [:toolchain_build_id, :sha256])
 
     identity(:unique_host_native_build_sha256, [:host_native_build_id, :sha256])
+
+    identity(:unique_deterministic_build_sha256, [:deterministic_build_id, :sha256])
   end
 
   attributes do
@@ -149,6 +165,11 @@ defmodule Portal.Catalog.ArtifactMembership do
     end
 
     belongs_to :host_native_build, Portal.Catalog.HostNativeBuild do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    belongs_to :deterministic_build, Portal.Catalog.DeterministicBuild do
       allow_nil?(true)
       public?(true)
     end

@@ -49,6 +49,7 @@ defmodule Portal.Catalog do
   }
 
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
+  alias Portal.Deterministic
   alias Portal.HostNative
   alias Portal.Precompiled.Withheld
   alias Portal.Repo
@@ -145,6 +146,7 @@ defmodule Portal.Catalog do
     resource(BulkSweep)
     resource(ToolchainBuild)
     resource(Portal.Catalog.HostNativeBuild)
+    resource(Portal.Catalog.DeterministicBuild)
     resource(ReleaseDownloads)
     resource(CoverageReport)
     resource(RunMemory)
@@ -1154,7 +1156,9 @@ defmodule Portal.Catalog do
   # builds (`Portal.HostNative`) count only while the `host_native_enabled`
   # setting is on, appended so every other package's fingerprint is the
   # bytes it was (`format/2` reads a NULL as '', so the suffix is decided by
-  # whether the package has a counted row, never by `coalesce`).
+  # whether the package has a counted row, never by `coalesce`); so do
+  # deterministic siblings (`Portal.Deterministic`) while the
+  # `deterministic_builds_enabled` setting is on, in a suffix of their own.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1213,12 +1217,29 @@ defmodule Portal.Catalog do
     JOIN catalog_host_native_builds h ON h.id = m.host_native_build_id
     WHERE EXISTS (SELECT 1 FROM settings st WHERE st.host_native_enabled)
     GROUP BY h.package_id
+  ), deterministic AS (
+    SELECT d.package_id,
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s', d.id, d.xmin, d.updated_at, d.status,
+                                 d.revoked_at, d.run_id),
+                          ',' ORDER BY d.id)) AS fp
+    FROM catalog_deterministic_builds d
+    WHERE EXISTS (SELECT 1 FROM settings st WHERE st.deterministic_builds_enabled)
+    GROUP BY d.package_id
+  ), deterministic_files AS (
+    SELECT d.package_id, count(*) AS n,
+           sum(hashtextextended(format('%s|%s|%s|%s', m.id, m.xmin, m.deterministic_build_id, m.sha256), 0)) AS h
+    FROM catalog_artifact_memberships m
+    JOIN catalog_deterministic_builds d ON d.id = m.deterministic_build_id
+    WHERE EXISTS (SELECT 1 FROM settings st WHERE st.deterministic_builds_enabled)
+    GROUP BY d.package_id
   )
   SELECT p.name,
          md5(format('%s/%s/%s/%s/%s/%s/%s/%s', p.id, runs.fp, results.fp, rf.n, rf.h,
                     tc.fp, tf.n, tf.h)) ||
            CASE WHEN hn.package_id IS NULL THEN ''
-                ELSE '|host_native:' || md5(format('%s/%s/%s', hn.fp, hf.n, hf.h)) END
+                ELSE '|host_native:' || md5(format('%s/%s/%s', hn.fp, hf.n, hf.h)) END ||
+           CASE WHEN dt.package_id IS NULL THEN ''
+                ELSE '|deterministic:' || md5(format('%s/%s/%s', dt.fp, df.n, df.h)) END
   FROM catalog_packages p
   LEFT JOIN runs ON runs.package_id = p.id
   LEFT JOIN results ON results.package_id = p.id
@@ -1227,6 +1248,8 @@ defmodule Portal.Catalog do
   LEFT JOIN toolchain_files tf ON tf.package_id = p.id
   LEFT JOIN host_native hn ON hn.package_id = p.id
   LEFT JOIN host_native_files hf ON hf.package_id = p.id
+  LEFT JOIN deterministic dt ON dt.package_id = p.id
+  LEFT JOIN deterministic_files df ON df.package_id = p.id
   WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL OR hn.package_id IS NOT NULL
   """
 
@@ -1371,6 +1394,18 @@ defmodule Portal.Catalog do
   AND #{withheld_lock_clause |> String.replace("$L", "h.deps_lock") |> String.replace("$E", "(h.compile_env_rule = 1 AND h.compile_env IS NOT NULL AND h.run_id IS NOT NULL)")}
   """
 
+  # The one predicate that serves a deterministic sibling aliased `d` of the
+  # toolchain build `r` of the package `p` (`Portal.Deterministic`, `$W` the
+  # withheld list): the `deterministic_builds_enabled` setting on, a pass,
+  # not revoked, of the run that wrote `r`, and `r` itself served
+  # (`@served_toolchain_clause`'s predicate on the row, never on its earlier
+  # builds): every lever that withdraws `r` withdraws `d`.
+  @served_deterministic_clause """
+  EXISTS (SELECT 1 FROM settings st WHERE st.deterministic_builds_enabled)
+  AND d.status = 'pass' AND d.revoked_at IS NULL AND d.run_id = r.run_id
+  AND #{served_toolchain.("r")}
+  """
+
   # Whether the toolchain build aliased `table` lists `sha` in its own file
   # manifest, under either key it publishes: a row's memberships also hold
   # its earlier builds' files, which only those builds publish.
@@ -1385,6 +1420,9 @@ defmodule Portal.Catalog do
 
   # Whether the host-native build `h` lists `sha` in its own file manifest.
   @served_host_native_file_clause in_own_manifest.("h", "m.sha256")
+
+  # Whether the deterministic sibling `d` lists `sha` in its own file manifest.
+  @served_deterministic_file_clause in_own_manifest.("d", "m.sha256")
 
   @packages_with_precompiled_files_sql_template """
   SELECT p.name
@@ -2648,6 +2686,15 @@ defmodule Portal.Catalog do
   WHERE m.sha256 = $1
     AND #{@served_host_native_clause}
     AND #{@served_host_native_file_clause}
+  UNION ALL
+  SELECT 1
+  FROM catalog_artifact_memberships m
+  JOIN catalog_deterministic_builds d ON d.id = m.deterministic_build_id
+  JOIN catalog_toolchain_builds r ON r.id = d.toolchain_build_id
+  JOIN catalog_packages p ON p.id = r.package_id
+  WHERE m.sha256 = $1
+    AND #{@served_deterministic_clause}
+    AND #{@served_deterministic_file_clause}
   LIMIT 1
   """
   @published_sha256_sql String.replace(@published_sha256_sql_template, "$W", "$2")
@@ -2666,7 +2713,10 @@ defmodule Portal.Catalog do
   build serves only the files its own manifest lists, and its earlier
   builds (`ToolchainBuild.EarlierBuilds`) theirs, each judged as a virtual
   row of it (`@served_toolchain_builds`): a withheld earlier build's file is
-  not served, though it is a membership of a served row.
+  not served, though it is a membership of a served row. A deterministic
+  sibling serves the files its own manifest lists while it is served
+  (`@served_deterministic_clause`: the setting on and its toolchain build
+  served).
   """
   @spec published_sha256?(String.t()) :: boolean()
   # The SQL is a module constant; the digest is a bound parameter the caller
@@ -3277,10 +3327,18 @@ defmodule Portal.Catalog do
         shas_by_host_native_id =
           host_native_builds |> Enum.map(& &1.id) |> HostNative.membership_shas()
 
+        # Empty while the `deterministic_builds_enabled` setting is off, and
+        # only beside a toolchain build served here (`Portal.Deterministic`).
+        deterministic_builds = Deterministic.served(toolchain_builds)
+
+        shas_by_deterministic_id =
+          deterministic_builds |> Enum.map(& &1.id) |> Deterministic.membership_shas()
+
         stored =
           shas_by_system_result_id
           |> Map.merge(shas_by_toolchain_build_id)
           |> Map.merge(shas_by_host_native_id)
+          |> Map.merge(shas_by_deterministic_id)
           |> stored_shas()
 
         present = MapSet.filter(stored, &ArtifactStore.present?/1)
@@ -3293,6 +3351,8 @@ defmodule Portal.Catalog do
           shas_by_toolchain_build_id: shas_by_toolchain_build_id,
           host_native_builds: host_native_builds,
           shas_by_host_native_id: shas_by_host_native_id,
+          deterministic_builds: deterministic_builds,
+          shas_by_deterministic_id: shas_by_deterministic_id,
           present_shas: present,
           absent_shas: stored |> MapSet.difference(present) |> Enum.sort()
         }
@@ -3379,23 +3439,11 @@ defmodule Portal.Catalog do
   # Builds are `{version, finished_at, build}` until the end, so the newest of
   # each key can be picked and `updated_at` taken over what is published.
   defp manifest_v2(sources) do
-    {closure, builds} =
-      (run_builds(sources) ++ toolchain_builds_v2(sources))
-      |> Enum.filter(&matchable?/1)
-      |> Enum.split_with(&closure_build?/1)
-
-    builds =
-      builds
-      |> Enum.split_with(&needs_check?/1)
-      |> then(fn {checked, plain} ->
-        Enum.map(newest_per_key(checked), &{:checked, &1}) ++
-          Enum.map(newest_per_key(plain), &{:plain, &1})
-      end)
-      |> Kernel.++(Enum.map(newest_per_key(closure), &{:closure, &1}))
-
+    builds = listed(run_builds(sources) ++ toolchain_builds_v2(sources))
     host_native = host_native_v2(sources)
+    deterministic = listed(deterministic_v2(sources))
 
-    if builds == [] and host_native == [] do
+    if builds == [] and host_native == [] and deterministic == [] do
       nil
     else
       %{
@@ -3404,14 +3452,71 @@ defmodule Portal.Catalog do
           builds
           |> Enum.group_by(fn {_list, {version, _at, _build}} -> version end)
           |> Map.new(fn {version, list} -> {version, version_builds(list)} end)
-          |> put_host_native(host_native),
+          |> put_host_native(host_native)
+          |> put_deterministic(deterministic),
         "updated_at" =>
-          (builds ++ Enum.map(host_native, &{:host_native, &1}))
+          (builds ++ deterministic ++ Enum.map(host_native, &{:host_native, &1}))
           |> Enum.map(fn {_list, {_version, at, _build}} -> at end)
           |> Enum.reject(&is_nil/1)
           |> Enum.max(DateTime, fn -> nil end)
           |> iso8601()
       }
+    end
+  end
+
+  # The builds a client can match, each tagged with the list it goes under
+  # (`version_builds/1`), the newest per key within each list.
+  defp listed(builds) do
+    {closure, builds} =
+      builds
+      |> Enum.filter(&matchable?/1)
+      |> Enum.split_with(&closure_build?/1)
+
+    builds
+    |> Enum.split_with(&needs_check?/1)
+    |> then(fn {checked, plain} ->
+      Enum.map(newest_per_key(checked), &{:checked, &1}) ++
+        Enum.map(newest_per_key(plain), &{:plain, &1})
+    end)
+    |> Kernel.++(Enum.map(newest_per_key(closure), &{:closure, &1}))
+  end
+
+  # Deterministic siblings (`Portal.Deterministic`) go under the version's
+  # `deterministic` key only, as an object of the same lists, each split as
+  # the version's own are (`version_builds/1`): a client reads it only when
+  # its project's `ERL_COMPILER_OPTIONS` is exactly `deterministic`, in place
+  # of the version's other lists, and a client before that never reads it.
+  # A version without siblings renders the bytes it always did; one with
+  # siblings alone keeps an empty `builds`.
+  defp put_deterministic(versions, deterministic) do
+    deterministic
+    |> Enum.group_by(fn {_list, {version, _at, _build}} -> version end)
+    |> Enum.reduce(versions, fn {version, list}, acc ->
+      lists = version_builds(list)
+
+      Map.update(
+        acc,
+        version,
+        %{"builds" => [], "deterministic" => lists},
+        &Map.put(&1, "deterministic", lists)
+      )
+    end)
+  end
+
+  # Each served sibling whose files this host holds, rendered as its
+  # toolchain build is (the same lock, inputs and run) with its own files
+  # and `erl_compiler_options`.
+  defp deterministic_v2(sources) do
+    builds = Map.new(sources.toolchain_builds, &{{&1.id, &1.run_id}, &1})
+
+    for d <- sources.deterministic_builds,
+        tb = Map.get(builds, {d.toolchain_build_id, d.run_id}),
+        tb != nil,
+        stored = Map.get(sources.shas_by_deterministic_id, d.id, MapSet.new()),
+        files = toolchain_files(d.file_manifest, stored, sources.present_shas),
+        files != nil do
+      {version, at, entry} = toolchain_build_v2(tb, files)
+      {version, at, put_in(entry, ["build", "erl_compiler_options"], d.erl_compiler_options)}
     end
   end
 
@@ -3622,31 +3727,33 @@ defmodule Portal.Catalog do
     for tb <- sources.toolchain_builds,
         stored = Map.get(sources.shas_by_toolchain_build_id, tb.id, MapSet.new()),
         files = toolchain_files(tb.file_manifest, stored, sources.present_shas),
-        files != nil do
-      build = %{
-        "elixir" => tb.elixir,
-        "otp" => tb.otp,
-        "dep_env" => "prod",
-        "mix_target" => "host",
-        "system_version" => nil,
-        "deps" => tb.deps_lock,
-        "compile_env" => tb.compile_env,
-        "package_checksum" => tb.package_checksum,
-        "run_id" => tb.run_id,
-        "image_digest" => tb.image_digest
-      }
+        files != nil,
+        do: toolchain_build_v2(tb, files)
+  end
 
-      build =
-        build
-        |> put_variant(tb.variant)
-        |> put_config_variant(tb.config_variant)
-        |> put_declared(tb.declared)
-        |> put_manager(tb.manager)
-        |> put_inputs(tb.compile_inputs)
+  defp toolchain_build_v2(tb, files) do
+    build = %{
+      "elixir" => tb.elixir,
+      "otp" => tb.otp,
+      "dep_env" => "prod",
+      "mix_target" => "host",
+      "system_version" => nil,
+      "deps" => tb.deps_lock,
+      "compile_env" => tb.compile_env,
+      "package_checksum" => tb.package_checksum,
+      "run_id" => tb.run_id,
+      "image_digest" => tb.image_digest
+    }
 
-      {tb.version, tb.finished_at,
-       Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
-    end
+    build =
+      build
+      |> put_variant(tb.variant)
+      |> put_config_variant(tb.config_variant)
+      |> put_declared(tb.declared)
+      |> put_manager(tb.manager)
+      |> put_inputs(tb.compile_inputs)
+
+    {tb.version, tb.finished_at, Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
   end
 
   # Informational, and only for a world build, which `manifest_v2/1` lists

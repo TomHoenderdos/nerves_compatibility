@@ -584,12 +584,14 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp stage_toolchain_build(result, build, opts) do
+    # Checked first: the check reads the build's blobs from the run's files.
+    sibling = Portal.Deterministic.Ingest.candidate(result, build, opts)
     wanted = build |> Map.get("file_manifest") |> shas_from_manifest()
     staged = stage_shas(wanted, opts.files_dir)
 
     case wanted -- Enum.map(staged, & &1.sha256) do
       [] ->
-        write_toolchain_build(result, build, opts, staged)
+        write_toolchain_build(result, build, opts, staged, stage_sibling(sibling, opts))
 
       # A pass build publishes every file of its manifest or none: storing it
       # with a file missing would replace a complete published build with a
@@ -601,12 +603,46 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
-  defp write_toolchain_build(result, build, opts, staged) do
+  # The deterministic sibling (`Portal.Deterministic.Ingest`), checked and
+  # its blobs staged before the transaction, as the build's are: `nil` when
+  # the result carries none or it did not hold. Every blob or none: a sibling
+  # with a file missing is left out, and the build is stored without it.
+  defp stage_sibling(candidate, opts) do
+    case candidate do
+      {:ok, sibling} ->
+        staged = stage_shas(Enum.uniq(sibling["shas"]), opts.files_dir)
+
+        case Enum.uniq(sibling["shas"]) -- Enum.map(staged, & &1.sha256) do
+          [] ->
+            Map.put(sibling, "staged", staged)
+
+          missing ->
+            Logger.warning(
+              "deterministic sibling of #{opts.package} #{opts.version} left out: " <>
+                "#{length(missing)} blobs not staged"
+            )
+
+            nil
+        end
+
+      {:skip, reason} ->
+        Logger.warning(
+          "deterministic sibling of #{opts.package} #{opts.version} left out: " <> reason
+        )
+
+        nil
+
+      :none ->
+        nil
+    end
+  end
+
+  defp write_toolchain_build(result, build, opts, staged, sibling) do
     Repo.transaction(
       fn ->
         :ok = lock_toolchain_identity(opts)
 
-        case do_ingest_toolchain(result, build, opts, staged) do
+        case do_ingest_toolchain(result, build, opts, staged, sibling) do
           {:ok, toolchain_build} -> toolchain_build
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -720,7 +756,7 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
-  defp do_ingest_toolchain(result, build, opts, staged) do
+  defp do_ingest_toolchain(result, build, opts, staged, sibling) do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
     package_name = package_name(package_info, opts)
     verdict = toolchain_verdict(build)
@@ -733,19 +769,22 @@ defmodule Portal.Catalog.Ingestion do
 
         nil ->
           counted = counted(verdict, transient?, package.id, opts)
-          write_toolchain_row(result, build, counted, opts, package.id, staged)
+          write_toolchain_row(result, build, counted, opts, package.id, {staged, sibling})
       end
     end
   end
 
-  defp write_toolchain_row(result, build, counted, opts, package_id, staged) do
+  # The row's deterministic sibling is replaced with the row
+  # (`Portal.Deterministic.replace/2`): a sibling belongs to the run that
+  # wrote the row, so a rebuild without one leaves the row without one.
+  defp write_toolchain_row(result, build, counted, opts, package_id, {staged, sibling}) do
     replaced = identity_row(package_id, opts)
 
     with {:ok, toolchain_build} <-
            upsert_toolchain_build(result, build, counted, opts, package_id),
          {:ok, toolchain_build} <- maybe_unrevoke(toolchain_build),
          {:ok, toolchain_build} <- record_earlier_builds(toolchain_build, replaced) do
-      :ok = upsert_artifacts(staged)
+      :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
 
       :ok =
         replace_toolchain_memberships(
@@ -754,7 +793,8 @@ defmodule Portal.Catalog.Ingestion do
           EarlierBuilds.shas(toolchain_build.earlier_builds)
         )
 
-      {:ok, toolchain_build}
+      with :ok <- Portal.Deterministic.replace(toolchain_build, sibling),
+           do: {:ok, toolchain_build}
     end
   end
 

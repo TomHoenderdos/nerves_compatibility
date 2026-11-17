@@ -1,0 +1,339 @@
+defmodule Portal.DeterministicTest do
+  # Deterministic siblings: ingested beside their toolchain build after the
+  # host's own checks (`Portal.Deterministic.Ingest`), and published under a
+  # version's `deterministic` key, with their files, only while the
+  # `deterministic_builds_enabled` setting is on and their build is served.
+  use Portal.DataCase, async: false
+
+  require Ash.Query
+
+  alias Portal.Catalog
+  alias Portal.Catalog.{ArtifactMembership, DeterministicBuild, Ingestion, ToolchainBuild}
+  alias Portal.Precompiled.{DeterministicRevocation, ToolchainRevocation, Withheld}
+
+  defp sha(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+  defp on!, do: {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
+
+  defp unique,
+    do:
+      "dtpkg_#{System.unique_integer([:positive])}_#{Base.encode16(:crypto.strong_rand_bytes(3))}"
+
+  defp tmp(name) do
+    dir = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+    dir
+  end
+
+  # An Erlang module holding `?FILE`, compiled without and with the option:
+  # a real sibling pair, whose `CInf`, `Dbgi`, `Line`, `LitT` and `Attr` differ.
+  defp beams(name, body \\ "f() -> ?FILE.\n") do
+    path = Path.join(tmp("dt-src"), "#{name}.erl")
+    File.write!(path, "-module(#{name}).\n-export([f/0]).\n" <> body)
+    {erl(path, []), erl(path, [:deterministic])}
+  end
+
+  defp erl(path, opts) do
+    {:ok, _, beam} = :compile.file(String.to_charlist(path), [:binary, :debug_info | opts])
+    beam
+  end
+
+  defp entry(path, bytes),
+    do: %{"path" => path, "sha256" => sha(bytes), "size" => byte_size(bytes), "mode" => 33_188}
+
+  defp manifest(name, beam), do: %{"ebin" => [entry("ebin/#{name}.beam", beam)], "priv" => []}
+
+  defp result(name, normal, sibling) do
+    build = %{
+      "status" => "pass",
+      "reason" => nil,
+      "elixir" => "1.20.5",
+      "otp" => "28",
+      "deps_lock" => %{},
+      "package_checksum" => String.duplicate("a", 64),
+      "declared" => [],
+      "manager" => "rebar3",
+      "compile_env" => [],
+      "compile_env_rule" => 1,
+      "compile_inputs" => [],
+      "built_priv" => [],
+      "portability_rule" => 2,
+      "rule1_reason" => "calls a shell",
+      "judge_revision" => 29,
+      "file_manifest" => manifest(name, normal)
+    }
+
+    sibling_build =
+      build
+      |> Map.drop(["rule1_reason"])
+      |> Map.merge(%{
+        "erl_compiler_options" => ["deterministic"],
+        "file_manifest" => manifest(name, sibling)
+      })
+
+    %{
+      "scope" => "toolchain",
+      "finished_at" => "2026-11-17T10:00:00Z",
+      "package" => %{"name" => name, "version" => "1.0.0"},
+      "systems" => %{},
+      "toolchain_build" => build,
+      "deterministic_build" => sibling_build
+    }
+  end
+
+  defp files(blobs) do
+    dir = tmp("dt-files")
+    Enum.each(blobs, &File.write!(Path.join(dir, sha(&1)), &1))
+    dir
+  end
+
+  defp opts(name, files_dir) do
+    %{
+      package: name,
+      version: "1.0.0",
+      run_id: "dt-#{System.unique_integer([:positive])}",
+      image_digest: "sha256:dt",
+      files_dir: files_dir,
+      output_dir: files_dir,
+      toolchain: "1.20/28",
+      builder_version: Portal.Toolchains.builder_version()
+    }
+  end
+
+  # A passing build with its sibling, ingested: `%{name, tb, normal, sibling}`.
+  defp ingested do
+    name = unique()
+    {normal, sibling} = beams(name)
+    result = result(name, normal, sibling)
+    {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files([normal, sibling])))
+    %{name: name, tb: tb, normal: normal, sibling: sibling}
+  end
+
+  defp sibling_of(tb) do
+    DeterministicBuild
+    |> Ash.Query.filter(toolchain_build_id == ^tb.id)
+    |> Ash.read_one!(domain: Catalog)
+  end
+
+  defp version(name) do
+    case Catalog.precompiled_manifest_v2(name) do
+      %{"versions" => %{"1.0.0" => version}} -> version
+      other -> other
+    end
+  end
+
+  defp ebin_sha(%{"ebin" => [%{"sha256" => sha}]}), do: sha
+
+  describe "ingest" do
+    test "a sibling that holds is stored beside its build, with its own files" do
+      %{tb: tb, sibling: sibling} = ingested()
+
+      assert %DeterministicBuild{status: :pass, erl_compiler_options: ["deterministic"]} =
+               row = sibling_of(tb)
+
+      assert row.run_id == tb.run_id
+      assert row.judge_revision == 29
+      assert ebin_sha(row.file_manifest) == sha(sibling)
+
+      shas =
+        ArtifactMembership
+        |> Ash.Query.filter(deterministic_build_id == ^row.id)
+        |> Ash.read!(domain: Catalog)
+        |> Enum.map(& &1.sha256)
+
+      assert shas == [sha(sibling)]
+      assert File.exists?(Portal.ArtifactStore.blob_path(sha(sibling)))
+    end
+
+    test "a sibling that does not hold is left out and its build is stored" do
+      name = unique()
+      {normal, sibling} = beams(name)
+      {_, other_code} = beams(name, "f() -> other.\n")
+      base = result(name, normal, sibling)
+
+      cases = [
+        {"never compiled with the option",
+         put_in(base, ["deterministic_build", "file_manifest"], manifest(name, normal)),
+         [normal]},
+        {"other code",
+         put_in(base, ["deterministic_build", "file_manifest"], manifest(name, other_code)),
+         [normal, other_code]},
+        {"other inputs",
+         put_in(base, ["deterministic_build", "compile_inputs"], [%{"kind" => "env_all"}]),
+         [normal, sibling]},
+        {"other options",
+         put_in(base, ["deterministic_build", "erl_compiler_options"], ["debug_info"]),
+         [normal, sibling]},
+        {"an older revision", put_in(base, ["deterministic_build", "judge_revision"], 28),
+         [normal, sibling]},
+        {"skipped", put_in(base, ["deterministic_build", "status"], "skipped"),
+         [normal, sibling]},
+        {"a blob missing", base, [normal]},
+        {"other files",
+         put_in(base, ["deterministic_build", "file_manifest", "priv"], [entry("priv/x", "x")]),
+         [normal, sibling, "x"]}
+      ]
+
+      for {label, result, blobs} <- cases do
+        assert {:ok, %ToolchainBuild{status: :pass} = tb} =
+                 Ingestion.ingest_toolchain(result, opts(name, files(blobs))),
+               label
+
+        assert sibling_of(tb) == nil, label
+      end
+    end
+
+    test "a rebuild replaces its build's sibling, and one without a sibling removes it" do
+      %{name: name, tb: tb, normal: normal, sibling: sibling} = ingested()
+      first = sibling_of(tb)
+      result = result(name, normal, sibling)
+
+      {:ok, again} = Ingestion.ingest_toolchain(result, opts(name, files([normal, sibling])))
+      assert again.id == tb.id
+      assert %DeterministicBuild{} = second = sibling_of(again)
+      refute second.id == first.id
+      assert second.run_id == again.run_id
+
+      {:ok, without} =
+        Ingestion.ingest_toolchain(
+          Map.delete(result, "deterministic_build"),
+          opts(name, files([normal]))
+        )
+
+      assert without.id == tb.id
+      assert sibling_of(without) == nil
+    end
+  end
+
+  describe "publishing" do
+    setup do
+      ingested()
+    end
+
+    test "with the setting off no manifest lists the sibling and its files are not served",
+         ctx do
+      version = version(ctx.name)
+      refute Map.has_key?(version, "deterministic")
+      assert [%{"build" => build} = listed] = version["builds"]
+      refute Map.has_key?(build, "erl_compiler_options")
+      assert ebin_sha(listed) == sha(ctx.normal)
+      refute Catalog.published_sha256?(sha(ctx.sibling))
+      assert Catalog.published_sha256?(sha(ctx.normal))
+    end
+
+    test "with it on the sibling is listed under deterministic alone, with its own files", ctx do
+      off = Catalog.precompiled_manifest_v2(ctx.name)
+      on!()
+      manifest = Catalog.precompiled_manifest_v2(ctx.name)
+      version = manifest["versions"]["1.0.0"]
+
+      assert Map.delete(version, "deterministic") == off["versions"]["1.0.0"]
+      assert %{"builds" => [%{"build" => build} = sibling]} = version["deterministic"]
+      assert build["erl_compiler_options"] == ["deterministic"]
+      assert ebin_sha(sibling) == sha(ctx.sibling)
+      assert sibling["target"] == "pure_elixir"
+
+      [%{"build" => normal}] = version["builds"]
+      assert Map.delete(build, "erl_compiler_options") == normal
+
+      PortalWeb.ApiSpecAssertions.assert_api_schema(manifest, "ManifestV2")
+      assert Catalog.published_sha256?(sha(ctx.sibling))
+    end
+
+    test "a package's fingerprint changes with its sibling's publication only", ctx do
+      %{name: other} = plain = ingested_without_sibling()
+      before = Catalog.precompiled_fingerprints()
+      on!()
+      now = Catalog.precompiled_fingerprints()
+
+      assert now[other] == before[other]
+      refute now[ctx.name] == before[ctx.name]
+
+      assert Catalog.precompiled_manifest_v2(plain.name)["versions"]["1.0.0"] |> Map.keys() == [
+               "builds"
+             ]
+    end
+
+    test "the sibling lever withdraws the sibling alone; undo puts it back", ctx do
+      on!()
+
+      assert {:revoked, 1, [%{package: package}], at} =
+               DeterministicRevocation.revoke(package: ctx.name, dry_run: false)
+
+      assert package == ctx.name
+      refute Map.has_key?(version(ctx.name), "deterministic")
+      assert [_] = version(ctx.name)["builds"]
+      refute Catalog.published_sha256?(sha(ctx.sibling))
+      assert sibling_of(ctx.tb).revoked_reason == DeterministicRevocation.reason()
+
+      assert {:ok, 1} = DeterministicRevocation.undo(at)
+      assert Map.has_key?(version(ctx.name), "deterministic")
+      assert {:error, :filter_required} = DeterministicRevocation.revoke(dry_run: false)
+    end
+  end
+
+  describe "every lever that withdraws a toolchain build withdraws its sibling" do
+    setup do
+      on!()
+      ingested()
+    end
+
+    defp withdrawn?(ctx) do
+      version = version(ctx.name)
+
+      not (is_map(version) and Map.has_key?(version, "deterministic")) and
+        not Catalog.published_sha256?(sha(ctx.sibling))
+    end
+
+    test "rule 2 revocation (`ToolchainRevocation`), and its undo", ctx do
+      refute withdrawn?(ctx)
+
+      assert {:revoked, _, _, at} =
+               ToolchainRevocation.revoke(package: ctx.name, judge_revision: 29, dry_run: false)
+
+      assert withdrawn?(ctx)
+      ToolchainRevocation.undo(at)
+      refute withdrawn?(ctx)
+    end
+
+    test "a withheld package (`Withheld`)", ctx do
+      # A build that records its config reads is never withheld by its closure.
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET compile_env_rule = NULL WHERE id = $1",
+        [Ecto.UUID.dump!(ctx.tb.id)]
+      )
+
+      refute withdrawn?(ctx)
+      old = Application.get_env(:portal, Withheld)
+      Application.put_env(:portal, Withheld, packages: [ctx.name])
+
+      try do
+        assert withdrawn?(ctx)
+      after
+        if old,
+          do: Application.put_env(:portal, Withheld, old),
+          else: Application.delete_env(:portal, Withheld)
+      end
+
+      refute withdrawn?(ctx)
+    end
+
+    test "a revoked toolchain build, by any action", ctx do
+      ctx.tb |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Catalog)
+      assert withdrawn?(ctx)
+    end
+
+    test "the setting turned off", ctx do
+      {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: false})
+      assert withdrawn?(ctx)
+    end
+  end
+
+  defp ingested_without_sibling do
+    name = unique()
+    {normal, _sibling} = beams(name)
+    result = name |> result(normal, normal) |> Map.delete("deterministic_build")
+    {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files([normal])))
+    %{name: name, tb: tb}
+  end
+end

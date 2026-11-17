@@ -77,6 +77,10 @@ defmodule Portal.Builder do
           optional(:optional_deps) => String.t() | nil,
           # For mode: "toolchain": a Compatibility.ConfigVariants name; nil is "default".
           optional(:config_variant) => String.t() | nil,
+          # For mode: "toolchain": `true` also builds the deterministic
+          # sibling (`Portal.Deterministic`, `NCC_INPUT.deterministic`); any
+          # other value asks for none.
+          optional(:deterministic) => boolean() | nil,
           # For `optional_deps: "world"`: the world's name and its member
           # package names (`Compatibility.Worlds`).
           optional(:world) => String.t() | nil,
@@ -418,6 +422,7 @@ defmodule Portal.Builder do
       triple: Map.get(args, :triple),
       optional_deps: Map.get(args, :optional_deps),
       config_variant: Map.get(args, :config_variant),
+      deterministic: deterministic_input(mode, args),
       world: Map.get(args, :world),
       world_members: Map.get(args, :world_members),
       firmware_world: Map.get(args, :firmware_world),
@@ -1029,6 +1034,7 @@ defmodule Portal.Builder do
     |> maybe_put("triple", Map.get(job, :triple))
     |> maybe_put("optional_deps", Map.get(job, :optional_deps))
     |> maybe_put("config_variant", Map.get(job, :config_variant))
+    |> maybe_put("deterministic", Map.get(job, :deterministic))
     |> maybe_put("world", Map.get(job, :world))
     |> maybe_put("world_members", Map.get(job, :world_members))
     |> maybe_put("firmware_world", firmware_world(job))
@@ -1101,6 +1107,10 @@ defmodule Portal.Builder do
   rescue
     e -> {:error, {:input_write_failed, Exception.message(e)}}
   end
+
+  # Exactly `true`, and only for a toolchain run: any other run ignores it.
+  defp deterministic_input("toolchain", %{deterministic: true}), do: true
+  defp deterministic_input(_mode, _args), do: nil
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

@@ -46,6 +46,24 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
                     "and only on a host of the same triple whose libraries define every " <>
                     "`elf.needs` version. Absent when empty or while the portal's " <>
                     "`host_native_enabled` setting is off."
+              },
+              deterministic: %Schema{
+                type: :object,
+                description:
+                  "Deterministic siblings: the version's toolchain builds compiled again " <>
+                    "with `ERL_COMPILER_OPTIONS=deterministic`, each with " <>
+                    "`build.erl_compiler_options: [\"deterministic\"]`, in the same lists as " <>
+                    "the version's own. Only a client whose project's `ERL_COMPILER_OPTIONS` " <>
+                    "is exactly `deterministic` reads this key, in place of the version's " <>
+                    "other lists; no other client ever does. Absent when the version has " <>
+                    "none or while the portal's `deterministic_builds_enabled` setting is off.",
+                properties: %{
+                  builds: %Schema{type: :array, items: ManifestBuild},
+                  builds_with_inputs: %Schema{type: :array, items: ManifestBuild},
+                  builds_closure: %Schema{type: :array, items: ManifestBuild}
+                },
+                required: [:builds],
+                additionalProperties: false
               }
             },
             required: [:builds],

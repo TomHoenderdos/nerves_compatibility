@@ -56,6 +56,14 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
             "Optional, informational: the world a build under `builds_closure` was made " <>
               "in. Absent on every other build. A client matches the build by its `deps`."
         },
+        erl_compiler_options: %Schema{
+          type: :array,
+          items: %Schema{type: :string, enum: Compatibility.DeterministicBeams.options()},
+          description:
+            "Only on a build under a version's `deterministic` key: the " <>
+              "`ERL_COMPILER_OPTIONS` it was compiled with, `[\"deterministic\"]`. A client " <>
+              "takes such a build only when its own project sets exactly that option."
+        },
         config_variant: %Schema{
           type: :string,
           enum: Compatibility.ConfigVariants.names(),

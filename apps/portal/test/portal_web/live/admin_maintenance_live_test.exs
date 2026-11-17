@@ -421,6 +421,30 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
     end
   end
 
+  describe "deterministic builds" do
+    test "the toggle turns deterministic builds on and off", %{conn: conn} do
+      {view, html} = live_maintenance(conn)
+
+      refute Portal.Settings.get().deterministic_builds_enabled
+      assert html =~ "Deterministic builds are off"
+
+      html = view |> element("#deterministic-toggle") |> render_click()
+      assert html =~ "Deterministic builds are on"
+      assert Portal.Settings.get().deterministic_builds_enabled
+
+      view |> element("#deterministic-toggle") |> render_click()
+      refute Portal.Settings.get().deterministic_builds_enabled
+    end
+
+    test "a demoted admin cannot turn it on", %{conn: conn, admin: admin} do
+      {view, _html} = live_maintenance(conn)
+      demote!(admin)
+
+      view |> element("#deterministic-toggle") |> render_click()
+      refute Portal.Settings.get().deterministic_builds_enabled
+    end
+  end
+
   describe "world builds" do
     test "the toggle turns world builds on and off and the counts show beside the backlog",
          %{conn: conn} do

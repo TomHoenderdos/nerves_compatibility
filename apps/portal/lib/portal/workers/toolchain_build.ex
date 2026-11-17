@@ -170,7 +170,10 @@ defmodule Portal.Workers.ToolchainBuild do
         mode: "toolchain",
         toolchain: toolchain,
         optional_deps: optional_deps(variant(args)),
-        config_variant: input_config_variant(config_variant(args))
+        config_variant: input_config_variant(config_variant(args)),
+        # The deterministic sibling, asked for while the setting is on
+        # (`Portal.Deterministic`); the ingest stores whatever the run built.
+        deterministic: Portal.Deterministic.enabled?()
       }
       |> put_world(variant(args))
       |> Map.merge(oom_overrides(job))

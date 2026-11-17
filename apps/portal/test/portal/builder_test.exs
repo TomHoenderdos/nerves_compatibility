@@ -283,6 +283,15 @@ defmodule Portal.BuilderTest do
       assert Builder.worker_input(Map.put(@input_job, :argus, argus))["argus"] == argus
     end
 
+    test "a toolchain run carries deterministic only when it is exactly true" do
+      toolchain = Map.put(@input_job, :mode, "toolchain")
+
+      assert Builder.worker_input(Map.put(toolchain, :deterministic, true))["deterministic"] ==
+               true
+
+      refute Map.has_key?(Builder.worker_input(toolchain), "deterministic")
+    end
+
     test "a host-native build carries its mode and triple" do
       job = Map.merge(@input_job, %{mode: "host_native", triple: "x86_64-linux-gnu"})
 

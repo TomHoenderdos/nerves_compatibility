@@ -57,7 +57,8 @@ defmodule Portal.Settings.Setting do
         :remote_auto_on,
         :world_variants_enabled,
         :firmware_world_enabled,
-        :host_native_enabled
+        :host_native_enabled,
+        :deterministic_builds_enabled
       ])
 
       upsert?(true)
@@ -163,6 +164,16 @@ defmodule Portal.Settings.Setting do
     # and published: their manifest list, `builds_host_native`, and their
     # files. Off by default; stored rows stay when it is turned off, unserved.
     attribute :host_native_enabled, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Whether toolchain builds are asked for their deterministic sibling
+    # (`ERL_COMPILER_OPTIONS=deterministic`, `Portal.Deterministic`) and
+    # siblings are published: a version's `deterministic` key and their
+    # files. Off by default; stored rows stay when it is turned off, unserved.
+    attribute :deterministic_builds_enabled, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)
