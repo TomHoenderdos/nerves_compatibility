@@ -579,7 +579,7 @@ defmodule Portal.Workers.ClosureDrift do
   day, across runs (`NCC_FIRMWARE_DRIFT_MAX`).
   """
   @spec firmware_max_per_run() :: non_neg_integer()
-  def firmware_max_per_run, do: Keyword.get(config(), :firmware_max_per_run, 100)
+  def firmware_max_per_run, do: Keyword.get(config(), :firmware_max_per_run, 25)
 
   defp firmware_scan_limit, do: Keyword.get(config(), :firmware_scan_limit, 1_000)
 

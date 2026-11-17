@@ -143,6 +143,13 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
     )
   end
 
+  # The first days go gently; the operator raises `NCC_FIRMWARE_DRIFT_MAX`.
+  test "the firmware cap is 25 a day unless configured" do
+    assert ClosureDrift.firmware_max_per_run() == 25
+    Application.put_env(:portal, ClosureDrift, enabled: true)
+    assert ClosureDrift.firmware_max_per_run() == 25
+  end
+
   test "queues a targets rebuild of the drifted passing targets, low priority, saying why" do
     name = name()
     world([name])

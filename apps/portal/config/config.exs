@@ -194,7 +194,8 @@ config :portal, Portal.Workers.UpdateCheck, enabled: true
 # most `max_per_run` a run and one scheduled run a day; at most `scan_limit`
 # builds are judged a run. `NCC_CLOSURE_DRIFT=0` and `NCC_CLOSURE_DRIFT_MAX`
 # override it at runtime. The firmware phase rebuilds the drifted targets of
-# at most `firmware_max_per_run` runs a day (a container each, about 3
+# at most `firmware_max_per_run` runs a day, 25 so the first days go gently
+# while the operator watches them land (a container each, about 3
 # minutes for the ~5 targets a typical rebuild names), reading the runs to
 # judge `firmware_scan_limit` at a time, each with every target's lock.
 # `NCC_FIRMWARE_DRIFT=0` and `NCC_FIRMWARE_DRIFT_MAX` override it. A run
@@ -205,7 +206,7 @@ config :portal, Portal.Workers.ClosureDrift,
   max_per_run: 500,
   scan_limit: 5_000,
   firmware: true,
-  firmware_max_per_run: 100,
+  firmware_max_per_run: 25,
   firmware_scan_limit: 1_000,
   budget_ms: :timer.minutes(60)
 
