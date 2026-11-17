@@ -268,6 +268,9 @@ config :portal, Portal.Builder,
   # roughly two builds of headroom above the worst case. This is a refusal, not
   # a reservation — `Portal.Workers.Sweep` is what maintains the headroom.
   min_free_disk_gb: 25,
+  # A toolchain build's own floor, never above the one above: its scratch
+  # tree peaks at a few hundred MB (`Portal.Builder.min_free_bytes/1`).
+  min_free_disk_gb_toolchain: 5,
   # How long a scratch dir may sit before `Sweep` treats it as orphaned: the 2h
   # docker wall clock plus an hour for the ingest handoff.
   scratch_max_age_ms: :timer.hours(3),

@@ -253,6 +253,8 @@ if portal_available? do
     run_as_user: System.get_env("NCC_BUILD_USER"),
     # `Portal.Builder.min_free_bytes/0` parses this, so the string is fine.
     min_free_disk_gb: System.get_env("NCC_MIN_FREE_GB"),
+    # The same for a toolchain build, `min_free_bytes/1`; never above the one above.
+    min_free_disk_gb_toolchain: System.get_env("NCC_MIN_FREE_GB_TOOLCHAIN"),
     # `0` turns the egress preflight off (a host without docker-ncc and its
     # filter), `1` on. Anything else keeps the default, which
     # is on, so a typo can never switch the check off.

@@ -218,6 +218,37 @@ defmodule Portal.BuilderTest do
       put_builder([min_free_disk_gb: "8"], previous)
       assert Builder.min_free_bytes() == 8 * 1024 * 1024 * 1024
     end
+
+    test "a toolchain build has its own, smaller floor", %{previous: previous} do
+      gib = 1024 * 1024 * 1024
+      put_builder([min_free_disk_gb: 25, min_free_disk_gb_toolchain: nil], previous)
+
+      assert Builder.min_free_bytes("toolchain") == 5 * gib
+      assert Builder.min_free_bytes(nil) == 25 * gib
+      assert Builder.min_free_bytes("host_native") == 25 * gib
+      assert Builder.min_free_bytes("warm_nerves") == 25 * gib
+
+      put_builder([min_free_disk_gb: 25, min_free_disk_gb_toolchain: "2.5"], previous)
+      assert Builder.min_free_bytes("toolchain") == trunc(2.5 * gib)
+
+      # Never above the floor every other build has.
+      put_builder([min_free_disk_gb: 3, min_free_disk_gb_toolchain: "10"], previous)
+      assert Builder.min_free_bytes("toolchain") == 3 * gib
+    end
+
+    test "check_disk/1 holds a toolchain build to its own floor", %{previous: previous} do
+      root = Path.join(System.tmp_dir!(), "builder-space-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      on_exit(fn -> File.rm_rf(root) end)
+
+      put_builder(
+        [scratch_root: root, min_free_disk_gb: 10_000_000, min_free_disk_gb_toolchain: 0],
+        previous
+      )
+
+      assert {:error, {:insufficient_disk, _free, _needed}} = Builder.check_disk(nil)
+      assert :ok = Builder.check_disk("toolchain")
+    end
   end
 
   describe "cache_slug/1" do

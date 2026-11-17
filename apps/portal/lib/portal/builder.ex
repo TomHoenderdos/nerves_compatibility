@@ -158,11 +158,34 @@ defmodule Portal.Builder do
   headroom in the first place is `Portal.Workers.Sweep`'s job.
   """
   @spec min_free_bytes() :: non_neg_integer()
-  def min_free_bytes do
-    # Env vars arrive as strings; config.exs supplies a number.
-    case :min_free_disk_gb |> config(25) |> to_string() |> Float.parse() do
+  def min_free_bytes, do: gb_config(:min_free_disk_gb, 25)
+
+  @doc """
+  Minimum free bytes on the scratch filesystem to start a build of `mode`
+  (`build/2`'s `:mode`).
+
+  A toolchain build (`"toolchain"`) has its own floor,
+  `:min_free_disk_gb_toolchain` (`NCC_MIN_FREE_GB_TOOLCHAIN`, default 5),
+  never above `min_free_bytes/0`. Its scratch tree is a `mix new` project
+  with its deps: 32 MB at the median and 242 MB at the most over 47 live
+  runs sampled on three builders (2026-11-17), against ~3.5 GB for a
+  firmware tree. Six at that maximum, the widest toolchain queue any
+  builder runs, is 1.5 GB; 5 GB leaves three times that for what 20 s
+  samples miss. Under the firmware floor a node keeps building toolchain
+  jobs instead of refusing every one. Every other mode, a host-native NIF
+  build and a Nerves cache warm included, keeps `min_free_bytes/0`.
+  """
+  @spec min_free_bytes(String.t() | nil) :: non_neg_integer()
+  def min_free_bytes("toolchain"),
+    do: min(gb_config(:min_free_disk_gb_toolchain, 5), min_free_bytes())
+
+  def min_free_bytes(_mode), do: min_free_bytes()
+
+  # Env vars arrive as strings (nil when unset); config.exs supplies a number.
+  defp gb_config(key, default) do
+    case key |> config(default) |> to_string() |> Float.parse() do
       {gb, _rest} -> trunc(gb * 1024 * 1024 * 1024)
-      :error -> 25 * 1024 * 1024 * 1024
+      :error -> trunc(default * 1024 * 1024 * 1024)
     end
   end
 
@@ -445,8 +468,8 @@ defmodule Portal.Builder do
     with :ok <- check_memory_override(job.memory),
          :ok <- distrust_rw_cache(job),
          :ok <- check_memory_limit(),
-         :ok <- check_free_space(scratch_root()),
-         :ok <- check_scratch_exec(scratch_root()),
+         :ok <- check_disk(mode),
+         :ok <- check_scratch_exec(),
          :ok <- check_egress(),
          {:ok, _version} <- check_docker(),
          # After docker answers: the label is read through it. A failure is
@@ -687,9 +710,15 @@ defmodule Portal.Builder do
     e -> {:error, {:scratch_setup_failed, Exception.message(e)}}
   end
 
-  defp check_free_space(path) do
-    required = min_free_bytes()
+  @doc """
+  The disk preflight of a build of `mode` (`build/2`'s `:mode`): `:ok` when
+  the scratch filesystem has `min_free_bytes/1` free, or cannot be measured,
+  else `{:error, {:insufficient_disk, free, required}}`.
+  """
+  @spec check_disk(String.t() | nil) :: :ok | {:error, {:insufficient_disk, integer(), integer()}}
+  def check_disk(mode), do: check_free_space(scratch_root(), min_free_bytes(mode))
 
+  defp check_free_space(path, required) do
     case free_bytes(path) do
       nil ->
         # A preflight that cannot measure must not block every build. This leaves
@@ -711,9 +740,14 @@ defmodule Portal.Builder do
   # in a way that would be recorded as the package's failure. Probe it the way
   # fakeroot will: write a script and run it. Nothing to measure means nothing
   # to parse, and it is the same check on macOS and Linux.
-  defp check_scratch_exec(root) do
+  @doc """
+  The scratch preflight: `:ok` when a file in the scratch root can be
+  executed, else `{:error, :scratch_noexec}`.
+  """
+  @spec check_scratch_exec() :: :ok | {:error, :scratch_noexec}
+  def check_scratch_exec do
     probe = config(:exec_probe, &__MODULE__.probe_exec/1)
-    dir = existing_ancestor(root)
+    dir = existing_ancestor(scratch_root())
 
     case probe.(dir) do
       :ok ->
