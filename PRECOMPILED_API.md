@@ -592,9 +592,10 @@ What it lists:
   exactly that tarball's after the compile (judge revision 23). Nor does a
   Mix alias of a package's own project copying one file its tarball ships
   onto another the tarball ships with the same bytes (phoenix copying its
-  `core_components.ex.eex` template into `priv`), when it runs before Mix
-  goes on and the package's source tree is still exactly that tarball's
-  after the compile (judge revision 27). What the package does at
+  `core_components.ex.eex` template into `priv`) with `File.cp/3`, in the
+  process Mix runs its tasks in and while Mix builds that package, when
+  the two are two files and the package's source tree is still exactly
+  that tarball's after the compile (judge revision 27). What the package does at
   runtime does not count: a package that runs programs, opens ports, looks
   up executables or reads the OS type when it runs is built and served like
   any other, since those calls run the same from a precompiled build. Native
