@@ -749,6 +749,27 @@ the overlay would record the build as the wrong variant. Other modes accept the 
 `toolchain_build.config_variant` is the config variant the build was made in, echoed for the portal to check
 against the job; it is always set in a toolchain run, `"default"` without an input value.
 
+`"deterministic": true` in `NCC_INPUT` (toolchain mode; anything but exactly `true` is off, and other modes ignore
+it) also builds the build's deterministic sibling (`NccWorker.Deterministic`, judge revision 29), recorded as
+`result.json`'s `deterministic_build`: the package's closure compiled again with `ERL_COMPILER_OPTIONS=deterministic`
+in its own traced judge compile, never a second window of the build's (Elixir reads the variable once per VM, on
+its first module), at `_build/deterministic` (the build's `_build/host` is not touched), with the build's env and
+`HEX_HOME`, and judged by `NccWorker.Portability.run/3` on the lock and tree snapshots the build's passing trace was
+judged on, then by the static rules on its own `ebin` and `priv`. It is tried only after a build that passed and
+whose compile neither read nor set `ERL_COMPILER_OPTIONS` (nor read the whole environment); otherwise it is
+`"skipped"` with `"the build without the option did not pass"` or `"the build's compile reads or sets
+ERL_COMPILER_OPTIONS"`. It passes only when it is the build but for what the option changes: the same `deps_lock`,
+`package_checksum`, `declared`, `manager`, `compile_env`, `compile_env_rule`, `compile_inputs` and `built_priv`, the
+same `priv` files (bytes too, but for `built_priv`), and an `ebin` `Compatibility.DeterministicBeams.compare_ebin/2`
+takes (every beam compiled with the option; an Elixir module's code and md5 the build's, only `CInf`, `Dbgi`, `Docs`
+and `ExCk` differing; an Erlang module's only `CInf`, `Dbgi`, `Docs`, `Line`, `LitT` and `Attr`). Else it is
+`"skipped"`, its reason the judge's or `"differs from the build: ..."`. Its fields are a toolchain build's plus
+`erl_compiler_options: ["deterministic"]`; a sibling that was not tried carries only `status`, `reason`,
+`erl_compiler_options`, `elixir`, `otp`, `judge_revision` and a nil `file_manifest`. Its files are archived from
+`_build/deterministic/lib/<package>`, each only while it still hashes to its entry. A sibling trace that left
+processes running that could not be killed, or a build whose files no longer hash to its manifest after the sibling,
+fails the run (exit `10`). Nothing about the build itself changes either way.
+
 A package that ships `priv` files is portable only when they are static data (`NccWorker.StaticPriv`): every file
 under `_build/host/lib/<package>/priv` (or `deps/<package>/priv`, the only link target followed there) is a regular file with one link, executable neither there nor in the
 tarball, carried byte for byte at `priv/<path>` in the `contents.tar.gz` of the package's own Hex tarball, and not

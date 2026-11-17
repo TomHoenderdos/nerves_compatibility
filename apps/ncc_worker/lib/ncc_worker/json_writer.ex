@@ -70,7 +70,9 @@ defmodule NccWorker.JsonWriter do
     # and, for `declared`, one from before it was recorded), `optional_deps` for
     # argus-only runs, which publish nothing, `toolchain_build` and
     # `requested_toolchain` for every run but a toolchain one
-    # (`NccWorker.Worker.toolchain_build/5`), `host_native_build` for every
+    # (`NccWorker.Worker.toolchain_build/5`), `deterministic_build` for every
+    # run but a toolchain one asked for it (`NccWorker.Deterministic`),
+    # `host_native_build` for every
     # run but a host-native one (`NccWorker.HostNative`; its archives' local
     # paths, `host_native_archives`, are never written), `nerves_cache` for a run with
     # no Nerves cache misses or locked Nerves packages
@@ -95,6 +97,7 @@ defmodule NccWorker.JsonWriter do
         :declared,
         :optional_deps,
         :toolchain_build,
+        :deterministic_build,
         :host_native_build,
         :requested_toolchain,
         :nerves_cache,

@@ -10,6 +10,7 @@ defmodule NccWorker.Worker do
     BuildCache,
     BuildSelection,
     DepsGetClassifier,
+    Deterministic,
     DepsLock,
     EgressProbe,
     FirmwareBuildRoot,
@@ -265,6 +266,16 @@ defmodule NccWorker.Worker do
           # Only for a "toolchain" run, whose `systems` is `%{}`: no firmware,
           # no argus (`argus.status` "skipped"), no Nerves systems.
           optional(:toolchain_build) => toolchain_build(),
+          # Only for a "toolchain" run asked for `deterministic: true`
+          # (`NccWorker.Deterministic`): the build's deterministic sibling, a
+          # `t:toolchain_build_verdict/0` of its own traced compile with
+          # `ERL_COMPILER_OPTIONS=deterministic` plus `erl_compiler_options`
+          # (`["deterministic"]`); "pass" only when it is the build but for what
+          # the option changes. Its files are under `_build/deterministic`.
+          # A sibling that was not tried is "skipped" with only `status`,
+          # `reason`, `erl_compiler_options`, `elixir`, `otp`,
+          # `judge_revision` and a nil `file_manifest`.
+          optional(:deterministic_build) => map(),
           # Only for a "host_native" run, whose `systems` is `%{}`
           # (`NccWorker.HostNative.build/6`): a toolchain build's fields
           # but `config_variant`, `rule1_reason` and `world`, plus `triple`,
@@ -1862,7 +1873,13 @@ defmodule NccWorker.Worker do
              package_name,
              paths,
              compile_opts
-           ) do
+           ),
+         build =
+           compiled
+           |> compiled_build(project_dir, package_name, toolchain, makefile_rule2: rule2)
+           |> Map.put(:config_variant, config_variant),
+         {:ok, sibling} <-
+           deterministic(input, compiled, build, project_dir, paths, toolchain, compile_opts) do
       result =
         %{
           run_id: input.run_id,
@@ -1878,17 +1895,46 @@ defmodule NccWorker.Worker do
           argus: Argus.skipped(),
           finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
           scope: RunScope.to_string(:toolchain),
-          toolchain_build:
-            compiled
-            |> compiled_build(project_dir, package_name, toolchain, makefile_rule2: rule2)
-            |> Map.put(:config_variant, config_variant)
+          toolchain_build: build
         }
+        |> put_present(:deterministic_build, sibling)
         |> put_optional_deps(compiled.optional_deps)
         |> put_run_deps_lock(compiled, project_dir, package_name)
         |> put_requested_toolchain(input[:toolchain])
         |> put_requested_optional_deps(requested_optional_deps(input))
 
       {:ok, result}
+    end
+  end
+
+  # The deterministic sibling (`NccWorker.Deterministic`), when the input asks
+  # for one: of a build that passed, judged on what that build was judged on.
+  # A world build that was not built, or any build that did not pass, gets a
+  # skipped one, so the result says the request was read. `nil` otherwise.
+  # Tests inject the sibling's trace as `deterministic_trace:`.
+  defp deterministic(input, compiled, build, project_dir, paths, toolchain, opts) do
+    if Deterministic.requested?(input) do
+      Deterministic.build(
+        project_dir,
+        input.package.name,
+        paths,
+        toolchain,
+        build,
+        Map.get(compiled, :judged_with, []),
+        [
+          run_started_at: input[:started_at],
+          makefile_rule2: Keyword.get(opts, :makefile_rule2) == true
+        ] ++ trace_opt(opts)
+      )
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp trace_opt(opts) do
+    case Keyword.fetch(opts, :deterministic_trace) do
+      {:ok, trace} -> [trace: trace]
+      :error -> []
     end
   end
 
@@ -2193,13 +2239,18 @@ defmodule NccWorker.Worker do
   # caller's injections are dropped before the options reach it.
   defp host_trace(project_dir, package_name, paths, opts) do
     trace = Keyword.get(opts, :host_trace, &HostTrace.compile/4)
-    forwarded = Keyword.drop(opts, [:deps_get, :optional_deps, :host_trace])
+    forwarded = Keyword.drop(opts, [:deps_get, :optional_deps, :host_trace, :deterministic_trace])
 
     case guarded_host_trace(trace, project_dir, package_name, paths, forwarded) do
       {:ok, %{host: %{status: :error} = host}} -> {:error, {:host_compile_error, host[:error]}}
+      {:ok, compiled} -> {:ok, Map.put(compiled, :judged_with, judged_with(forwarded))}
       other -> other
     end
   end
+
+  # What a verdict of this compile was judged on, for a later traced compile
+  # of the same closure to be judged on too (`NccWorker.Deterministic`).
+  defp judged_with(opts), do: Keyword.take(opts, [:releases, :trees])
 
   defp guarded_host_trace(trace, project_dir, package_name, paths, opts) do
     {:ok, trace.(project_dir, package_name, paths, opts)}
@@ -2437,7 +2488,9 @@ defmodule NccWorker.Worker do
   trace's verdict (`NccWorker.Portability.run/3`; `nil` when there was none,
   which cannot pass). `opts` are the toolchain run's judge options
   (`makefile_rule2:`, item 1 of the judge refinements; `hex_home:`, the Hex
-  cache the package's tarball is read from, default `HEX_HOME`); `judge_revision` is
+  cache the package's tarball is read from, default `HEX_HOME`; `build_path:`,
+  the build dir the judged build is under, default `_build/host`, which a
+  deterministic sibling's is not, `NccWorker.Deterministic`); `judge_revision` is
   `Portability.judge_revision(opts)` for every judged build.
   """
   @spec toolchain_build(
@@ -2519,7 +2572,8 @@ defmodule NccWorker.Worker do
       ]
 
   defp judge_finished_build(build, project_dir, package_name, portability, host_result, opts) do
-    app_dir = Path.join([project_dir, "_build", "host", "lib", package_name])
+    build_path = Keyword.get(opts, :build_path, Path.join([project_dir, "_build", "host"]))
+    app_dir = Path.join([build_path, "lib", package_name])
     scan = scan_host_app(app_dir)
     tarball = package_tarball(project_dir, package_name, Keyword.get(opts, :hex_home))
     built_priv = trace_built_priv(portability)
@@ -2529,10 +2583,16 @@ defmodule NccWorker.Worker do
         tarball: tarball,
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
         manager: portability[:manager],
-        built_priv: built_priv
+        built_priv: built_priv,
+        build_path: build_path
       )
 
-    rule1 = BuildSelection.portable?(project_dir, package_name, scan, tarball: tarball)
+    rule1 =
+      BuildSelection.portable?(project_dir, package_name, scan,
+        tarball: tarball,
+        build_path: build_path
+      )
+
     app_env = AppFile.read_compile_env(Path.join([app_dir, "ebin", "#{package_name}.app"]))
     {compile_env, compile_env_rule} = r5_compile_env(app_env, portability)
 

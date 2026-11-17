@@ -257,8 +257,15 @@ defmodule NccWorker.Portability do
   # compile (`own_tree_copies/2`): phoenix's `compile:
   # [&copy_core_components/1, "compile"]`, which refused phoenix and every
   # package with it in its closure (bumped by two while `makefile_rule2`
-  # exists).
-  @judge_revision 27
+  # exists). 29: a toolchain run asked for `deterministic: true` also
+  # builds the package's deterministic sibling (`NccWorker.Deterministic`):
+  # the closure's own traced compile with `ERL_COMPILER_OPTIONS=deterministic`
+  # at a build path of its own, judged by every rule here on the lock and
+  # tree snapshots the build was judged on, and kept only when it is the
+  # build but for what the option changes (`Compatibility.DeterministicBeams`);
+  # the build's own verdict does not change (bumped by two while
+  # `makefile_rule2` exists).
+  @judge_revision 29
 
   @doc "The judge revision a toolchain build made with `opts` records."
   # `NCC_INPUT.judge.makefile_rule2` adds one, so turning item 1 on

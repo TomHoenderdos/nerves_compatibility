@@ -48,6 +48,7 @@ defmodule NccWorker.FileArchiver do
           collect_manifests_from_system(system_result, project_dir, system_name, package_name)
       end)
       |> Kernel.++(collect_toolchain_manifest(result, project_dir, package_name))
+      |> Kernel.++(collect_deterministic(result, project_dir, package_name))
       |> Kernel.++(collect_host_native(result, project_dir, package_name))
 
     # Archive each file
@@ -196,6 +197,31 @@ defmodule NccWorker.FileArchiver do
   end
 
   defp collect_toolchain_manifest(_result, _project_dir, _package_name), do: []
+
+  # A toolchain run's deterministic sibling (`NccWorker.Deterministic`): its
+  # own build of the package under `_build/deterministic`, listed in
+  # `deterministic_build.file_manifest` when it passed. As for a firmware
+  # variant, a file whose bytes no longer hash to its entry is not archived,
+  # and the portal then leaves the sibling out.
+  defp collect_deterministic(%{scope: "toolchain"} = result, project_dir, package_name)
+       when is_binary(package_name) do
+    case get_in(result, [:deterministic_build, :file_manifest]) do
+      %{} = manifest ->
+        app_dir =
+          project_dir |> NccWorker.Deterministic.build_path() |> Path.join("lib/" <> package_name)
+
+        index = app_dir |> walk_files() |> Map.new(&{Path.relative_to(&1, app_dir), &1})
+
+        %{file_manifest: manifest}
+        |> collect_manifest_entries(index, "package")
+        |> Enum.filter(fn {source, entry} -> file_sha256(source) == field(entry, :sha256) end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp collect_deterministic(_result, _project_dir, _package_name), do: []
 
   # A host-native run's files: the package's host build, listed in
   # `host_native_build.file_manifest` when the build passed, and the

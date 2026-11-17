@@ -114,7 +114,10 @@ defmodule NccWorker.BuildSelection do
   or a tar archive but for its times, `NccWorker.Portability.TarTimes`)
   (judge revision 21): such a file is static when the tarball does not carry
   it at all, and is held to every other priv rule
-  (`Compatibility.StaticPriv.check/3`). Rule 1 never takes it.
+  (`Compatibility.StaticPriv.check/3`). Rule 1 never takes it. `build_path:`
+  (default `<project>/_build/host`, here and in `portable?/4`) is the build
+  dir whose `lib/<package>/priv` is judged: a deterministic sibling's is its
+  own (`NccWorker.Deterministic`).
   """
   @spec static_rules(String.t(), String.t(), map(), keyword()) :: :ok | {:skip, String.t()}
   def static_rules(project, package, scan, opts \\ []) do
@@ -177,8 +180,10 @@ defmodule NccWorker.BuildSelection do
   defp portable_priv(project, package, _scan, opts, built) do
     case Keyword.fetch(opts, :tarball) do
       {:ok, tarball} ->
+        build_path = Keyword.get(opts, :build_path, Path.join([project, "_build", "host"]))
+
         StaticPriv.check(
-          Path.join([project, "_build", "host", "lib", package, "priv"]),
+          Path.join([build_path, "lib", package, "priv"]),
           Path.join([project, "deps", package, "priv"]),
           tarball,
           built
