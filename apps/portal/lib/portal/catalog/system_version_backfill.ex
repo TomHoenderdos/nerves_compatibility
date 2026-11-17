@@ -68,7 +68,8 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     * every row a call fills gets a `catalog_system_version_backfills`
       row with the value, its evidence and the call's `filled_at`;
       `backfills/0` lists them and `undo/1` sets the rows one call filled
-      back to NULL, only where they still hold the value it wrote.
+      back to NULL, only where they still hold the value it wrote, with
+      the copies a partial run carried from them since.
 
   A filled row changes its package's precompiled fingerprint, so the next
   signed batch (`Portal.Workers.PrecompiledBatch`) renders it.
@@ -160,19 +161,36 @@ defmodule Portal.Catalog.SystemVersionBackfill do
   ORDER BY filled_at, 2
   """
 
+  # The rows the fill at `$1` wrote, and the copies a partial run made of
+  # one of them since (`Portal.Catalog.Ingestion` copies the version with
+  # the row): a copy of the same build and system, holding the value, with
+  # no audit row of its own. A build's rows were all NULL before a fill, so
+  # such a copy has the value only from the fill.
   @undo_sql """
-  WITH restored AS (
+  WITH filled AS (
+    SELECT a.system_result_id, a.system_pkg, a.system_version,
+           coalesce(r.carried_from_run_id, r.run_id) AS built_by
+    FROM catalog_system_version_backfills a
+    JOIN catalog_system_results r ON r.id = a.system_result_id
+    WHERE a.filled_at = $1 AND a.undone_at IS NULL
+  ), restored AS (
     UPDATE catalog_system_results s
     SET system_version = NULL, updated_at = $2
-    FROM catalog_system_version_backfills a
-    WHERE a.filled_at = $1 AND a.undone_at IS NULL
-      AND s.id = a.system_result_id AND s.system_version = a.system_version
+    FROM filled f
+    WHERE s.system_pkg = f.system_pkg AND s.system_version = f.system_version
+      AND (s.id = f.system_result_id OR
+           (s.carried_from_run_id = f.built_by AND
+            NOT EXISTS (SELECT 1 FROM catalog_system_version_backfills o
+                        WHERE o.system_result_id = s.id AND o.undone_at IS NULL)))
     RETURNING s.id
+  ), marked AS (
+    UPDATE catalog_system_version_backfills a
+    SET undone_at = $2
+    FROM restored
+    WHERE a.system_result_id = restored.id AND a.filled_at = $1 AND a.undone_at IS NULL
+    RETURNING a.id
   )
-  UPDATE catalog_system_version_backfills a
-  SET undone_at = $2
-  FROM restored
-  WHERE a.system_result_id = restored.id AND a.filled_at = $1 AND a.undone_at IS NULL
+  SELECT (SELECT count(*) FROM restored), (SELECT count(*) FROM marked)
   """
 
   @type reason ::
@@ -254,14 +272,21 @@ defmodule Portal.Catalog.SystemVersionBackfill do
   @doc """
   Sets the rows the fill at `filled_at` gave a version back to NULL, where
   they still hold the value it wrote, and marks their audit rows
-  `undone_at`. Returns how many.
+  `undone_at`. A copy a partial run carried from one of those rows after
+  the fill holds the value too, and goes back to NULL with it. Returns how
+  many rows it set back, copies included.
   """
   @spec undo(DateTime.t() | NaiveDateTime.t()) :: {:restored, non_neg_integer()}
   def undo(%DateTime{} = filled_at), do: filled_at |> naive_utc() |> undo()
 
   def undo(%NaiveDateTime{} = filled_at) do
-    %{num_rows: count} = Repo.query!(@undo_sql, [filled_at, NaiveDateTime.utc_now()])
-    Logger.warning("restored #{count} system versions filled at #{filled_at} to NULL")
+    %{rows: [[count, audited]]} = Repo.query!(@undo_sql, [filled_at, NaiveDateTime.utc_now()])
+
+    Logger.warning(
+      "restored #{count} system versions filled at #{filled_at} to NULL " <>
+        "(#{audited} filled, #{count - audited} carried copies)"
+    )
+
     {:restored, count}
   end
 

@@ -166,6 +166,24 @@ defmodule Portal.Catalog.SystemVersionBackfillTest do
     assert {:restored, 0} = SystemVersionBackfill.undo(filled_at)
   end
 
+  test "undo also puts back the copies a partial run carried from a filled row" do
+    recorded = recorded!(@rpi4, "2.2.1")
+    builder = run!(~N[2026-10-27 10:00:00])
+    source = result!(builder, @rpi4)
+
+    {:filled, 1, %{filled_at: filled_at}} =
+      SystemVersionBackfill.fill(dry_run: false, releases: releases())
+
+    # A partial run ingested after the fill copies the row, its version too.
+    copy =
+      ~N[2026-11-12 13:28:00] |> run!() |> result!(@rpi4, version: "2.2.1", carried_from: builder)
+
+    assert {:restored, 2} = SystemVersionBackfill.undo(filled_at)
+    assert version_of(source) == nil
+    assert version_of(copy) == nil
+    assert version_of(recorded) == "2.2.1"
+  end
+
   test "a row it filled is not evidence for the rows it has not filled yet" do
     recorded = recorded!(@rpi4, "2.2.1")
     null_row!()
