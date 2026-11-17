@@ -640,7 +640,11 @@ phoenix's `compile: [&copy_core_components/1, "compile"]`, which copies
 `installer/templates/phx_web/components/core_components.ex.eex` onto
 `priv/templates/phx.gen.live/core_components.ex.eex` (`compile-time write outside ebin: file:copy/2
 .../deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex`), and which refused phoenix 1.8 and every
-package with it in its closure (phoenix_live_view and phoenix_live_dashboard among them). The
+package with it in its closure (phoenix_live_view and phoenix_live_dashboard among them). Only
+the calls `File.cp/3` (and `File.cp_r/3`) make count, the toolchain's `File.do_cp_file/4` the frame right below each:
+the trace keeps neither a copy's byte count nor the modes it opens either file with, so a package's own `File.copy/3`
+or `:file.copy/3` (cutting a file short, appending, writing it compressed) or `File.write_stat/3` (any mode) keeps its
+refusal. The
 call must be made in the process `elixir -S mix` runs its tasks in (`Kernel.CLI`'s exec fun at the bottom of a stack
 seen whole), by a fun of the aliases Mix's alias runner called: one that tail-called the copy (`Mix.Task.run_alias/6`
 the first frame) or one whose own frame is in that dependency's own `mix.exs`. So the copy returns before Mix goes on

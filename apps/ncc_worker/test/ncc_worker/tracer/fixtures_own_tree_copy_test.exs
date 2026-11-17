@@ -20,6 +20,7 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
   @moduletag timeout: 900_000
 
   @tpl "<%= @name %> components\n"
+  @extra "defmodule FxCpTrunc.Extra do\n  def x, do: :x\nend\n"
 
   # Phoenix's shape: the alias copies a file the tarball ships twice.
   defp copying(app, body, from, to) do
@@ -126,6 +127,34 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
         "installer/core.ex.eex" => @tpl,
         "priv/templates/gen/core.ex.eex" => @tpl
       },
+      # Its alias empties a file of its tarball (`File.copy!/3` with no
+      # byte), compiles, and puts the tarball's bytes back with `File.cp!/2`
+      # from a twin the tarball ships: the tree is the tarball's again, but
+      # the compile saw the file empty.
+      "fx_cp_trunc" => %{
+        "mix.exs" => """
+        defmodule FxCpTrunc.MixProject do
+          use Mix.Project
+
+          def project,
+            do: [
+              app: :fx_cp_trunc,
+              version: "0.1.0",
+              deps: [],
+              aliases: [compile: [&cut/1, "compile", &put_back/1]]
+            ]
+
+          defp cut(_),
+            do: File.copy!(Path.join(__DIR__, "backup/extra.ex"), Path.join(__DIR__, "lib/extra.ex"), 0)
+
+          defp put_back(_),
+            do: File.cp!(Path.join(__DIR__, "backup/extra.ex"), Path.join(__DIR__, "lib/extra.ex"))
+        end
+        """,
+        "lib/fx_cp_trunc.ex" => "defmodule FxCpTrunc do\n  def x, do: :x\nend\n",
+        "lib/extra.ex" => @extra,
+        "backup/extra.ex" => @extra
+      },
       # Its alias makes fx_cp's own copy, in fx_cp's tree.
       "fx_cp_other" =>
         package(
@@ -173,7 +202,7 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
       )
 
     top = ~w(fx_cp fx_cp_user fx_cp_frame fx_cp_diff fx_cp_new fx_cp_spawn fx_cp_task fx_cp_lib
-               fx_cp_other)
+               fx_cp_other fx_cp_trunc)
     proj = TracerFixtures.project(root, top, deps)
     traced = TracerFixtures.trace(proj, top)
 
@@ -267,5 +296,40 @@ defmodule NccWorker.Tracer.FixturesOwnTreeCopyTest do
     v = verdict(ctx, "fx_cp_other")
     assert v.status == :skip
     assert copy_refusal?(v, "fx_cp"), show(v)
+  end
+
+  test "File.cp!/2's copies and mode write are made by File.do_cp_file/4", ctx do
+    dest = Path.join(ctx.proj, "deps/fx_cp/priv/templates/gen/core.ex.eex")
+
+    calls =
+      for %{"channel" => "file_write", "arg" => %{"path" => ^dest}} = e <-
+            ctx.traced.report.events,
+          do: {e["mfa"], e["caller"], e["caller_kind"]}
+
+    cp_file = %{"module" => "Elixir.File", "function" => "do_cp_file", "arity" => 4}
+
+    assert Enum.sort(Enum.uniq(for {mfa, _, _} <- calls, do: mfa)) ==
+             ~w(file:copy/2 file:copy/3 file:write_file_info/3)
+
+    for {_mfa, caller, kind} <- calls do
+      assert Map.take(caller, ~w(module function arity)) == cp_file
+      assert kind == "toolchain"
+    end
+  end
+
+  test "a copy that empties a file refuses, though a later copy puts its bytes back", ctx do
+    # The compile saw lib/extra.ex empty (no FxCpTrunc.Extra), and the tree
+    # is the tarball's again.
+    ebin = Path.join(ctx.proj, "_build/host/lib/fx_cp_trunc/ebin")
+    refute File.exists?(Path.join(ebin, "Elixir.FxCpTrunc.Extra.beam"))
+    assert File.exists?(Path.join(ebin, "Elixir.FxCpTrunc.beam"))
+    assert File.read!(Path.join(ctx.proj, "deps/fx_cp_trunc/lib/extra.ex")) == @extra
+
+    v = verdict(ctx, "fx_cp_trunc")
+    assert v.status == :skip, show(v)
+
+    assert v.reason ==
+             "compile-time write outside ebin: file:copy/3 " <>
+               Path.join(ctx.proj, "deps/fx_cp_trunc/lib/extra.ex")
   end
 end

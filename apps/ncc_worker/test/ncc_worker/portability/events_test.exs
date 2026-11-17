@@ -1706,6 +1706,8 @@ defmodule NccWorker.Portability.EventsTest do
     end
 
     @mix_main %{"module" => "Elixir.Kernel.CLI", "function" => "-exec_fun/2-fun-0-"}
+    # The frame `File.cp/3` leaves right below each of its three calls.
+    @cp_file %{"module" => "Elixir.File", "function" => "do_cp_file", "arity" => 4}
 
     defp copy(pkg, mfa \\ "file:copy/2", opts \\ []) do
       dest = Keyword.get(opts, :path, Path.join(pkg, "priv/t/a.eex"))
@@ -1726,13 +1728,15 @@ defmodule NccWorker.Portability.EventsTest do
         first: Keyword.get(opts, :first, {"Elixir.Mix.Task", "run_alias", 6})
       )
       |> Map.put("bottom", Keyword.get(opts, :bottom, @mix_main))
+      |> Map.put("caller", Keyword.get(opts, :caller, @cp_file))
+      |> Map.put("caller_kind", Keyword.get(opts, :caller_kind, "toolchain"))
     end
 
     test "is observed with the refusal it would be", %{dir: dir, proj: proj, pkg: pkg} do
       %{ctx: ctx, build_priv: build_priv} = tree_ctx(dir, proj, pkg)
       dest = Path.join(pkg, "priv/t/a.eex")
 
-      for mfa <- ~w(file:copy/2 file:copy/3 prim_file:copy/3) do
+      for mfa <- ~w(file:copy/2 file:copy/3) do
         assert {:observe, "own_tree_copies", item} = Events.decide(copy(pkg, mfa), ctx, "pkg")
 
         assert %{"app" => "pkg", "path" => "priv/t/a.eex", "source" => "installer/a.eex"} =
@@ -1785,6 +1789,37 @@ defmodule NccWorker.Portability.EventsTest do
         assert {:refuse, "compile-time write outside ebin: " <> _} =
                  Events.decide(copy(pkg), ctx, owner),
                inspect(owner)
+      end
+    end
+
+    test "keeps its refusal unless File.cp/3 made the call", %{dir: dir, proj: proj, pkg: pkg} do
+      # The trace keeps no byte count and no open modes: `File.copy/3` or
+      # `:file.copy/3` with a count cuts the file short, `{dest, [:append]}`
+      # appends, and `File.write_stat/3` sets any mode. Only the toolchain's
+      # `File.do_cp_file/4` copies a whole file by name and then the
+      # source's mode.
+      %{ctx: ctx} = tree_ctx(dir, proj, pkg)
+      copy! = %{"module" => "Elixir.File", "function" => "copy!", "arity" => 3}
+      alias_fun = %{"module" => "Elixir.Pkg.MixProject", "function" => "cut", "arity" => 1}
+
+      for mfa <- ~w(file:copy/2 file:copy/3 file:write_file_info/3),
+          opts <- [
+            [caller: copy!],
+            [caller: alias_fun, caller_kind: "user"],
+            [caller_kind: "user"],
+            [caller: nil, caller_kind: "none"]
+          ] do
+        event = copy(pkg, mfa, opts)
+
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(event, ctx, "pkg"),
+               inspect({mfa, opts})
+      end
+
+      for mfa <- ~w(prim_file:copy/3 file:write_file_info/2) do
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(copy(pkg, mfa), ctx, "pkg"),
+               mfa
       end
     end
 

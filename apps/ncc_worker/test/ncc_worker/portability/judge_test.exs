@@ -241,6 +241,8 @@ defmodule NccWorker.Portability.JudgeTest do
           "first" => %{"module" => "Elixir.Mix.Task", "function" => "run_alias", "arity" => 6}
       }
       |> Map.put("bottom", %{"module" => "Elixir.Kernel.CLI", "function" => "-exec_fun/2-fun-0-"})
+      |> Map.put("caller", %{"module" => "Elixir.File", "function" => "do_cp_file", "arity" => 4})
+      |> Map.put("caller_kind", "toolchain")
     end
 
     defp cp_events(proj, ts, app),

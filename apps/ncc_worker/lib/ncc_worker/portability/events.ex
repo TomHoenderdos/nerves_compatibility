@@ -102,7 +102,9 @@ defmodule NccWorker.Portability.Events do
       into another package's `priv` always does. A Mix alias of a
       dependency's own project, in the process Mix runs its tasks in,
       copying one file of its own source tree onto another, and the mode
-      `File.cp/3` writes onto the copy, are observed as `own_tree_copies`
+      `File.cp/3` writes onto the copy, made by the toolchain's
+      `File.do_cp_file/4` (never a package's own `File.copy/3`, which may
+      copy part of a file), are observed as `own_tree_copies`
       (phoenix's `copy_core_components/1`), carrying the refusal they would
       otherwise be: `NccWorker.Portability` refuses each unless the copy
       changed no byte of that dependency's verified tree (judge revision
@@ -183,12 +185,16 @@ defmodule NccWorker.Portability.Events do
                   file:change_mode/2 file:change_time/2 file:change_time/3)
   # Judge revision 27: the copies that set one file's bytes to another's,
   # the write `File.cp/3` then makes of the source's mode onto the copy
-  # (`File.write_stat/3`), the frame Mix's alias runner leaves when a fun
+  # (`File.write_stat/3`), the one function that makes all three for
+  # `File.cp/3` and `File.cp_r/3` (`File.do_cp_file/4`: `:file.copy/2` onto
+  # `{dest, [:exclusive]}`, then `File.copy/2`'s whole-file `:file.copy/3`,
+  # then the source's mode), the frame Mix's alias runner leaves when a fun
   # of the project's aliases tail-called one, and the bottom frame of the
   # process `elixir -S mix` runs its tasks in (`Kernel.CLI`'s exec fun),
   # Elixir 1.17 to 1.20.
-  @copies ~w(file:copy/2 file:copy/3 prim_file:copy/3)
-  @copy_modes ~w(file:write_file_info/2 file:write_file_info/3)
+  @copies ~w(file:copy/2 file:copy/3)
+  @copy_modes ~w(file:write_file_info/3)
+  @cp_file {"Elixir.File", "do_cp_file", 4}
   @run_alias {"Elixir.Mix.Task", "run_alias", 6}
   @mix_main {"Elixir.Kernel.CLI", "-exec_fun/2-fun-0-"}
 
@@ -625,12 +631,19 @@ defmodule NccWorker.Portability.Events do
   # the judge allows a copy only when the verified tarball holds both files
   # with the same bytes and the whole tree is still exactly the tarball's
   # after the compile, and the mode write only onto such a copy
-  # (`NccWorker.Portability`), so no byte of the tree ever changed. `"path"`
+  # (`NccWorker.Portability`), so no byte of the tree ever changed. Only
+  # as the toolchain's `File.do_cp_file/4` makes them (`@cp_file`, the
+  # frame right below the call): the trace keeps neither a copy's byte
+  # count nor the modes it opens either file with, so a package's own
+  # `:file.copy/3` or `File.copy/3` could cut a file short, append to it or
+  # write it compressed, and a package's own `File.write_stat/3` set any
+  # mode, and still look like this copy. `"path"`
   # and `"source"` (the copy's, `nil` for the mode write) are relative to
   # the dependency's source dir. Anything else refuses.
   defp own_tree_copy(%{"mfa" => mfa} = e, ctx, owner, [target])
        when mfa in @copies or mfa in @copy_modes do
-    with true <- mix_alias?(e, ctx, owner),
+    with true <- toolchain_caller?(e, @cp_file),
+         true <- mix_alias?(e, ctx, owner),
          path when is_binary(path) <- Context.own_tree_path(ctx, target, owner),
          {:ok, source} <- copied_from(e, ctx, owner) do
       {:observe, "own_tree_copies",
