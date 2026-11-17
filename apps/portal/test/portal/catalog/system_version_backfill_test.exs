@@ -166,6 +166,24 @@ defmodule Portal.Catalog.SystemVersionBackfillTest do
     assert {:restored, 0} = SystemVersionBackfill.undo(filled_at)
   end
 
+  test "a row it filled is not evidence for the rows it has not filled yet" do
+    recorded = recorded!(@rpi4, "2.2.1")
+    null_row!()
+    null_row!()
+
+    assert {:filled, 1, _} =
+             SystemVersionBackfill.fill(dry_run: false, limit: 1, releases: releases())
+
+    # The one recorded resolution goes; what is left is the row the backfill
+    # wrote itself, which corroborates nothing.
+    Repo.query!("DELETE FROM catalog_system_results WHERE id = $1", [Ecto.UUID.dump!(recorded)])
+
+    assert {:dry_run, %{provable: 0, left_null: %{uncorroborated: 1}} = report} =
+             SystemVersionBackfill.fill(releases: releases())
+
+    assert report.corroboration["#{@rpi4}@2.2.1"] == %{agree: 0, disagree: 0}
+  end
+
   test "fills at most `limit` rows per call" do
     recorded!(@rpi4, "2.2.1")
     for _ <- 1..3, do: null_row!()

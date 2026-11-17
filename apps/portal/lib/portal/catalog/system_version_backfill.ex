@@ -45,6 +45,8 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     3. **Corroboration.** Every resolution the catalog did record for the
        system whose own window (rule 1) places it on `V`, built by a run
        whose closure passes rule 2, chose `V`, and there is at least one.
+       A value this backfill wrote is not a recorded resolution, so an
+       earlier call's fills never vouch for a later call's.
        That checks the parts of the argument the portal cannot read back
        per row: the template's requirement, the Hex registry the build
        fetched, the worker's pins.
@@ -117,7 +119,9 @@ defmodule Portal.Catalog.SystemVersionBackfill do
 
   # The resolutions the catalog recorded for `$1`'s systems, by runs
   # inserted between `$2` and `$3` whose closure names no Nerves package;
-  # carried copies repeat their builder's row and are left out.
+  # carried copies repeat their builder's row and are left out, and so is a
+  # value this backfill wrote and has not undone: it is the conclusion, not
+  # evidence for it.
   @recorded_sql """
   SELECT s.system_pkg, s.system_version,
          least(b.finished_at, b.inserted_at), greatest(b.finished_at, b.inserted_at)
@@ -129,6 +133,8 @@ defmodule Portal.Catalog.SystemVersionBackfill do
     AND b.inserted_at >= $2 AND b.inserted_at <= $3
     AND jsonb_typeof(b.deps_lock) = 'object'
     AND NOT #{@nerves_closure}
+    AND NOT EXISTS (SELECT 1 FROM catalog_system_version_backfills a
+                    WHERE a.system_result_id = s.id AND a.undone_at IS NULL)
   """
 
   @fill_sql """
