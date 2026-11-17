@@ -153,9 +153,10 @@ config :portal, Oban,
        # host's queue: hex.pm lookups, not builds.
        {"11 5 * * *", Portal.Workers.CatalogSeedSweep},
        # Daily at 06:19 UTC, a minute no other entry here uses: queue a
-       # rebuild of the toolchain builds of each package's newest release
-       # whose lock a newer dependency release left behind
-       # (`Portal.Workers.ClosureDrift`), at most `max_per_run` a day. Two
+       # rebuild of the toolchain builds and firmware targets of each
+       # package's newest release that a newer dependency or system release
+       # left behind (`Portal.Workers.ClosureDrift`), at most `max_per_run`
+       # and `firmware_max_per_run` a day. Two
        # registry requests and the Hex reads of the closures it judges;
        # carries `:intake`, the web host's HTTP queue, as CoverageRefresh
        # does, off the single `:maintenance` slot.
@@ -192,8 +193,19 @@ config :portal, Portal.Workers.UpdateCheck, enabled: true
 # Rebuilding the toolchain builds a new dependency release left behind, at
 # most `max_per_run` a run and one scheduled run a day; at most `scan_limit`
 # builds are judged a run. `NCC_CLOSURE_DRIFT=0` and `NCC_CLOSURE_DRIFT_MAX`
-# override it at runtime. See `Portal.Workers.ClosureDrift`.
-config :portal, Portal.Workers.ClosureDrift, enabled: true, max_per_run: 500, scan_limit: 5_000
+# override it at runtime. The firmware phase rebuilds the drifted targets of
+# at most `firmware_max_per_run` runs a day (a container each, about 3
+# minutes for the ~5 targets a typical rebuild names), judging at most
+# `firmware_scan_limit` runs, each read with every target's lock.
+# `NCC_FIRMWARE_DRIFT=0` and `NCC_FIRMWARE_DRIFT_MAX` override it. See
+# `Portal.Workers.ClosureDrift`.
+config :portal, Portal.Workers.ClosureDrift,
+  enabled: true,
+  max_per_run: 500,
+  scan_limit: 5_000,
+  firmware: true,
+  firmware_max_per_run: 100,
+  firmware_scan_limit: 1_000
 
 # Registry-based native-code filter for bulk intake (`catalog_seed`,
 # `backfill`). Off by default so a deploy changes nothing until

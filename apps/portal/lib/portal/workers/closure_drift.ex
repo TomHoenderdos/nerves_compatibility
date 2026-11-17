@@ -1,7 +1,8 @@
 defmodule Portal.Workers.ClosureDrift do
   @moduledoc """
   Oban worker (queue `:intake`, a daily cron and a manual run) that
-  rebuilds the toolchain builds a new dependency release left behind.
+  rebuilds the toolchain builds a new dependency release left behind, and
+  the firmware targets a dependency or system release left behind.
 
   ## The decay it stops
 
@@ -58,11 +59,34 @@ defmodule Portal.Workers.ClosureDrift do
   yet deployed with this release; the ingest keeps it too, for rebuilds this
   worker did not queue.
 
+  ## Firmware targets
+
+  A firmware run's targets drift the same way, and also fall behind when
+  their system releases a version their build is not used on. After the
+  toolchain builds, a run asks `Portal.Catalog.FirmwareDrift` about each
+  package's latest run of its newest release, with the same registry and
+  Hex reads, most downloaded package first, and queues one forced targets
+  build (`Portal.Workers.Build.scope_args/3`) of only the targets it names,
+  through `Portal.Builders.Routing`, at priority 8: below a new release of a
+  tracked package, above bulk sweeps. Its args carry `reason` and `drift`
+  as above, a system bump naming the system as its `dep`. A package with a
+  build or lease already on the way is not queued again (`pending`), since
+  such a build's unique window is a minute and it may wait for days.
+
+  A firmware rebuild is a container run of minutes, so its cap is separate
+  and smaller (`firmware_max_per_run/0`). Nothing has to be kept for the old
+  lock: every run is its own row, the manifest lists one build per target,
+  system release and lock across all of a package's runs, and the rebuild
+  carries the targets it leaves out, so the replaced build keeps serving
+  projects still locked to the old dependency.
+
   ## Enablement
 
   On by default. `NCC_CLOSURE_DRIFT=0` switches the schedule off at runtime
-  and `NCC_CLOSURE_DRIFT_MAX` sets the per-run cap. A `"manual"` run ignores
-  the switch and a `"dry_run"` one queues and writes nothing.
+  and `NCC_CLOSURE_DRIFT_MAX` sets the per-run cap; `NCC_FIRMWARE_DRIFT=0`
+  switches the firmware phase off and `NCC_FIRMWARE_DRIFT_MAX` sets its cap.
+  A `"manual"` run ignores the schedule switch, not the firmware one, and a
+  `"dry_run"` one queues and writes nothing.
   """
 
   use Oban.Worker,
@@ -74,17 +98,28 @@ defmodule Portal.Workers.ClosureDrift do
 
   require Logger
 
+  alias Portal.Builders.Routing
+  alias Portal.BulkRebuild
   alias Portal.Catalog.ClosureDrift
+  alias Portal.Catalog.FirmwareDrift
   alias Portal.Catalog.Ingestion
   alias Portal.Catalog.ToolchainBuild, as: ToolchainRow
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
+  alias Portal.Precompiled.SystemAbi
   alias Portal.Repo
   alias Portal.Toolchains
   alias Portal.Toolchains.MemoryRouting
   alias Portal.Workers.ToolchainBuild
 
   @priority 3
+  # Firmware rebuilds sit below a new release of a tracked package
+  # (`:update_check`, 7) and above bulk sweeps and seeding (9).
+  @firmware_priority 8
   @reason "closure_drift"
+  @build_workers ~w(Portal.Workers.Build Portal.Workers.RemoteBuild)
+  @incomplete ~w(available scheduled executing retryable)
+  @lease_in_flight ~w(queued leased uploading)
+  @outcomes %{enqueued: 0, pending: 0, unknown: 0}
   # At most this many changes ride in a job's args, which Oban Web shows.
   @changes_shown 10
 
@@ -111,8 +146,10 @@ defmodule Portal.Workers.ClosureDrift do
   One run: judge the candidates and queue the drifted builds' rebuilds.
   Returns `{:ok, %{candidates, drifted, enqueued, pending, unknown}}`:
   builds judged, found drifted, newly queued, already queued (a unique
-  conflict), and whose closure could not be read. Option `:dry_run` judges
-  without queueing or writing anything.
+  conflict), and whose closure could not be read. While the firmware phase
+  is on (`firmware_enabled?/0`) the summary also has `firmware`, the same
+  counts for runs plus `targets`, the targets of the drifted runs. Option
+  `:dry_run` judges without queueing or writing anything.
   """
   @spec run(keyword()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) do
@@ -143,15 +180,13 @@ defmodule Portal.Workers.ClosureDrift do
 
       summary =
         try do
-          judge_all(candidates, index, context, dry_run?)
+          candidates
+          |> judge_all(index, context, dry_run?)
+          |> log_summary()
+          |> put_firmware(index, releases, dry_run?)
         after
           Process.delete(memo)
         end
-
-      Logger.info(
-        "Closure drift: #{summary.candidates} builds behind a release, #{summary.drifted} drifted, " <>
-          "#{summary.enqueued} queued, #{summary.pending} already queued, #{summary.unknown} unread"
-      )
 
       {:ok, summary}
     end
@@ -192,6 +227,9 @@ defmodule Portal.Workers.ClosureDrift do
     moved = Enum.map_join(changes, ", ", &"#{&1["dep"]} #{&1["from"]} -> #{&1["to"]}")
     Logger.info("Closure drift: #{describe(candidate)} drifted (#{moved})")
   end
+
+  defp describe(%{targets: targets} = c),
+    do: "#{c.package} #{c.version} (#{Enum.join(targets, ", ")})"
 
   defp describe(c),
     do: "#{c.package} #{c.version} (#{c.toolchain}, #{c.variant}, #{c.config_variant})"
@@ -259,6 +297,123 @@ defmodule Portal.Workers.ClosureDrift do
     :ok
   end
 
+  defp log_summary(summary) do
+    Logger.info(
+      "Closure drift: #{summary.candidates} builds behind a release, #{summary.drifted} drifted, " <>
+        "#{summary.enqueued} queued, #{summary.pending} already queued, #{summary.unknown} unread"
+    )
+
+    summary
+  end
+
+  # The firmware phase (moduledoc), with the run's registry and Hex reads.
+  defp put_firmware(summary, index, releases, dry_run?) do
+    if firmware_enabled?() do
+      firmware = firmware(index, releases, dry_run?)
+
+      Logger.info(
+        "Firmware drift: #{firmware.candidates} runs behind a release, #{firmware.drifted} " <>
+          "drifted (#{firmware.targets} targets), #{firmware.enqueued} queued, " <>
+          "#{firmware.pending} already on the way, #{firmware.unknown} unread"
+      )
+
+      Map.put(summary, :firmware, firmware)
+    else
+      summary
+    end
+  end
+
+  defp firmware(index, releases, dry_run?) do
+    candidates =
+      FirmwareDrift.candidates(index,
+        systems: BulkRebuild.targets(),
+        limit: firmware_scan_limit()
+      )
+
+    systems = SystemAbi.table()
+    max = firmware_max_per_run()
+
+    summary = Map.merge(%{candidates: length(candidates), drifted: 0, targets: 0}, @outcomes)
+
+    Enum.reduce_while(candidates, summary, fn
+      _run, %{enqueued: enqueued} = acc when enqueued >= max -> {:halt, acc}
+      run, acc -> {:cont, judge_firmware(run, {index, releases, systems}, dry_run?, acc)}
+    end)
+  end
+
+  defp judge_firmware(run, {index, releases, systems}, dry_run?, acc) do
+    case FirmwareDrift.judge(run, index, releases, systems) do
+      {:rebuild, targets, changes} ->
+        log_drift(%{package: run.package, version: run.version, targets: targets}, changes)
+        acc = %{acc | drifted: acc.drifted + 1, targets: acc.targets + length(targets)}
+
+        if dry_run?,
+          do: acc,
+          else: Map.update!(acc, rebuild_firmware(run, targets, changes), &(&1 + 1))
+
+      :current ->
+        acc
+
+      {:error, reason} ->
+        Logger.info(
+          "Firmware drift: #{run.package} #{run.version} not judged: #{inspect(reason)}"
+        )
+
+        %{acc | unknown: acc.unknown + 1}
+    end
+  end
+
+  # A forced targets build of the latest tested version, which
+  # `Portal.Workers.Build.scope_args/3` honours, through the routing every
+  # build takes. Its unique window is a minute, so a build of the package
+  # already waiting (any version, local or leased) is what dedupes it: one
+  # queued yesterday at this priority may still be waiting.
+  defp rebuild_firmware(run, targets, changes) do
+    if firmware_pending?(run.package) do
+      :pending
+    else
+      args = %{
+        package: run.package,
+        version: run.version,
+        force: true,
+        scope: "targets",
+        systems: targets,
+        reason: @reason,
+        drift: Enum.take(changes, @changes_shown)
+      }
+
+      case args |> Routing.build_job(priority: @firmware_priority) |> Oban.insert() do
+        {:ok, %Oban.Job{conflict?: true}} ->
+          :pending
+
+        {:ok, _job} ->
+          :enqueued
+
+        {:error, reason} ->
+          Logger.error(
+            "Firmware drift could not queue #{run.package} #{run.version}: #{inspect(reason)}"
+          )
+
+          :unknown
+      end
+    end
+  end
+
+  defp firmware_pending?(package) do
+    Repo.exists?(
+      from(j in Oban.Job,
+        where:
+          j.worker in ^@build_workers and j.state in ^@incomplete and
+            fragment("?->>'package'", j.args) == ^package
+      )
+    ) or
+      Repo.exists?(
+        from(l in "builder_leases",
+          where: l.package == ^package and l.state in ^@lease_in_flight
+        )
+      )
+  end
+
   # `Portal.HexDeps.releases/2` once per package for the run, its answer
   # (an error too) kept in this process until the run ends (moduledoc).
   defp memoized_releases do
@@ -289,6 +444,16 @@ defmodule Portal.Workers.ClosureDrift do
   def max_per_run, do: Keyword.get(config(), :max_per_run, 500)
 
   defp scan_limit, do: Keyword.get(config(), :scan_limit, 5_000)
+
+  @doc "Whether a run also rebuilds drifted firmware targets (`NCC_FIRMWARE_DRIFT`)."
+  @spec firmware_enabled?() :: boolean()
+  def firmware_enabled?, do: Keyword.get(config(), :firmware, true) == true
+
+  @doc "At most this many firmware rebuilds per run (`NCC_FIRMWARE_DRIFT_MAX`), one run a day."
+  @spec firmware_max_per_run() :: non_neg_integer()
+  def firmware_max_per_run, do: Keyword.get(config(), :firmware_max_per_run, 100)
+
+  defp firmware_scan_limit, do: Keyword.get(config(), :firmware_scan_limit, 1_000)
 
   defp config, do: Application.get_env(:portal, __MODULE__, [])
 

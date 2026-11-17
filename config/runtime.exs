@@ -376,6 +376,27 @@ if portal_available? do
     _ -> :ok
   end
 
+  # Its firmware phase, parsed the same way: `NCC_FIRMWARE_DRIFT=0` stops the
+  # firmware rebuilds and leaves the toolchain ones running.
+  case System.get_env("NCC_FIRMWARE_DRIFT") do
+    v when v in ["1", "true", "yes"] ->
+      config :portal, Portal.Workers.ClosureDrift, firmware: true
+
+    v when v in ["0", "false", "no"] ->
+      config :portal, Portal.Workers.ClosureDrift, firmware: false
+
+    _ ->
+      :ok
+  end
+
+  case Integer.parse(System.get_env("NCC_FIRMWARE_DRIFT_MAX", "")) do
+    {max, ""} when max >= 0 ->
+      config :portal, Portal.Workers.ClosureDrift, firmware_max_per_run: max
+
+    _ ->
+      :ok
+  end
+
   # Same parsing, and the same reasoning about typos, as `NCC_UPDATE_CHECK`.
   case System.get_env("NCC_QUEUE_FILTER") do
     v when v in ["1", "true", "yes"] ->
