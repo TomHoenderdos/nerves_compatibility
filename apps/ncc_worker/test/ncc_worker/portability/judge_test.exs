@@ -313,6 +313,23 @@ defmodule NccWorker.Portability.JudgeTest do
       end
     end
 
+    test "refuses a copy between two names of one file", %{proj: proj, dir: dir} do
+      # A hard link made before the compile (an untraced `mix deps.get`
+      # evaluates every mix.exs) leaves the tree's bytes the tarball's, but
+      # the copy opens its source's own inode for writing: it empties both.
+      opts = tree_releases(proj, dir, ["dep", "pkg"])
+      r = report(proj, %{events: cp_events(proj, 35, "pkg")})
+      assert %{status: :pass} = judge(proj, r, opts)
+
+      source = Path.join(proj, "deps/pkg/installer/a.eex")
+      dest = Path.join(proj, "deps/pkg/priv/t/a.eex")
+      File.rm!(dest)
+      File.ln!(source, dest)
+
+      assert %{status: :skip, reason: reason} = judge(proj, r, opts)
+      assert reason == cp_refusal(proj, "pkg")
+    end
+
     test "refuses a copy the tarball does not hold the same bytes for", %{proj: proj, dir: dir} do
       # The tree is the tarball's, but the tarball's priv/t/a.eex is not
       # installer/a.eex: copying one onto the other changes it.

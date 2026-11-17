@@ -2297,7 +2297,9 @@ defmodule NccWorker.Portability do
   # was being written; and `Events` never observes one in a natively built
   # dependency, whose untraced build tool may. The mode `File.cp/3` writes
   # onto the copy after it is allowed only onto the destination of such a
-  # copy in the same window. Anything else is the write it always was, in
+  # copy in the same window. A copy onto its own source, by another
+  # spelling or another hard link, empties it, so the two must be two
+  # files (`one_name?/3`). Anything else is the write it always was, in
   # that dependency's window, so a refused one taints it.
   defp own_tree_copies(decided, ctx) do
     items = for {owner, {:observe, "own_tree_copies", item}} <- decided, do: {owner, item}
@@ -2309,7 +2311,7 @@ defmodule NccWorker.Portability do
 
     copied =
       for {owner, item} <- items,
-          unchanged_copy?(owner, item, trees),
+          unchanged_copy?(owner, item, trees, ctx),
           into: MapSet.new(),
           do: {owner, item["path"]}
 
@@ -2317,7 +2319,7 @@ defmodule NccWorker.Portability do
       {owner, {:observe, "own_tree_copies", item}} = entry ->
         allowed? =
           if is_binary(item["source"]),
-            do: unchanged_copy?(owner, item, trees),
+            do: unchanged_copy?(owner, item, trees, ctx),
             else: owner == item["app"] and MapSet.member?(copied, {owner, item["path"]})
 
         if allowed?, do: entry, else: {owner, {:refuse, copy_refusal(item)}}
@@ -2327,15 +2329,28 @@ defmodule NccWorker.Portability do
     end)
   end
 
-  defp unchanged_copy?(owner, %{"app" => app, "path" => path, "source" => source}, trees)
-       when owner == app and is_binary(path) and is_binary(source) do
+  defp unchanged_copy?(owner, %{"app" => app, "path" => path, "source" => source}, trees, ctx)
+       when owner == app and is_binary(path) and is_binary(source) and path != source do
     case Map.get(trees, app) do
-      %{^path => sha, ^source => sha} -> true
+      %{^path => sha, ^source => sha} -> one_name?(ctx, app, path) and one_name?(ctx, app, source)
       _ -> false
     end
   end
 
-  defp unchanged_copy?(_owner, _item, _trees), do: false
+  defp unchanged_copy?(_owner, _item, _trees, _ctx), do: false
+
+  # A regular file no other name links to: a copy onto a hard link of its
+  # own source opens that one file for writing first, so it empties it. The
+  # tree check compares bytes only, and a link made before the snapshot
+  # passes it (an untraced `mix deps.get` evaluates every `mix.exs`); a
+  # link made or removed during the compile is a refused write.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp one_name?(ctx, app, rel) do
+    match?(
+      {:ok, %File.Stat{type: :regular, links: 1}},
+      File.lstat(Path.join(Context.dest(ctx, app), rel))
+    )
+  end
 
   defp copy_refusal(%{"refusal" => refusal}) when is_binary(refusal), do: refusal
   defp copy_refusal(item), do: "compile-time write outside ebin: #{item["mfa"]}"

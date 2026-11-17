@@ -650,7 +650,8 @@ seen whole), by a fun of the aliases Mix's alias runner called: one that tail-ca
 the first frame) or one whose own frame is in that dependency's own `mix.exs`. So the copy returns before Mix goes on
 to compile it: one the alias spawns, or the dependency's compiled code makes, keeps its refusal. Both paths must
 resolve, after every link (Mix's from the build `priv` included), under the dependency's own source dir, the source
-must be a readable source file, and the dependency must not be natively built (its untraced build tool may write the
+must be a readable source file and another file than the destination (not the same one through Mix's link, which
+`File.cp/3` would empty, nor, at judge time, a hard link of it), and the dependency must not be natively built (its untraced build tool may write the
 tree). The judge then allows the copy only when the verified tarball holds both files with the same bytes and the
 dependency's whole source tree, checked after the compile, is still exactly that tarball's, so the copy wrote the
 bytes that were already there and every user's compile reads the same; the mode write only onto the destination of

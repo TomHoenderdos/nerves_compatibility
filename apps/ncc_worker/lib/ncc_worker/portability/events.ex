@@ -661,15 +661,19 @@ defmodule NccWorker.Portability.Events do
 
   defp own_tree_copy(e, _ctx, _owner, outside), do: {:refuse, outside_ebin(e, outside)}
 
-  # A copy's source, in the dependency's own tree and readable as a read of
-  # it (`copy_source/3`); the mode write has none.
+  # A copy's source, in the dependency's own tree, never its destination
+  # (`File.cp/3` compares the two with `Path.expand/1` only, so through
+  # Mix's link from the build `priv` it copies a file onto itself, which
+  # empties it), and readable as a read of it (`copy_source/3`); the mode
+  # write has none.
   defp copied_from(
-         %{"mfa" => mfa, "arg" => %{"from_kind" => "read", "from" => from}} = e,
+         %{"mfa" => mfa, "arg" => %{"from_kind" => "read", "from" => from, "path" => to}} = e,
          ctx,
          owner
        )
        when mfa in @copies do
     with source when is_binary(source) <- Context.own_tree_path(ctx, from, owner),
+         true <- source != Context.own_tree_path(ctx, to, owner),
          :ignore <- copy_source(e, ctx, owner),
          do: {:ok, source}
   end

@@ -1823,6 +1823,21 @@ defmodule NccWorker.Portability.EventsTest do
       end
     end
 
+    test "keeps its refusal for a copy onto its own source", %{dir: dir, proj: proj, pkg: pkg} do
+      # `File.cp/3` tells the two apart by `Path.expand/1` alone: through
+      # Mix's link from the build priv it copies the file onto itself, and
+      # opening it for writing empties it first.
+      %{ctx: ctx, build_priv: build_priv} = tree_ctx(dir, proj, pkg)
+      source = Path.join(pkg, "priv/t/a.eex")
+
+      for mfa <- ~w(file:copy/2 file:copy/3),
+          path <- [Path.join(build_priv, "t/a.eex"), source, "priv/t/a.eex"] do
+        assert {:refuse, "compile-time write outside ebin: " <> _} =
+                 Events.decide(copy(pkg, mfa, path: path, from: source), ctx, "pkg"),
+               inspect({mfa, path})
+      end
+    end
+
     test "keeps its refusal out of its own tree, or for any other write",
          %{dir: dir, proj: proj, pkg: pkg} do
       %{ctx: ctx} = tree_ctx(dir, proj, pkg)
