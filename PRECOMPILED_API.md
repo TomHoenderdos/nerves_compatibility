@@ -697,6 +697,7 @@ What it lists:
   and that archive's `archive_sha256`, which both the worker and the portal verified against
   that checksum file in the package's Hex tarball. A package that compiled its own NIF in the build
   is not served: nothing checks the CPU features its build flags assumed of the builder.
+  It is built without the package's optional dependencies (`deps` holds none of them).
   One per version, triple, toolchain and `deps`, the newest. A client takes one only when the
   host's normalised triple equals `triple`, its libc is glibc, the OTP major is equal and
   `otp_full` no newer than the host's (`toolchain_otp`, `toolchain_otp_minor`), `nif_version` is
@@ -704,7 +705,9 @@ What it lists:
   host and defines every needed version (`needed_lib_missing`, `symbol_version_missing`), every
   origin's archive is listed with that sum in its own `deps/<package>/<checksum_file>`
   (`origin_unverified`), and every rule any other build has passes (lock checksum, closure,
-  `compile_env`, `compile_inputs`). Another triple or libc misses as `triple_differs`. The build
+  `compile_env`, `compile_inputs`). Another triple or libc misses as `triple_differs`. Before it
+  installs one, the client reads every staged priv ELF file back: a 64-bit library of the host's
+  machine that an origin names, or it is not installed. The build
   is ABI-compatible with what the host would compile, not byte-identical to it.
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
