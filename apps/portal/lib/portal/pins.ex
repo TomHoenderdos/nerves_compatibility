@@ -533,9 +533,10 @@ defmodule Portal.Pins do
     do: Map.put(args, "system_version", version)
 
   defp insert(queue, queue_for) do
-    Enum.reduce(queue, {[], []}, fn {set, path, _need} = item, {queued, conflicts} ->
+    Enum.reduce(queue, {[], []}, fn {set, path, need} = item, {queued, conflicts} ->
       set
       |> args(path)
+      |> put_backfill(need)
       |> Portal.Workers.PinnedBuild.new(priority: @priority, queue: queue(path, set, queue_for))
       |> Oban.insert()
       |> case do
@@ -546,6 +547,12 @@ defmodule Portal.Pins do
     end)
     |> then(fn {queued, conflicts} -> {Enum.reverse(queued), Enum.reverse(conflicts)} end)
   end
+
+  # A set queued only for its missing sibling is a sibling backfill: its
+  # rebuild replaces the key's row only with a pass whose sibling held
+  # (`Portal.Workers.PinnedBuild`).
+  defp put_backfill(args, :no_sibling), do: Map.put(args, "sibling_backfill", true)
+  defp put_backfill(args, _need), do: args
 
   defp queue(%{path: :firmware}, _set, _queue_for), do: :builds
   defp queue(%{path: :toolchain}, set, queue_for), do: queue_for.(set.package)

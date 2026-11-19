@@ -1506,13 +1506,51 @@ defmodule Portal.Catalog.Ingestion do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
 
     with {:ok, package} <- ensure_package(package_name(package_info, opts), %{}) do
-      case kept_pinned(verdict, build, package.id, opts) do
-        %PinnedBuild{} = kept ->
-          kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: @domain)
-
-        nil ->
-          upsert_pinned(result, build, verdict, opts, package.id, staged)
+      case backfill_kept(verdict, staged, package.id, opts) do
+        {:ok, _row} = kept -> kept
+        nil -> write_pinned_verdict(result, build, verdict, opts, package.id, staged)
       end
+    end
+  end
+
+  defp write_pinned_verdict(result, build, verdict, opts, package_id, staged) do
+    case kept_pinned(verdict, build, package_id, opts) do
+      %PinnedBuild{} = kept ->
+        kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: @domain)
+
+      nil ->
+        upsert_pinned(result, build, verdict, opts, package_id, staged)
+    end
+  end
+
+  # A sibling backfill's rebuild replaces the key's row only with a pass
+  # whose sibling held and was staged; see `backfill_attempted/2`.
+  defp backfill_kept({:pass, _reason}, {_staged, %{}}, _package_id, _opts), do: nil
+
+  defp backfill_kept(_verdict, _staged, package_id, opts) do
+    if backfill?(opts), do: backfill_attempted(package_id, opts)
+  end
+
+  defp backfill?(opts), do: Map.get(opts, :sibling_backfill) == true
+
+  @doc false
+  # A sibling backfill's rebuild (`Portal.Pins.from_lock/2`'s
+  # `deterministic: true`, the job's `sibling_backfill`) that brought
+  # anything but a pass with its sibling: a fail, a skip, an error, a
+  # timeout, another toolchain, or a pass whose sibling was refused or
+  # absent. The key's row stays as it is, its status, files, memberships
+  # and sibling, and only records the attempt (`sibling_attempted`):
+  # `{:ok, row}`. `nil` when the key has no row: nothing pinned is served to
+  # keep, and the rebuild's verdict is written as any pinned build's, with
+  # the attempt. Under the identity's lock, which the caller holds.
+  @spec backfill_attempted(Ecto.UUID.t(), map()) :: {:ok, PinnedBuild.t()} | nil
+  def backfill_attempted(package_id, opts) do
+    case pinned_row(package_id, opts, [:pass, :skipped, :fail, :error], false) do
+      nil ->
+        nil
+
+      row ->
+        row |> Ash.Changeset.for_update(:sibling_attempted, %{}) |> Ash.update(domain: @domain)
     end
   end
 
@@ -1586,7 +1624,7 @@ defmodule Portal.Catalog.Ingestion do
       rule1_reason: bounded_reason(build["rule1_reason"]),
       manager: manager(build["manager"]),
       compile_observations: compile_observations(build["compile_observations"]),
-      sibling_attempted: sibling_attempted?(result, opts),
+      sibling_attempted: sibling_attempted?(result, opts) or backfill?(opts),
       finished_at: parse_datetime(result["finished_at"]),
       # A firmware target's facts (`stage_pinned_target/2`); nil on the
       # toolchain path.

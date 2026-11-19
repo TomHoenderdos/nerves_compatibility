@@ -172,9 +172,8 @@ defmodule Portal.Pins.FirmwareBuild do
   defp enqueue_ingest(%Oban.Job{args: args}, run_id, digest) do
     ingest_args =
       args
-      |> Map.take(
-        ~w(package version toolchain builder_version pins pin_hash target system_version)
-      )
+      |> Map.take(~w(package version toolchain builder_version pins pin_hash target system_version
+           sibling_backfill))
       |> Map.merge(%{
         "kind" => "pinned",
         "run_id" => run_id,

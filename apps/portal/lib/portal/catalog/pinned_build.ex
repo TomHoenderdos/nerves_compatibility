@@ -116,6 +116,13 @@ defmodule Portal.Catalog.PinnedBuild do
       change(set_attribute(:attempted_at, &DateTime.utc_now/0))
     end
 
+    # A sibling backfill's rebuild that brought no pass with its sibling
+    # (`Portal.Catalog.Ingestion.backfill_attempted/2`): the one column it
+    # writes on the row it leaves standing.
+    update :sibling_attempted do
+      change(set_attribute(:sibling_attempted, true))
+    end
+
     update :revoke do
       accept([:revoked_reason])
       change(set_attribute(:revoked_at, &DateTime.utc_now/0))

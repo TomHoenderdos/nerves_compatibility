@@ -26,8 +26,16 @@ defmodule Portal.Workers.PinnedBuild do
   Args: `package`, `version`, `toolchain` (`"1.20/29"`), `image` (the
   toolchain path's), `builder_version`, `target` (`targets/0`),
   `system_version` (a firmware target's release, `"2.1.2"`; absent for
-  `pure_elixir`), `pin_hash` and `pins`. Enqueued by
-  `Portal.Pins.from_lock/2`. A set that does not validate, whose hash is not
+  `pure_elixir`), `pin_hash` and `pins`, and `sibling_backfill: true` on a
+  set `Portal.Pins.from_lock/2` queued only for its missing deterministic
+  sibling. Enqueued by `Portal.Pins.from_lock/2`.
+
+  A sibling backfill's rebuild replaces the key's row only with a pass whose
+  sibling held. Any other outcome, a fail, a skip, an error, a timeout,
+  another toolchain or a pass without its sibling, leaves the row, its
+  files, memberships and status as they were and records only the attempt
+  (`Portal.Catalog.Ingestion.backfill_attempted/2`); its ingest and the
+  rows written here when no ingest will both take that rule. A set that does not validate, whose hash is not
   the job's, of a target this release does not build, or of a firmware
   target without one exact release, is cancelled before anything runs.
   """
@@ -148,6 +156,19 @@ defmodule Portal.Workers.PinnedBuild do
   defp write_locked(args, identity, status, reason, run_id, image_digest) do
     {:ok, package_id} = Ingestion.ensure_package_id(args["package"])
 
+    case backfill_kept(args, package_id, identity) do
+      {:ok, _row} -> :ok
+      nil -> write_verdict(package_id, args, identity, status, reason, run_id, image_digest)
+    end
+  end
+
+  # A sibling backfill's rebuild that wrote no result keeps the key's row
+  # and records only the attempt (`Ingestion.backfill_attempted/2`).
+  defp backfill_kept(args, package_id, identity) do
+    if backfill?(args), do: Ingestion.backfill_attempted(package_id, identity)
+  end
+
+  defp write_verdict(package_id, args, identity, status, reason, run_id, image_digest) do
     case kept(status, package_id, identity) do
       nil ->
         upsert(package_id, args, identity, status, reason, run_id, image_digest)
@@ -156,6 +177,10 @@ defmodule Portal.Workers.PinnedBuild do
         kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update!(domain: Portal.Catalog)
     end
   end
+
+  @doc "Whether a job is a sibling backfill (`Portal.Pins.from_lock/2`)."
+  @spec backfill?(map()) :: boolean()
+  def backfill?(args), do: Map.get(args, "sibling_backfill") == true
 
   defp kept(:error, package_id, identity),
     do: Ingestion.pinned_row(package_id, identity, [:pass, :skipped], false)
@@ -175,6 +200,7 @@ defmodule Portal.Workers.PinnedBuild do
       reason: reason,
       run_id: run_id,
       image_digest: image_digest,
+      sibling_attempted: backfill?(args),
       finished_at: DateTime.utc_now()
     })
     |> then(&Ash.Changeset.for_create(PinnedBuild, :upsert, &1))

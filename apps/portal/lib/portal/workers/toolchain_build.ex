@@ -378,6 +378,7 @@ defmodule Portal.Workers.ToolchainBuild do
       "pin_hash" => args["pin_hash"],
       "target" => args["target"]
     })
+    |> Map.merge(Map.take(args, ["sibling_backfill"]))
   end
 
   defp pinned_ingest_args(ingest_args, _args), do: ingest_args

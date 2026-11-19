@@ -485,7 +485,8 @@ defmodule Portal.Workers.Ingest do
         image_digest: args["image_digest"],
         files_dir: build.files_dir,
         output_dir: build.output_dir,
-        pins: args["pins"]
+        pins: args["pins"],
+        sibling_backfill: args["sibling_backfill"] == true
       })
 
     case safe_ingest(&Ingestion.ingest_pinned/2, build.result, opts) do
