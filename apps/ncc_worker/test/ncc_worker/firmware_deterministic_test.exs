@@ -174,6 +174,73 @@ defmodule NccWorker.FirmwareDeterministicTest do
     assert sibling.reason == "the target's build was made with its optional dependencies"
   end
 
+  # An Elixir module compiled from the package's own source under the
+  # target's deps dir, without and with the option (`@compile :deterministic`
+  # gives the beam the env var gives), its build's beam written into the
+  # published build and the build rescanned.
+  defp with_elixir(c, body) do
+    module = Module.concat([FwDetSample, "M#{System.unique_integer([:positive])}"])
+    file = Path.join([c.proj, "deps_rpi4", "sample", "lib", "sample.ex"])
+    File.mkdir_p!(Path.dirname(file))
+    normal = compile_elixir(module, "", body, file)
+    det = compile_elixir(module, "@compile :deterministic", body, file)
+    File.write!(Path.join([c.lib, "ebin", "#{module}.beam"]), normal)
+    {:ok, scan} = BeamScan.analyze_app_dir(c.lib)
+    systems = put_in(c.systems, ["nerves_system_rpi4", :beam_scan], scan)
+    {systems, %{module: module, det: det}}
+  end
+
+  defp compile_elixir(module, attr, body, file) do
+    [{^module, beam}] =
+      Code.compile_string("defmodule #{inspect(module)} do #{attr}\n#{body}\nend\n", file)
+
+    :code.delete(module)
+    :code.purge(module)
+    beam
+  end
+
+  # The sibling compile of a package holding the Erlang module of `setup` and
+  # the Elixir module `elixir`, both compiled with the option.
+  defp compile_both(c, elixir) do
+    fn _proj, env, _log, _timeout ->
+      lib = Path.join([Map.new(env)["MIX_BUILD_PATH"], "lib", "sample"])
+      write_build(lib, c.module, c.det)
+      File.write!(Path.join([lib, "ebin", "#{elixir.module}.beam"]), elixir.det)
+      :ok
+    end
+  end
+
+  # Review M5: an Elixir module's sibling, judged by the real R2
+  # (`FirmwareBuildRoot.judge/4`, the default runner).
+  test "an Elixir module's sibling passes the real R2 and the comparison", c do
+    {systems, elixir} = with_elixir(c, ~s|@moduledoc "x"\ndef f(x), do: {x, :ok}|)
+    runners = %{compile: compile_both(c, elixir), reap: fn _ -> :ok end}
+
+    assert {:ok, systems, _} = put(c, runners, systems)
+
+    assert %{status: "pass", build_root: %{status: "pass"}} =
+             sibling = systems["nerves_system_rpi4"].deterministic_build
+
+    paths = Enum.map(sibling.file_manifest["ebin"], & &1["path"])
+    assert "ebin/#{elixir.module}.beam" in paths
+    assert "ebin/#{c.module}.beam" in paths
+  end
+
+  # Review M5: a sibling whose beams bake the build tree is refused by the
+  # real R2 on its own dir, whatever the build's verdict was.
+  test "a sibling whose Elixir module bakes the build tree is refused by the real R2", c do
+    {systems, elixir} = with_elixir(c, "def dir, do: __DIR__")
+    runners = %{compile: compile_both(c, elixir), reap: fn _ -> :ok end}
+
+    assert {:ok, systems, _} = put(c, runners, systems)
+
+    assert %{status: "skipped", file_manifest: nil, build_root: %{status: "skipped"}} =
+             sibling = systems["nerves_system_rpi4"].deterministic_build
+
+    assert sibling.reason =~ "R2: bakes the build path"
+    published_intact(%{c | systems: systems})
+  end
+
   # Review I2: the optional pass rebuilt the closure's dependency builds of a
   # target it dropped with the optional dependencies loadable, and put back
   # only the package's own build. A sibling compiled there would expand
