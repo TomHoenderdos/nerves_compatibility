@@ -241,14 +241,11 @@ defmodule Portal.Workers.UpdateCheck do
       |> Ash.Query.select([:id, :name, :latest_version, :native_components])
       |> Ash.read!(domain: Portal.Catalog)
       |> Enum.flat_map(fn package ->
-        case Map.fetch(by_name, package.name) do
-          {:ok, entry} ->
-            if LatestRun.newer?(entry.latest_version, package.latest_version),
-              do: [{package, entry}],
-              else: []
-
-          :error ->
-            []
+        with {:ok, entry} <- Map.fetch(by_name, package.name),
+             true <- LatestRun.newer?(entry.latest_version, package.latest_version) do
+          [{package, entry}]
+        else
+          _ -> []
         end
       end)
 

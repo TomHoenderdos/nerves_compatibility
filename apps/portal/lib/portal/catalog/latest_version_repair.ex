@@ -119,24 +119,24 @@ defmodule Portal.Catalog.LatestVersionRepair do
 
     rows
     |> Enum.chunk_by(&hd/1)
-    |> Enum.flat_map(fn [[_id, name, latest, last_run_at | _] | _] = group ->
-      versions =
-        Enum.map(group, fn [_, _, _, _, version, finished_at] -> {version, finished_at} end)
-
-      case highest(versions) do
-        {version, finished_at} when is_nil(latest) ->
-          [change(name, latest, last_run_at, version, finished_at)]
-
-        {version, finished_at} ->
-          if LatestRun.compare(version, latest) == :gt,
-            do: [change(name, latest, last_run_at, version, finished_at)],
-            else: []
-
-        nil ->
-          []
-      end
-    end)
+    |> Enum.flat_map(&package_change/1)
   end
+
+  # The change of one package's rows, or none when it is not behind.
+  defp package_change([[_id, name, latest, last_run_at | _] | _] = group) do
+    versions =
+      Enum.map(group, fn [_, _, _, _, version, finished_at] -> {version, finished_at} end)
+
+    with {version, finished_at} <- highest(versions),
+         true <- behind?(latest, version) do
+      [change(name, latest, last_run_at, version, finished_at)]
+    else
+      _ -> []
+    end
+  end
+
+  defp behind?(nil, _version), do: true
+  defp behind?(latest, version), do: LatestRun.compare(version, latest) == :gt
 
   # The highest version that parses; one that does not has no place in the
   # order to repair to.
