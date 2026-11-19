@@ -1027,7 +1027,9 @@ default 600) or 75 minutes into the run, and when the compile changed `mix.lock`
 pass or publishes nothing gets no key. Its files are archived from `.<package>.deterministic`, each only while it
 still hashes to its entry. A published build that cannot be put back or no longer hashes to its manifest, and
 writers of a build path that survive the reap, fail the run (exit `10`). The target's status, firmware, log tail and
-files never change.
+files never change. The budget bounds the compiles alone: the settle steps after them (the reap, owning the links,
+which copies a target's `priv` once for the published build and once for the sibling, the scan, the file checks and
+R2) are not charged to it, and the 75-minute rule bounds only when the pass starts.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
