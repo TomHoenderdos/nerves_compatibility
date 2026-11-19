@@ -497,7 +497,8 @@ toolchain:
   2026-11 lack it; a client then assumes that same conventional name.
 - `build.variant` — optional, informational, only on a build under
   `builds_closure`: the world it was built in, such as `"world_phx"` (see
-  below). A client matches the build by its `deps` and can ignore this key.
+  below), or `"pinned"` for a pinned build. A client matches the build by its
+  `deps` and can ignore this key.
 - `build.config_variant` — optional, informational: the config variant a
   toolchain build was compiled in (see below). Absent for the default build.
   A client matches a variant by its `compile_env` like any other build, and
@@ -670,6 +671,10 @@ What it lists:
   do not know `compile_inputs`, so they would use such a build without comparing its environment
   or config reads, and to them it does not exist. They also refuse the whole manifest when a
   version has no `builds` key, which is why it is never left out.
+- `versions[v].builds_closure` also lists pinned builds (`"variant": "pinned"`): the package
+  compiled against exactly one closure from a project's `mix.lock`, whose `deps` is the lock Mix
+  resolved, checked equal to that closure before it is stored; at most 8 closures per version and
+  target are listed, and format 1 never lists one.
 - `versions[v].builds_closure` — world builds, read only by clients 0.7.0 and later, which
   enforce env-closure equality: a build is taken only when the names in its whole `deps` closure
   equal the closure Mix gives the package in the project's env. A world is a named, pinned set of

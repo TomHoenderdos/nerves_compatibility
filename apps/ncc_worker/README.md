@@ -738,6 +738,28 @@ dependencies that are not members. When the closure was not built, `added` is `[
 rounds had added, and `reason` is one of `deps_get_failed`, `mix_exs_edit_failed`, `stale_build_not_removed`,
 `lock_policy_violation`, `world_not_converged`, `world_extra_deps`, `deps_lock_unreadable` or `host_compile_failed`.
 
+`"optional_deps": "pinned"` with `"pins"` (toolchain mode only) is a pinned build (`NccWorker.Pins`): the package
+compiled against exactly one closure from a project's lock.
+
+```json
+{"mode": "toolchain", "optional_deps": "pinned",
+ "pins": {"hash": "<64 hex>", "package_checksum": "<64 hex>",
+          "deps": [{"name": "decimal", "hex": "decimal", "version": "2.3.0", "checksum": "<64 hex>"}]}}
+```
+
+`deps` is the closure without the package, `hash` is `Compatibility.Pins.hash/1`, and the set is checked by
+`Compatibility.Pins.validate/3` (at most 200 deps, names, versions, lowercase checksums, no duplicates, no Nerves
+tooling, not the package itself, the hash recomputed) when the input is read; `pins` without `"pinned"`, `"pinned"`
+without `pins`, a world, or any mode but `toolchain` is refused (exit 10, no result). The package (`== version`) and
+every pin (`== v`, `hex:` when the names differ, never `override: true`) are written into `mix.exs` before the one
+`deps.get`; the lock policy is checked as always (exit 11); then `NccWorker.DepsLock.read/2`, the package's checksum
+and the lock outside the closure must be exactly the set. A set Mix does not reproduce compiles nothing: the result's
+`toolchain_build` is `skipped` ("pins not reproduced: pins_closure_mismatch (+extra -missing ~differing)"), exit 0. A
+deterministic `deps.get` failure is `pins_unresolvable`, a transient one exit 10. A reproduced set runs the toolchain
+run's own compile, judge and deterministic sibling with nothing added (`optional_deps.reason` `"pinned"`). The result
+echoes `requested_optional_deps: "pinned"` and carries `pins`: `{"hash", "status": "reproduced" | "refused",
+"reason", "extra", "missing", "differing"}`.
+
 `"config_variant"` in `NCC_INPUT` (toolchain mode) is a `Compatibility.ConfigVariants` name; its overlay is written as
 `config/config.exs` before the compile (`NccWorker.ConfigOverlay`). Absent is `"default"`, no overlay. The overlay
 is written after the project's `deps.get` and before the lock snapshot and the traced compile, so the traced
