@@ -5,6 +5,10 @@ defmodule NccWorker.NativeBuildTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   # A Hex tarball whose `metadata.config` lists `build_tools` (`nil`: no key).
   defp tools_tarball(build_tools) do
     meta =

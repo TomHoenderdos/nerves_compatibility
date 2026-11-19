@@ -7,6 +7,10 @@ defmodule NccWorker.PinsRegressionTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   @toolchain %{elixir: "1.19.1", erlang: "28", mix: "1.19.1", nerves_bootstrap: "absent"}
   @golden Path.expand("../fixtures/pins/toolchain_result_without_pins.json", __DIR__)
 

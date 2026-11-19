@@ -17,6 +17,7 @@ defmodule NccWorker.Portability.JudgeTest do
   # deps/<app> and _build/host/lib/<app>/ebin for `dep` and `pkg` (pkg
   # depends on dep), plus `other`, a closure dependency `pkg` does not reach.
   setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
     proj = Path.join(dir, "proj")
 
     for app <- ["dep", "pkg", "other"] do

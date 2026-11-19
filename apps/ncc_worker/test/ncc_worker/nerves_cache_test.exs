@@ -5,6 +5,10 @@ defmodule NccWorker.NervesCacheTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   @lock """
   %{
     "jason": {:hex, :jason, "1.4.4", "i", [:mix], [], "hexpm", "o"},

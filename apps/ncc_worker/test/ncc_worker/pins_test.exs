@@ -5,6 +5,10 @@ defmodule NccWorker.PinsTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   @a String.duplicate("a", 64)
   @b String.duplicate("b", 64)
   @c String.duplicate("c", 64)

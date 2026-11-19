@@ -5,6 +5,10 @@ defmodule NccWorker.HostNativeTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   @toolchain %{elixir: "1.20.5", erlang: "28", mix: "1.20.5", nerves_bootstrap: "absent"}
   @facts [otp_full: "28.5.0.2", nif_version: "2.17", glibc: "2.36"]
   @pass %{

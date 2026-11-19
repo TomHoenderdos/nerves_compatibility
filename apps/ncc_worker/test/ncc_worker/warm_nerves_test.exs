@@ -80,6 +80,7 @@ defmodule NccWorker.WarmNervesTest do
 
   describe "run/5" do
     setup %{tmp_dir: tmp} do
+      on_exit(fn -> File.rm_rf(tmp) end)
       cache = Path.join(tmp, "cache")
       out = Path.join(tmp, "out")
       File.mkdir_p!(Path.join(out, "logs"))

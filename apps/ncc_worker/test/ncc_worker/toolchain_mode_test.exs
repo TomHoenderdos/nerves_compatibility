@@ -5,6 +5,10 @@ defmodule NccWorker.ToolchainModeTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   @root? System.cmd("id", ["-u"]) |> elem(0) |> String.trim() == "0"
 
   @toolchain %{elixir: "1.19.1", erlang: "28", mix: "1.19.1", nerves_bootstrap: "absent"}

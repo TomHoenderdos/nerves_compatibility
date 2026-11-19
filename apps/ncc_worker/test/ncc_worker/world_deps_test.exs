@@ -5,6 +5,10 @@ defmodule NccWorker.WorldDepsTest do
 
   @moduletag :tmp_dir
 
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   @toolchain %{elixir: "1.20.5", erlang: "28", mix: "1.20.5", nerves_bootstrap: "absent"}
 
   # The prod package set of a `mix phx.new` 1.8.16 app.

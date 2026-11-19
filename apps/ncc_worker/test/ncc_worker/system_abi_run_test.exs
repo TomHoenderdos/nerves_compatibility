@@ -19,6 +19,7 @@ defmodule NccWorker.SystemAbiRunTest do
   """
 
   setup %{tmp_dir: tmp} do
+    on_exit(fn -> File.rm_rf(tmp) end)
     out = Path.join(tmp, "out")
     File.mkdir_p!(Path.join(out, "logs"))
     artifacts = Path.join(tmp, "artifacts")

@@ -41,6 +41,7 @@ defmodule NccWorker.OptionalDepsRecompileIntegrationTest do
           )
 
   setup %{tmp_dir: tmp} do
+    on_exit(fn -> File.rm_rf(tmp) end)
     src = Path.join(tmp, "src")
 
     fixture(src, "o", "", "defmodule O do\n  def hi, do: :o\nend\n")
