@@ -266,11 +266,11 @@ defmodule NccWorker.CLI do
   # A pinned build (`NccWorker.Pins`): `pins` with `optional_deps: "pinned"`,
   # each requiring the other (so never with a world), and checked whole by
   # `Compatibility.Pins.validate/3` against the package and its exact
-  # version. Phase 1 builds pins on the toolchain path only; the firmware
-  # path (no mode, one `systems_filter` system and an exact
-  # `systems_override`) is refused until it exists, and so is every other
-  # mode. Any refusal is a worker failure (exit 10) with no result, as an
-  # invalid world is.
+  # version. Two paths: the toolchain one (`mode: "toolchain"`) and the
+  # firmware one (no mode), which builds one system (`systems_filter`) at one
+  # exact release (`systems_override`, `"== X.Y.Z"` on that system and no
+  # other) and no firmware world. Every other mode is refused. Any refusal is
+  # a worker failure (exit 10) with no result, as an invalid world is.
   defp validate_pins(%{pins: pins} = input) do
     package = input[:package] || %{}
 
@@ -278,20 +278,55 @@ defmodule NccWorker.CLI do
       input[:optional_deps] != "pinned" ->
         {:error, {:invalid_pins, {:optional_deps, input[:optional_deps]}}}
 
-      input[:mode] != "toolchain" ->
+      input[:mode] not in ["toolchain", nil] ->
         {:error, {:invalid_pins, {:mode, input[:mode]}}}
 
       not (is_binary(package[:name]) and is_binary(package[:version])) ->
         {:error, {:invalid_pins, {:package, package}}}
 
       true ->
-        with {:ok, pins} <- Compatibility.Pins.validate(package.name, package.version, pins),
+        with :ok <- validate_pinned_path(input),
+             {:ok, pins} <- Compatibility.Pins.validate(package.name, package.version, pins),
              do: {:ok, %{input | pins: pins}}
     end
   end
 
   defp validate_pins(%{optional_deps: "pinned"}), do: {:error, {:invalid_pins, :missing}}
   defp validate_pins(input), do: {:ok, input}
+
+  defp validate_pinned_path(%{mode: "toolchain"}), do: :ok
+
+  defp validate_pinned_path(input) do
+    known = Enum.map(NccWorker.Systems.all(), & &1.name)
+
+    case {input[:systems_filter], input[:systems_override]} do
+      {_filter, _override} when is_map_key(input, :firmware_world) ->
+        {:error, {:invalid_pins, :firmware_world}}
+
+      {[system], override} when is_binary(system) ->
+        cond do
+          system not in known -> {:error, {:invalid_pins, {:systems_filter, [system]}}}
+          exact_override?(override, system) -> :ok
+          true -> {:error, {:invalid_pins, {:systems_override, override}}}
+        end
+
+      {filter, _override} ->
+        {:error, {:invalid_pins, {:systems_filter, filter}}}
+    end
+  end
+
+  # `%{system => "== X.Y.Z"}` and nothing else: the one release the set is
+  # built on.
+  defp exact_override?(%{} = override, system) when map_size(override) == 1 do
+    with {:ok, "== " <> version} <- Map.fetch(override, system),
+         {:ok, _} <- Version.parse(version) do
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp exact_override?(_override, _system), do: false
 
   # The firmware world (`NccWorker.WorldTargets`), `firmware_world: %{"name",
   # "members"}`: a third build per passing firmware target, checked like a

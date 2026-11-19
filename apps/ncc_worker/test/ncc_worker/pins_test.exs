@@ -78,7 +78,8 @@ defmodule NccWorker.PinsTest do
         {%{"mode" => "argus_only"}, {:mode, "argus_only"}},
         {%{"mode" => "warm_nerves"}, {:mode, "warm_nerves"}},
         {%{"mode" => "system_abi"}, {:mode, "system_abi"}},
-        {%{"mode" => :drop}, {:mode, nil}},
+        # No mode is the firmware path, which needs one system.
+        {%{"mode" => :drop}, {:systems_filter, nil}},
         {%{"package" => %{"name" => "sample"}}, {:package, %{name: "sample"}}},
         {%{"pins" => Map.put(pins([]), "hash", @c)}, :hash_mismatch}
       ]
@@ -114,6 +115,66 @@ defmodule NccWorker.PinsTest do
                CLI.parse_input(input(%{"pins" => :drop, "optional_deps" => "exclude"}))
 
       refute Map.has_key?(input, :pins)
+    end
+  end
+
+  # Phase 2: no mode, one system, and that system's exact release.
+  describe "NCC_INPUT.pins on the firmware path" do
+    defp firmware(fields) do
+      input(
+        Map.merge(
+          %{
+            "mode" => :drop,
+            "systems_filter" => ["nerves_system_rpi4"],
+            "systems_override" => %{"nerves_system_rpi4" => "== 2.1.2"}
+          },
+          fields
+        )
+      )
+    end
+
+    test "one system at one exact release is read as given" do
+      assert {:ok,
+              %{
+                pins: %{"hash" => _},
+                systems_filter: ["nerves_system_rpi4"],
+                systems_override: %{"nerves_system_rpi4" => "== 2.1.2"}
+              } = input} = CLI.parse_input(firmware(%{}))
+
+      refute Map.has_key?(input, :mode)
+    end
+
+    test "anything but one known system at an exact release exits 10 with no result" do
+      cases = [
+        {%{"systems_filter" => ["nerves_system_rpi4", "nerves_system_rpi5"]},
+         {:systems_filter, ["nerves_system_rpi4", "nerves_system_rpi5"]}},
+        {%{"systems_filter" => :drop}, {:systems_filter, nil}},
+        {%{"systems_filter" => ["nerves_system_rpi3"]},
+         {:systems_filter, ["nerves_system_rpi3"]}},
+        {%{"systems_override" => :drop}, {:systems_override, nil}},
+        {%{"systems_override" => %{"nerves_system_rpi5" => "== 2.1.2"}},
+         {:systems_override, %{"nerves_system_rpi5" => "== 2.1.2"}}},
+        {%{
+           "systems_override" => %{
+             "nerves_system_rpi4" => "== 2.1.2",
+             "nerves_system_rpi5" => "== 2.1.2"
+           }
+         },
+         {:systems_override,
+          %{"nerves_system_rpi4" => "== 2.1.2", "nerves_system_rpi5" => "== 2.1.2"}}},
+        {%{"systems_override" => %{"nerves_system_rpi4" => "~> 2.1"}},
+         {:systems_override, %{"nerves_system_rpi4" => "~> 2.1"}}},
+        {%{"systems_override" => %{"nerves_system_rpi4" => "== 2.1"}},
+         {:systems_override, %{"nerves_system_rpi4" => "== 2.1"}}},
+        {%{"firmware_world" => %{"name" => "nerves", "members" => ["jason"]}}, :firmware_world},
+        {%{"mode" => "host_native"}, {:mode, "host_native"}},
+        {%{"mode" => "argus_only"}, {:mode, "argus_only"}}
+      ]
+
+      for {fields, why} <- cases do
+        assert {:error, {:invalid_pins, ^why}} = CLI.parse_input(firmware(fields)),
+               inspect(fields)
+      end
     end
   end
 
