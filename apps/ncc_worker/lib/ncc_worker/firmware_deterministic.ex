@@ -10,8 +10,25 @@ defmodule NccWorker.FirmwareDeterministic do
 
   A sibling is its own `mix compile`, a VM started with the option, never a
   part of the firmware build's: Elixir reads `ERL_COMPILER_OPTIONS` once per
-  VM. A dependency's `CInf` and `Dbgi` cannot change how a dependent
-  compiles, so the closure is not compiled again (design doc, option (a)).
+  VM. The closure is not compiled again, so only the package's own beams
+  are compiled with the option, where a user's deterministic project
+  compiles every dependency with it too. What the option changes in a
+  dependency is its compile metadata (`CInf`, `Dbgi`, `Docs`) and, for an
+  Erlang dependency, its source paths: the line table's file names and
+  `?FILE` literals become base names, and with them its md5, default `vsn`
+  and funs' `old_uniq`. The package's compile can only see any of that
+  through dependency code it runs at compile time (a parse transform, a
+  macro or module attribute that calls the dependency and embeds what it
+  returns, a compile-time `module_info/1` or stacktrace). In practice what
+  it embeds then is a dependency's source path where the user's build has
+  its base name: the bare dependency source path class the baked build path
+  rule already publishes as observed (`NccWorker.FirmwareBuildRoot`). A
+  package that embedded a dependency's md5, `vsn` or compile info at
+  compile time would differ too; none is known, and nothing here detects
+  it. The design measured package-alone siblings equal to whole-closure
+  ones (option (a)). A toolchain build's sibling (`NccWorker.Deterministic`)
+  does not rest on this argument: it compiles the whole closure with the
+  option.
 
   It runs last, once the optional pass, the firmware world, R2
   (`NccWorker.FirmwareBuildRoot`) and the compile inputs

@@ -1006,7 +1006,11 @@ With `"deterministic": true` in `NCC_INPUT`, each passing target that publishes 
 deterministic sibling (`NccWorker.FirmwareDeterministic`), last, once the optional pass, the world, R2 and the compile
 inputs have settled what the target publishes: the package alone compiled again for the target with
 `ERL_COMPILER_OPTIONS=deterministic` in a `mix compile` of its own (Elixir reads the variable once per VM), in the
-target's build env and build tree, over the closure its firmware build already compiled. The published build is
+target's build env and build tree, over the closure its firmware build already compiled without the option (unlike a
+toolchain build's sibling, which compiles the whole closure with it: a dependency's own beams keep their compile
+metadata and, for an Erlang dependency, its source paths, md5 and default `vsn`, which the package can embed only
+through dependency code it runs at compile time, in practice a bare dependency source path; a package that embedded a
+dependency's md5, `vsn` or compile info would differ too, and none is known). The published build is
 renamed to `.<package>.det-build` with its `priv`/`include` links made its own, the compile (under `timeout(1)`,
 targets concurrently as `NCC_BUILD_CONCURRENCY` allows) builds the one app missing from `_build/<target>`, its output
 is renamed to `.<package>.deterministic`, its links owned and scanned there, and the published build goes back and

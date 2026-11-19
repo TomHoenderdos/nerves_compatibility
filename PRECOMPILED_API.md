@@ -767,9 +767,15 @@ What it lists:
   `Portal.Precompiled.FirmwareBuildPathWithdrawal`) nor withheld, of an unrevoked run whose builder
   publishes, and its own build the entry `builds` or `builds_with_inputs` picked. A newer run of
   the same key that brought no sibling withdraws the older one's, as a toolchain rebuild does; a
-  carried copy of a result has none. The builder (`NccWorker.FirmwareDeterministic`) compiles the package alone for
-  the target with the option, in the target's build env and build tree over the closure its
-  firmware build compiled, and keeps it only when the target passed and publishes its own build
+  carried copy of a result has none. The builder (`NccWorker.FirmwareDeterministic`) compiles the
+  package alone for the target with the option, in the target's build env and build tree over the
+  closure its firmware build compiled without it. A dependency's own beams therefore keep what the
+  option would change in them (compile metadata and, for an Erlang dependency, its source paths,
+  md5 and default `vsn`); the package can embed any of that only through dependency code it runs at
+  compile time. In practice that is a bare dependency source path, which every published build may
+  already hold; a package that embedded a dependency's md5, `vsn` or compile info would differ too,
+  and none is known. A toolchain build's sibling compiles the whole closure with the option instead. It
+  keeps the sibling only when the target passed and publishes its own build
   (R2 did not withhold it), the build was made against the run's lock and the optional pass did not
   touch the target (a target that kept its optional dependencies, or that the pass tried and dropped,
   leaving the closure's builds rebuilt with them, gets none), its recorded `compile_inputs` read neither
