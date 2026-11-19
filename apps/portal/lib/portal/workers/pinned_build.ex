@@ -35,7 +35,8 @@ defmodule Portal.Workers.PinnedBuild do
   use Oban.Worker,
     queue: :toolchain,
     max_attempts: 2,
-    priority: 9,
+    # `Portal.Pins.from_lock/2`'s, for a job inserted without one.
+    priority: 3,
     unique: [
       fields: [:args, :worker],
       keys: [

@@ -162,6 +162,10 @@ defmodule Portal.Workers.PinnedBuildTest do
     refute_received {:build_args, _}
   end
 
+  test "a job inserted without a priority gets Portal.Pins' own, 3" do
+    assert {:ok, %Oban.Job{priority: 3}} = args() |> PinnedBuild.new() |> Oban.insert()
+  end
+
   test "NCC_INPUT carries the set" do
     pins = pins("jason")
     job = %{run_id: "r", image_name: "i", image_digest: "d", systems_filter: nil, pins: pins}

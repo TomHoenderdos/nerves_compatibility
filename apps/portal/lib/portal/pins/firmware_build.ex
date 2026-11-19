@@ -21,6 +21,11 @@ defmodule Portal.Pins.FirmwareBuild do
                      target and release, on this node's queue
       worker  11  -> lock policy violation → `fail` row, cancel
       worker  10  -> no result → retry; the last attempt an `error` row
+      worker 137  -> OOM-killed → retry once at the same memory (no lower
+                     concurrency, as `Portal.Workers.Build` takes, nor a
+                     bigger queue, as `ToolchainBuild` takes); a second
+                     OOM leaves an `error` row, which `Portal.Pins.from_lock/2`
+                     queues again. Accepted for phase 2's volume
       host 20/21  -> runner error → retry, the same
       wall clock  -> a `fail` row ("build timed out after Ns"), cancel
 

@@ -101,11 +101,11 @@ defmodule Portal.PinsTest do
     assert {:ok, _} = Compatibility.Pins.validate("app_a", "1.0.0", app_a.pins)
   end
 
-  test "acting queues at priority 2 and a second call finds them queued" do
+  test "acting queues at priority 3 and a second call finds them queued" do
     assert {:ok, %{queue: [_, _, _, _, _]}} = run(dry_run: false)
     jobs = all_enqueued(worker: PinnedBuild)
     assert length(jobs) == 5
-    assert Enum.all?(jobs, &(&1.priority == 2 and &1.queue == "toolchain"))
+    assert Enum.all?(jobs, &(&1.priority == 3 and &1.queue == "toolchain"))
     assert %{"target" => "pure_elixir", "pins" => %{"hash" => _}} = hd(jobs).args
 
     assert {:ok, %{queue: []} = again} = run(dry_run: false)
@@ -294,7 +294,7 @@ defmodule Portal.PinsTest do
                "pins" => %{"deps" => [%{"name" => "elixir_make"}]}
              } = Enum.find(firmware, &(&1.args["package"] == "nif")).args
 
-      assert Enum.all?(firmware, &(&1.priority == 2 and not Map.has_key?(&1.args, "image")))
+      assert Enum.all?(firmware, &(&1.priority == 3 and not Map.has_key?(&1.args, "image")))
       assert reasons(report)["nerves_system_rpi4"] == "tooling"
 
       assert {:ok, again} = run(lock: lock, dry_run: false)
