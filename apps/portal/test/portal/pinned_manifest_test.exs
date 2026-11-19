@@ -182,4 +182,107 @@ defmodule Portal.PinnedManifestTest do
     refute Catalog.published_sha256?(sha(sibling))
     assert Catalog.published_sha256?(sha(normal))
   end
+
+  # Phase 2: a pinned firmware build (`Portal.Pins.FirmwareBuild`).
+  describe "a pinned firmware build" do
+    defp ingested_firmware(opts \\ []) do
+      name = unique()
+      pins = pins(name)
+      {:ok, row} = ingest_firmware(name, pins, opts)
+      %{name: name, pins: pins, row: row, sha: sha("beam-" <> name)}
+    end
+
+    # Review focus 4: never under a list a client that does not compare the
+    # env closure reads.
+    test "is listed under builds_closure only, at its target and release" do
+      %{name: name, row: row, sha: sha} = ingested_firmware()
+
+      assert %{"builds" => [], "builds_closure" => [entry]} = version = version(name)
+      refute Map.has_key?(version, "builds_with_inputs")
+      assert entry["target"] == "nerves_system_rpi4"
+      assert entry["build"]["system_version"] == "2.1.2"
+      assert entry["build"]["mix_target"] == "rpi4"
+      assert entry["build"]["deps"] == row.deps_lock
+      assert entry["build"]["variant"] == "pinned"
+      assert entry["build"]["elixir"] == "1.20.5" and entry["build"]["otp"] == "29"
+      assert entry["build"]["run_id"] == row.run_id
+      assert entry["build"]["compile_env"] == []
+      assert [%{"path" => "ebin/m0.beam", "sha256" => ^sha}] = entry["ebin"]
+      refute Map.has_key?(entry, :closure_only)
+
+      assert Catalog.precompiled_manifest(name) == nil
+      assert Catalog.published_sha256?(sha)
+      assert name in Catalog.packages_with_precompiled_files()
+      assert Catalog.precompiled_fingerprints()[name] =~ "|pinned:"
+    end
+
+    # Review focus 1: the client takes a build that says `native: false`, or
+    # native and portable, on another release of the system; a pinned build
+    # is served at its own release only.
+    test "never carries native false or portable" do
+      %{name: name, row: row} = ingested_firmware()
+      assert row.native == false and row.portable == true
+
+      assert %{"builds_closure" => [%{"build" => build}]} = version(name)
+
+      for key <- ["native", "portable", "elf"],
+          do: refute(Map.has_key?(build, key), key)
+
+      assert build["otp_full"] == "29.0.6"
+
+      assert build["toolchain"] == %{
+               "package" => "nerves_toolchain_aarch64_nerves_linux_gnu",
+               "version" => "15.3.1"
+             }
+
+      Portal.Repo.query!(
+        "UPDATE catalog_pinned_builds SET native = true, portable = true, elf_needs = $2 " <>
+          "WHERE id = $1",
+        [Ecto.UUID.dump!(row.id), %{"libc.so.6" => ["GLIBC_2.17"]}]
+      )
+
+      assert %{"builds_closure" => [%{"build" => build}]} = version(name)
+      assert build["native"] == true
+      assert build["elf"] == %{"needs" => %{"libc.so.6" => ["GLIBC_2.17"]}}
+      refute Map.has_key?(build, "portable")
+    end
+
+    test "a skipped one is not served" do
+      %{name: name, sha: sha} = ingested_firmware(system_version: "2.2.0")
+      assert version(name) == nil
+      refute Catalog.published_sha256?(sha)
+    end
+
+    test "revoke_run/1 reaches it" do
+      %{name: name, row: row, sha: sha} = ingested_firmware()
+
+      assert {:ok, %Catalog.PinnedBuild{revoked_reason: "run revoked"}} =
+               Catalog.revoke_run(row.run_id)
+
+      assert version(name) == nil
+      refute Catalog.published_sha256?(sha)
+    end
+
+    # The 8-closure cap counts per release: two releases of one target are
+    # each their own key.
+    test "two releases of one target are listed side by side" do
+      name = unique()
+      pins = pins(name)
+      {:ok, _} = ingest_firmware(name, pins)
+
+      {:ok, _} =
+        ingest_firmware(name, pins,
+          system_version: "2.2.0",
+          beams: ["beam-#{name}-2"],
+          job: [system_version: "2.2.0"]
+        )
+
+      assert %{"builds_closure" => listed} = version(name)
+
+      assert listed |> Enum.map(& &1["build"]["system_version"]) |> Enum.sort() == [
+               "2.1.2",
+               "2.2.0"
+             ]
+    end
+  end
 end

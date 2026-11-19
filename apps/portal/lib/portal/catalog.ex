@@ -3672,6 +3672,33 @@ defmodule Portal.Catalog do
         do: pinned_build_v2(pb, files)
   end
 
+  # A firmware one (phase 2) is rendered as its target's build at its
+  # release (`run_builds/1`'s shape), with its own lock as `deps`, and ABI
+  # facts that keep it to that release (`put_pinned_abi_facts/2`).
+  defp pinned_build_v2(%{target: "nerves_system_" <> _} = pb, files) do
+    build =
+      %{
+        "elixir" => pb.elixir,
+        "otp" => pb.otp,
+        "dep_env" => "prod",
+        "mix_target" => mix_target(pb.target),
+        "system_version" => pb.system_version,
+        "deps" => pb.deps_lock,
+        "compile_env" => pb.compile_env,
+        "package_checksum" => pb.package_checksum,
+        "run_id" => pb.run_id,
+        "image_digest" => pb.image_digest,
+        "variant" => "pinned"
+      }
+      |> put_declared(pb.declared)
+      |> put_manager(pb.manager)
+      |> put_pinned_abi_facts(pb)
+      |> put_inputs(pb.compile_inputs)
+
+    {pb.version, pb.finished_at,
+     Map.merge(files, %{"target" => pb.target, "build" => build, closure_only: true})}
+  end
+
   defp pinned_build_v2(pb, files) do
     {version, at, entry} =
       pb
@@ -3968,6 +3995,26 @@ defmodule Portal.Catalog do
     |> put_known("toolchain", toolchain_fact(result))
     |> put_known("elf", elf_fact(result))
   end
+
+  # A pinned firmware build's facts, which never let a client take it on
+  # another release of its system: the client takes a build that says
+  # `native: false`, or `native` and `portable`, on any release whose ABI
+  # matches (`Precompiled.Match.target_reason/4`), and a pinned build was
+  # made for one project's exact release. So never `portable`, and `native`
+  # only when true, with the `elf` needs the client's install-time library
+  # check reads; without either, the client takes it at its own release
+  # only.
+  defp put_pinned_abi_facts(build, pb) do
+    build
+    |> put_known("otp_full", pb.otp_full)
+    |> put_known("toolchain", toolchain_fact(pb))
+    |> put_pinned_native(pb)
+  end
+
+  defp put_pinned_native(build, %{native: true} = pb),
+    do: build |> Map.put("native", true) |> put_known("elf", elf_fact(pb))
+
+  defp put_pinned_native(build, _pb), do: build
 
   defp put_known(build, _key, nil), do: build
   defp put_known(build, key, value), do: Map.put(build, key, value)

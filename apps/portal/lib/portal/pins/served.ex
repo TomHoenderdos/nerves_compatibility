@@ -15,6 +15,10 @@ defmodule Portal.Pins.Served do
   A manifest lists at most 8 of them per (package, version, target,
   system version), most distinct reporters first, then newest (`cap/1`);
   the rest stay stored and unlisted.
+
+  A firmware one (phase 2) is served at its own target and release only:
+  `Portal.Catalog` renders it without the facts that let a client take a
+  build on another release of the system.
   """
 
   require Ash.Query
