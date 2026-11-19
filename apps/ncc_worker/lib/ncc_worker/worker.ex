@@ -1810,6 +1810,26 @@ defmodule NccWorker.Worker do
   # what the default build locks. The overlay is written in
   # `toolchain_project/5` so it precedes every compile, the traced one
   # included, on each path into it.
+  # A pinned build (`NCC_INPUT.pins`, `NccWorker.Pins`) writes the package
+  # and its pins into `mix.exs` before the one `deps.get` and checks the lock
+  # it resolved; then the same project, compile and judge as any toolchain
+  # run, with nothing added. A refused set compiles nothing
+  # (`toolchain_compile/5`'s `{:pins_refused, _}`).
+  defp toolchain_run(%{pins: %{} = pins} = input, paths, toolchain) do
+    with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
+         {:ok, outcome} <-
+           NccWorker.Pins.reproduce(
+             project_dir,
+             input.package,
+             pins,
+             host_env(project_dir),
+             &Project.run_deps_get/2
+           ) do
+      log_pins(paths, outcome)
+      toolchain_project(project_dir, Map.put(input, :pins_outcome, outcome), paths, toolchain, [])
+    end
+  end
+
   defp toolchain_run(input, paths, toolchain) do
     with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
          {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
@@ -1902,6 +1922,7 @@ defmodule NccWorker.Worker do
         |> put_run_deps_lock(compiled, project_dir, package_name)
         |> put_requested_toolchain(input[:toolchain])
         |> put_requested_optional_deps(requested_optional_deps(input))
+        |> put_present(:pins, input[:pins_outcome])
 
       {:ok, result}
     end
@@ -2024,6 +2045,13 @@ defmodule NccWorker.Worker do
   defp compile_request(%{optional_deps: "world", world: name, world_members: members}),
     do: {:world, name, members}
 
+  # A pinned build compiles what the set resolved, nothing added; one whose
+  # set Mix did not reproduce compiles nothing.
+  defp compile_request(%{pins_outcome: %{"status" => "reproduced"}}), do: :pinned
+
+  defp compile_request(%{pins_outcome: %{} = outcome}),
+    do: {:pins_refused, NccWorker.Pins.describe(outcome)}
+
   defp compile_request(input), do: input[:optional_deps]
 
   defp requested_optional_deps(%{optional_deps: "world", world: name}), do: "world:" <> name
@@ -2034,11 +2062,15 @@ defmodule NccWorker.Worker do
   defp compiled_build(%{world_skip: reason}, _project_dir, _package_name, toolchain, opts),
     do: world_skipped_build(toolchain, reason, opts)
 
+  defp compiled_build(%{pins_skip: reason}, _project_dir, _package_name, toolchain, opts),
+    do: unbuilt(toolchain, "pins not reproduced: " <> reason, opts)
+
   defp compiled_build(compiled, project_dir, package_name, toolchain, opts),
     do:
       toolchain_build(project_dir, package_name, compiled.host, toolchain, compiled.verdict, opts)
 
   defp put_run_deps_lock(result, %{world_skip: _}, _project_dir, _package_name), do: result
+  defp put_run_deps_lock(result, %{pins_skip: _}, _project_dir, _package_name), do: result
 
   defp put_run_deps_lock(result, _compiled, project_dir, package_name),
     do: put_deps_lock(result, :toolchain, nil, project_dir, package_name)
@@ -2052,10 +2084,15 @@ defmodule NccWorker.Worker do
   # again every week although the world fails the same way every time.
   # Public for tests.
   @spec world_skipped_build(map(), String.t(), keyword()) :: toolchain_build_verdict()
-  def world_skipped_build(toolchain, reason, opts \\ []) do
+  def world_skipped_build(toolchain, reason, opts \\ []),
+    do: unbuilt(toolchain, "world closure not built: " <> reason, opts)
+
+  # A toolchain build that compiled nothing: skipped with `reason`, no files
+  # and no lock-derived fields, the judge revision as a judged build's.
+  defp unbuilt(toolchain, reason, opts) do
     %{
       status: "skipped",
-      reason: "world closure not built: " <> reason,
+      reason: reason,
       elixir: toolchain.elixir,
       otp: toolchain.erlang,
       deps_lock: nil,
@@ -2132,6 +2169,21 @@ defmodule NccWorker.Worker do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  # A pinned build (`NccWorker.Pins`): the set is the closure, so the one
+  # traced compile adds nothing, as "exclude" does; `optional_deps.reason`
+  # says the closure was pinned. A set Mix did not reproduce compiles
+  # nothing at all.
+  def toolchain_compile(_project_dir, {:pins_refused, reason}, _package_name, paths, _opts) do
+    log_host(paths, "Pinned closure not reproduced, nothing is compiled: " <> reason)
+    {:ok, %{pins_skip: reason, optional_deps: pinned_info()}}
+  end
+
+  def toolchain_compile(project_dir, :pinned, package_name, paths, opts) do
+    with {:ok, compiled} <- host_trace(project_dir, package_name, paths, opts) do
+      {:ok, Map.put(compiled, :optional_deps, pinned_info())}
     end
   end
 
@@ -2225,6 +2277,20 @@ defmodule NccWorker.Worker do
   defp world_detail(text) when is_binary(text), do: LogTail.tail(text, 2000)
   defp world_detail(names) when is_list(names), do: Enum.join(names, ", ")
   defp world_detail(other), do: inspect(other, limit: 20)
+
+  defp pinned_info, do: Map.put(optional_deps_info([], [], "pinned"), :skipped, [])
+
+  defp log_pins(paths, %{"status" => "reproduced", "hash" => hash}),
+    do: log_host(paths, "Pinned closure #{hash} reproduced")
+
+  defp log_pins(paths, outcome) do
+    detail = if outcome["detail"], do: "\n" <> outcome["detail"], else: ""
+
+    log_host(
+      paths,
+      "Pinned closure #{outcome["hash"]} refused: " <> NccWorker.Pins.describe(outcome) <> detail
+    )
+  end
 
   defp optional_deps_to_add(project_dir, package_name) do
     project_dir
@@ -2478,6 +2544,9 @@ defmodule NccWorker.Worker do
 
   def put_requested_optional_deps(result, "world:" <> _ = requested),
     do: Map.put(result, :requested_optional_deps, requested)
+
+  def put_requested_optional_deps(result, "pinned"),
+    do: Map.put(result, :requested_optional_deps, "pinned")
 
   def put_requested_optional_deps(result, _requested), do: result
 

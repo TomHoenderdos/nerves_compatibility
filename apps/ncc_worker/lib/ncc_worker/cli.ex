@@ -204,11 +204,13 @@ defmodule NccWorker.CLI do
              {:invalid_json, String.t()}
              | {:invalid_optional_deps, term()}
              | {:invalid_world, term()}
+             | {:invalid_pins, term()}
              | {:invalid_config_variant, term()}}
   def parse_input(content) do
     with {:ok, input} <- decode_input(content),
          {:ok, input} <- validate_optional_deps(input),
          {:ok, input} <- validate_world(input),
+         {:ok, input} <- validate_pins(input),
          {:ok, input} <- validate_firmware_world(input) do
       validate_config_variant(input)
     end
@@ -225,7 +227,7 @@ defmodule NccWorker.CLI do
   # would run as some default and be recorded as the wrong variant, so it is
   # refused; an input without the key runs as before.
   defp validate_optional_deps(%{optional_deps: value})
-       when value not in ["include", "exclude", "world"],
+       when value not in ["include", "exclude", "world", "pinned"],
        do: {:error, {:invalid_optional_deps, value}}
 
   defp validate_optional_deps(input), do: {:ok, input}
@@ -261,6 +263,36 @@ defmodule NccWorker.CLI do
   defp world_fields(%{world: name} = input), do: {:ok, name, input[:world_members]}
   defp world_fields(_input), do: {:error, {:invalid_world, :missing}}
 
+  # A pinned build (`NccWorker.Pins`): `pins` with `optional_deps: "pinned"`,
+  # each requiring the other (so never with a world), and checked whole by
+  # `Compatibility.Pins.validate/3` against the package and its exact
+  # version. Phase 1 builds pins on the toolchain path only; the firmware
+  # path (no mode, one `systems_filter` system and an exact
+  # `systems_override`) is refused until it exists, and so is every other
+  # mode. Any refusal is a worker failure (exit 10) with no result, as an
+  # invalid world is.
+  defp validate_pins(%{pins: pins} = input) do
+    package = input[:package] || %{}
+
+    cond do
+      input[:optional_deps] != "pinned" ->
+        {:error, {:invalid_pins, {:optional_deps, input[:optional_deps]}}}
+
+      input[:mode] != "toolchain" ->
+        {:error, {:invalid_pins, {:mode, input[:mode]}}}
+
+      not (is_binary(package[:name]) and is_binary(package[:version])) ->
+        {:error, {:invalid_pins, {:package, package}}}
+
+      true ->
+        with {:ok, pins} <- Compatibility.Pins.validate(package.name, package.version, pins),
+             do: {:ok, %{input | pins: pins}}
+    end
+  end
+
+  defp validate_pins(%{optional_deps: "pinned"}), do: {:error, {:invalid_pins, :missing}}
+  defp validate_pins(input), do: {:ok, input}
+
   # The firmware world (`NccWorker.WorldTargets`), `firmware_world: %{"name",
   # "members"}`: a third build per passing firmware target, checked like a
   # toolchain world (`NccWorker.WorldDeps.validate/2`) and refused whole when
@@ -295,7 +327,7 @@ defmodule NccWorker.CLI do
 
   defp validate_config_variant(input), do: {:ok, input}
 
-  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps world world_members firmware_world firmware_inputs config_variant judge makefile_rule2 triple deterministic)a
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps world world_members firmware_world firmware_inputs config_variant judge makefile_rule2 triple deterministic pins)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
 
   @spec atomize_keys(map()) :: map()

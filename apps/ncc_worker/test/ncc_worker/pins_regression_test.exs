@@ -1,6 +1,6 @@
 defmodule NccWorker.PinsRegressionTest do
-  # Without `pins`, a toolchain run's result.json is the bytes it was before
-  # pinned builds existed (lock-driven builds spec, section 1).
+  # Without `pins`, a toolchain run's result.json is the document it was
+  # before pinned builds existed (lock-driven builds spec, section 1).
   use ExUnit.Case, async: true
 
   alias NccWorker.{JsonWriter, Worker}
@@ -42,7 +42,11 @@ defmodule NccWorker.PinsRegressionTest do
     [app] = Path.wildcard(Path.join(built, "ebin/*.app"))
     File.rename!(app, Path.join(built, "ebin/sample.app"))
     File.write!(Path.join(proj, "mix.lock"), @lock)
-    File.write!(Path.join(proj, "mix.exs"), "defp deps do\n  [\n    {:sample, \"1.0.0\"}\n  ]\nend\n")
+
+    File.write!(
+      Path.join(proj, "mix.exs"),
+      "defp deps do\n  [\n    {:sample, \"1.0.0\"}\n  ]\nend\n"
+    )
 
     out = Path.join(dir, "out")
     File.mkdir_p!(Path.join(out, "logs"))
@@ -86,6 +90,82 @@ defmodule NccWorker.PinsRegressionTest do
       File.write!(@golden, json)
     end
 
-    assert json == File.read!(@golden)
+    # The same document, key for key and value for value. Not the same
+    # bytes: OTP orders a map's atom keys by atom-table index, so the key
+    # order of any result.json moves whenever a release loads its atoms in
+    # another order, pins or not.
+    assert JSON.decode!(json) == @golden |> File.read!() |> JSON.decode!()
+  end
+
+  describe "a pinned toolchain run" do
+    @a String.duplicate("a", 64)
+
+    defp pinned(input, status, extra \\ []) do
+      outcome = %{
+        "hash" => @a,
+        "status" => status,
+        "reason" => if(status == "refused", do: "pins_closure_mismatch"),
+        "extra" => extra,
+        "missing" => [],
+        "differing" => []
+      }
+
+      input
+      |> Map.merge(%{optional_deps: "pinned", pins: %{"hash" => @a}})
+      |> Map.put(:pins_outcome, outcome)
+    end
+
+    defp counting_trace(parent) do
+      fn project_dir, package, paths, opts ->
+        send(parent, :traced)
+        passing_trace(project_dir, package, paths, opts)
+      end
+    end
+
+    test "a reproduced set is compiled and judged exactly as any toolchain build", %{tmp_dir: dir} do
+      {proj, input, paths} = toolchain_run(dir)
+      trace = counting_trace(self())
+
+      assert {:ok, plain} =
+               Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: trace)
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, pinned(input, "reproduced"), paths, @toolchain,
+                 host_trace: trace
+               )
+
+      assert_received :traced
+      assert_received :traced
+      # No judge or status code branches on pins.
+      assert result.toolchain_build == plain.toolchain_build
+      assert result.deps_lock == plain.deps_lock
+      assert result.pins["status"] == "reproduced"
+      assert result.requested_optional_deps == "pinned"
+      assert %{added: [], dropped: [], skipped: [], reason: "pinned"} = result.optional_deps
+      assert written(result, dir) =~ ~s|"pins":{|
+    end
+
+    test "a refused set compiles nothing and publishes nothing", %{tmp_dir: dir} do
+      {proj, input, paths} = toolchain_run(dir)
+      input = input |> pinned("refused", ["jason"]) |> Map.put(:deterministic, true)
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain,
+                 host_trace: counting_trace(self())
+               )
+
+      refute_received :traced
+
+      assert %{
+               status: "skipped",
+               reason: "pins not reproduced: pins_closure_mismatch (+jason)",
+               file_manifest: nil,
+               deps_lock: nil
+             } = result.toolchain_build
+
+      refute Map.has_key?(result, :deps_lock)
+      assert result.pins["status"] == "refused"
+      assert result.deterministic_build.status == "skipped"
+    end
   end
 end

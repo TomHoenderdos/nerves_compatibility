@@ -188,6 +188,55 @@ defmodule NccWorker.Project do
   end
 
   @doc """
+  `add_package/4` for a pinned build (`NccWorker.Pins`): the package at
+  `== version` and every pin of `deps` (`inject_pins/2`) are written into
+  `mix.exs` before the one `deps.get`, so Mix resolves the set it was given
+  or nothing. `deps` are `Compatibility.Pins` deps.
+  """
+  @spec add_pinned_package(
+          String.t(),
+          map(),
+          [map()],
+          keyword() | list(),
+          (String.t(), list() -> :ok | {:error, term()})
+        ) :: {:ok, :added} | {:error, term()}
+  # Edits only the generated worker project mix.exs; the worker deliberately builds package code.
+  # sobelow_skip ["Traversal.FileModule"]
+  def add_pinned_package(project_dir, package, deps, env, deps_get \\ &run_deps_get/2) do
+    mix_exs_path = Path.join(project_dir, "mix.exs")
+
+    with {:ok, content} <- File.read(mix_exs_path),
+         {:ok, content} <- inject_dep(content, package),
+         {:ok, content} <- inject_pins(content, deps),
+         :ok <- File.write(mix_exs_path, content) do
+      deps_get.(project_dir, env)
+      |> case do
+        :ok -> {:ok, :added}
+        error -> error
+      end
+    end
+  end
+
+  @doc """
+  Writes each pin (`%{"name", "hex", "version"}`) into `content` as an exact
+  requirement: a dependency the template declares is repinned in place,
+  keeping its options; every other one is prepended as `{:app, "== v"}`,
+  with `hex: :pkg` when the names differ. Never `override: true`: a set that
+  does not resolve is refused, never forced.
+  """
+  @spec inject_pins(String.t(), [map()]) :: {:ok, String.t()} | {:error, term()}
+  def inject_pins(content, deps) do
+    Enum.reduce_while(deps, {:ok, content}, fn pin, {:ok, acc} ->
+      dep = %{name: pin["name"], requirement: "== " <> pin["version"], hex: pin["hex"]}
+
+      case inject_dep(acc, dep) do
+        {:ok, injected} -> {:cont, {:ok, injected}}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  @doc """
   Splits optional dependencies from `NccWorker.DepsLock.unresolved_optional_deps/2`
   into `{to_add, skipped}`, where `skipped` holds the application names on
   `Compatibility.OptionalDeps.never_added/0` (see the module doc), matched by
@@ -509,8 +558,10 @@ defmodule NccWorker.Project do
   defp dep_tuple(%{name: name}),
     do: ~s[{:#{name}, ">= 0.0.0"}]
 
+  @doc false
+  # One `mix deps.get` in `env`; public for `NccWorker.Pins`' caller.
   @spec run_deps_get(String.t(), list()) :: :ok | {:error, term()}
-  defp run_deps_get(project_dir, env) do
+  def run_deps_get(project_dir, env) do
     case System.cmd("mix", ["deps.get"], cd: project_dir, env: env, stderr_to_stdout: true) do
       {_, 0} -> :ok
       {error, _} -> {:error, {:deps_get_failed, error}}

@@ -109,7 +109,8 @@ defmodule NccWorker.JsonWriter do
         :requested_optional_deps,
         :firmware_world,
         :host_portability,
-        :resources
+        :resources,
+        :pins
       ]
       |> Enum.reduce(json, &put_present(&2, &1, Map.get(result, &1)))
 
