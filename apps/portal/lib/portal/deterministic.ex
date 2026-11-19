@@ -153,20 +153,23 @@ defmodule Portal.Deterministic do
   (`Portal.Deterministic.Ingest.firmware_candidate/3`'s, its files' blobs
   registered already) when the result passed. `run` is the result's run,
   `%{package_id, version, finished_at}`; the sibling's `run_id` is the
-  result's own. `nil` stores none.
+  result's own. `nil` stores none. A system result is a new row in every
+  ingest, so it has no sibling to remove first.
   """
-  @spec replace(SystemResult.t(), map() | nil, map()) :: :ok | {:error, term()}
-  def replace(%SystemResult{} = result, sibling, run) do
+  @spec store(SystemResult.t(), map() | nil, map()) :: :ok | {:error, term()}
+  def store(%SystemResult{status: :pass} = result, %{} = sibling, run) do
     build =
       run
       |> Map.take([:package_id, :version, :finished_at])
       |> Map.merge(%{id: result.id, run_id: result.run_id, status: result.status})
 
-    replace_owned(build, :system_result_id, sibling)
+    insert(build, :system_result_id, sibling)
   end
 
+  def store(%SystemResult{}, _sibling, _run), do: :ok
+
   # `owner` is the column the sibling's build is named by. The SQL is one of
-  # three literals (`delete_sql/1`); the id is a bound parameter.
+  # two literals (`delete_sql/1`); the id is a bound parameter.
   # sobelow_skip ["SQL.Query"]
   defp replace_owned(build, owner, sibling) do
     Repo.query!(delete_sql(owner), [Ecto.UUID.dump!(build.id)])
@@ -182,9 +185,6 @@ defmodule Portal.Deterministic do
 
   defp delete_sql(:pinned_build_id),
     do: "DELETE FROM catalog_deterministic_builds WHERE pinned_build_id = $1"
-
-  defp delete_sql(:system_result_id),
-    do: "DELETE FROM catalog_deterministic_builds WHERE system_result_id = $1"
 
   defp insert(build, owner, sibling) do
     attrs = %{

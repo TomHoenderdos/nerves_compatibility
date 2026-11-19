@@ -2222,7 +2222,7 @@ defmodule Portal.Catalog.Ingestion do
 
         # A firmware target's deterministic sibling, owned by its row.
         with :ok <-
-               Portal.Deterministic.replace(system_result, sibling, sibling_run(run, version)),
+               Portal.Deterministic.store(system_result, sibling, sibling_run(run, version)),
              do: {:ok, system_result}
 
       {:error, reason} ->
