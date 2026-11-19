@@ -1265,25 +1265,28 @@ defmodule Portal.Catalog.Ingestion do
   # The row of the pinned identity in `opts` with one of `statuses`; `served`
   # only one that is neither revoked nor withdrawn.
   def pinned_row(package_id, opts, statuses, served) do
-    target = Map.get(opts, :target, "pure_elixir")
-    system_version = Map.get(opts, :system_version, "")
-    config_variant = Map.get(opts, :config_variant, ConfigVariants.default())
+    key = [
+      package_id: package_id,
+      version: opts.version,
+      pin_hash: opts.pin_hash,
+      target: Map.get(opts, :target, "pure_elixir"),
+      system_version: Map.get(opts, :system_version, ""),
+      toolchain: opts.toolchain,
+      builder_version: opts.builder_version,
+      config_variant: Map.get(opts, :config_variant, ConfigVariants.default())
+    ]
 
     PinnedBuild
-    |> Ash.Query.filter(
-      package_id == ^package_id and version == ^opts.version and pin_hash == ^opts.pin_hash and
-        target == ^target and system_version == ^system_version and
-        toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
-        config_variant == ^config_variant and status in ^statuses
-    )
-    |> then(
-      &if(served,
-        do: Ash.Query.filter(&1, is_nil(revoked_at) and is_nil(unpublished_at)),
-        else: &1
-      )
-    )
+    |> Ash.Query.filter(^key)
+    |> Ash.Query.filter(status in ^statuses)
+    |> served_pinned(served)
     |> Ash.read_one!(domain: @domain)
   end
+
+  defp served_pinned(query, true),
+    do: Ash.Query.filter(query, is_nil(revoked_at) and is_nil(unpublished_at))
+
+  defp served_pinned(query, false), do: query
 
   defp upsert_pinned(result, build, {status, reason}, opts, package_id, {staged, sibling}) do
     {inputs, compiled_env} = inputs_and_env(build, {opts.package, opts.version})

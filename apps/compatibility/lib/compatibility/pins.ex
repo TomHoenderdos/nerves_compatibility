@@ -122,30 +122,19 @@ defmodule Compatibility.Pins do
          package,
          seen
        ) do
-    cond do
-      not valid_name?(name) ->
-        {:error, {:name, name}}
+    checks = [
+      {valid_name?(name), {:name, name}},
+      {valid_name?(hex), {:name, hex}},
+      {valid_version?(version), {:version, version}},
+      {check_checksum(sum) == :ok, {:checksum, sum}},
+      {not MapSet.member?(seen, name), {:duplicate, name}},
+      {not (tooling?(name) or tooling?(hex)), {:tooling, name}},
+      {name != package and hex != package, {:package_itself, name}}
+    ]
 
-      not valid_name?(hex) ->
-        {:error, {:name, hex}}
-
-      not (is_binary(version) and match?({:ok, _}, Version.parse(version))) ->
-        {:error, {:version, version}}
-
-      check_checksum(sum) != :ok ->
-        {:error, {:checksum, sum}}
-
-      MapSet.member?(seen, name) ->
-        {:error, {:duplicate, name}}
-
-      tooling?(name) or tooling?(hex) ->
-        {:error, {:tooling, name}}
-
-      name == package or hex == package ->
-        {:error, {:package_itself, name}}
-
-      true ->
-        :ok
+    case Enum.find(checks, &(not elem(&1, 0))) do
+      nil -> :ok
+      {false, why} -> {:error, why}
     end
   end
 
@@ -161,6 +150,9 @@ defmodule Compatibility.Pins do
 
     if recomputed == hash, do: :ok, else: {:error, :hash_mismatch}
   end
+
+  defp valid_version?(version),
+    do: is_binary(version) and match?({:ok, _}, Version.parse(version))
 
   defp valid_name?(name),
     do: is_binary(name) and byte_size(name) <= @max_name_bytes and Regex.match?(@name, name)

@@ -79,7 +79,15 @@ defmodule Portal.HexDepsTest do
     )
 
     assert {:ok, [old, new]} = releases("tortoise", context)
-    assert old == %{version: "0.9.0", retired?: true, deps: [], outer_checksum: nil}
+
+    assert old == %{
+             version: "0.9.0",
+             retired?: true,
+             retired_reason: "security",
+             deps: [],
+             outer_checksum: nil
+           }
+
     assert new.version == "0.10.0"
     refute new.retired?
 

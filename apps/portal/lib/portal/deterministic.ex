@@ -102,7 +102,9 @@ defmodule Portal.Deterministic do
   def replace(%PinnedBuild{} = pinned_build, sibling),
     do: replace(pinned_build, :pinned_build_id, sibling)
 
-  # `owner` is the column the sibling's build is named by.
+  # `owner` is the column the sibling's build is named by. The SQL is one of
+  # two literals (`delete_sql/1`); the id is a bound parameter.
+  # sobelow_skip ["SQL.Query"]
   defp replace(build, owner, sibling) do
     Repo.query!(delete_sql(owner), [Ecto.UUID.dump!(build.id)])
 
