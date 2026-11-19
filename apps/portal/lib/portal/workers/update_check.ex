@@ -383,7 +383,9 @@ defmodule Portal.Workers.UpdateCheck do
     end
   end
 
-  defp passing?(package_id, statuses), do: Map.get(statuses, package_id) == :pass
+  # The text column as stored: a run with no `overall_status` is not a passing
+  # one.
+  defp passing?(package_id, statuses), do: Map.get(statuses, package_id) == "pass"
 
   defp latest_run_statuses([]), do: %{}
 
@@ -397,7 +399,7 @@ defmodule Portal.Workers.UpdateCheck do
       select: {type(r.package_id, Ecto.UUID), r.overall_status}
     )
     |> Portal.Repo.all()
-    |> Map.new(fn {id, status} -> {id, String.to_existing_atom(status)} end)
+    |> Map.new()
   end
 
   # `source: update_check` is what separates these from a bulk catalogue seed.

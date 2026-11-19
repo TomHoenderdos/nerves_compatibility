@@ -391,6 +391,17 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert queued_packages() == ["alpha"]
     end
 
+    # `catalog_runs.overall_status` is nullable: a run with none is not a
+    # passing one, and must not stop the check for every other package.
+    test "a patch bump on a package whose latest run has no status is queued" do
+      package = package("alpha", "1.2.3")
+      run(package, nil)
+      hex_says([{"alpha", "1.2.4"}])
+
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+      assert queued_packages() == ["alpha"]
+    end
+
     # Only the newest run decides. A package that failed once and has passed
     # since is a passing package, and its patch releases are skipped like any
     # other.
