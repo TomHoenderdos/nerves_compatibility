@@ -1236,11 +1236,15 @@ defmodule Portal.Catalog.Ingestion do
     :ok
   end
 
+  # A pinned build is no run, so it never writes the package row's
+  # `latest_version` or `description` (`Portal.Catalog.LatestRun`): a
+  # package the catalog does not hold yet is created with its name alone,
+  # as a host-native ingest creates one.
   defp write_pinned(result, build, opts, staged, sibling) do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
     verdict = toolchain_verdict(build)
 
-    with {:ok, package} <- ensure_package(package_name(package_info, opts), package_info) do
+    with {:ok, package} <- ensure_package(package_name(package_info, opts), %{}) do
       case kept_pinned(verdict, build, package.id, opts) do
         %PinnedBuild{} = kept ->
           kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: @domain)

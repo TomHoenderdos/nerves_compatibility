@@ -34,6 +34,32 @@ defmodule Portal.PinnedIngestTest do
            |> Ash.read!(domain: Catalog) == []
   end
 
+  # A pinned build is no run: it never writes the package's latest version
+  # (`Portal.Catalog.LatestRun`), not even for a package the catalog does
+  # not hold yet, which it creates bare, as a host-native ingest does.
+  test "a package the catalog does not hold is created without a latest version" do
+    name = unique()
+    pins = pins(name)
+    result = put_in(result(name, pins), ["package", "description"], "from the lock")
+
+    assert {:ok, %PinnedBuild{status: :pass}} =
+             Ingestion.ingest_pinned(result, opts(name, pins, files(["beam-" <> name])))
+
+    assert %Portal.Catalog.Package{latest_version: nil, description: nil, last_run_at: nil} =
+             package(name)
+  end
+
+  test "a package's latest version stays what its runs made it" do
+    name = unique()
+
+    Portal.Catalog.Package
+    |> Ash.Changeset.for_create(:create, %{name: name, latest_version: "2.0.0"})
+    |> Ash.create!(domain: Catalog)
+
+    assert {:ok, %PinnedBuild{status: :pass}} = ingest(name, pins(name))
+    assert %Portal.Catalog.Package{latest_version: "2.0.0"} = package(name)
+  end
+
   test "a lock that is not the set is a skipped row with no files" do
     name = unique()
     pins = pins(name)
@@ -105,5 +131,11 @@ defmodule Portal.PinnedIngestTest do
              DeterministicBuild
              |> Ash.Query.filter(pinned_build_id == ^row.id)
              |> Ash.read_one!(domain: Catalog)
+  end
+
+  defp package(name) do
+    Portal.Catalog.Package
+    |> Ash.Query.filter(name == ^name)
+    |> Ash.read_one!(domain: Catalog)
   end
 end
