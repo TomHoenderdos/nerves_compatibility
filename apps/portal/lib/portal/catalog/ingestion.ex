@@ -526,23 +526,25 @@ defmodule Portal.Catalog.Ingestion do
 
     case wanted -- Enum.map(staged, & &1.sha256) do
       [] ->
-        build = put_elf_facts(build)
-
-        Repo.transaction(
-          fn ->
-            :ok = lock_pinned_identity(opts)
-
-            case write_pinned(result, build, target_verdict(build), opts, {staged, nil}) do
-              {:ok, pinned_build} -> pinned_build
-              {:error, reason} -> Repo.rollback(reason)
-            end
-          end,
-          timeout: @transaction_timeout
-        )
+        write_pinned_target(result, put_elf_facts(build), opts, staged)
 
       missing ->
         {:error, {:artifacts_unstaged, missing}}
     end
+  end
+
+  defp write_pinned_target(result, build, opts, staged) do
+    Repo.transaction(
+      fn ->
+        :ok = lock_pinned_identity(opts)
+
+        case write_pinned(result, build, target_verdict(build), opts, {staged, nil}) do
+          {:ok, pinned_build} -> pinned_build
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end,
+      timeout: @transaction_timeout
+    )
   end
 
   defp target_build(result, %{target: target}) do
