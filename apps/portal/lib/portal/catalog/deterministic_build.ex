@@ -27,9 +27,9 @@ defmodule Portal.Catalog.DeterministicBuild do
   `deterministic` key. A firmware target's sibling
   (`NccWorker.FirmwareDeterministic`) is owned by its system result
   (`system_result_id`, `run_id` the id of the result's `catalog_runs` row),
-  written with the row by the
-  run's ingest, and published only beside that row's own build while it is
-  served. Exactly one of the three is set (`one_build`).
+  written with the row by the run's ingest, and published only beside that
+  row's own build while it is served. Exactly one of the three is set
+  (`one_build`).
   """
 
   use Ash.Resource,
