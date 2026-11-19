@@ -770,8 +770,9 @@ What it lists:
   carried copy of a result has none. The builder (`NccWorker.FirmwareDeterministic`) compiles the package alone for
   the target with the option, in the target's build env and build tree over the closure its
   firmware build compiled, and keeps it only when the target passed and publishes its own build
-  (R2 did not withhold it), the build was made against the run's lock (a target that kept its
-  optional dependencies gets none), its recorded `compile_inputs` read neither
+  (R2 did not withhold it), the build was made against the run's lock and the optional pass did not
+  touch the target (a target that kept its optional dependencies, or that the pass tried and dropped,
+  leaving the closure's builds rebuilt with them, gets none), its recorded `compile_inputs` read neither
   `ERL_COMPILER_OPTIONS` nor the whole environment, and the sibling lists the build's `ebin` and
   `priv` paths and modes, has its `priv` bytes, passes the same `ebin` comparison, and passes R2 on
   its own beams. The portal checks the closure, paths, priv bytes, beams and R2 outcome again at

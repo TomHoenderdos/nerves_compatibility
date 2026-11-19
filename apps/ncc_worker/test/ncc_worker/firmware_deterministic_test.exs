@@ -174,6 +174,32 @@ defmodule NccWorker.FirmwareDeterministicTest do
     assert sibling.reason == "the target's build was made with its optional dependencies"
   end
 
+  # Review I2: the optional pass rebuilt the closure's dependency builds of a
+  # target it dropped with the optional dependencies loadable, and put back
+  # only the package's own build. A sibling compiled there would expand
+  # macros of builds the published build was not made against.
+  test "a target the optional pass dropped gets a skipped sibling, never compiled", c do
+    never = %{compile: fn _, _, _, _ -> flunk("compiled") end}
+
+    for reason <- ~w(target_compile_failed timeout run_budget_exhausted deps_get_failed) do
+      dropped = %{added: [], dropped: ["jason"], reason: reason}
+      systems = put_in(c.systems, ["nerves_system_rpi4", :optional_deps], dropped)
+
+      assert {:ok, systems, _} = put(c, never, systems)
+
+      assert %{
+               status: "skipped",
+               file_manifest: nil,
+               reason: "the optional dependencies pass rebuilt the target's closure"
+             } = systems["nerves_system_rpi4"].deterministic_build
+    end
+
+    # One that tried nothing (no optional dependencies to add) is eligible.
+    none = %{added: [], dropped: [], reason: nil}
+    systems = put_in(c.systems, ["nerves_system_rpi4", :optional_deps], none)
+    assert FirmwareDeterministic.eligible(systems["nerves_system_rpi4"]) == :ok
+  end
+
   test "a build whose compile reads the option or the whole env gets none", c do
     never = %{compile: fn _, _, _, _ -> flunk("compiled") end}
 

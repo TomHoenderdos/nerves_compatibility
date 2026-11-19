@@ -1016,7 +1016,8 @@ is checked file by file against its manifest. It is recorded as the system's `de
 files are the build's bytes, its `ebin` passes `Compatibility.DeterministicBeams.compare_ebin/2` against the build's,
 and R2 passes on its own dir (`build_root`; the option changes an Erlang module's `?FILE` literals). It is
 `"skipped"` with its reason otherwise, and also for a target that kept its optional dependencies (its build was made
-against a closure the project no longer holds), one whose recorded `compile_inputs` read `ERL_COMPILER_OPTIONS` or the
+against a closure the project no longer holds) or that the optional pass tried and dropped (it left the closure's builds
+rebuilt with them), one whose recorded `compile_inputs` read `ERL_COMPILER_OPTIONS` or the
 whole environment, after a compile failure or timeout, past the pass's budget (`NCC_FIRMWARE_DETERMINISTIC_BUDGET_SEC`,
 default 600) or 75 minutes into the run, and when the compile changed `mix.lock` (put back). A target that did not
 pass or publishes nothing gets no key. Its files are archived from `.<package>.deterministic`, each only while it

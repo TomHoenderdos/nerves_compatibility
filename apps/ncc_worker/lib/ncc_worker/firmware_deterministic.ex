@@ -19,7 +19,10 @@ defmodule NccWorker.FirmwareDeterministic do
   only on a target that passed and publishes its own build (R2 did not
   withhold it), whose build was made against the run's lock (no `deps_lock`
   of its own: a target that kept its optional dependencies was compiled
-  against a closure the project no longer holds), and whose recorded
+  against a closure the project no longer holds), that the optional pass
+  did not try and drop (it rebuilt the closure's builds the new lock
+  changed with the optional dependencies loadable, and put back only the
+  package's own build), and whose recorded
   `compile_inputs`, if any, neither read `ERL_COMPILER_OPTIONS` nor the
   whole environment. A passing target that publishes and is not eligible
   gets a `skipped` sibling with the reason; any other target gets none.
@@ -126,6 +129,7 @@ defmodule NccWorker.FirmwareDeterministic do
   @sibling "deterministic"
 
   @kept_optional "the target's build was made with its optional dependencies"
+  @dropped_optional "the optional dependencies pass rebuilt the target's closure"
   @reads_option "the build's compile reads ERL_COMPILER_OPTIONS"
   @scan_errors "the build's scan has errors"
   @no_beams "the build has no beams"
@@ -199,12 +203,21 @@ defmodule NccWorker.FirmwareDeterministic do
 
     cond do
       Map.get(result, :deps_lock) != nil -> {:skip, @kept_optional}
+      touched_closure?(Map.get(result, :optional_deps)) -> {:skip, @dropped_optional}
       is_list(inputs) and Enum.any?(inputs, &option_input?/1) -> {:skip, @reads_option}
       Map.get(scan, "errors", []) != [] -> {:skip, @scan_errors}
       ebin_entries(manifest(scan)) == [] -> {:skip, @no_beams}
       true -> :ok
     end
   end
+
+  # A target the optional pass tried and dropped: `Project.fetch_optional_deps/4`
+  # removed the closure's builds the new lock changed and the pass's compile
+  # rebuilt them with the optional dependencies loadable, and only the
+  # package's own build was put back. Any drop, whatever its reason, counts.
+  defp touched_closure?(%{dropped: dropped}), do: dropped != []
+  defp touched_closure?(nil), do: false
+  defp touched_closure?(_info), do: true
 
   defp option_input?(%{"kind" => "env_all"}), do: true
 

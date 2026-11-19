@@ -239,7 +239,8 @@ defmodule Portal.FirmwareDeterministicTest do
       end
     end
 
-    test "a target built against its own lock, or beside its build without, gets none" do
+    test "a target built against its own lock, beside its build without, or dropped by the " <>
+           "optional pass gets none" do
       name = unique()
       module = "fdm#{System.unique_integer([:positive])}"
       {normal, det} = beams(module)
@@ -252,9 +253,15 @@ defmodule Portal.FirmwareDeterministicTest do
         "deps_lock" => @lock
       }
 
+      # Review I2: a target the optional pass dropped had its closure's
+      # builds rebuilt with the optional dependencies.
+      dropped = %{"added" => [], "dropped" => ["jason"], "reason" => "target_compile_failed"}
+
       for change <- [
             &put_in(&1, ["systems", "nerves_system_rpi4", "deps_lock"], Map.put(@lock, "x", %{})),
-            &put_in(&1, ["systems", "nerves_system_rpi4", "published_variants"], [without])
+            &put_in(&1, ["systems", "nerves_system_rpi4", "published_variants"], [without]),
+            &put_in(&1, ["systems", "nerves_system_rpi4", "optional_deps"], dropped),
+            &put_in(&1, ["systems", "nerves_system_rpi4", "optional_deps"], "malformed")
           ] do
         log =
           capture_log(fn ->
@@ -265,6 +272,25 @@ defmodule Portal.FirmwareDeterministicTest do
 
         assert log =~ "its build was made against another closure than the run's"
       end
+    end
+
+    test "a target the optional pass touched nothing of keeps its sibling" do
+      name = unique()
+      module = "fdm#{System.unique_integer([:positive])}"
+      {normal, det} = beams(module)
+
+      result =
+        name
+        |> run_result(module, normal, sibling(module, det))
+        |> put_in(["systems", "nerves_system_rpi4", "optional_deps"], %{
+          "added" => [],
+          "dropped" => [],
+          "reason" => nil
+        })
+
+      run = ingest!(name, result, [normal, det, @nif])
+      assert [rpi4] = results(run.id, "nerves_system_rpi4")
+      assert %DeterministicBuild{} = sibling_of(rpi4)
     end
 
     test "only a Nerves system's sibling is read" do

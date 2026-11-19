@@ -32,10 +32,12 @@ defmodule Portal.Deterministic.Ingest do
     * the sibling passed, is tagged as above, and its own R2 outcome
       (`build_root`) is a pass; the target passed with its own file
       manifest;
-    * the target's build was made against the run's lock: no `deps_lock`
-      of its own and no published build without its optional dependencies,
-      so the closure the sibling was compiled over is the one its build is
-      published under;
+    * the target's build was made against the run's lock and the optional
+      pass did not touch the target: no `deps_lock` of its own, no
+      published build without its optional dependencies, and no optional
+      dependencies added or dropped (a dropped target's closure builds were
+      rebuilt with them loadable), so the closure the sibling was compiled
+      over is the one its build is published under;
     * its manifest lists the build's paths under the same keys with the
       same modes, and every `priv` file is the build's, byte for byte (a
       firmware build has no own-priv list);
@@ -139,6 +141,10 @@ defmodule Portal.Deterministic.Ingest do
 
   # A target that kept its optional dependencies published a build made
   # against its own lock, and the sibling was compiled against the run's.
+  # One the optional pass tried and dropped had its closure's builds rebuilt
+  # with them loadable, which the sibling compile then built over. Only a
+  # target the pass did not touch (no `optional_deps`, or nothing added or
+  # dropped) was compiled over the closure its build is published under.
   defp run_closure(sys) do
     without? =
       Enum.any?(
@@ -146,10 +152,17 @@ defmodule Portal.Deterministic.Ingest do
         &(is_map(&1) and &1["variant"] == "without")
       )
 
-    if sys["deps_lock"] == nil and not without?,
+    if sys["deps_lock"] == nil and not without? and untouched?(sys["optional_deps"]),
       do: :ok,
       else: {:skip, "its build was made against another closure than the run's"}
   end
+
+  defp untouched?(nil), do: true
+
+  defp untouched?(%{"added" => added, "dropped" => dropped}),
+    do: added in [nil, []] and dropped in [nil, []]
+
+  defp untouched?(_info), do: false
 
   defp passed(%{"status" => "pass"}, %{"status" => "pass", "file_manifest" => %{}}), do: :ok
   defp passed(%{"status" => "pass"}, _build), do: {:skip, "its build did not pass here"}
