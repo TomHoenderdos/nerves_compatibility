@@ -113,6 +113,40 @@ defmodule Portal.PinsTest do
     assert length(all_enqueued(worker: PinnedBuild)) == 5
   end
 
+  # Review M3: jobs a phase-1 release queued carry no `system_version`. A
+  # new release still sees one as the same build, both in `from_lock`'s own
+  # check and in Oban's unique keys, which now include `system_version`.
+  test "a job queued by a phase-1 release is still the same build" do
+    {sets, _} = Portal.Pins.derive(elem(Portal.Pins.Lock.parse(lock()), 1))
+    decimal = Enum.find(sets, &(&1.package == "decimal"))
+
+    old_args = %{
+      "package" => "decimal",
+      "version" => "2.3.0",
+      "toolchain" => "1.20/29",
+      "image" => "ncc-worker:local",
+      "builder_version" => Portal.Toolchains.builder_version(),
+      "target" => "pure_elixir",
+      "pin_hash" => decimal.pins["hash"],
+      "pins" => decimal.pins
+    }
+
+    {:ok, old} =
+      old_args |> PinnedBuild.new(priority: 9, queue: :toolchain) |> Oban.insert()
+
+    refute Map.has_key?(old.args, "system_version")
+
+    assert {:ok, report} = run(dry_run: false)
+    assert reasons(report)["decimal"] == "queued_dup"
+    refute "decimal" in Enum.map(report.queue, & &1.package)
+
+    assert {:ok, %Oban.Job{conflict?: true, id: id}} =
+             old_args |> PinnedBuild.new(queue: :toolchain) |> Oban.insert()
+
+    assert id == old.id
+    assert length(all_enqueued(worker: PinnedBuild, args: %{"package" => "decimal"})) == 1
+  end
+
   test "the cap bounds one call" do
     assert {:ok, report} = run(cap: 2)
     assert length(report.queue) == 2

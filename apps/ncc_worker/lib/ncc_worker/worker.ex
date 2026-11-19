@@ -1124,24 +1124,28 @@ defmodule NccWorker.Worker do
     end
   end
 
-  defp finish_result(system_results, %{
-         input: input,
-         project_dir: project_dir,
-         systems: systems,
-         description: description,
-         release_info: release_info,
-         package_version_hint: package_version_hint,
-         host_result: host_result,
-         scope: scope,
-         selection: selection,
-         runtime_apps: runtime_apps,
-         source_before: source_before,
-         pkg_source_dir: pkg_source_dir,
-         toolchain: toolchain,
-         github_url: github_url,
-         optional_deps: optional_deps,
-         run_lock: run_lock
-       }) do
+  @doc false
+  # The run's result from its systems and `context` (`finish_project/4`'s).
+  # Public for tests.
+  @spec finish_result(map(), map()) :: {:ok, result()}
+  def finish_result(system_results, %{
+        input: input,
+        project_dir: project_dir,
+        systems: systems,
+        description: description,
+        release_info: release_info,
+        package_version_hint: package_version_hint,
+        host_result: host_result,
+        scope: scope,
+        selection: selection,
+        runtime_apps: runtime_apps,
+        source_before: source_before,
+        pkg_source_dir: pkg_source_dir,
+        toolchain: toolchain,
+        github_url: github_url,
+        optional_deps: optional_deps,
+        run_lock: run_lock
+      }) do
     {:ok, source_after} = NccWorker.SourceScanner.snapshot(pkg_source_dir)
     source_changes = NccWorker.SourceScanner.diff(source_before, source_after)
 

@@ -44,6 +44,7 @@ defmodule NccWorker.PinsFirmwareTest do
   end
 
   defp written(result, dir) do
+    File.mkdir_p!(dir)
     :ok = JsonWriter.write_result(dir, result)
     dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
   end
@@ -113,6 +114,48 @@ defmodule NccWorker.PinsFirmwareTest do
   defp manifest(systems),
     do: get_in(systems, ["nerves_system_rpi4", :beam_scan, "footprint", "file_manifest"])
 
+  # Review M3: R2 runs on a pinned target's own build, and withholds it.
+  test "a passing pinned target goes through R2, which can withhold its files", %{tmp_dir: dir} do
+    pass = pinned_project(dir)
+    build = fn -> {%{"nerves_system_rpi4" => passed()}, @envs} end
+    refuse = fn _app_dir, _project, "rpi4", _opts -> {:refuse, "bakes the build path"} end
+    record = fn _name, _target_env, _ctx, _result -> {:error, "not traced"} end
+
+    assert {:ok, systems, @info, _lock} =
+             Worker.pinned_targets(build, pass, @info,
+               build_root_judge: refuse,
+               record_inputs: record
+             )
+
+    assert systems["nerves_system_rpi4"].status == :pass
+    assert manifest(systems) == nil
+
+    assert %{status: "skipped", reason: "bakes the build path"} =
+             systems["nerves_system_rpi4"].build_root
+  end
+
+  # Review M3: and its compile inputs are recorded, as any firmware target's.
+  test "a passing pinned target that R2 passes records its compile inputs", %{tmp_dir: dir} do
+    pass = pinned_project(dir)
+    build = fn -> {%{"nerves_system_rpi4" => passed()}, @envs} end
+    publish = fn _app_dir, _project, "rpi4", _opts -> :ok end
+    inputs = [%{"kind" => "env", "name" => "SAMPLE_MODE", "value" => nil}]
+
+    record = fn "nerves_system_rpi4", {"rpi4", _env}, _ctx, _result ->
+      {:ok, %{compile_inputs: inputs, compile_env: []}}
+    end
+
+    assert {:ok, systems, @info, _lock} =
+             Worker.pinned_targets(build, pass, @info,
+               build_root_judge: publish,
+               record_inputs: record
+             )
+
+    assert manifest(systems) == @manifest
+    assert systems["nerves_system_rpi4"].compile_inputs == inputs
+    assert %{status: "pass"} = systems["nerves_system_rpi4"].build_root
+  end
+
   # Review M2: the lock is read after the build, as on the regular path; a
   # build that changed it is no build of the set.
   test "a target build that rewrote the lock is an error, never served", %{tmp_dir: dir} do
@@ -133,6 +176,50 @@ defmodule NccWorker.PinsFirmwareTest do
     assert %{status: :error, error: "deps_lock_changed"} = systems["nerves_system_rpi4"]
     assert manifest(systems) == nil
     assert run_lock.deps_lock["ring_logger"]["version"] == "0.11.4"
+  end
+
+  # Review M3: the result a reproduced set writes is the one ingest takes:
+  # the echo, the set's outcome, the lock its target built against.
+  test "a reproduced set's result echoes it and carries its lock", %{tmp_dir: dir} do
+    pass = pinned_project(dir)
+    outcome = outcome("reproduced", nil, [])
+    source = Path.join([pass.project_dir, "deps", "sample"])
+    {:ok, snapshot} = NccWorker.SourceScanner.snapshot(source)
+
+    run_lock = %{
+      deps_lock: %{"ring_logger" => %{"version" => "0.11.3", "checksum" => @b}},
+      package_checksum: @a,
+      declared: []
+    }
+
+    context =
+      context(outcome)
+      |> Map.merge(%{
+        project_dir: pass.project_dir,
+        systems: pass.systems,
+        release_info: nil,
+        host_result: %{status: :pass, duration_sec: 1.0},
+        scope: :targets,
+        selection: :firmware,
+        runtime_apps: [],
+        source_before: snapshot,
+        pkg_source_dir: source,
+        optional_deps: @info,
+        run_lock: run_lock
+      })
+
+    systems = %{"nerves_system_rpi4" => passed(), "host" => %{passed() | system_version: nil}}
+    assert {:ok, result} = Worker.finish_result(systems, context)
+    json = written(Map.put(result, :finished_at, "2026-11-19T00:00:00Z"), Path.join(dir, "json"))
+
+    assert json["pins"] == outcome
+    assert json["requested_optional_deps"] == "pinned"
+    assert json["scope"] == "targets"
+    assert json["deps_lock"] == %{"ring_logger" => %{"version" => "0.11.3", "checksum" => @b}}
+    assert json["package_checksum"] == @a
+    assert json["optional_deps"]["reason"] == "pinned"
+    assert json["systems"]["nerves_system_rpi4"]["system_version"] == "2.1.2"
+    refute Map.has_key?(json, "firmware_world")
   end
 
   test "a refused set skips its target, builds nothing and says why", %{tmp_dir: dir} do
