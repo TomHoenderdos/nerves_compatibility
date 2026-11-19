@@ -179,6 +179,7 @@ defmodule Portal.Workers.ToolchainBuild do
         deterministic: Portal.Deterministic.enabled?()
       }
       |> put_world(variant(args))
+      |> put_pins(args)
       |> Map.merge(oom_overrides(job))
 
     started_at = DateTime.utc_now()
@@ -234,6 +235,13 @@ defmodule Portal.Workers.ToolchainBuild do
     {:ok, members} = Compatibility.Worlds.members(name)
     Map.merge(build_args, %{world: name, world_members: members})
   end
+
+  # A pinned build (`Portal.Workers.PinnedBuild`) sends its set and builds
+  # nothing else: the set is the closure.
+  defp put_pins(build_args, %{"pins" => %{} = pins}),
+    do: Map.merge(build_args, %{optional_deps: "pinned", pins: pins})
+
+  defp put_pins(build_args, _args), do: build_args
 
   defp config_variant(args), do: Map.get(args, "config_variant", "default")
 
@@ -343,6 +351,8 @@ defmodule Portal.Workers.ToolchainBuild do
       "config_variant" => config_variant(args)
     }
 
+    ingest_args = pinned_ingest_args(ingest_args, args)
+
     # This node's own queue: the scratch dir the ingest reads is on this disk.
     case ingest_args |> Ingest.new(queue: NodeQueue.name()) |> Oban.insert() do
       {:ok, _job} ->
@@ -355,12 +365,30 @@ defmodule Portal.Workers.ToolchainBuild do
     end
   end
 
+  # A pinned build's ingest (`Ingestion.ingest_pinned/2`) is keyed on the
+  # pinned identity the job was queued for, never on a variant.
+  defp pinned_ingest_args(ingest_args, %{"pins" => %{}} = args) do
+    ingest_args
+    |> Map.delete("variant")
+    |> Map.merge(%{
+      "kind" => "pinned",
+      "pins" => args["pins"],
+      "pin_hash" => args["pin_hash"],
+      "target" => args["target"]
+    })
+  end
+
+  defp pinned_ingest_args(ingest_args, _args), do: ingest_args
+
   # Best-effort: the row is what keeps the sweep from re-enqueueing the build
   # tomorrow, not the job's result. Failing to write it is logged and the job's
   # own outcome stands. It runs under the identity's lock, as an ingest does
   # (`Ingestion.lock_toolchain_identity/1`). An `:error` is no verdict, so it
   # keeps the transient count of the `:error` row it replaces; a `:fail`
   # (exit 11) is one and resets it.
+  defp write_row(%Oban.Job{args: %{"pins" => %{}} = args}, status, reason, run_id, digest),
+    do: Portal.Workers.PinnedBuild.write_row(args, status, reason, run_id, digest)
+
   defp write_row(%Oban.Job{args: args} = job, status, reason, run_id, image_digest) do
     identity = %{
       package: args["package"],
@@ -511,6 +539,9 @@ defmodule Portal.Workers.ToolchainBuild do
   end
 
   def split_toolchain(_toolchain), do: :error
+
+  defp describe(%Oban.Job{args: %{"pins" => %{}} = args}),
+    do: Portal.Workers.PinnedBuild.describe(args)
 
   defp describe(%Oban.Job{args: args}),
     do:

@@ -147,6 +147,7 @@ defmodule Portal.Catalog do
     resource(BulkSweep)
     resource(ToolchainBuild)
     resource(Portal.Catalog.HostNativeBuild)
+    resource(Portal.Catalog.PinnedBuild)
     resource(Portal.Catalog.DeterministicBuild)
     resource(ReleaseDownloads)
     resource(CoverageReport)

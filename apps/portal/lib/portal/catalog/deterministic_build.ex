@@ -20,7 +20,11 @@ defmodule Portal.Catalog.DeterministicBuild do
   (`Portal.Precompiled.DeterministicRevocation`).
 
   One row per toolchain build: an ingest that writes the toolchain build
-  replaces its sibling, or removes it when the new run brought none.
+  replaces its sibling, or removes it when the new run brought none. A
+  pinned build (`Portal.Catalog.PinnedBuild`) has its sibling the same way,
+  owned by `pinned_build_id` instead: exactly one of the two is set
+  (`one_build`), and it is published only beside its served pinned build,
+  in the `builds_closure` list of the version's `deterministic` key.
   """
 
   use Ash.Resource,
@@ -36,8 +40,16 @@ defmodule Portal.Catalog.DeterministicBuild do
     end
 
     identity_index_names(
-      unique_toolchain_build: "catalog_deterministic_builds_unique_toolchain_build_index"
+      unique_toolchain_build: "catalog_deterministic_builds_unique_toolchain_build_index",
+      unique_pinned_build: "catalog_deterministic_builds_unique_pinned_build_index"
     )
+
+    check_constraints do
+      check_constraint(:toolchain_build_id, "one_build",
+        check: "num_nonnulls(toolchain_build_id, pinned_build_id) = 1",
+        message: "exactly one build"
+      )
+    end
   end
 
   actions do
@@ -46,6 +58,7 @@ defmodule Portal.Catalog.DeterministicBuild do
     create :create do
       accept([
         :toolchain_build_id,
+        :pinned_build_id,
         :package_id,
         :version,
         :run_id,
@@ -67,6 +80,7 @@ defmodule Portal.Catalog.DeterministicBuild do
 
   identities do
     identity(:unique_toolchain_build, [:toolchain_build_id])
+    identity(:unique_pinned_build, [:pinned_build_id])
   end
 
   attributes do
@@ -98,7 +112,12 @@ defmodule Portal.Catalog.DeterministicBuild do
 
   relationships do
     belongs_to :toolchain_build, Portal.Catalog.ToolchainBuild do
-      allow_nil?(false)
+      allow_nil?(true)
+      public?(true)
+    end
+
+    belongs_to :pinned_build, Portal.Catalog.PinnedBuild do
+      allow_nil?(true)
       public?(true)
     end
 

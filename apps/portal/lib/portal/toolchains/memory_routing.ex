@@ -174,7 +174,7 @@ defmodule Portal.Toolchains.MemoryRouting do
       {count, _} =
         Repo.update_all(
           from(j in Oban.Job,
-            where: j.worker == "Portal.Workers.ToolchainBuild",
+            where: j.worker in ["Portal.Workers.ToolchainBuild", "Portal.Workers.PinnedBuild"],
             where: j.queue == ^Atom.to_string(@big),
             where: j.state in @queued_states,
             where: j.scheduled_at < ^before

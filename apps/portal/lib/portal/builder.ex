@@ -85,6 +85,9 @@ defmodule Portal.Builder do
           # package names (`Compatibility.Worlds`).
           optional(:world) => String.t() | nil,
           optional(:world_members) => [String.t()] | nil,
+          # For `optional_deps: "pinned"` (`Portal.Workers.PinnedBuild`): the
+          # set (`Compatibility.Pins`), `NCC_INPUT.pins`.
+          optional(:pins) => map() | nil,
           # For a firmware build (no `mode`): `%{"name", "members"}`, the
           # firmware world the worker builds per passing target
           # (`Portal.Settings.worker_firmware_world/1`). Never sent with a mode.
@@ -448,6 +451,7 @@ defmodule Portal.Builder do
       deterministic: deterministic_input(mode, args),
       world: Map.get(args, :world),
       world_members: Map.get(args, :world_members),
+      pins: Map.get(args, :pins),
       firmware_world: Map.get(args, :firmware_world),
       argus: Map.get(args, :argus),
       nerves_packages: Map.get(args, :nerves_packages),
@@ -1071,6 +1075,7 @@ defmodule Portal.Builder do
     |> maybe_put("deterministic", Map.get(job, :deterministic))
     |> maybe_put("world", Map.get(job, :world))
     |> maybe_put("world_members", Map.get(job, :world_members))
+    |> maybe_put("pins", Map.get(job, :pins))
     |> maybe_put("firmware_world", firmware_world(job))
     |> maybe_put("argus", Map.get(job, :argus))
     |> maybe_put("nerves_packages", Map.get(job, :nerves_packages))

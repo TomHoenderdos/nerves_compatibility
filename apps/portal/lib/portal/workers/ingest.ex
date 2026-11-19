@@ -163,6 +163,19 @@ defmodule Portal.Workers.Ingest do
     end
   end
 
+  def perform(%Oban.Job{args: %{"kind" => "pinned"} = args} = job) do
+    run_id = args["run_id"]
+
+    case builder().load_run(run_id) do
+      {:ok, build} ->
+        ingest_pinned(build, args, job)
+
+      {:error, reason} ->
+        Logger.error("Ingest found no pinned build output for #{run_id}: #{inspect(reason)}")
+        {:cancel, "build output missing: #{inspect(reason)}"}
+    end
+  end
+
   def perform(%Oban.Job{args: %{"kind" => "host_native"} = args} = job) do
     run_id = args["run_id"]
 
@@ -454,6 +467,40 @@ defmodule Portal.Workers.Ingest do
 
       {:error, reason} ->
         Logger.error("Toolchain ingestion failed for #{run_id}: #{inspect(reason)}")
+        if job.attempt >= job.max_attempts, do: Builder.cleanup(run_id)
+        {:error, reason}
+    end
+  end
+
+  # A pinned build (`Ingestion.ingest_pinned/2`), keyed on the job's pinned
+  # identity and checked against the job's own set.
+  defp ingest_pinned(build, args, %Oban.Job{} = job) do
+    run_id = args["run_id"]
+
+    opts =
+      args
+      |> Portal.Workers.PinnedBuild.identity()
+      |> Map.merge(%{
+        run_id: run_id,
+        image_digest: args["image_digest"],
+        files_dir: build.files_dir,
+        output_dir: build.output_dir,
+        pins: args["pins"]
+      })
+
+    case safe_ingest(&Ingestion.ingest_pinned/2, build.result, opts) do
+      {:ok, _row} ->
+        Builder.cleanup(run_id)
+        :ok
+
+      {:error, {:identity_mismatch, job_identity, reported}} ->
+        refuse_mismatch(%{kind: :local}, run_id, nil, job_identity, reported)
+
+      {:error, {:identity_missing, _keys}} ->
+        refuse_unidentified(%{kind: :local}, run_id, nil, build.result)
+
+      {:error, reason} ->
+        Logger.error("Pinned ingestion failed for #{run_id}: #{inspect(reason)}")
         if job.attempt >= job.max_attempts, do: Builder.cleanup(run_id)
         {:error, reason}
     end

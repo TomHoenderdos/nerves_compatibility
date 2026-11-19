@@ -5,8 +5,10 @@ defmodule Portal.Catalog.ArtifactMembership do
   `Portal.Catalog.ToolchainBuild` (one host toolchain) or a
   `Portal.Catalog.HostNativeBuild` (one glibc Linux triple) or a
   `Portal.Catalog.DeterministicBuild` (a toolchain build's deterministic
-  sibling): every row has exactly one of `system_result_id`,
-  `toolchain_build_id`, `host_native_build_id` and `deterministic_build_id`,
+  sibling) or a `Portal.Catalog.PinnedBuild` (one closure from a project's
+  lock): every row has exactly one of `system_result_id`,
+  `toolchain_build_id`, `host_native_build_id`, `deterministic_build_id` and
+  `pinned_build_id`,
   which the `one_owner` check constraint enforces.
 
   `Portal.Catalog.Artifact` is a *registry*: one row per distinct sha256, saying
@@ -64,6 +66,7 @@ defmodule Portal.Catalog.ArtifactMembership do
       index([:toolchain_build_id])
       index([:host_native_build_id])
       index([:deterministic_build_id])
+      index([:pinned_build_id])
       index([:sha256])
     end
 
@@ -71,7 +74,7 @@ defmodule Portal.Catalog.ArtifactMembership do
       check_constraint(:toolchain_build_id, "one_owner",
         check:
           "num_nonnulls(system_result_id, toolchain_build_id, host_native_build_id, " <>
-            "deterministic_build_id) = 1",
+            "deterministic_build_id, pinned_build_id) = 1",
         message: "exactly one owner"
       )
     end
@@ -83,7 +86,8 @@ defmodule Portal.Catalog.ArtifactMembership do
       unique_host_native_build_sha256:
         "catalog_artifact_memberships_host_native_build_sha256_index",
       unique_deterministic_build_sha256:
-        "catalog_artifact_memberships_deterministic_build_sha256_index"
+        "catalog_artifact_memberships_deterministic_build_sha256_index",
+      unique_pinned_build_sha256: "catalog_artifact_memberships_pinned_build_sha256_index"
     )
   end
 
@@ -123,6 +127,13 @@ defmodule Portal.Catalog.ArtifactMembership do
       upsert_identity(:unique_deterministic_build_sha256)
       upsert_fields([:sha256])
     end
+
+    create :upsert_pinned do
+      accept([:sha256, :pinned_build_id])
+      upsert?(true)
+      upsert_identity(:unique_pinned_build_sha256)
+      upsert_fields([:sha256])
+    end
   end
 
   identities do
@@ -140,6 +151,8 @@ defmodule Portal.Catalog.ArtifactMembership do
     identity(:unique_host_native_build_sha256, [:host_native_build_id, :sha256])
 
     identity(:unique_deterministic_build_sha256, [:deterministic_build_id, :sha256])
+
+    identity(:unique_pinned_build_sha256, [:pinned_build_id, :sha256])
   end
 
   attributes do
@@ -170,6 +183,11 @@ defmodule Portal.Catalog.ArtifactMembership do
     end
 
     belongs_to :deterministic_build, Portal.Catalog.DeterministicBuild do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    belongs_to :pinned_build, Portal.Catalog.PinnedBuild do
       allow_nil?(true)
       public?(true)
     end

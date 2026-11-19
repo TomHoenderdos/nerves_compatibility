@@ -57,6 +57,7 @@ defmodule Portal.Catalog.Ingestion do
     LatestRun,
     LogSanitizer,
     Package,
+    PinnedBuild,
     Run,
     SystemAbi,
     SystemLog,
@@ -426,6 +427,51 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
+  @doc """
+  Ingest the `result.json` of a pinned toolchain build (`NCC_INPUT.pins`,
+  `NccWorker.Pins`) into one `Portal.Catalog.PinnedBuild`, through the same
+  staging and gates a toolchain build goes through (`ingest_toolchain/2`):
+  the identity check, the config variant, the misplaced-entry and priv
+  checks on the host (`Portal.Catalog.ToolchainPriv`), the verdict mapping
+  (a failed compile is a `fail`, a transient could-not-judge an `error`),
+  every file staged or none, and the deterministic sibling
+  (`Portal.Deterministic`, owned by the pinned build). Only the row it
+  writes differs.
+
+  `opts` are `ingest_toolchain/2`'s without `variant`, plus `:pins` (the set
+  the job asked for) and `:pin_hash`, and optionally `:target`
+  (`"pure_elixir"`) and `:builder_id`. The result must echo
+  `requested_optional_deps: "pinned"`, or it is refused as an identity
+  mismatch. A pass is stored as one only when the result's `pins` echo is
+  this set, reproduced, and its `deps_lock` and `package_checksum` are
+  exactly the set (`Compatibility.Pins.compare/2`): otherwise it is a
+  `skipped` row with the reason and no files, so a build is never served
+  under a closure it was not compiled against.
+
+  An `:error` never replaces a pass or skipped row of the same identity, and
+  a failed compile never replaces a served pass: the kept row records the
+  attempt (`attempted_at`). Every write takes the identity's transaction
+  lock first.
+  """
+  @spec ingest_pinned(map(), map()) :: {:ok, PinnedBuild.t()} | {:error, term()}
+  def ingest_pinned(result, opts) when is_map(result) do
+    keys = [:package, :version, :toolchain]
+
+    with :ok <- check_identity(result, opts, keys),
+         :ok <- check_pinned(result, opts, keys),
+         :ok <- check_config_variant(result, opts, keys) do
+      stage_toolchain_build(result, opts)
+    end
+  end
+
+  defp check_pinned(%{"requested_optional_deps" => "pinned"}, _opts, _keys), do: :ok
+
+  defp check_pinned(result, opts, keys) do
+    {:error,
+     {:identity_mismatch, opts |> Map.take(keys) |> Map.put(:variant, :pinned),
+      result |> result_identity(keys) |> Map.put(:variant, result_variant(result))}}
+  end
+
   # The config variant is the job's ("default" for a job from before config
   # variants); the result must say it was built in it. A worker that does not
   # know the request echoes nothing, which reads as "default".
@@ -522,6 +568,7 @@ defmodule Portal.Catalog.Ingestion do
       |> gate_manifest()
       |> gate_config_variant(opts)
       |> gate_world_closure(opts)
+      |> gate_pins(result, opts)
 
     case ToolchainPriv.verify(result, build, opts) do
       :ok -> stage_toolchain_build(result, keyed(build), opts)
@@ -638,6 +685,20 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
+  defp write_toolchain_build(result, build, %{pins: _} = opts, staged, sibling) do
+    Repo.transaction(
+      fn ->
+        :ok = lock_pinned_identity(opts)
+
+        case write_pinned(result, build, opts, staged, sibling) do
+          {:ok, pinned_build} -> pinned_build
+          {:error, reason} -> Repo.rollback(reason)
+        end
+      end,
+      timeout: @transaction_timeout
+    )
+  end
+
   defp write_toolchain_build(result, build, opts, staged, sibling) do
     Repo.transaction(
       fn ->
@@ -717,6 +778,35 @@ defmodule Portal.Catalog.Ingestion do
       deps
     ]).rows
   end
+
+  # A pinned build passes as one only when the worker says it reproduced
+  # this set and the lock it compiled against is exactly the set: the
+  # published `deps` is what Mix resolved, and it must be what was asked for.
+  defp gate_pins(%{"status" => "pass"} = build, result, %{pins: pins, pin_hash: hash}) do
+    echo = if is_map(result["pins"]), do: result["pins"], else: %{}
+
+    cond do
+      echo["status"] != "reproduced" or echo["hash"] != hash ->
+        skip_variant(build, "pins not reproduced: the result does not echo the set")
+
+      build["package_checksum"] != pins["package_checksum"] ->
+        skip_variant(build, "pins not reproduced on the host: pins_checksum_mismatch")
+
+      true ->
+        case Compatibility.Pins.compare(pins["deps"], deps_lock(build["deps_lock"])) do
+          :ok ->
+            build
+
+          {:mismatch, reason, diff} ->
+            skip_variant(
+              build,
+              "pins not reproduced on the host: " <> Compatibility.Pins.describe(reason, diff)
+            )
+        end
+    end
+  end
+
+  defp gate_pins(build, _result, _opts), do: build
 
   defp skip_variant(build, reason),
     do: Map.merge(build, %{"status" => "skipped", "reason" => reason, "file_manifest" => nil})
@@ -1116,6 +1206,144 @@ defmodule Portal.Catalog.Ingestion do
     shas
     |> Enum.map(&%{sha256: &1, toolchain_build_id: toolchain_build_id})
     |> insert_memberships(:upsert_toolchain, :unique_toolchain_build_sha256)
+  end
+
+  @doc """
+  Takes the transaction-scoped lock on the pinned build identity in `opts`
+  (`:package`, `:version`, `:pin_hash`, `:target`, `:toolchain`,
+  `:builder_version`, `:config_variant`), which every write of a pinned
+  build row takes first.
+  """
+  @spec lock_pinned_identity(map()) :: :ok
+  def lock_pinned_identity(opts) do
+    key =
+      Enum.join(
+        [
+          "pinned_build",
+          opts.package,
+          opts.version,
+          opts.pin_hash,
+          Map.get(opts, :target, "pure_elixir"),
+          Map.get(opts, :system_version, ""),
+          opts.toolchain,
+          opts.builder_version,
+          Map.get(opts, :config_variant, ConfigVariants.default())
+        ],
+        "@"
+      )
+
+    Repo.query!("SELECT pg_advisory_xact_lock(hashtext($1::text))", [key])
+    :ok
+  end
+
+  defp write_pinned(result, build, opts, staged, sibling) do
+    package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
+    verdict = toolchain_verdict(build)
+
+    with {:ok, package} <- ensure_package(package_name(package_info, opts), package_info) do
+      case kept_pinned(verdict, build, package.id, opts) do
+        %PinnedBuild{} = kept ->
+          kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: @domain)
+
+        nil ->
+          upsert_pinned(result, build, verdict, opts, package.id, {staged, sibling})
+      end
+    end
+  end
+
+  # As `kept_toolchain_build/4`: an `:error` keeps a pass or skipped row, a
+  # failed compile keeps a served pass.
+  defp kept_pinned({:error, _reason}, _build, package_id, opts),
+    do: pinned_row(package_id, opts, [:pass, :skipped], false)
+
+  defp kept_pinned({:fail, "compile failed: " <> _}, %{"status" => "error"}, package_id, opts),
+    do: pinned_row(package_id, opts, [:pass], true)
+
+  defp kept_pinned(_verdict, _build, _package_id, _opts), do: nil
+
+  @doc false
+  # The row of the pinned identity in `opts` with one of `statuses`; `served`
+  # only one that is neither revoked nor withdrawn.
+  def pinned_row(package_id, opts, statuses, served) do
+    target = Map.get(opts, :target, "pure_elixir")
+    system_version = Map.get(opts, :system_version, "")
+    config_variant = Map.get(opts, :config_variant, ConfigVariants.default())
+
+    PinnedBuild
+    |> Ash.Query.filter(
+      package_id == ^package_id and version == ^opts.version and pin_hash == ^opts.pin_hash and
+        target == ^target and system_version == ^system_version and
+        toolchain == ^opts.toolchain and builder_version == ^opts.builder_version and
+        config_variant == ^config_variant and status in ^statuses
+    )
+    |> then(
+      &if(served,
+        do: Ash.Query.filter(&1, is_nil(revoked_at) and is_nil(unpublished_at)),
+        else: &1
+      )
+    )
+    |> Ash.read_one!(domain: @domain)
+  end
+
+  defp upsert_pinned(result, build, {status, reason}, opts, package_id, {staged, sibling}) do
+    {inputs, compiled_env} = inputs_and_env(build, {opts.package, opts.version})
+
+    attrs = %{
+      package_id: package_id,
+      version: opts.version,
+      pin_hash: opts.pin_hash,
+      target: Map.get(opts, :target, "pure_elixir"),
+      system_version: Map.get(opts, :system_version, ""),
+      toolchain: opts.toolchain,
+      builder_version: opts.builder_version,
+      config_variant: Map.get(opts, :config_variant, ConfigVariants.default()),
+      pins: opts.pins,
+      status: status,
+      reason: reason,
+      elixir: build["elixir"],
+      otp: build["otp"],
+      image_digest: opts.image_digest,
+      run_id: opts.run_id,
+      builder_id: Map.get(opts, :builder_id),
+      deps_lock: deps_lock(build["deps_lock"]),
+      package_checksum: package_checksum(build["package_checksum"]),
+      declared: declared(build["declared"]),
+      compile_env: compiled_env,
+      compile_env_rule: compile_env_rule(Map.get(build, "compile_env_rule"), compiled_env),
+      compile_inputs: inputs,
+      file_manifest: file_manifest(build["file_manifest"]),
+      optional_deps: optional_deps(result["optional_deps"]),
+      judge_revision: judge_revision(build["judge_revision"]),
+      portability_rule: portability_rule(build["portability_rule"]),
+      rule1_reason: bounded_reason(build["rule1_reason"]),
+      manager: manager(build["manager"]),
+      compile_observations: compile_observations(build["compile_observations"]),
+      finished_at: parse_datetime(result["finished_at"])
+    }
+
+    with {:ok, row} <-
+           PinnedBuild |> Ash.Changeset.for_create(:upsert, attrs) |> Ash.create(domain: @domain) do
+      :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
+      :ok = replace_pinned_memberships(row.id, staged)
+      with :ok <- Portal.Deterministic.replace(row, sibling), do: {:ok, row}
+    end
+  end
+
+  # Exactly the shas this ingest staged, the whole manifest of a pass.
+  defp replace_pinned_memberships(pinned_build_id, staged) do
+    shas = staged |> Enum.map(& &1.sha256) |> Enum.uniq() |> Enum.sort()
+
+    Repo.query!(
+      """
+      DELETE FROM catalog_artifact_memberships
+      WHERE pinned_build_id = $1 AND NOT (sha256 = ANY($2::text[]))
+      """,
+      [dump(pinned_build_id), shas]
+    )
+
+    shas
+    |> Enum.map(&%{sha256: &1, pinned_build_id: pinned_build_id})
+    |> insert_memberships(:upsert_pinned, :unique_pinned_build_sha256)
   end
 
   # The job's package, which `check_identity/3` has already held the result
