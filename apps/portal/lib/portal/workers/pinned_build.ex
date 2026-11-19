@@ -141,18 +141,18 @@ defmodule Portal.Workers.PinnedBuild do
     exception -> Logger.error("Pinned row for #{describe(args)}: #{Exception.message(exception)}")
   end
 
+  # A package the catalog does not hold yet is created with its name alone,
+  # as an ingest creates one: without the row, the next `from_lock` would
+  # queue the same build again.
   defp write_locked(args, identity, status, reason, run_id, image_digest) do
-    case Portal.HostNative.package_id(args["package"]) do
+    {:ok, package_id} = Ingestion.ensure_package_id(args["package"])
+
+    case kept(status, package_id, identity) do
       nil ->
-        Logger.warning("No package #{args["package"]} to record #{describe(args)} against")
+        upsert(package_id, args, identity, status, reason, run_id, image_digest)
 
-      package_id ->
-        kept = kept(status, package_id, identity)
-
-        if kept,
-          do:
-            kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update!(domain: Portal.Catalog),
-          else: upsert(package_id, args, identity, status, reason, run_id, image_digest)
+      kept ->
+        kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update!(domain: Portal.Catalog)
     end
   end
 

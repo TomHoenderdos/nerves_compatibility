@@ -1255,6 +1255,17 @@ defmodule Portal.Catalog.Ingestion do
   # The conflict update names only `name`, which is the conflict key and so
   # unchanged; `:upsert`'s own field list would overwrite `last_run_at` and
   # `latest_version` with what a toolchain build has no say over.
+  @doc """
+  The id of the package named `name`, its row created with the name alone
+  when the catalog has none, as a toolchain or pinned ingest creates one: no
+  latest version, no description. `Portal.Workers.PinnedBuild.write_row/5`
+  records a build no ingest will under it.
+  """
+  @spec ensure_package_id(String.t()) :: {:ok, Ecto.UUID.t()} | {:error, term()}
+  def ensure_package_id(name) when is_binary(name) do
+    with {:ok, package} <- ensure_package(name, %{}), do: {:ok, package.id}
+  end
+
   defp ensure_package(name, info) do
     Package
     |> Ash.Changeset.for_create(:upsert, %{

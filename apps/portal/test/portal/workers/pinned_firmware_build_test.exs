@@ -203,6 +203,33 @@ defmodule Portal.Workers.PinnedFirmwareBuildTest do
     assert row.id == pass.id and row.attempted_at != nil
   end
 
+  # Review M5: a package the catalog does not hold yet still gets its row,
+  # or the next `from_lock` would queue the same build again.
+  test "a timeout, an exit 11 or a last error of a package the catalog lacks leaves a row" do
+    respond({:error, {:build_timeout, 7200, "ctr"}})
+    assert {:cancel, _} = perform_job(PinnedBuild, args("pinfwnew1"), queue: :builds)
+    assert [%Catalog.PinnedBuild{status: :fail}] = pinned_rows("pinfwnew1")
+
+    assert %Package{latest_version: nil, description: nil} =
+             Package |> Ash.Query.filter(name == "pinfwnew1") |> Ash.read_one!(domain: Catalog)
+
+    exit_code(11)
+    assert {:cancel, _} = perform_job(PinnedBuild, args("pinfwnew2"), queue: :builds)
+    assert [%Catalog.PinnedBuild{status: :fail}] = pinned_rows("pinfwnew2")
+
+    exit_code(10)
+
+    assert {:error, _} =
+             perform_job(PinnedBuild, args("pinfwnew3"),
+               queue: :builds,
+               attempt: 2,
+               max_attempts: 2
+             )
+
+    assert [%Catalog.PinnedBuild{status: :error}] = pinned_rows("pinfwnew3")
+    assert runs("pinfwnew1") == [] and runs("pinfwnew3") == []
+  end
+
   test "the last attempt of a retryable failure writes an error row" do
     package!("pinfwerr")
     exit_code(10)
