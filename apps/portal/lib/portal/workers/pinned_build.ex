@@ -1,24 +1,35 @@
 defmodule Portal.Workers.PinnedBuild do
   @moduledoc """
-  Oban worker (queue `:toolchain`) for one pinned build (lock-driven builds
-  spec, phase 1): a pure-BEAM package version built on one toolchain image
-  against exactly the closure in `pins` (`Compatibility.Pins`), as
-  `mode: "toolchain"`, `optional_deps: "pinned"`.
+  Oban worker for one pinned build (lock-driven builds spec): a package
+  version built against exactly the closure in `pins`
+  (`Compatibility.Pins`), on one of two paths by `target`.
 
-  It is `Portal.Workers.ToolchainBuild`'s code path, not a copy: `perform/1`
-  checks the set and hands the job to `ToolchainBuild.perform/1`, which runs
-  the same image, sandbox, memory routing, deterministic sibling request
-  and exit-code handling, and differs only in the input it sends (`pins`),
-  the ingest it enqueues (`kind: "pinned"`, `Portal.Catalog.Ingestion.ingest_pinned/2`)
-  and the row it writes when no ingest will (`write_row/5`). Its own worker
-  name keeps it apart from every reader of toolchain build jobs, and its own
-  `unique` keys (the pinned identity) from the toolchain backlog's.
+    * `"pure_elixir"` (phase 1, queue `:toolchain`): a pure-BEAM set on one
+      toolchain image, as `mode: "toolchain"`, `optional_deps: "pinned"`.
+      It is `Portal.Workers.ToolchainBuild`'s code path, not a copy:
+      `perform/1` checks the set and hands the job to
+      `ToolchainBuild.perform/1`, which runs the same image, sandbox, memory
+      routing, deterministic sibling request and exit-code handling, and
+      differs only in the input it sends (`pins`), the ingest it enqueues
+      (`kind: "pinned"`, `Portal.Catalog.Ingestion.ingest_pinned/2`) and the
+      row it writes when no ingest will (`write_row/5`).
+    * a `nerves_system_*` (phase 2, queue `:builds`): a native set as a
+      firmware build of that one target at its exact release
+      (`system_version`), `Portal.Pins.FirmwareBuild`, on this node's own
+      worker image and never through `Portal.Workers.Build`: no Run, no
+      scan request, and a package's latest version is never touched.
 
-  Args: `package`, `version`, `toolchain` (`"1.20/29"`), `image`,
-  `builder_version`, `target` (`"pure_elixir"`; phase 2 adds firmware
-  targets), `pin_hash` and `pins`. Enqueued by `Portal.Pins.queue/2`. A set
-  that does not validate, or whose hash is not the job's, is cancelled
-  before anything runs.
+  Its own worker name keeps it apart from every reader of toolchain and
+  firmware build jobs, and its own `unique` keys (the pinned identity) from
+  their backlogs'.
+
+  Args: `package`, `version`, `toolchain` (`"1.20/29"`), `image` (the
+  toolchain path's), `builder_version`, `target` (`targets/0`),
+  `system_version` (a firmware target's release, `"2.1.2"`; absent for
+  `pure_elixir`), `pin_hash` and `pins`. Enqueued by
+  `Portal.Pins.from_lock/2`. A set that does not validate, whose hash is not
+  the job's, of a target this release does not build, or of a firmware
+  target without one exact release, is cancelled before anything runs.
   """
 
   use Oban.Worker,
@@ -27,7 +38,15 @@ defmodule Portal.Workers.PinnedBuild do
     priority: 9,
     unique: [
       fields: [:args, :worker],
-      keys: [:package, :version, :pin_hash, :target, :toolchain, :builder_version],
+      keys: [
+        :package,
+        :version,
+        :pin_hash,
+        :target,
+        :system_version,
+        :toolchain,
+        :builder_version
+      ],
       period: :infinity,
       states: :incomplete
     ]
@@ -35,28 +54,50 @@ defmodule Portal.Workers.PinnedBuild do
   require Logger
 
   alias Portal.Catalog.{Ingestion, PinnedBuild}
+  alias Portal.Pins.FirmwareBuild
   alias Portal.Workers.ToolchainBuild
 
-  @targets ["pure_elixir"]
-
-  @doc "The targets this release builds pinned: `pure_elixir` only (phase 1)."
+  @doc """
+  The targets this release builds pinned: `pure_elixir` (phase 1) and every
+  firmware target (`firmware_targets/0`, phase 2).
+  """
   @spec targets() :: [String.t()]
-  def targets, do: @targets
+  def targets, do: ["pure_elixir" | firmware_targets()]
+
+  @doc """
+  The firmware targets a pinned build may have: the systems the worker
+  builds (`Portal.BulkRebuild.targets/0`).
+  """
+  @spec firmware_targets() :: [String.t()]
+  def firmware_targets, do: Portal.BulkRebuild.targets()
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: args} = job) do
-    with :ok <- check_target(args["target"]),
+    with {:ok, path} <- check_target(args["target"], args["system_version"]),
          {:ok, pins} <-
            Compatibility.Pins.validate(args["package"], args["version"], args["pins"]),
          true <- pins["hash"] == args["pin_hash"] || {:error, :pin_hash_differs} do
-      ToolchainBuild.perform(job)
+      case path do
+        :toolchain -> ToolchainBuild.perform(job)
+        :firmware -> FirmwareBuild.perform(job)
+      end
     else
       {:error, reason} -> {:cancel, "pinned build #{describe(args)}: #{inspect(reason)}"}
     end
   end
 
-  defp check_target(target) when target in @targets, do: :ok
-  defp check_target(target), do: {:error, {:unknown_target, target}}
+  # A firmware target is built at one exact release, a `pure_elixir` one at
+  # none.
+  defp check_target("pure_elixir", version) when version in [nil, ""], do: {:ok, :toolchain}
+
+  defp check_target(target, version) do
+    if target in firmware_targets() and exact_version?(version),
+      do: {:ok, :firmware},
+      else: {:error, {:unknown_target, target, version}}
+  end
+
+  defp exact_version?(version),
+    do: is_binary(version) and match?({:ok, _}, Version.parse(version))
 
   @impl Oban.Worker
   def backoff(%Oban.Job{} = job), do: ToolchainBuild.backoff(job)
@@ -71,7 +112,7 @@ defmodule Portal.Workers.PinnedBuild do
       version: args["version"],
       pin_hash: args["pin_hash"],
       target: args["target"],
-      system_version: "",
+      system_version: args["system_version"] || "",
       toolchain: args["toolchain"],
       builder_version: args["builder_version"],
       config_variant: "default"
@@ -133,5 +174,10 @@ defmodule Portal.Workers.PinnedBuild do
   def describe(args),
     do:
       "#{args["package"]} #{args["version"]} pinned #{String.slice(to_string(args["pin_hash"]), 0, 12)} " <>
-        "on #{args["toolchain"]}"
+        "on #{args["toolchain"]}" <> describe_system(args)
+
+  defp describe_system(%{"target" => "nerves_system_" <> _ = target} = args),
+    do: " for #{target} #{args["system_version"]}"
+
+  defp describe_system(_args), do: ""
 end
