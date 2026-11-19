@@ -792,6 +792,44 @@ defmodule NccWorker.Worker do
     {:ok, result}
   end
 
+  # A pinned firmware build (`NCC_INPUT.pins` with no mode, `NccWorker.Pins`):
+  # the project of its one target at its exact release, the package and its
+  # pins written in before the one `deps.get`, and the lock checked, with the
+  # template round. A refused set builds nothing (`pinned_refused_result/3`);
+  # a reproduced one is evaluated as any firmware run, with no optional-deps
+  # pass (`run_optional_deps/5`). A retired release is built too, as on the
+  # toolchain path: the portal refuses the retirements that matter
+  # (`security`, `invalid`) before it queues a set, and a project may lock
+  # any other.
+  defp prepare_project(%{input: %{pins: %{} = pins} = input, paths: paths} = context) do
+    systems = Systems.select(input[:systems_filter])
+
+    with {:ok, project_dir} <-
+           Project.create(paths.work_dir, input[:systems_override], Systems.targets(systems)),
+         {:ok, outcome} <-
+           NccWorker.Pins.reproduce(
+             project_dir,
+             input.package,
+             pins,
+             host_env(project_dir),
+             &Project.run_deps_get/2,
+             :firmware
+           ) do
+      log_pins(paths, outcome)
+      context = %{context | input: Map.put(input, :pins_outcome, outcome)}
+
+      case outcome do
+        %{"status" => "reproduced"} ->
+          context
+          |> Map.merge(%{project_dir: project_dir, systems: systems})
+          |> evaluate_project()
+
+        _refused ->
+          {:ok, pinned_refused_result(context, systems, outcome)}
+      end
+    end
+  end
+
   defp prepare_project(%{input: input, paths: paths, retired_info: retired_info} = context) do
     systems = Systems.select(input[:systems_filter])
 
@@ -984,7 +1022,7 @@ defmodule NccWorker.Worker do
       runtime_applications(project_dir, input)
 
     with {:ok, optional_deps} <-
-           resolve_optional_deps(scope, selection, project_dir, input.package.name, paths) do
+           run_optional_deps(input, scope, selection, project_dir, paths) do
       # The lock and tree snapshots matching the build the traced judge
       # compile judges; neither is part of `result.json`.
       trees = judge_trees(first_trees, first_releases, optional_deps)
@@ -1166,7 +1204,70 @@ defmodule NccWorker.Worker do
      |> put_optional_deps(optional_deps)
      |> put_firmware_world(optional_deps)
      |> put_deps_lock(scope, run_lock, project_dir, input.package.name)
-     |> put_host_portability(system_results)}
+     |> put_host_portability(system_results)
+     |> put_pinned(input)}
+  end
+
+  # A pinned firmware build echoes its request and carries the set's
+  # outcome, as a pinned toolchain build does.
+  defp put_pinned(result, %{pins_outcome: %{} = outcome}) do
+    result
+    |> Map.put(:pins, outcome)
+    |> put_requested_optional_deps("pinned")
+  end
+
+  defp put_pinned(result, _input), do: result
+
+  @doc false
+  # A pinned firmware build whose set Mix did not reproduce: every target it
+  # would have built is `skipped` with `error` "pins_not_reproduced" and the
+  # refusal in its log tail, nothing is compiled, and the result carries the
+  # outcome as `pins`. No `deps_lock`: nothing was built against one. Public
+  # for tests.
+  @spec pinned_refused_result(map(), [Systems.t()], map()) :: result()
+  def pinned_refused_result(
+        %{
+          input: input,
+          toolchain: toolchain,
+          description: description,
+          github_url: github_url,
+          package_version_hint: package_version_hint
+        },
+        systems,
+        outcome
+      ) do
+    reason = "pins not reproduced: " <> NccWorker.Pins.describe(outcome)
+
+    target = %{
+      status: :skipped,
+      duration_sec: 0.0,
+      firmware_size_bytes: nil,
+      log_tail: reason,
+      system_version: nil,
+      beam_scan: nil,
+      dependency_scans: nil,
+      error: "pins_not_reproduced"
+    }
+
+    %{
+      run_id: input.run_id,
+      package: %{
+        name: input.package.name,
+        version: package_version_hint || input.package.version,
+        description: description,
+        github_url: github_url,
+        dependencies: [],
+        footprint: empty_footprint()
+      },
+      image: input.image,
+      toolchain: toolchain,
+      systems: Map.new(systems, &{&1.name, target}),
+      argus: Argus.skipped(),
+      finished_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+      scope: input |> RunScope.from_input() |> RunScope.to_string(),
+      optional_deps: pinned_info()
+    }
+    |> put_pinned(input)
   end
 
   @doc false
@@ -1206,6 +1307,16 @@ defmodule NccWorker.Worker do
   #
   # `nil` (no `optional_deps` key) for an argus-only run, which publishes
   # nothing.
+  #
+  # A pinned build's set already holds the project's optional deps
+  # (`NccWorker.Pins`), so it gets no pass at all: `optional_deps.reason`
+  # "pinned", and `build_systems/5` never runs the per-target pass.
+  defp run_optional_deps(%{pins_outcome: %{}}, _scope, _selection, _project_dir, _paths),
+    do: {:ok, pinned_info()}
+
+  defp run_optional_deps(input, scope, selection, project_dir, paths),
+    do: resolve_optional_deps(scope, selection, project_dir, input.package.name, paths)
+
   defp resolve_optional_deps(:argus_only, _selection, _project_dir, _package, _paths),
     do: {:ok, nil}
 
@@ -1392,6 +1503,9 @@ defmodule NccWorker.Worker do
   defp build_systems(_scope, :pure_elixir, %{pure_elixir: pure}, _pass, optional_deps),
     do: {:ok, %{"pure_elixir" => pure.()}, optional_deps, nil}
 
+  defp build_systems(_scope, :firmware, %{firmware: build}, pass, %{reason: "pinned"} = info),
+    do: pinned_targets(build, pass, info)
+
   defp build_systems(_scope, :firmware, %{firmware: build}, pass, {:per_target, deps, skipped}) do
     {results, envs} = build.()
     results = put_system_abi(results, pass)
@@ -1430,6 +1544,34 @@ defmodule NccWorker.Worker do
          package_checksum: out.package_checksum,
          declared: DepsLock.declared(pass.project_dir, pass.package)
        }}
+    end
+  end
+
+  @doc false
+  # A pinned firmware build's targets (`NccWorker.Pins`): its set is the
+  # closure, so neither the per-target optional pass nor a firmware world
+  # runs; everything else a firmware run does to its targets is kept, the
+  # ABI facts, R2 on the files they publish and their compile inputs. The
+  # lock is read before the build, the one the status build saw, and it is
+  # the published `deps` of every target. Public for tests, which pass a
+  # stub `build`.
+  @spec pinned_targets((-> {map(), map()}), map(), map()) ::
+          {:ok, map(), map(), map()} | {:error, term()}
+  def pinned_targets(build, pass, info) do
+    run_lock = %{
+      deps_lock: DepsLock.read(pass.project_dir, pass.package),
+      package_checksum: DepsLock.package_checksum(pass.project_dir, pass.package),
+      declared: DepsLock.declared(pass.project_dir, pass.package)
+    }
+
+    {results, envs} = build.()
+
+    with {:ok, systems} <-
+           results
+           |> put_system_abi(pass)
+           |> gate_build_root(pass, envs)
+           |> put_firmware_inputs(pass, envs) do
+      {:ok, systems, info, run_lock}
     end
   end
 
