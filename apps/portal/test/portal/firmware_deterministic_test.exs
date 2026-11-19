@@ -219,7 +219,8 @@ defmodule Portal.FirmwareDeterministicTest do
          "names other compiler options"},
         {"an older revision", Map.put(good, "judge_revision", 28), blobs,
          "names no compiler options or judge revision"},
-        {"skipped", Map.put(good, "status", "skipped"), blobs, "did not pass"},
+        {"skipped", %{good | "status" => "skipped", "reason" => "timeout"}, blobs,
+         "did not pass: timeout"},
         {"a blob missing", good, [normal, @nif], "its ebin blobs cannot be read back"}
       ]
 

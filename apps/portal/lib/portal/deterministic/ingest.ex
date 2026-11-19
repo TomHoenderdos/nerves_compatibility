@@ -153,6 +153,12 @@ defmodule Portal.Deterministic.Ingest do
 
   defp passed(%{"status" => "pass"}, %{"status" => "pass", "file_manifest" => %{}}), do: :ok
   defp passed(%{"status" => "pass"}, _build), do: {:skip, "its build did not pass here"}
+  # The worker's own reason travels into the log line: it is the only record
+  # of why a build has no sibling (`Portal.Catalog.DeterministicBuild` stores
+  # passes only).
+  defp passed(%{"reason" => reason}, _build) when is_binary(reason) and reason != "",
+    do: {:skip, "did not pass: " <> String.slice(reason, 0, 300)}
+
   defp passed(_sibling, _build), do: {:skip, "did not pass"}
 
   defp tagged(%{"erl_compiler_options" => options, "judge_revision" => revision})
