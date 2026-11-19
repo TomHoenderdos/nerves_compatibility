@@ -99,6 +99,12 @@ defmodule NccWorker.Worker do
           # normalises to these two keys.
           optional(:world) => String.t(),
           optional(:world_members) => [String.t()],
+          # A pinned build (`optional_deps: "pinned"`, toolchain mode only):
+          # `%{"hash", "package_checksum", "deps"}`, the package's exact
+          # closure from a project's lock, checked by `NccWorker.CLI`
+          # (`Compatibility.Pins.validate/3`) and reproduced or refused by
+          # `NccWorker.Pins`.
+          optional(:pins) => map(),
           # For a firmware run (no `mode`): the firmware world to build per
           # passing target after the optional pass (`NccWorker.WorldTargets`),
           # `%{"name", "members"}` in NCC_INPUT, checked like `world`
@@ -364,7 +370,12 @@ defmodule NccWorker.Worker do
             # members its fixpoint added, the rounds, the systems that
             # publish it, and the first dropped target's reason when none
             # does (`NccWorker.WorldTargets`).
-            optional(:firmware_world) => WorldTargets.summary()
+            optional(:firmware_world) => WorldTargets.summary(),
+            # A pinned build: `%{"hash", "status", "reason", "extra",
+            # "missing", "differing"}`, `status` "reproduced" or "refused"
+            # (`NccWorker.Pins`). A refused set compiled nothing: its
+            # `toolchain_build` is skipped with no files.
+            optional(:pins) => map()
           },
           # The package's transitive dependency closure as locked for this
           # build, itself excluded, keyed by name. For a firmware run, the
