@@ -8,7 +8,8 @@ defmodule Portal.Pins.FirmwareBuild do
   The worker gets no `mode`, `systems_filter: [target]`, `systems_override:
   %{target => "== <system_version>"}`, `optional_deps: "pinned"` and the set
   as `pins` (`NccWorker.Pins`), and nothing else a firmware run may carry:
-  no argus, no firmware world. It runs outside `Portal.Workers.Build`: no
+  no argus, no firmware world. While `deterministic_builds_enabled` is on it
+  asks for the target's deterministic sibling too (`Portal.Deterministic`). It runs outside `Portal.Workers.Build`: no
   Run, no scan request, no tooling skip, no build-cache promotion, and a
   timeout is no Run either. A package's latest version is never touched.
 
@@ -89,7 +90,8 @@ defmodule Portal.Pins.FirmwareBuild do
       systems_filter: [target],
       systems_override: %{target => "== " <> args["system_version"]},
       optional_deps: "pinned",
-      pins: args["pins"]
+      pins: args["pins"],
+      deterministic: Portal.Deterministic.enabled?()
     }
   end
 

@@ -234,7 +234,11 @@ defmodule Portal.Workers.Build do
         run_id: run_id,
         image_digest: image_digest,
         # Read per build, so an admin change applies from the next build on.
-        argus: Portal.Settings.worker_argus(settings)
+        argus: Portal.Settings.worker_argus(settings),
+        # Each passing target's deterministic sibling, asked for while the
+        # setting is on (`Portal.Deterministic`); `Portal.Builder` sends it to
+        # a firmware build only.
+        deterministic: Portal.Deterministic.enabled?()
       }
       |> Map.merge(scope)
       |> Map.merge(firmware_world(scope, settings))

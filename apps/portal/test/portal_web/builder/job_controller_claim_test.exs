@@ -42,6 +42,7 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
     assert body["input"]["paths"]["files_dir"] == "/files"
     refute Map.has_key?(body["input"], "firmware_world")
     refute Map.has_key?(body["input"], "firmware_inputs")
+    refute Map.has_key?(body["input"], "deterministic")
     assert body["timeout_sec"] == 7200
     assert body["upload"]["max_files"] == 20_000
     assert body["egress_required"] == true
@@ -65,6 +66,29 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
 
     body = conn |> with_cert(der) |> post("/builder/v1/jobs/claim", @claim) |> json_response(200)
     assert body["input"]["firmware_world"] == world
+  end
+
+  test "a firmware lease that asks for deterministic siblings carries it in the worker input",
+       %{conn: conn} do
+    for {mode, version, expected} <- [{nil, "2.0.1", true}, {"argus_only", "2.0.2", nil}] do
+      %{cert_der: der} = enrolled_builder!("c-det-" <> version)
+
+      {:ok, _lease} =
+        Leases.enqueue(%{
+          package: "decimal",
+          version: version,
+          image_name: "ghcr.io/x/ncc-worker",
+          image_digest: "sha256:#{String.duplicate("b", 64)}",
+          args: %{"mode" => mode, "deterministic" => true},
+          scan_request_id: nil,
+          priority: 5
+        })
+
+      body =
+        conn |> with_cert(der) |> post("/builder/v1/jobs/claim", @claim) |> json_response(200)
+
+      assert body["input"]["deterministic"] == expected
+    end
   end
 
   test "with NCC_FIRMWARE_INPUTS=0 a firmware lease's input turns the traced pass off",

@@ -81,9 +81,9 @@ defmodule Portal.Builder do
           optional(:optional_deps) => String.t() | nil,
           # For mode: "toolchain": a Compatibility.ConfigVariants name; nil is "default".
           optional(:config_variant) => String.t() | nil,
-          # For mode: "toolchain": `true` also builds the deterministic
-          # sibling (`Portal.Deterministic`, `NCC_INPUT.deterministic`); any
-          # other value asks for none.
+          # For mode: "toolchain" and a firmware build (no mode): `true` also
+          # builds the deterministic siblings (`Portal.Deterministic`,
+          # `NCC_INPUT.deterministic`); any other value asks for none.
           optional(:deterministic) => boolean() | nil,
           # For `optional_deps: "world"`: the world's name and its member
           # package names (`Compatibility.Worlds`).
@@ -239,6 +239,18 @@ defmodule Portal.Builder do
   end
 
   def judge_input(_mode), do: nil
+
+  @doc """
+  The `NCC_INPUT.deterministic` of a build of `mode` whose args are `args`:
+  `true` when `args.deterministic` is exactly `true` and the build is a
+  toolchain build (its sibling, `NccWorker.Deterministic`) or a firmware
+  build, no mode (each passing target's, `NccWorker.FirmwareDeterministic`);
+  else nil, no key, which the worker reads as off. The builder API sends the
+  same for a remote lease.
+  """
+  @spec deterministic_input(String.t() | nil, map()) :: true | nil
+  def deterministic_input(mode, %{deterministic: true}) when mode in ["toolchain", nil], do: true
+  def deterministic_input(_mode, _args), do: nil
 
   @doc """
   The `NCC_INPUT.firmware_inputs` of a build of `mode`: `false` for a
@@ -1152,10 +1164,6 @@ defmodule Portal.Builder do
   rescue
     e -> {:error, {:input_write_failed, Exception.message(e)}}
   end
-
-  # Exactly `true`, and only for a toolchain run: any other run ignores it.
-  defp deterministic_input("toolchain", %{deterministic: true}), do: true
-  defp deterministic_input(_mode, _args), do: nil
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

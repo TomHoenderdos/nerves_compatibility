@@ -157,6 +157,10 @@ defmodule Portal.Workers.RemoteBuild do
       # Only for a firmware lease (no mode), as `Portal.Workers.Build`.
       "firmware_world" =>
         if(scope.mode == nil, do: Portal.Settings.worker_firmware_world(Portal.Settings.get())),
+      # Each passing target's deterministic sibling, asked for while the
+      # setting is on (`Portal.Deterministic`); the claim sends it to a
+      # firmware lease only (`Portal.Builder.deterministic_input/2`).
+      "deterministic" => Portal.Deterministic.enabled?(),
       "force" => force,
       # One platform digest per architecture: the claim pins the lease to
       # the claiming builder's (`Portal.Builders.Leases.claim/2`). Until

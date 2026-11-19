@@ -285,6 +285,31 @@ defmodule Portal.Workers.BuildTest do
       assert job.args["firmware_world"] == "nerves"
     end
 
+    test "a firmware build asks for deterministic siblings while the setting is on" do
+      ok_response()
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "jason",
+                 "version" => "1.4.1",
+                 "image_digest" => "sha256:fwd0"
+               })
+
+      assert_received {:stub_build_args, %{deterministic: false}}
+
+      {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
+      ok_response()
+
+      assert :ok =
+               perform_job(Build, %{
+                 "package" => "jason",
+                 "version" => "1.4.2",
+                 "image_digest" => "sha256:fwd1"
+               })
+
+      assert_received {:stub_build_args, %{deterministic: true}}
+    end
+
     test "on: an argus-only build asks for none" do
       {:ok, _} = Portal.Settings.save(%{firmware_world_enabled: true})
       previous_run!("fwargus", "1.0.0")

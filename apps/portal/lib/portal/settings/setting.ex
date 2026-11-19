@@ -169,9 +169,9 @@ defmodule Portal.Settings.Setting do
       public?(true)
     end
 
-    # Whether toolchain builds are asked for their deterministic sibling
-    # (`ERL_COMPILER_OPTIONS=deterministic`, `Portal.Deterministic`) and
-    # siblings are published: a version's `deterministic` key and their
+    # Whether toolchain and firmware builds are asked for their deterministic
+    # siblings (`ERL_COMPILER_OPTIONS=deterministic`, `Portal.Deterministic`)
+    # and siblings are published: a version's `deterministic` key and their
     # files. Off by default; stored rows stay when it is turned off, unserved.
     attribute :deterministic_builds_enabled, :boolean do
       allow_nil?(false)

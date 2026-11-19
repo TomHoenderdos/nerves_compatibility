@@ -173,6 +173,22 @@ defmodule Portal.Workers.PinnedBuildTest do
     refute Map.has_key?(Portal.Builder.worker_input(Map.delete(job, :pins)), "pins")
   end
 
+  # A firmware pinned build asks for its target's deterministic sibling as a
+  # toolchain one does, while the setting is on.
+  test "a firmware pinned build's args ask for the sibling while the setting is on" do
+    args = %{
+      "package" => "jason",
+      "version" => "1.4.4",
+      "target" => "nerves_system_rpi4",
+      "system_version" => "2.1.2",
+      "pins" => pins("jason")
+    }
+
+    assert %{deterministic: false} = Portal.Pins.FirmwareBuild.build_args(args, "r", "i", "d")
+    {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
+    assert %{deterministic: true} = Portal.Pins.FirmwareBuild.build_args(args, "r", "i", "d")
+  end
+
   # Phase 2: a firmware pinned build names its one system's exact release.
   test "NCC_INPUT carries the system release override" do
     override = %{"nerves_system_rpi4" => "== 2.1.2"}

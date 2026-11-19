@@ -852,7 +852,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     do: "on",
                     else: "off"}.
                 </span>
-                Each toolchain build is compiled again with
+                Each toolchain build, and each passing firmware target's build, is compiled again with
                 <code>ERL_COMPILER_OPTIONS=deterministic</code>
                 and judged, and these siblings are listed under a version's <code>deterministic</code>
                 key and their files served, only while this is on. Only clients whose project sets

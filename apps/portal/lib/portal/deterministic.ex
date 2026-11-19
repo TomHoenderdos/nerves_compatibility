@@ -9,8 +9,10 @@ defmodule Portal.Deterministic do
   lists.
 
   Everything here is behind the `deterministic_builds_enabled` setting
-  (`Portal.Settings`, off by default): with it off no toolchain run is asked
-  for a sibling (`Portal.Workers.ToolchainBuild`), no manifest lists one
+  (`Portal.Settings`, off by default): with it off no toolchain or firmware
+  run is asked for a sibling (`Portal.Workers.ToolchainBuild`,
+  `Portal.Workers.Build`, `Portal.Pins.FirmwareBuild`, a remote lease's
+  claim), no manifest lists one
   (`served/1`), and `Portal.Catalog`'s SQL selectors (the files route, the
   batch fingerprints) leave them out by the same predicate. Rows ingested
   while it was on stay stored.

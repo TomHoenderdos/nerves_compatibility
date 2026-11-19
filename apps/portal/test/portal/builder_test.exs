@@ -323,6 +323,27 @@ defmodule Portal.BuilderTest do
       refute Map.has_key?(Builder.worker_input(toolchain), "deterministic")
     end
 
+    test "deterministic is asked for a toolchain or firmware build only, and only when true" do
+      for mode <- ["toolchain", nil] do
+        assert Builder.deterministic_input(mode, %{deterministic: true}) == true
+
+        for value <- [false, nil, "true"],
+            do: assert(Builder.deterministic_input(mode, %{deterministic: value}) == nil)
+      end
+
+      for mode <- ["argus_only", "host_native", "warm_nerves", "system_abi"],
+          do: assert(Builder.deterministic_input(mode, %{deterministic: true}) == nil)
+
+      firmware =
+        Map.put(
+          @input_job,
+          :deterministic,
+          Builder.deterministic_input(nil, %{deterministic: true})
+        )
+
+      assert Builder.worker_input(firmware)["deterministic"] == true
+    end
+
     test "a host-native build carries its mode and triple" do
       job = Map.merge(@input_job, %{mode: "host_native", triple: "x86_64-linux-gnu"})
 

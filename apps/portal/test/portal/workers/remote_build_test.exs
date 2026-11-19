@@ -71,6 +71,19 @@ defmodule Portal.Workers.RemoteBuildTest do
     assert %{"name" => "nerves", "members" => [_ | _]} = lease.args["firmware_world"]
   end
 
+  test "the lease asks for deterministic siblings while the setting is on" do
+    assert :ok = perform_job(RemoteBuild, %{"package" => "jason", "version" => "1.4.4"})
+    assert [lease] = Ash.read!(Lease, domain: Portal.Builders)
+    assert lease.args["deterministic"] == false
+
+    {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
+
+    assert :ok = perform_job(RemoteBuild, %{"package" => "jason", "version" => "1.4.5"})
+    leases = Ash.read!(Lease, domain: Portal.Builders)
+    assert %Lease{} = lease = Enum.find(leases, &(&1.version == "1.4.5"))
+    assert lease.args["deterministic"] == true
+  end
+
   test "dedups on an existing run at the registry digest unless forced" do
     digest = "sha256:" <> String.duplicate("a", 64)
 
