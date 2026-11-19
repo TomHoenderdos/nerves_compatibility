@@ -456,9 +456,10 @@ defmodule Portal.Catalog.Ingestion do
   A firmware target (`:target` a `nerves_system_*`, with `:system_version`,
   phase 2) is a full run's result.json of that one target
   (`Portal.Pins.FirmwareBuild`), and only `systems[target]` is read: no Run
-  and no other target. The result must echo `"pinned"` and its own
-  toolchain (`toolchain.elixir`, `toolchain.erlang`) must be the job's
-  `:toolchain`, or it is refused as an identity mismatch. A target the run
+  and no other target. The result must echo `"pinned"`, or it is refused as
+  an identity mismatch. One whose own toolchain (`toolchain.elixir`,
+  `toolchain.erlang`) is not the job's `:toolchain` is an `error` row with
+  no files that names the toolchain it ran on. A target the run
   did not build (a closure the worker judged pure Elixir, or no such
   system) is a `skipped` row. A pass is stored as one only when, besides
   the checks above (its lock is the target's own, else the run's), the run
@@ -473,9 +474,11 @@ defmodule Portal.Catalog.Ingestion do
     keys = [:package, :version]
 
     with :ok <- check_identity(result, opts, keys),
-         :ok <- check_pinned(result, opts, keys),
-         :ok <- check_firmware_toolchain(result, opts) do
-      stage_pinned_target(result, opts)
+         :ok <- check_pinned(result, opts, keys) do
+      case firmware_toolchain(result) do
+        toolchain when toolchain == opts.toolchain -> stage_pinned_target(result, opts)
+        other -> write_toolchain_mismatch(result, opts, other)
+      end
     end
   end
 
@@ -497,16 +500,34 @@ defmodule Portal.Catalog.Ingestion do
       result |> result_identity(keys) |> Map.put(:variant, result_variant(result))}}
   end
 
-  # A firmware run records the toolchain it ran on, never a requested one:
-  # the job's must be it, or the row would be keyed on another image's.
-  defp check_firmware_toolchain(result, opts) do
+  # A firmware run records the toolchain it ran on, never a requested one.
+  defp firmware_toolchain(result) do
     toolchain = if is_map(result["toolchain"]), do: result["toolchain"], else: %{}
-    reported = Portal.Toolchains.from_versions(toolchain["elixir"], toolchain["erlang"])
-    job = Map.take(opts, [:package, :version, :toolchain])
+    Portal.Toolchains.from_versions(toolchain["elixir"], toolchain["erlang"])
+  end
 
-    if reported == opts.toolchain,
-      do: :ok,
-      else: {:error, {:identity_mismatch, job, Map.put(job, :toolchain, reported)}}
+  # A build on another toolchain than the job's is never stored as the
+  # job's: the image moved off `Portal.Pins.firmware_toolchain/0`. It is an
+  # `error` row of the job's identity with no files, carrying the toolchain
+  # it ran on, so the wasted build shows in the catalog; as any `error`, it
+  # never replaces a pass or skipped row.
+  defp write_toolchain_mismatch(result, opts, reported) do
+    toolchain = if is_map(result["toolchain"]), do: result["toolchain"], else: %{}
+
+    Logger.error(
+      "pinned build of #{opts.package} #{opts.version} ran on toolchain #{inspect(reported)}, " <>
+        "not the job's #{opts.toolchain}: stored as an error"
+    )
+
+    build = %{
+      "status" => "error",
+      "reason" =>
+        "pinned build on toolchain #{reported || "unknown"}, not the job's #{opts.toolchain}",
+      "elixir" => fact_string(toolchain["elixir"]),
+      "otp" => fact_string(toolchain["erlang"])
+    }
+
+    write_pinned_target(result, build, opts, [])
   end
 
   # The job's target as a build in the shape a pinned toolchain build has,

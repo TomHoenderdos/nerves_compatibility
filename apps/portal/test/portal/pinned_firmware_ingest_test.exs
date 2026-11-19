@@ -147,15 +147,38 @@ defmodule Portal.PinnedFirmwareIngestTest do
     assert row.status == :error
   end
 
-  test "a result built on another toolchain is refused before anything is stored" do
+  # Review I1: a firmware image off the job's toolchain wastes every build;
+  # the error row it leaves says so in the catalog, and never serves.
+  test "a result built on another toolchain is an error row naming that toolchain, with no files" do
     name = unique()
     pins = pins(name)
-    result = firmware_result(name, pins, otp: "28")
+    result = firmware_result(name, pins, otp: "30")
 
-    assert {:error, {:identity_mismatch, %{toolchain: "1.20/29"}, %{toolchain: "1.20/28"}}} =
+    assert {:ok, row} =
              Ingestion.ingest_pinned(result, firmware_opts(name, pins, files(["beam-" <> name])))
 
-    assert package(name) == nil
+    assert row.status == :error
+    assert row.toolchain == "1.20/29"
+    assert {row.elixir, row.otp} == {"1.20.5", "30"}
+    assert row.reason == "pinned build on toolchain 1.20/30, not the job's 1.20/29"
+    assert row.file_manifest == nil and row.deps_lock == nil
+    assert shas(row) == []
+    assert runs(name) == []
+  end
+
+  test "a toolchain mismatch never replaces a served pass" do
+    name = unique()
+    pins = pins(name)
+    assert {:ok, %{status: :pass} = pass} = ingest_firmware(name, pins)
+
+    assert {:ok, row} =
+             Ingestion.ingest_pinned(
+               firmware_result(name, pins, otp: "30"),
+               firmware_opts(name, pins, files(["beam-" <> name]))
+             )
+
+    assert row.id == pass.id and row.status == :pass and row.attempted_at != nil
+    assert shas(row) == [sha("beam-" <> name)]
   end
 
   test "the ingest job keys the row on the job's target and release" do
