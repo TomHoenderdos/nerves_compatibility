@@ -151,9 +151,31 @@ defmodule Portal.PinnedIngestTest do
            |> Ash.Query.filter(pinned_build_id == ^row.id)
            |> Ash.read!(domain: Catalog) == []
 
-    # A rebuild that was not asked for one records none again.
-    assert {:ok, %PinnedBuild{id: id, sibling_attempted: false}} = ingest(name, pins)
+    # A rebuild that was not asked for one never lowers it.
+    assert {:ok, %PinnedBuild{id: id, sibling_attempted: true}} = ingest(name, pins)
     assert id == row.id
+  end
+
+  # `Portal.Pins.from_lock/2` sets it when it queues a sibling backfill; no
+  # write of the row lowers it again, an older release's included.
+  test "no upsert lowers the recorded attempt" do
+    name = unique()
+    pins = pins(name)
+    assert {:ok, %PinnedBuild{sibling_attempted: false} = row} = ingest(name, pins)
+
+    attrs =
+      row
+      |> Map.take(PinnedBuild.identity() ++ [:pins, :status])
+      |> Map.put(:sibling_attempted, true)
+
+    upsert =
+      &(PinnedBuild |> Ash.Changeset.for_create(:upsert, &1) |> Ash.create!(domain: Catalog))
+
+    assert %PinnedBuild{id: id, sibling_attempted: true} = upsert.(attrs)
+    assert id == row.id
+    assert %PinnedBuild{sibling_attempted: true} = upsert.(%{attrs | sibling_attempted: false})
+    assert %PinnedBuild{sibling_attempted: true} = upsert.(Map.delete(attrs, :sibling_attempted))
+    assert Ash.get!(PinnedBuild, id, domain: Catalog).sibling_attempted
   end
 
   defp package(name) do

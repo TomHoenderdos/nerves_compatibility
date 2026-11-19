@@ -23,9 +23,11 @@ defmodule Portal.Catalog.PinnedBuild do
   rechecks). Files are `Portal.Catalog.ArtifactMembership` rows owned by
   `pinned_build_id`; a deterministic sibling is a
   `Portal.Catalog.DeterministicBuild` owned by it. `sibling_attempted`
-  records whether the run that wrote the row tried for that sibling, held or
-  not (its result carried one), which `Portal.Pins.from_lock/2`'s
-  `deterministic: true` reads to queue a served pass for its sibling once.
+  records whether that sibling was tried for, held or not: by a run whose
+  result carried one, or by a sibling backfill `Portal.Pins.from_lock/2`'s
+  `deterministic: true` queued for the row, which marks it when it queues
+  the job. No write lowers it again, so a served pass is queued for its
+  sibling once.
 
   `revoked_at` withdraws one build (every revocation lever names it),
   `unpublished_at` a withdrawal by a count-first tool. `reporters` and
@@ -108,8 +110,21 @@ defmodule Portal.Catalog.PinnedBuild do
       upsert_identity(:unique_identity)
       # A rebuild clears `attempted_at` with the verdict it replaces; it never
       # writes `revoked_at` or `unpublished_at`, so a withdrawal holds.
-      upsert_fields(@mutable ++ [:attempted_at])
+      upsert_fields((@mutable -- [:sibling_attempted]) ++ [:attempted_at])
       change(set_attribute(:attempted_at, nil))
+
+      # A recorded sibling attempt is never lowered: on a conflict it is the
+      # row's own OR the new write's, so a backfill `Portal.Pins.from_lock/2`
+      # marked when it queued it stays marked whatever writes the row next.
+      change(fn changeset, _context ->
+        attempted = Ash.Changeset.get_attribute(changeset, :sibling_attempted) == true
+
+        Ash.Changeset.atomic_update(
+          changeset,
+          :sibling_attempted,
+          expr(sibling_attempted or ^attempted)
+        )
+      end)
     end
 
     update :retried do
@@ -181,9 +196,9 @@ defmodule Portal.Catalog.PinnedBuild do
     attribute(:rule1_reason, :string, public?: true)
     attribute(:manager, :string, public?: true)
     attribute(:compile_observations, :map, public?: true)
-    # Whether the run that wrote the row tried for its deterministic sibling,
-    # held or not (`Portal.Catalog.Ingestion`). A row of a release before it
-    # reads as no attempt.
+    # Whether the row's deterministic sibling was tried for, held or not
+    # (`Portal.Catalog.Ingestion`, `Portal.Pins.from_lock/2`); never lowered.
+    # A row of a release before it reads as no attempt.
     attribute(:sibling_attempted, :boolean, allow_nil?: false, default: false, public?: true)
     attribute(:reporters, :integer, allow_nil?: false, default: 0, public?: true)
     attribute(:last_demand_at, :utc_datetime_usec, public?: true)

@@ -73,13 +73,18 @@ defmodule Portal.Pins do
   stays `judged` unless it is a served pass (passing, neither revoked nor
   withdrawn) whose run never tried for its sibling
   (`Portal.Catalog.PinnedBuild`'s `sibling_attempted`) and no listed sibling
-  serves its closure: the rebuild then replaces the row and records the
-  attempt, held or not, so a closure is queued for its sibling once. A
-  pinned build runs no optional pass (`optional_deps: "pinned"`), so the
-  firmware sibling's refusal of a target that kept or dropped optional
-  dependencies never applies to it; any other refusal is the recorded
-  attempt. An `error` row is no verdict, with or without the option. The
-  report then says whether the setting held sets to siblings
+  serves its closure. Such a set, and one a regular build serves without a
+  sibling, is queued as a sibling backfill (the job's `sibling_backfill`),
+  and the key's row records the attempt in the transaction that queues it,
+  so a closure is queued for its sibling once whether its rebuild ever
+  ingests or not. The rebuild replaces the row only with a pass whose
+  sibling held; any other outcome leaves the row as it was
+  (`Portal.Workers.PinnedBuild`). A key without a row gets the rebuild's
+  own verdict row, with the attempt, and an `error` row that records one
+  is `judged` too; any other `error` row is no verdict, with or without the
+  option. A pinned build runs no optional pass (`optional_deps: "pinned"`),
+  so the firmware sibling's refusal of a target that kept or dropped
+  optional dependencies never applies to it. The report then says whether the setting held sets to siblings
   (`deterministic`), counts the sets queued for a sibling alone
   (`no_sibling`) and marks each queued set with it.
 
@@ -480,22 +485,32 @@ defmodule Portal.Pins do
   # closure served without a listed sibling (see the moduledoc).
   defp need(set, path, false) do
     cond do
-      judged(set, path) != nil -> {:skip, "judged"}
+      match?(%{verdict?: true}, pinned_row(set, path)) -> {:skip, "judged"}
       served?(set, path) -> {:skip, "served"}
       true -> :unserved
     end
   end
 
   defp need(set, path, true) do
-    case judged(set, path) do
-      :verdict -> {:skip, "judged"}
-      :bare_pass -> sibling(set, path, "judged")
-      nil -> if served?(set, path), do: sibling(set, path, "served"), else: :unserved
+    case pinned_row(set, path) do
+      %{verdict?: true, bare?: true} -> sibling(set, path, "judged", false)
+      %{verdict?: true} -> {:skip, "judged"}
+      row -> if served?(set, path), do: served_sibling(set, path, row), else: :unserved
     end
   end
 
-  defp sibling(set, path, reason),
-    do: if(sibling_listed?(set, path), do: {:skip, reason}, else: :no_sibling)
+  # A closure served by a regular build: an `error` row of its key that
+  # records a sibling attempt is that backfill's own row.
+  defp served_sibling(set, path, row),
+    do: sibling(set, path, "served", match?(%{attempted?: true}, row))
+
+  defp sibling(set, path, served_as, attempted?) do
+    cond do
+      sibling_listed?(set, path) -> {:skip, served_as}
+      attempted? -> {:skip, "judged"}
+      true -> :no_sibling
+    end
+  end
 
   defp skip(set, reason), do: %{package: set.package, version: set.version, reason: reason}
 
@@ -538,7 +553,7 @@ defmodule Portal.Pins do
       |> args(path)
       |> put_backfill(need)
       |> Portal.Workers.PinnedBuild.new(priority: @priority, queue: queue(path, set, queue_for))
-      |> Oban.insert()
+      |> insert_job(need)
       |> case do
         {:ok, %Oban.Job{conflict?: true}} -> {queued, [skip(set, "queued_dup") | conflicts]}
         {:ok, _job} -> {[item | queued], conflicts}
@@ -554,19 +569,61 @@ defmodule Portal.Pins do
   defp put_backfill(args, :no_sibling), do: Map.put(args, "sibling_backfill", true)
   defp put_backfill(args, _need), do: args
 
+  # A backfill's job and the attempt on its key's row, in one transaction:
+  # the attempt holds whether the rebuild ever ingests or not, and whatever
+  # release ingests it (`Portal.Catalog.PinnedBuild`'s upsert never lowers
+  # it). A conflict marks nothing: the key's job already queued is not this
+  # one.
+  defp insert_job(changeset, :no_sibling) do
+    Portal.Repo.transaction(fn ->
+      case Oban.insert(changeset) do
+        {:ok, %Oban.Job{conflict?: true} = job} -> job
+        {:ok, job} -> mark_attempted(job)
+        {:error, error} -> Portal.Repo.rollback(error)
+      end
+    end)
+  end
+
+  defp insert_job(changeset, _need), do: Oban.insert(changeset)
+
+  # Under the key's lock, as every write of a pinned row; a key without a
+  # row has nothing to mark, and its rebuild writes its verdict with the
+  # attempt.
+  defp mark_attempted(%Oban.Job{args: args} = job) do
+    identity = Portal.Workers.PinnedBuild.identity(args)
+    :ok = Portal.Catalog.Ingestion.lock_pinned_identity(identity)
+
+    with %{id: package_id} <- package(args["package"]),
+         {:error, error} <- Portal.Catalog.Ingestion.backfill_attempted(package_id, identity) do
+      Portal.Repo.rollback(error)
+    else
+      _marked -> job
+    end
+  end
+
+  defp package(name) do
+    Portal.Catalog.Package
+    |> Ash.Query.filter(name == ^name)
+    |> Ash.Query.select([:id])
+    |> Ash.read_one!(domain: Portal.Catalog)
+  end
+
   defp queue(%{path: :firmware}, _set, _queue_for), do: :builds
   defp queue(%{path: :toolchain}, set, queue_for), do: queue_for.(set.package)
 
-  # The key's pinned build row that is a verdict, and whether it is a
-  # served pass whose run never tried for its sibling.
-  @judged_sql """
-  SELECT pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.unpublished_at IS NULL
-         AND NOT pb.sibling_attempted
+  # The key's pinned build row: whether it is a verdict (anything but an
+  # `error`), a served pass whose run never tried for its sibling, and
+  # whether it records a sibling attempt.
+  @pinned_row_sql """
+  SELECT pb.status <> 'error',
+         pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.unpublished_at IS NULL
+           AND NOT pb.sibling_attempted,
+         pb.sibling_attempted
   FROM catalog_pinned_builds pb
   JOIN catalog_packages p ON p.id = pb.package_id
   WHERE p.name = $1 AND pb.version = $2 AND pb.pin_hash = $3 AND pb.target = $4
     AND pb.system_version = $7 AND pb.toolchain = $5 AND pb.builder_version = $6
-    AND pb.config_variant = 'default' AND pb.status <> 'error'
+    AND pb.config_variant = 'default'
   LIMIT 1
   """
 
@@ -620,10 +677,10 @@ defmodule Portal.Pins do
   LIMIT 1
   """
 
-  # `:bare_pass` for a served pass whose run never tried for a sibling
-  # (`Portal.Catalog.PinnedBuild`'s `sibling_attempted`), `:verdict` for any
-  # other verdict, `nil` without one.
-  defp judged(set, path) do
+  # The key's row as `%{verdict?, bare?, attempted?}` (`bare?` a served pass
+  # whose run never tried for a sibling, `Portal.Catalog.PinnedBuild`'s
+  # `sibling_attempted`), `nil` without one.
+  defp pinned_row(set, path) do
     params = [
       set.package,
       set.version,
@@ -634,10 +691,12 @@ defmodule Portal.Pins do
       path.system_version
     ]
 
-    case Portal.Repo.query!(@judged_sql, params).rows do
-      [] -> nil
-      [[true]] -> :bare_pass
-      [[_bare_pass]] -> :verdict
+    case Portal.Repo.query!(@pinned_row_sql, params).rows do
+      [] ->
+        nil
+
+      [[verdict?, bare?, attempted?]] ->
+        %{verdict?: verdict?, bare?: bare?, attempted?: attempted?}
     end
   end
 

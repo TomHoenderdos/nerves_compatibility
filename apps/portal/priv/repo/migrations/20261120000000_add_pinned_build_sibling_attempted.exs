@@ -1,14 +1,15 @@
 defmodule Portal.Repo.Migrations.AddPinnedBuildSiblingAttempted do
   @moduledoc """
-  `catalog_pinned_builds.sibling_attempted`: whether the run that wrote a
-  pinned build tried for its deterministic sibling, held or not
-  (`Portal.Catalog.PinnedBuild`). `Portal.Pins.from_lock/2`'s
-  `deterministic: true` builds a served pass without a sibling again only
-  while this is false, so a closure is queued for its sibling once.
+  `catalog_pinned_builds.sibling_attempted`: whether a pinned build's
+  deterministic sibling was tried for, held or not, by its run or by a
+  sibling backfill (`Portal.Catalog.PinnedBuild`). `Portal.Pins.from_lock/2`'s
+  `deterministic: true` queues a served pass without a sibling only while
+  this is false, and sets it when it does, so a closure is queued for its
+  sibling once.
 
   Add-only for the release still running during the deploy window: its
-  inserts take the default and its upserts leave the column alone, so every
-  row it writes reads as no attempt, which costs at most one rebuild.
+  inserts take the default and its upserts leave the column alone, so a
+  mark stays and a row it inserts reads as no attempt.
   """
 
   use Ecto.Migration

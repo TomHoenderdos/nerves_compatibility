@@ -317,6 +317,40 @@ defmodule Portal.Pins.BackfillTest do
 
   defp snapshot(row), do: {Map.take(row(row), @kept), shas(row), siblings(row)}
 
+  # A closure a regular build serves without a sibling has no pinned row to
+  # keep: its backfill writes the rebuild's verdict, here an error, with the
+  # attempt, which holds the closure as judged.
+  test "a backfill of a closure no pinned row serves that errors is not queued again" do
+    set = set("jason")
+
+    Catalog.ToolchainBuild
+    |> Ash.Changeset.for_create(:upsert, %{
+      package_id: Ingestion.ensure_package_id("jason") |> elem(1),
+      version: set.version,
+      toolchain: "1.20/29",
+      builder_version: 1,
+      variant: :with,
+      config_variant: "default",
+      status: :pass,
+      deps_lock: lock_of(set)
+    })
+    |> Ash.create!(domain: Catalog)
+
+    job = backfill!(set)
+    rebuild!(job, {:exit, 10})
+
+    assert [%PinnedBuild{status: :error, sibling_attempted: true}] =
+             PinnedBuild
+             |> Ash.Query.filter(package.name == "jason")
+             |> Ash.read!(domain: Catalog)
+
+    done!()
+    assert {:ok, report} = run(dry_run: false)
+    assert reasons(report)["jason"] == "judged"
+    assert report.counts["no_sibling"] == 0
+    assert all_enqueued(worker: PinnedBuildWorker, args: %{"package" => "jason"}) == []
+  end
+
   # Each outcome that is not a pass with its sibling, on each path.
   defp outcomes(path, set) do
     other = beams(set.package <> "-rebuilt")
@@ -354,6 +388,23 @@ defmodule Portal.Pins.BackfillTest do
   end
 
   for path <- [:toolchain, :firmware] do
+    test "a #{path} backfill records the attempt when it is queued: a rebuild that never ingests counts" do
+      {set, first} = served_pass!(unquote(path))
+
+      assert {:ok, _report} = run(dry_run: true)
+      refute row(first).sibling_attempted
+
+      backfill!(set)
+      assert row(first).sibling_attempted
+
+      # The job never ran, nor will.
+      done!()
+      assert {:ok, report} = run(dry_run: false)
+      assert reasons(report)[set.package] == "judged"
+      assert report.counts["no_sibling"] == 0
+      assert all_enqueued(worker: PinnedBuildWorker, args: %{"package" => set.package}) == []
+    end
+
     describe "a served #{path} pinned pass whose backfill rebuild" do
       test "does not pass with its sibling is left as it was, and recorded as attempted" do
         path = unquote(path)
