@@ -405,6 +405,37 @@ defmodule Portal.Pins.BackfillTest do
       assert all_enqueued(worker: PinnedBuildWorker, args: %{"package" => set.package}) == []
     end
 
+    # Review M1: a pinned pass that owns a sibling row, revoked or not, is no
+    # backfill's, even one written before the attempt was recorded.
+    test "a #{path} pinned pass whose sibling was revoked is never queued again" do
+      path = unquote(path)
+      {set, first} = served_pass!(path)
+      {normal, det} = beams = beams(set.package <> "-rebuilt")
+
+      rebuild!(
+        backfill!(set),
+        {:ingest, result(path, set, beams, sibling: :pass, finished_at: "2026-11-20T10:00:00Z"),
+         [normal, det]}
+      )
+
+      done!()
+
+      assert {:revoked, 1, _rows, _at} =
+               Portal.Precompiled.DeterministicRevocation.revoke(
+                 package: set.package,
+                 dry_run: false
+               )
+
+      Repo.query!("UPDATE catalog_pinned_builds SET sibling_attempted = false WHERE id = $1", [
+        Ecto.UUID.dump!(first.id)
+      ])
+
+      assert {:ok, report} = run(dry_run: false)
+      assert reasons(report)[set.package] == "judged"
+      assert report.counts["no_sibling"] == 0
+      assert all_enqueued(worker: PinnedBuildWorker, args: %{"package" => set.package}) == []
+    end
+
     describe "a served #{path} pinned pass whose backfill rebuild" do
       test "does not pass with its sibling is left as it was, and recorded as attempted" do
         path = unquote(path)

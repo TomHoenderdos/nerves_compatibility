@@ -307,6 +307,22 @@ defmodule Portal.Pins.DeterministicTest do
       assert report.counts["no_sibling"] == 0
     end
 
+    # A revoked sibling is never built again, not as a pinned build's either.
+    test "a closure whose served sibling was revoked is not queued" do
+      jason = set("jason")
+      served_with_sibling!(jason)
+
+      assert {:revoked, 1, _rows, _at} =
+               Portal.Precompiled.DeterministicRevocation.revoke(package: "jason", dry_run: false)
+
+      assert deterministic_listed("jason", "1.4.4") == nil
+
+      assert {:ok, report} = run(deterministic: true, dry_run: false)
+      assert reasons(report)["jason"] == "sibling_revoked"
+      assert report.counts["no_sibling"] == 0
+      assert all_enqueued(worker: Portal.Workers.PinnedBuild, args: %{"package" => "jason"}) == []
+    end
+
     test "a sibling of another closure serves nothing here" do
       jason = set("jason")
       other = %{jason | pins: %{jason.pins | "deps" => []}}
@@ -491,6 +507,19 @@ defmodule Portal.Pins.DeterministicTest do
       # Without the option the same closure is served, as before.
       assert {:ok, report} = run(lock: native_lock())
       assert reasons(report)["nif"] == "served"
+    end
+
+    test "a target whose served sibling was revoked is not queued" do
+      nif = set("nif", native_lock())
+      {normal, det} = beams("nif")
+      firmware_run!(nif, normal, det, "2026-11-19T12:00:00Z")
+
+      assert {:revoked, 1, _rows, _at} =
+               Portal.Precompiled.DeterministicRevocation.revoke(package: "nif", dry_run: false)
+
+      assert {:ok, report} = run(lock: native_lock(), deterministic: true, dry_run: false)
+      assert reasons(report)["nif"] == "sibling_revoked"
+      assert all_enqueued(worker: Portal.Workers.PinnedBuild, args: %{"package" => "nif"}) == []
     end
   end
 end

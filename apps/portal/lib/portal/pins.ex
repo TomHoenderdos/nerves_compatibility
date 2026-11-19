@@ -71,21 +71,24 @@ defmodule Portal.Pins do
   (`Portal.Deterministic.served/1`, `served_pinned/1`, a firmware sibling
   beside a build that lost its key) keeps it out here. Its key's pinned row
   stays `judged` unless it is a served pass (passing, neither revoked nor
-  withdrawn) whose run never tried for its sibling
-  (`Portal.Catalog.PinnedBuild`'s `sibling_attempted`) and no listed sibling
-  serves its closure. Such a set, and one a regular build serves without a
-  sibling, is queued as a sibling backfill (the job's `sibling_backfill`),
-  and the key's row records the attempt in the transaction that queues it,
-  so a closure is queued for its sibling once whether its rebuild ever
-  ingests or not. The rebuild replaces the row only with a pass whose
-  sibling held; any other outcome leaves the row as it was
-  (`Portal.Workers.PinnedBuild`). A key without a row gets the rebuild's
-  own verdict row, with the attempt, and an `error` row that records one
-  is `judged` too; any other `error` row is no verdict, with or without the
-  option. A pinned build runs no optional pass (`optional_deps: "pinned"`),
-  so the firmware sibling's refusal of a target that kept or dropped
-  optional dependencies never applies to it. The report then says whether the setting held sets to siblings
-  (`deterministic`), counts the sets queued for a sibling alone
+  withdrawn) whose sibling was never tried for
+  (`Portal.Catalog.PinnedBuild`'s `sibling_attempted`), that owns no
+  sibling row, revoked or not, and whose closure no listed sibling serves.
+  A closure with a revoked sibling of any owner
+  (`Portal.Precompiled.DeterministicRevocation`) is never queued for one
+  again (`sibling_revoked`). Any other set served without a sibling is
+  queued as a sibling backfill (the job's `sibling_backfill`), and the
+  key's row records the attempt in the transaction that queues it, so a
+  closure is queued for its sibling once whether its rebuild ever ingests
+  or not. The rebuild replaces the row only with a pass whose sibling held;
+  any other outcome leaves the row as it was (`Portal.Workers.PinnedBuild`).
+  A key without a row gets the rebuild's own verdict row, with the attempt,
+  and an `error` row that records one is `judged` too; any other `error`
+  row is no verdict, with or without the option. A pinned build runs no
+  optional pass (`optional_deps: "pinned"`), so the firmware sibling's
+  refusal of a target that kept or dropped optional dependencies never
+  applies to it. The report then says whether the setting held sets to
+  siblings (`deterministic`), counts the sets queued for a sibling alone
   (`no_sibling`) and marks each queued set with it.
 
   It only lists unless given `dry_run: false`. Options: `target:` (the
@@ -508,6 +511,7 @@ defmodule Portal.Pins do
     cond do
       sibling_listed?(set, path) -> {:skip, served_as}
       attempted? -> {:skip, "judged"}
+      sibling_revoked?(set) -> {:skip, "sibling_revoked"}
       true -> :no_sibling
     end
   end
@@ -612,12 +616,16 @@ defmodule Portal.Pins do
   defp queue(%{path: :toolchain}, set, queue_for), do: queue_for.(set.package)
 
   # The key's pinned build row: whether it is a verdict (anything but an
-  # `error`), a served pass whose run never tried for its sibling, and
-  # whether it records a sibling attempt.
+  # `error`), a served pass whose sibling was never tried for (no attempt
+  # recorded, and no sibling row of its own, revoked or not: a row written
+  # before attempts were recorded may own one), and whether it records a
+  # sibling attempt.
   @pinned_row_sql """
   SELECT pb.status <> 'error',
          pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.unpublished_at IS NULL
-           AND NOT pb.sibling_attempted,
+           AND NOT pb.sibling_attempted
+           AND NOT EXISTS (SELECT 1 FROM catalog_deterministic_builds d
+                           WHERE d.pinned_build_id = pb.id),
          pb.sibling_attempted
   FROM catalog_pinned_builds pb
   JOIN catalog_packages p ON p.id = pb.package_id
@@ -668,6 +676,21 @@ defmodule Portal.Pins do
     AND (x.lock = $5::jsonb
          OR EXISTS (SELECT 1 FROM unnest(coalesce(s.published_variants, '{}')) AS v
                     WHERE v->'deps_lock' = $5::jsonb))
+  LIMIT 1
+  """
+
+  # A revoked sibling (`Portal.Precompiled.DeterministicRevocation`) of the
+  # version built over exactly this closure, by any owner: a toolchain or
+  # pinned build's own lock, a system result's own lock or else its run's.
+  @sibling_revoked_sql """
+  SELECT 1 FROM catalog_deterministic_builds d
+  JOIN catalog_packages p ON p.id = d.package_id
+  LEFT JOIN catalog_toolchain_builds t ON t.id = d.toolchain_build_id
+  LEFT JOIN catalog_pinned_builds pb ON pb.id = d.pinned_build_id
+  LEFT JOIN catalog_system_results s ON s.id = d.system_result_id
+  LEFT JOIN catalog_runs r ON r.id = s.run_id
+  WHERE p.name = $1 AND d.version = $2 AND d.revoked_at IS NOT NULL
+    AND coalesce(t.deps_lock, pb.deps_lock, s.deps_lock, r.deps_lock) = $3::jsonb
   LIMIT 1
   """
 
@@ -753,6 +776,13 @@ defmodule Portal.Pins do
     do: build["system_version"] == path.system_version
 
   defp at_target?(_target, _build, _path), do: false
+
+  # A revoked sibling stays withdrawn: its closure is never built again for
+  # one, on any path.
+  defp sibling_revoked?(set) do
+    params = [set.package, set.version, Set.to_lock(set.pins["deps"])]
+    Portal.Repo.query!(@sibling_revoked_sql, params).rows != []
+  end
 
   defp queued?(set, path) do
     keys = ["package", "version", "pin_hash", "target", "toolchain", "builder_version"]
