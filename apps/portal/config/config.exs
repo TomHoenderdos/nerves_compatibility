@@ -299,18 +299,13 @@ config :portal, Portal.Builder,
     # nft 1.0.9
     "d8910d1bcc775b0fe9f307c699b5f748415f848691ed22f565940c144b0082b4"
   ],
-  # The ruleset before it, still accepted so that a build host keeps building
-  # until its own configuration lists the current one (the host configuration
-  # changes separately from a release), but every check that finds it logs a
-  # warning naming the hash. Empty this list (and remove the
-  # `status_listing_v1_unreserved*` fixtures) once every build host lists the
-  # current ruleset.
-  egress_table_hashes_superseded: [
-    # nft 1.1.6
-    "ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e",
-    # nft 1.0.9
-    "3d3101f9587c8634749e68cc521f98d6f2866f1d8d26a37f3de943443f34c721"
-  ]
+  # The ruleset before the current one, accepted so that a build host keeps
+  # building until its own configuration lists the current ruleset (the host
+  # configuration changes separately from a release), but every check that
+  # finds it logs a warning naming the hash. Empty until the next ruleset
+  # change, when the new previous ruleset's hashes go here and every build
+  # host lists the one after it.
+  egress_table_hashes_superseded: []
 
 # Where the "Open an issue" link in the UI points.
 #

@@ -773,11 +773,11 @@ defmodule Portal.BuilderTest do
     # What the builders' status helper really lists (nft 1.1.6), captured
     # from the builder host's configuration, and the same ruleset as a
     # builder with nft 1.0.9 lists it, which spells the protocol set
-    # `{ tcp, udp }` where 1.1.6 prints `{ 6, 17 }`; both for the current
-    # ruleset and for the one before it, accepted until every build host
-    # lists the current one. The release's expected set must hold exactly
-    # their hashes: without one, every build on such a builder is refused;
-    # with any other, a ruleset nobody reviewed passes.
+    # `{ tcp, udp }` where 1.1.6 prints `{ 6, 17 }`. The release's expected
+    # set must hold exactly their hashes: without one, every build on such a
+    # builder is refused; with any other, a ruleset nobody reviewed passes.
+    # `egress_table_hashes_superseded` is empty until the next ruleset
+    # change.
     test "the release expects the builders' reviewed filter and nothing else" do
       hashes = fn names ->
         for name <- names do
@@ -793,30 +793,64 @@ defmodule Portal.BuilderTest do
       assert hashes.(["status_listing.txt", "status_listing_nft_1_0_9.txt"]) ==
                Enum.sort(config[:egress_table_hashes])
 
-      assert hashes.([
-               "status_listing_v1_unreserved.txt",
-               "status_listing_v1_unreserved_nft_1_0_9.txt"
-             ]) == Enum.sort(config[:egress_table_hashes_superseded])
+      assert config[:egress_table_hashes_superseded] == []
     end
 
-    # The ruleset the current one replaced still passes, so a host whose
-    # configuration is not updated yet keeps building, but every check says
-    # so: the transition window is visible until the list is emptied.
-    test "a superseded ruleset passes with a warning naming its hash" do
-      fixture = &File.read!(Path.expand("../fixtures/egress/" <> &1, __DIR__))
-      old = fixture.("status_listing_v1_unreserved.txt")
+    # The ruleset the current one replaced used to pass with a warning while
+    # `egress_table_hashes_superseded` named it, so a host whose
+    # configuration was not updated yet kept building. Every build host now
+    # lists the current ruleset, so the list was emptied and this ruleset
+    # (not kept as a fixture; it exists only here) is unknown like any
+    # other: refused outright, not merely logged.
+    test "an unknown ruleset refuses the build, including the one superseded_hashes used to allow" do
+      old = """
+      table inet ncc_egress {
+      \tchain build_forward {
+      \t\ttype filter hook forward priority filter - 10; policy accept;
+      \t\toifname "ncc0" ct state established,related accept
+      \t\toifname "ncc0" drop
+      \t\tiifname != "ncc0" accept
+      \t\tip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/3 } drop
+      \t\tip6 daddr { ::1, ::ffff:0.0.0.0/96, 64:ff9b::/96, fc00::/7, fe80::/10, ff00::/8 } drop
+      \t\ttcp dport { 80, 443 } accept
+      \t\tmeta l4proto { 6, 17 } th dport 53 accept
+      \t\tdrop comment "ncc_egress_v1"
+      \t}
+
+      \tchain build_input {
+      \t\ttype filter hook input priority filter - 10; policy accept;
+      \t\tiifname "ncc0" drop
+      \t}
+
+      \tchain build_nat {
+      \t\ttype nat hook postrouting priority srcnat; policy accept;
+      \t\toifname != "ncc0" ip saddr 172.30.0.0/24 masquerade
+      \t}
+      }
+      table bridge ncc_egress_icc {
+      \tchain build_icc {
+      \t\ttype filter hook forward priority filter - 10; policy accept;
+      \t\tmeta ibrname "ncc0" drop comment "ncc_egress_icc_v1"
+      \t}
+      }
+      """
+
+      # This is really the ruleset `egress_table_hashes_superseded` used to
+      # name (nft 1.1.6 rendering), not a new one made up for this test.
+      assert Builder.egress_listing_sha256(old) ==
+               "ac690f8147aefe1fff9d11b6604cc71cde01ee6b631abd8d857df7fe7d6ca15e"
+
       hash = Builder.egress_listing_sha256(old)
       socket = egress_status_socket(old)
 
-      log = capture_log(fn -> assert :ok = Builder.probe_egress(socket: socket) end)
-      assert log =~ "superseded ruleset (#{hash})"
+      assert {:error, {:unexpected_egress_table, ^hash}} = Builder.probe_egress(socket: socket)
 
-      # Only as superseded: without that list it is any other ruleset.
-      assert {:error, {:unexpected_egress_table, ^hash}} =
-               Builder.probe_egress(socket: socket, superseded_hashes: [])
+      # The current ruleset still passes quietly.
+      current =
+        egress_status_socket(
+          File.read!(Path.expand("../fixtures/egress/status_listing.txt", __DIR__))
+        )
 
-      # The current ruleset passes quietly.
-      current = egress_status_socket(fixture.("status_listing.txt"))
       log = capture_log(fn -> assert :ok = Builder.probe_egress(socket: current) end)
       refute log =~ "superseded"
     end
