@@ -131,6 +131,29 @@ defmodule Portal.PinnedIngestTest do
              DeterministicBuild
              |> Ash.Query.filter(pinned_build_id == ^row.id)
              |> Ash.read_one!(domain: Catalog)
+
+    assert row.sibling_attempted
+  end
+
+  # `Portal.Pins.from_lock/2`'s `deterministic: true` builds a served pass
+  # again for its sibling only while its row records no attempt.
+  test "a run that tried for a sibling records the attempt, held or not; one that did not, none" do
+    name = unique()
+    pins = pins(name)
+    assert {:ok, %PinnedBuild{status: :pass, sibling_attempted: false}} = ingest(name, pins)
+
+    refused = %{"status" => "skipped", "reason" => "its compile failed"}
+
+    assert {:ok, %PinnedBuild{status: :pass, sibling_attempted: true} = row} =
+             ingest(name, pins, sibling: refused)
+
+    assert DeterministicBuild
+           |> Ash.Query.filter(pinned_build_id == ^row.id)
+           |> Ash.read!(domain: Catalog) == []
+
+    # A rebuild that was not asked for one records none again.
+    assert {:ok, %PinnedBuild{id: id, sibling_attempted: false}} = ingest(name, pins)
+    assert id == row.id
   end
 
   defp package(name) do

@@ -22,7 +22,10 @@ defmodule Portal.Catalog.PinnedBuild do
   closure as built, equal to it on a pass (`Portal.Catalog.Ingestion`
   rechecks). Files are `Portal.Catalog.ArtifactMembership` rows owned by
   `pinned_build_id`; a deterministic sibling is a
-  `Portal.Catalog.DeterministicBuild` owned by it.
+  `Portal.Catalog.DeterministicBuild` owned by it. `sibling_attempted`
+  records whether the run that wrote the row tried for that sibling, held or
+  not (its result carried one), which `Portal.Pins.from_lock/2`'s
+  `deterministic: true` reads to queue a served pass for its sibling once.
 
   `revoked_at` withdraws one build (every revocation lever names it),
   `unpublished_at` a withdrawal by a count-first tool. `reporters` and
@@ -75,6 +78,7 @@ defmodule Portal.Catalog.PinnedBuild do
     :rule1_reason,
     :manager,
     :compile_observations,
+    :sibling_attempted,
     :finished_at
   ]
 
@@ -170,6 +174,10 @@ defmodule Portal.Catalog.PinnedBuild do
     attribute(:rule1_reason, :string, public?: true)
     attribute(:manager, :string, public?: true)
     attribute(:compile_observations, :map, public?: true)
+    # Whether the run that wrote the row tried for its deterministic sibling,
+    # held or not (`Portal.Catalog.Ingestion`). A row of a release before it
+    # reads as no attempt.
+    attribute(:sibling_attempted, :boolean, allow_nil?: false, default: false, public?: true)
     attribute(:reporters, :integer, allow_nil?: false, default: 0, public?: true)
     attribute(:last_demand_at, :utc_datetime_usec, public?: true)
 

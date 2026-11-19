@@ -442,7 +442,8 @@ defmodule Portal.Catalog.Ingestion do
   (a failed compile is a `fail`, a transient could-not-judge an `error`),
   every file staged or none, and the deterministic sibling
   (`Portal.Deterministic`, owned by the pinned build). Only the row it
-  writes differs.
+  writes differs. The row records whether the run tried for that sibling,
+  held or not (`sibling_attempted`).
 
   `opts` are `ingest_toolchain/2`'s without `variant`, plus `:pins` (the set
   the job asked for) and `:pin_hash`, and optionally `:target`
@@ -1585,6 +1586,7 @@ defmodule Portal.Catalog.Ingestion do
       rule1_reason: bounded_reason(build["rule1_reason"]),
       manager: manager(build["manager"]),
       compile_observations: compile_observations(build["compile_observations"]),
+      sibling_attempted: sibling_attempted?(result, opts),
       finished_at: parse_datetime(result["finished_at"]),
       # A firmware target's facts (`stage_pinned_target/2`); nil on the
       # toolchain path.
@@ -1604,6 +1606,20 @@ defmodule Portal.Catalog.Ingestion do
       with :ok <- Portal.Deterministic.replace(row, sibling), do: {:ok, row}
     end
   end
+
+  # Whether the run tried for the build's deterministic sibling, held or
+  # not: the worker writes one, `skipped` with its reason when it could not
+  # build it, whenever the run was asked for one (`NccWorker.Deterministic`,
+  # each passing target's `NccWorker.FirmwareDeterministic`). The row keeps
+  # the attempt, as `Portal.Catalog.DeterministicBuild` stores passes only.
+  defp sibling_attempted?(result, %{target: "nerves_system_" <> _ = target}) do
+    case result["systems"] do
+      %{^target => %{"deterministic_build" => %{}}} -> true
+      _ -> false
+    end
+  end
+
+  defp sibling_attempted?(result, _opts), do: is_map(result["deterministic_build"])
 
   # Exactly the shas this ingest staged, the whole manifest of a pass.
   defp replace_pinned_memberships(pinned_build_id, staged) do

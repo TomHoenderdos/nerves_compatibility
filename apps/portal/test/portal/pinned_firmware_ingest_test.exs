@@ -49,6 +49,26 @@ defmodule Portal.PinnedFirmwareIngestTest do
     assert shas(row) == [sha("beam-" <> name)]
   end
 
+  # `Portal.Pins.from_lock/2`'s `deterministic: true` builds a served pass
+  # again for its sibling only while its row records no attempt. The worker
+  # gives a passing target it could not build one for a `skipped` sibling.
+  test "a target that was tried for a sibling records the attempt, held or not" do
+    name = unique()
+    pins = pins(name)
+    assert {:ok, %{status: :pass, sibling_attempted: false}} = ingest_firmware(name, pins)
+
+    result =
+      name
+      |> firmware_result(pins)
+      |> put_in(["systems", "nerves_system_rpi4", "deterministic_build"], %{
+        "status" => "skipped",
+        "reason" => "run budget exhausted"
+      })
+
+    job = firmware_opts(name, pins, files(["beam-" <> name]))
+    assert {:ok, %{status: :pass, sibling_attempted: true}} = Ingestion.ingest_pinned(result, job)
+  end
+
   # The bug: R2 (`NccWorker.FirmwareBuildRoot`) withholds a passing target's
   # files but leaves its own `status` at "pass"; only `build_root` says so.
   # Stored as a pass, the row would show as served when nothing of it is.
