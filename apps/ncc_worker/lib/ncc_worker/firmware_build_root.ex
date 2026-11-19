@@ -193,19 +193,37 @@ defmodule NccWorker.FirmwareBuildRoot do
   end
 
   defp apply_own(name, result, verdict) do
-    case decide(verdict) do
-      {:publish, observations} ->
-        {Map.put(result, :build_root, %{record("pass", nil) | observations: observations}), []}
+    case outcome(verdict) do
+      %{status: "pass"} = outcome ->
+        {Map.put(result, :build_root, outcome), []}
 
-      {:withhold, reason, observations} ->
+      %{reason: reason} = outcome ->
         footprint = Map.delete(result.beam_scan["footprint"], "file_manifest")
 
         result =
           result
           |> Map.put(:beam_scan, Map.put(result.beam_scan, "footprint", footprint))
-          |> Map.put(:build_root, %{record("skipped", reason) | observations: observations})
+          |> Map.put(:build_root, outcome)
 
         {result, ["Files of #{name} not published: #{reason}"]}
+    end
+  end
+
+  @doc """
+  What the rule says of one `judge/4` verdict, as a target's `build_root`
+  records it: "pass" (published) with the observations, or "skipped"
+  (withheld) with the refusal or could-not-judge reason. A firmware
+  target's deterministic sibling (`NccWorker.FirmwareDeterministic`) is
+  judged by it too.
+  """
+  @spec outcome(verdict() | term()) :: outcome()
+  def outcome(verdict) do
+    case decide(verdict) do
+      {:publish, observations} ->
+        %{record("pass", nil) | observations: observations}
+
+      {:withhold, reason, observations} ->
+        %{record("skipped", reason) | observations: observations}
     end
   end
 
