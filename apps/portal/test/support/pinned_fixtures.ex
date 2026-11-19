@@ -112,6 +112,72 @@ defmodule Portal.PinnedFixtures do
     Ingestion.ingest_pinned(result(name, pins, opts), opts(name, pins, files(beams)))
   end
 
+  # A pinned firmware run's result.json (phase 2): the target `target` at
+  # `system_version`, its files `beams` and `priv` (`{path, bytes}`), the
+  # run's lock `lock`.
+  def firmware_result(name, pins, opts \\ []) do
+    beams = Keyword.get(opts, :beams, ["beam-" <> name])
+    priv = Keyword.get(opts, :priv, [])
+    target = Keyword.get(opts, :target, "nerves_system_rpi4")
+
+    sys = %{
+      "status" => Keyword.get(opts, :status, "pass"),
+      "duration_sec" => 90.0,
+      "firmware_size_bytes" => 1_000_000,
+      "log_tail" => Keyword.get(opts, :log_tail, "built"),
+      "system_version" => Keyword.get(opts, :system_version, "2.1.2"),
+      "compile_env" => [],
+      "compile_inputs" => [],
+      "toolchain" => %{
+        "package" => "nerves_toolchain_aarch64_nerves_linux_gnu",
+        "version" => "15.3.1"
+      },
+      "otp_full" => "29.0.6",
+      "error" => Keyword.get(opts, :error),
+      "beam_scan" => %{
+        "footprint" => %{
+          "file_manifest" => %{
+            "ebin" => Enum.with_index(beams, &entry("ebin/m#{&2}.beam", &1)),
+            "priv" => Enum.map(priv, fn {path, bytes} -> entry(path, bytes) end)
+          }
+        }
+      }
+    }
+
+    %{
+      "scope" => Keyword.get(opts, :scope, "targets"),
+      "finished_at" => "2026-11-19T11:00:00Z",
+      "package" => %{"name" => name, "version" => "1.0.0"},
+      "toolchain" => %{"elixir" => "1.20.5", "erlang" => Keyword.get(opts, :otp, "29")},
+      "systems" =>
+        %{"host" => %{"status" => "pass"}}
+        |> Map.merge(Keyword.get(opts, :systems, %{target => sys})),
+      "deps_lock" => Keyword.get(opts, :lock, Compatibility.Pins.to_lock(pins["deps"])),
+      "package_checksum" => @a,
+      "declared" => [],
+      "requested_optional_deps" => Keyword.get(opts, :echo, "pinned"),
+      "optional_deps" => %{"added" => [], "dropped" => [], "skipped" => [], "reason" => "pinned"},
+      "pins" => %{
+        "hash" => Keyword.get(opts, :hash, pins["hash"]),
+        "status" => Keyword.get(opts, :pins_status, "reproduced")
+      }
+    }
+  end
+
+  def firmware_opts(name, pins, files_dir) do
+    name
+    |> opts(pins, files_dir)
+    |> Map.merge(%{target: "nerves_system_rpi4", system_version: "2.1.2", toolchain: "1.20/29"})
+  end
+
+  def ingest_firmware(name, pins, opts \\ []) do
+    blobs =
+      Keyword.get(opts, :beams, ["beam-" <> name]) ++ Enum.map(opts[:priv] || [], &elem(&1, 1))
+
+    job = name |> firmware_opts(pins, files(blobs)) |> Map.merge(Map.new(opts[:job] || []))
+    Ingestion.ingest_pinned(firmware_result(name, pins, opts), job)
+  end
+
   def shas(row) do
     ArtifactMembership
     |> Ash.Query.filter(pinned_build_id == ^row.id)

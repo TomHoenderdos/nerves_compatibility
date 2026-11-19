@@ -91,6 +91,15 @@ defmodule Portal.Precompiled.ElfFacts do
     end
   end
 
+  @doc """
+  `compute/2` of `entries` with their blobs read from `Portal.ArtifactStore`,
+  where an ingest has already staged them. A pinned firmware build
+  (`Portal.Catalog.PinnedBuild`) records its facts this way, inside its own
+  ingest.
+  """
+  @spec compute_stored([%{String.t() => String.t()}]) :: facts() | {:error, term()}
+  def compute_stored(entries), do: compute(entries, &read_blob/1)
+
   @doc "The priv entries a beam scan's file manifest publishes."
   @spec priv_entries(map() | nil) :: [%{String.t() => String.t()}]
   def priv_entries(beam_scan) do

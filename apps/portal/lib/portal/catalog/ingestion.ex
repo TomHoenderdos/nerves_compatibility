@@ -452,8 +452,33 @@ defmodule Portal.Catalog.Ingestion do
   a failed compile never replaces a served pass: the kept row records the
   attempt (`attempted_at`). Every write takes the identity's transaction
   lock first.
+
+  A firmware target (`:target` a `nerves_system_*`, with `:system_version`,
+  phase 2) is a full run's result.json of that one target
+  (`Portal.Pins.FirmwareBuild`), and only `systems[target]` is read: no Run
+  and no other target. The result must echo `"pinned"` and its own
+  toolchain (`toolchain.elixir`, `toolchain.erlang`) must be the job's
+  `:toolchain`, or it is refused as an identity mismatch. A target the run
+  did not build (a closure the worker judged pure Elixir, or no such
+  system) is a `skipped` row. A pass is stored as one only when, besides
+  the checks above (its lock is the target's own, else the run's), the run
+  was a `"targets"` run and the target was built on the job's
+  `:system_version` exactly: otherwise a `skipped` row with no files. Its
+  priv files' ELF facts (`Portal.Precompiled.ElfFacts`), toolchain, full OTP
+  and library table are stored with it; its `compile_env` records no
+  config reads, as any firmware target's.
   """
   @spec ingest_pinned(map(), map()) :: {:ok, PinnedBuild.t()} | {:error, term()}
+  def ingest_pinned(result, %{target: "nerves_system_" <> _} = opts) when is_map(result) do
+    keys = [:package, :version]
+
+    with :ok <- check_identity(result, opts, keys),
+         :ok <- check_pinned(result, opts, keys),
+         :ok <- check_firmware_toolchain(result, opts) do
+      stage_pinned_target(result, opts)
+    end
+  end
+
   def ingest_pinned(result, opts) when is_map(result) do
     keys = [:package, :version, :toolchain]
 
@@ -471,6 +496,147 @@ defmodule Portal.Catalog.Ingestion do
      {:identity_mismatch, opts |> Map.take(keys) |> Map.put(:variant, :pinned),
       result |> result_identity(keys) |> Map.put(:variant, result_variant(result))}}
   end
+
+  # A firmware run records the toolchain it ran on, never a requested one:
+  # the job's must be it, or the row would be keyed on another image's.
+  defp check_firmware_toolchain(result, opts) do
+    toolchain = if is_map(result["toolchain"]), do: result["toolchain"], else: %{}
+    reported = Portal.Toolchains.from_versions(toolchain["elixir"], toolchain["erlang"])
+    job = Map.take(opts, [:package, :version, :toolchain])
+
+    if reported == opts.toolchain,
+      do: :ok,
+      else: {:error, {:identity_mismatch, job, Map.put(job, :toolchain, reported)}}
+  end
+
+  # The job's target as a build in the shape a pinned toolchain build has,
+  # gated as it is, then staged whole or not at all, with its ELF facts read
+  # from the staged blobs.
+  defp stage_pinned_target(result, opts) do
+    build =
+      result
+      |> target_build(opts)
+      |> gate_manifest()
+      |> gate_release(result, opts)
+      |> gate_pins(result, opts)
+      |> keyed()
+
+    wanted = build |> Map.get("file_manifest") |> shas_from_manifest()
+    staged = stage_shas(wanted, opts.files_dir)
+
+    case wanted -- Enum.map(staged, & &1.sha256) do
+      [] ->
+        build = put_elf_facts(build)
+
+        Repo.transaction(
+          fn ->
+            :ok = lock_pinned_identity(opts)
+
+            case write_pinned(result, build, target_verdict(build), opts, {staged, nil}) do
+              {:ok, pinned_build} -> pinned_build
+              {:error, reason} -> Repo.rollback(reason)
+            end
+          end,
+          timeout: @transaction_timeout
+        )
+
+      missing ->
+        {:error, {:artifacts_unstaged, missing}}
+    end
+  end
+
+  defp target_build(result, %{target: target}) do
+    systems = if is_map(result["systems"]), do: result["systems"], else: %{}
+
+    case systems[target] do
+      %{} = sys -> target_build(result, sys)
+      _ -> %{"status" => "skipped", "reason" => not_built(systems, target)}
+    end
+  end
+
+  defp target_build(result, sys) do
+    toolchain = if is_map(result["toolchain"]), do: result["toolchain"], else: %{}
+    {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
+
+    %{
+      "status" => sys["status"],
+      "reason" => target_reason(sys),
+      "elixir" => toolchain["elixir"],
+      "otp" => toolchain["erlang"],
+      "deps_lock" => sys["deps_lock"] || result["deps_lock"],
+      "package_checksum" => result["package_checksum"],
+      "declared" => result["declared"],
+      "compile_env" => sys["compile_env"],
+      "compile_inputs" => sys["compile_inputs"],
+      "file_manifest" => get_in(sys, ["beam_scan", "footprint", "file_manifest"]),
+      "system_version" => sys["system_version"],
+      "toolchain_pkg" => toolchain_pkg,
+      "toolchain_version" => toolchain_version,
+      "otp_full" => fact_string(sys["otp_full"]),
+      "system_libs" => if(is_map(sys["system_libs"]), do: sys["system_libs"])
+    }
+  end
+
+  defp not_built(%{"pure_elixir" => _}, _target),
+    do: "pinned target not built: the worker judged the closure pure Elixir"
+
+  defp not_built(_systems, target), do: "pinned target not built: the result has no #{target}"
+
+  # A skipped target says why in its log tail (a refused set's is the
+  # refusal); a failed or errored one names its error.
+  defp target_reason(%{"status" => "pass"}), do: nil
+
+  defp target_reason(%{"status" => "skipped"} = sys),
+    do: bounded_reason(sys["log_tail"] || sys["error"])
+
+  defp target_reason(sys),
+    do: "firmware build #{sys["status"]}: " <> to_string(fact_string(sys["error"]) || "unknown")
+
+  # A firmware target's verdict, as `create_system_result/7` maps its
+  # status: anything but a pass, a skip or a failed build is no verdict.
+  defp target_verdict(%{"status" => status, "reason" => reason})
+       when status in ["pass", "skipped", "fail"],
+       do: {String.to_existing_atom(status), reason}
+
+  defp target_verdict(build), do: {:error, build["reason"]}
+
+  # The release the target was built on must be the job's, exactly, and
+  # only a targets run builds the one target asked for.
+  defp gate_release(%{"status" => "pass"} = build, result, opts) do
+    cond do
+      result["scope"] != "targets" ->
+        skip_variant(build, "pinned target not built alone: scope #{inspect(result["scope"])}")
+
+      build["system_version"] != opts.system_version ->
+        skip_variant(
+          build,
+          "pinned target built on #{opts.target} #{inspect(build["system_version"])}, " <>
+            "not #{opts.system_version}"
+        )
+
+      true ->
+        build
+    end
+  end
+
+  defp gate_release(build, _result, _opts), do: build
+
+  # Read from the blobs this ingest just staged; facts that cannot be read
+  # are left out, which serves the build at its own release only anyway.
+  defp put_elf_facts(%{"status" => "pass", "file_manifest" => %{} = manifest} = build) do
+    case ElfFacts.compute_stored(
+           ElfFacts.priv_entries(%{"footprint" => %{"file_manifest" => manifest}})
+         ) do
+      %{native: native, portable: portable, needs: needs} ->
+        Map.merge(build, %{"native" => native, "portable" => portable, "elf_needs" => needs})
+
+      {:error, reason} ->
+        Logger.warning("ELF facts of a pinned firmware build not read: #{inspect(reason)}")
+        build
+    end
+  end
+
+  defp put_elf_facts(build), do: build
 
   # The config variant is the job's ("default" for a job from before config
   # variants); the result must say it was built in it. A worker that does not
@@ -690,7 +856,7 @@ defmodule Portal.Catalog.Ingestion do
       fn ->
         :ok = lock_pinned_identity(opts)
 
-        case write_pinned(result, build, opts, staged, sibling) do
+        case write_pinned(result, build, toolchain_verdict(build), opts, {staged, sibling}) do
           {:ok, pinned_build} -> pinned_build
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -1245,9 +1411,8 @@ defmodule Portal.Catalog.Ingestion do
   # `latest_version` or `description` (`Portal.Catalog.LatestRun`): a
   # package the catalog does not hold yet is created with its name alone,
   # as a host-native ingest creates one.
-  defp write_pinned(result, build, opts, staged, sibling) do
+  defp write_pinned(result, build, verdict, opts, staged) do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
-    verdict = toolchain_verdict(build)
 
     with {:ok, package} <- ensure_package(package_name(package_info, opts), %{}) do
       case kept_pinned(verdict, build, package.id, opts) do
@@ -1255,7 +1420,7 @@ defmodule Portal.Catalog.Ingestion do
           kept |> Ash.Changeset.for_update(:retried, %{}) |> Ash.update(domain: @domain)
 
         nil ->
-          upsert_pinned(result, build, verdict, opts, package.id, {staged, sibling})
+          upsert_pinned(result, build, verdict, opts, package.id, staged)
       end
     end
   end
@@ -1330,7 +1495,16 @@ defmodule Portal.Catalog.Ingestion do
       rule1_reason: bounded_reason(build["rule1_reason"]),
       manager: manager(build["manager"]),
       compile_observations: compile_observations(build["compile_observations"]),
-      finished_at: parse_datetime(result["finished_at"])
+      finished_at: parse_datetime(result["finished_at"]),
+      # A firmware target's facts (`stage_pinned_target/2`); nil on the
+      # toolchain path.
+      native: build["native"],
+      portable: build["portable"],
+      elf_needs: build["elf_needs"],
+      toolchain_pkg: build["toolchain_pkg"],
+      toolchain_version: build["toolchain_version"],
+      otp_full: build["otp_full"],
+      system_libs: build["system_libs"]
     }
 
     with {:ok, row} <-
