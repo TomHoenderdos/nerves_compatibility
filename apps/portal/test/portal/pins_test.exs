@@ -61,7 +61,8 @@ defmodule Portal.PinsTest do
       hex("over", "1.0.0", "f", [{"decimal", "~> 1.0", false}]) <>
       hex("nif", "1.0.0", "1", [{"elixir_make", "~> 0.6", false}], "[:make, :mix]") <>
       hex("elixir_make", "0.8.4", "2") <>
-      hex("nerves", "1.11.0", "3") <> "}\n"
+      hex("nerves", "1.11.0", "3") <>
+      hex("ranch", "1.8.0", "4", [], "[:make, :rebar3]") <> "}\n"
   end
 
   defp run(opts \\ []), do: Portal.Pins.from_lock(lock(), [hex: FakeHex] ++ opts)
@@ -71,7 +72,8 @@ defmodule Portal.PinsTest do
   test "a dry run derives each package's set from the lock and queues nothing" do
     assert {:ok, report} = run()
     assert report.dry_run and report.target == "pure_elixir" and report.toolchain == "1.20/29"
-    assert Enum.map(report.queue, & &1.package) == ~w(app_a decimal floki jason)
+    # ranch's `make` manager is erlang.mk's: pure Erlang, not native.
+    assert Enum.map(report.queue, & &1.package) == ~w(app_a decimal floki jason ranch)
     assert %{deps: 2} = Enum.find(report.queue, &(&1.package == "app_a"))
 
     assert %{
@@ -84,7 +86,7 @@ defmodule Portal.PinsTest do
              "nerves" => "tooling"
            } = reasons(report)
 
-    assert report.counts["queue"] == 4
+    assert report.counts["queue"] == 5
     assert all_enqueued(worker: PinnedBuild) == []
   end
 
@@ -97,21 +99,21 @@ defmodule Portal.PinsTest do
   end
 
   test "acting queues at priority 9 and a second call finds them queued" do
-    assert {:ok, %{queue: [_, _, _, _]}} = run(dry_run: false)
+    assert {:ok, %{queue: [_, _, _, _, _]}} = run(dry_run: false)
     jobs = all_enqueued(worker: PinnedBuild)
-    assert length(jobs) == 4
+    assert length(jobs) == 5
     assert Enum.all?(jobs, &(&1.priority == 9 and &1.queue == "toolchain"))
     assert %{"target" => "pure_elixir", "pins" => %{"hash" => _}} = hd(jobs).args
 
     assert {:ok, %{queue: []} = again} = run(dry_run: false)
     assert reasons(again)["decimal"] == "queued_dup"
-    assert length(all_enqueued(worker: PinnedBuild)) == 4
+    assert length(all_enqueued(worker: PinnedBuild)) == 5
   end
 
   test "the cap bounds one call" do
     assert {:ok, report} = run(cap: 2)
     assert length(report.queue) == 2
-    assert report.counts["cap"] == 2
+    assert report.counts["cap"] == 3
   end
 
   test "a closure already served or judged is not queued again" do
@@ -186,7 +188,7 @@ defmodule Portal.PinsTest do
     File.write!(path, lock())
     on_exit(fn -> File.rm(path) end)
 
-    assert {:ok, %{queue: [_, _, _, _]}} = Portal.Pins.from_lock(path, hex: FakeHex)
+    assert {:ok, %{queue: [_, _, _, _, _]}} = Portal.Pins.from_lock(path, hex: FakeHex)
     assert {:error, {:unreadable, :enoent}} = Portal.Pins.from_lock("/nonexistent/mix.lock")
     assert {:error, :unparsable} = Portal.Pins.from_lock("%{")
 

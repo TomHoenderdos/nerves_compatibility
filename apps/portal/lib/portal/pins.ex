@@ -18,9 +18,11 @@ defmodule Portal.Pins do
   the public repository (`non_hex`: a git, path or private dependency), is
   Nerves tooling (`tooling`), does not satisfy an edge's requirement into it
   (`unsatisfied`, which is what an `override: true` leaves), or the set does
-  not validate. Phase 1 builds only pure-BEAM sets: a set with a native
-  marker (`Portal.NativeClosure.markers/0`), a `nerves*` member or a `make`
-  manager is left for phase 2 (`native`).
+  not validate. Phase 1 builds only pure-BEAM sets: a set with a member that
+  is a native marker (`Portal.NativeClosure.markers/0`) or a `nerves*`
+  package, as `Portal.NativeClosure` reads a closure, is left for phase 2
+  (`native`). A lock's `make` manager says nothing: erlang.mk packages such
+  as cowboy list it and are pure Erlang.
 
   Then, in package order, each set is skipped when its build is already
   `judged` (a pinned build row of the key that is not an `error`),
@@ -223,8 +225,7 @@ defmodule Portal.Pins do
     Enum.any?(apps, fn app ->
       entry = entries[app]
 
-      app in markers or entry.hex in markers or String.starts_with?(app, "nerves") or
-        "make" in entry.managers
+      app in markers or entry.hex in markers or String.starts_with?(entry.hex, "nerves")
     end)
   end
 
