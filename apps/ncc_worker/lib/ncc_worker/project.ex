@@ -259,14 +259,17 @@ defmodule NccWorker.Project do
 
   @doc """
   Takes `apps` out of the project: each one's `{:app, ...}` line out of
-  `mix.exs` and its entry out of `mix.lock`, which Mix writes one entry per
-  line. A pinned firmware build's template round (`NccWorker.Pins`): Mix
-  merges every `deps.get`'s lock over the old one, so an entry left in the
-  lock would stay resolved, and the optional edge into it with it. `:error`
-  when an app has no line in `mix.exs` to take out; nothing is written then.
+  `mix.exs`, its entry out of `mix.lock`, which Mix writes one entry per
+  line, and what the template's config says of it (`unconfigure/2`). A
+  pinned firmware build's template round (`NccWorker.Pins`): Mix merges
+  every `deps.get`'s lock over the old one, so an entry left in the lock
+  would stay resolved, and the optional edge into it with it; and Nerves 2
+  refuses to assemble a release whose `application_sort` names an
+  application it lacks. `:error` when an app has no line in `mix.exs` to
+  take out; nothing is written then.
   """
   @spec remove_deps(String.t(), [String.t()]) :: :ok | :error | {:error, term()}
-  # Edits only the generated worker project's mix.exs and mix.lock.
+  # Edits only the generated worker project's mix.exs, mix.lock and config.
   # sobelow_skip ["Traversal.FileModule"]
   def remove_deps(project_dir, apps) do
     mix_exs_path = Path.join(project_dir, "mix.exs")
@@ -281,8 +284,70 @@ defmodule NccWorker.Project do
           Regex.replace(~r/^\s*"#{Regex.escape(app)}":[^\n]*\n/m, acc, "", global: false)
         end)
 
-      with :ok <- File.write(mix_exs_path, mix_exs), do: File.write(lock_path, lock)
+      with :ok <- File.write(mix_exs_path, mix_exs),
+           :ok <- File.write(lock_path, lock),
+           do: unconfigure_files(project_dir, apps)
     end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp unconfigure_files(project_dir, apps) do
+    project_dir
+    |> Path.join("config/*.exs")
+    |> Path.wildcard()
+    |> Enum.reduce_while(:ok, fn path, :ok ->
+      with {:ok, content} <- File.read(path),
+           :ok <- write_changed(path, content, unconfigure(content, apps, Path.basename(path))) do
+        {:cont, :ok}
+      else
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp write_changed(_path, content, content), do: :ok
+  defp write_changed(path, _content, changed), do: File.write(path, changed)
+
+  @doc """
+  `content`, a config file of the Nerves template named `file`, without
+  `apps`: each one out of every `application_sort` list, and, in
+  `runtime.exs`, which runs at boot, every line that names the application
+  (`:app`) or its module (`App`, as `Macro.camelize/1` makes it). What the
+  template writes (`mix nerves.new`, nerves_bootstrap 1.17.3):
+  `application_sort: [init: [:logger_backends, :nerves_runtime]]` in
+  `target.exs`, and `Application.ensure_all_started(:logger_backends)` and
+  `LoggerBackends.add(RingLogger)` in `runtime.exs`.
+  """
+  @spec unconfigure(String.t(), [String.t()], String.t()) :: String.t()
+  def unconfigure(content, apps, file \\ "config.exs") do
+    Enum.reduce(apps, content, fn app, acc ->
+      acc
+      |> String.split("\n")
+      |> Enum.flat_map(&unconfigure_line(&1, app, file))
+      |> Enum.join("\n")
+    end)
+  end
+
+  defp unconfigure_line(line, app, file) do
+    atom = ~r/:#{Regex.escape(app)}(?![a-zA-Z0-9_?!])/
+    module = ~r/(?<![a-zA-Z0-9_.])#{Regex.escape(Macro.camelize(app))}(?![a-zA-Z0-9_])/
+
+    cond do
+      String.contains?(line, "application_sort") -> [drop_listed(line, atom)]
+      file == "runtime.exs" and (line =~ atom or line =~ module) -> []
+      true -> [line]
+    end
+  end
+
+  # `:app` out of every list on the line, with the comma that joined it.
+  defp drop_listed(line, atom) do
+    source = Regex.source(atom)
+
+    line
+    |> then(&Regex.replace(~r/#{source}\s*,\s*/, &1, ""))
+    |> then(&Regex.replace(~r/,\s*#{source}/, &1, ""))
+    |> then(&Regex.replace(~r/\[\s*#{source}\s*\]/, &1, "[]"))
   end
 
   # Every app's `mix.exs` line, once each, or `:error` when one has none.

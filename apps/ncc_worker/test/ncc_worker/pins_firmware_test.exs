@@ -123,4 +123,24 @@ defmodule NccWorker.PinsFirmwareTest do
     assert run_lock.deps_lock == %{"ring_logger" => %{"version" => "0.11.3", "checksum" => @b}}
     assert run_lock.package_checksum == @a
   end
+
+  # Spec section 6, item 4: pins change only which `mix.exs` lines exist
+  # before `deps.get`. No module that judges a build or decides a status
+  # reads them.
+  test "no judge or status module reads the pins" do
+    lib = Path.expand("../../lib/ncc_worker", __DIR__)
+
+    judges =
+      ~w(portability.ex build_selection.ex firmware_build_root.ex firmware_inputs.ex beam_scan.ex
+         static_priv.ex host_trace.ex tracer.ex native_build.ex system_abi.ex footprint.ex)
+      |> Enum.map(&Path.join(lib, &1))
+      |> Kernel.++(Path.wildcard(Path.join(lib, "portability/*.ex")))
+      |> Kernel.++(Path.wildcard(Path.join(lib, "tracer/*.ex")))
+
+    reads = ~r/pins_outcome|NccWorker\.Pins|Compatibility\.Pins|:pins\b|"pins"|"pinned"/
+
+    for file <- judges do
+      refute File.read!(file) =~ reads, file
+    end
+  end
 end

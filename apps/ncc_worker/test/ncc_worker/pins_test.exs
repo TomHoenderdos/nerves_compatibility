@@ -361,10 +361,26 @@ defmodule NccWorker.PinsTest do
       end
     """
 
+    # What `mix nerves.new --no-nerves-pack --prerelease` (nerves_bootstrap
+    # 1.17.3) writes into config/ about the template's deps.
+    @target_exs """
+    import Config
+
+    config :nerves, application_sort: [init: [:logger_backends, :nerves_runtime]]
+    """
+    @runtime_exs """
+    import Config
+
+    Application.ensure_all_started(:logger_backends)
+    LoggerBackends.add(RingLogger)
+    """
+
     defp nerves_project(dir) do
       proj = Path.join(dir, "proj")
-      File.mkdir_p!(proj)
+      File.mkdir_p!(Path.join(proj, "config"))
       File.write!(Path.join(proj, "mix.exs"), @template)
+      File.write!(Path.join([proj, "config", "target.exs"]), @target_exs)
+      File.write!(Path.join([proj, "config", "runtime.exs"]), @runtime_exs)
       proj
     end
 
@@ -473,6 +489,45 @@ defmodule NccWorker.PinsTest do
       assert second =~ "{:toolshed,"
       refute lock =~ ~s|"logger_backends":|
       assert lock =~ ~s|"ring_logger":|
+    end
+
+    # Nerves 2's `SortApps` raises on an `application_sort` app the release
+    # lacks, so a dep taken out of the template is taken out of its config too.
+    test "the round takes the dep out of the template's config", %{tmp_dir: dir} do
+      proj = nerves_project(dir)
+
+      assert {:ok, %{"status" => "reproduced"}} =
+               Pins.reproduce(
+                 proj,
+                 @package,
+                 ring_pins(),
+                 [],
+                 round_trip(with_backends()),
+                 :firmware
+               )
+
+      target = File.read!(Path.join([proj, "config", "target.exs"]))
+      assert target =~ "config :nerves, application_sort: [init: [:nerves_runtime]]"
+      refute target =~ "logger_backends"
+
+      runtime = File.read!(Path.join([proj, "config", "runtime.exs"]))
+      refute runtime =~ "logger_backends"
+      refute runtime =~ "LoggerBackends"
+      assert runtime =~ "import Config"
+    end
+
+    test "a config list naming only the dep, or naming it last, is edited the same way" do
+      assert Project.unconfigure("config :nerves, application_sort: [init: [:a, :b]]\n", ["b"]) ==
+               "config :nerves, application_sort: [init: [:a]]\n"
+
+      assert Project.unconfigure("config :nerves, application_sort: [init: [:b]]\n", ["b"]) ==
+               "config :nerves, application_sort: [init: []]\n"
+
+      assert Project.unconfigure(
+               "config :nerves, application_sort: [init: [:bb, :b, :c], last: [:b]]\n",
+               ["b"]
+             ) ==
+               "config :nerves, application_sort: [init: [:bb, :c], last: []]\n"
     end
 
     test "an extra a required edge reaches refuses the set, with no round", %{tmp_dir: dir} do

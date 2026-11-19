@@ -204,13 +204,15 @@ defmodule NccWorker.DepsLock do
             dep in names,
             do: {dep, is_list(opts) and opts[:optional] == true}
 
-      Enum.filter(names, fn name ->
-        optional = for {^name, optional} <- edges, do: optional
-        optional != [] and Enum.all?(optional)
-      end)
+      Enum.filter(names, &only_optional?(edges, &1))
     else
       _ -> []
     end
+  end
+
+  defp only_optional?(edges, name) do
+    optional = for {^name, optional} <- edges, do: optional
+    optional != [] and Enum.all?(optional)
   end
 
   @doc """
