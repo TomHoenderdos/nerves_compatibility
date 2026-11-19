@@ -460,6 +460,33 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert length(memberships(kept)) == 2
     end
 
+    # The backlog reopens a row by its last activity, the attempt if there is
+    # one (`Portal.Catalog.toolchain_backlog/3`): an attempt the new build
+    # left behind would make the build look a week old the day it landed,
+    # and a reopen rule would queue it again at every sweep (production,
+    # 2026-11-19: two rows rebuilt 9 times each in 11 hours).
+    test "a new build clears the attempt the kept row recorded" do
+      name = unique_name()
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+
+      {:ok, _passed} =
+        Ingestion.ingest_toolchain(
+          pass_result(name, beam, priv),
+          opts(name, files_dir_with([beam, priv]))
+        )
+
+      result = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})
+
+      assert {:ok, %{attempted_at: %DateTime{}}} =
+               Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+
+      assert {:ok, rebuilt} =
+               Ingestion.ingest_toolchain(skipped_result(name), opts(name, files_dir_with([])))
+
+      assert {rebuilt.status, rebuilt.attempted_at} == {:skipped, nil}
+    end
+
     test "counts transient results and gives up at the cap, as a skip" do
       name = unique_name()
       transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})

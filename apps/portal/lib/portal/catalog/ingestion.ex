@@ -1108,7 +1108,11 @@ defmodule Portal.Catalog.Ingestion do
       compile_observations: compile_observations(build["compile_observations"]),
       compile_env_rule: compile_env_rule(Map.get(build, "compile_env_rule"), compiled_env),
       transient_attempts: attempts,
-      finished_at: parse_datetime(result["finished_at"])
+      finished_at: parse_datetime(result["finished_at"]),
+      # Named, or the upsert leaves the kept row's attempt in place: the
+      # backlog reopens a row by its last attempt, and a stale one makes a
+      # build that just landed look due.
+      attempted_at: nil
     })
     |> Ash.create(domain: @domain)
   end
