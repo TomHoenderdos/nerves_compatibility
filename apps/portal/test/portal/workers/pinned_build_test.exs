@@ -118,6 +118,39 @@ defmodule Portal.Workers.PinnedBuildTest do
            |> Ash.read!(domain: Catalog) == []
   end
 
+  # Review M4: ToolchainBuild's exit 11 writes through the same row writer.
+  test "exit 11 never replaces a served pass of the same identity" do
+    package =
+      Package
+      |> Ash.Changeset.for_create(:create, %{name: "pinpass11"})
+      |> Ash.create!(domain: Catalog)
+
+    args = args("pinpass11")
+
+    Catalog.PinnedBuild
+    |> Ash.Changeset.for_create(:upsert, %{
+      package_id: package.id,
+      version: args["version"],
+      pin_hash: args["pin_hash"],
+      target: "pure_elixir",
+      system_version: "",
+      toolchain: args["toolchain"],
+      builder_version: args["builder_version"],
+      config_variant: "default",
+      pins: args["pins"],
+      status: :pass
+    })
+    |> Ash.create!(domain: Catalog)
+
+    respond(11)
+    assert {:cancel, "lock policy violation"} = perform_job(PinnedBuild, args)
+
+    assert [%Catalog.PinnedBuild{status: :pass, attempted_at: %DateTime{}}] =
+             Catalog.PinnedBuild
+             |> Ash.Query.filter(package.name == "pinpass11")
+             |> Ash.read!(domain: Catalog)
+  end
+
   test "a set that does not validate or is not the job's is cancelled before anything runs" do
     bad = put_in(args(), ["pins", "deps"], [])
     assert {:cancel, _} = perform_job(PinnedBuild, bad)

@@ -166,6 +166,43 @@ defmodule Portal.Workers.PinnedFirmwareBuildTest do
     assert Ash.get!(Package, package.id, domain: Catalog).latest_version == nil
   end
 
+  defp pass_row!(package, args) do
+    Catalog.PinnedBuild
+    |> Ash.Changeset.for_create(:upsert, %{
+      package_id: package.id,
+      version: args["version"],
+      pin_hash: args["pin_hash"],
+      target: args["target"],
+      system_version: args["system_version"],
+      toolchain: args["toolchain"],
+      builder_version: args["builder_version"],
+      config_variant: "default",
+      pins: args["pins"],
+      status: :pass,
+      run_id: "pin-served"
+    })
+    |> Ash.create!(domain: Catalog)
+  end
+
+  # Review M4: a stale attempt (its container hung, Lifeline rescued the job
+  # and a later attempt stored a pass) never takes a served pass down.
+  test "a stale timeout or exit 11 keeps a served pass, recording the attempt" do
+    package = package!("pinfwstale")
+    args = args("pinfwstale")
+    pass = pass_row!(package, args)
+
+    respond({:error, {:build_timeout, 7200, "ctr"}})
+    assert {:cancel, _} = perform_job(PinnedBuild, args, queue: :builds)
+
+    exit_code(11)
+    assert {:cancel, _} = perform_job(PinnedBuild, args, queue: :builds)
+
+    assert [%Catalog.PinnedBuild{status: :pass, run_id: "pin-served"} = row] =
+             pinned_rows("pinfwstale")
+
+    assert row.id == pass.id and row.attempted_at != nil
+  end
+
   test "the last attempt of a retryable failure writes an error row" do
     package!("pinfwerr")
     exit_code(10)

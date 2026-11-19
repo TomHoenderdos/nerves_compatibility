@@ -120,9 +120,13 @@ defmodule Portal.Workers.PinnedBuild do
   end
 
   @doc false
-  # The row `ToolchainBuild` writes when no ingest will (exit 11's `fail`, a
-  # last attempt's `error`), under the identity's lock. An `error` never
-  # replaces a pass or skipped row; that row records the attempt instead.
+  # The row `ToolchainBuild` or `Portal.Pins.FirmwareBuild` writes when no
+  # ingest will (exit 11's or a timeout's `fail`, a last attempt's `error`),
+  # under the identity's lock. An `error` never replaces a pass or skipped
+  # row, and a `fail` never a served pass, as a failed compile never does at
+  # ingest (`Ingestion.pinned_row/4`): a stale attempt, whose job a later
+  # attempt finished, must not take that build down. The kept row records
+  # the attempt instead.
   @spec write_row(map(), atom(), String.t(), String.t(), String.t() | nil) :: :ok
   def write_row(args, status, reason, run_id, image_digest) do
     identity = identity(args)
@@ -143,9 +147,7 @@ defmodule Portal.Workers.PinnedBuild do
         Logger.warning("No package #{args["package"]} to record #{describe(args)} against")
 
       package_id ->
-        kept =
-          status == :error and
-            Ingestion.pinned_row(package_id, identity, [:pass, :skipped], false)
+        kept = kept(status, package_id, identity)
 
         if kept,
           do:
@@ -153,6 +155,14 @@ defmodule Portal.Workers.PinnedBuild do
           else: upsert(package_id, args, identity, status, reason, run_id, image_digest)
     end
   end
+
+  defp kept(:error, package_id, identity),
+    do: Ingestion.pinned_row(package_id, identity, [:pass, :skipped], false)
+
+  defp kept(:fail, package_id, identity),
+    do: Ingestion.pinned_row(package_id, identity, [:pass], true)
+
+  defp kept(_status, _package_id, _identity), do: nil
 
   defp upsert(package_id, args, identity, status, reason, run_id, image_digest) do
     identity
