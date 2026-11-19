@@ -28,6 +28,7 @@ defmodule PortalWeb.PrecompiledReportClientE2ETest do
 
     RateLimiter.reset()
     on_exit(&RateLimiter.reset/0)
+    on_exit(fn -> File.rm_rf(dir) end)
 
     server =
       start_supervised!(
