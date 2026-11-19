@@ -135,4 +135,24 @@ defmodule Portal.Workers.PinnedBuildTest do
     assert Portal.Builder.worker_input(job)["pins"] == pins
     refute Map.has_key?(Portal.Builder.worker_input(Map.delete(job, :pins)), "pins")
   end
+
+  # Phase 2: a firmware pinned build names its one system's exact release.
+  test "NCC_INPUT carries the system release override" do
+    override = %{"nerves_system_rpi4" => "== 2.1.2"}
+
+    job = %{
+      run_id: "r",
+      image_name: "i",
+      image_digest: "d",
+      systems_filter: ["nerves_system_rpi4"],
+      systems_override: override
+    }
+
+    assert Portal.Builder.worker_input(job)["systems_override"] == override
+
+    refute Map.has_key?(
+             Portal.Builder.worker_input(%{job | systems_override: nil}),
+             "systems_override"
+           )
+  end
 end

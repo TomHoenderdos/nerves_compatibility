@@ -64,6 +64,10 @@ defmodule Portal.Builder do
           optional(:image) => String.t(),
           optional(:image_digest) => String.t(),
           optional(:systems_filter) => [String.t()] | nil,
+          # For a pinned firmware build (`Portal.Pins.FirmwareBuild`): its
+          # one system at its exact release, `%{system => "== X.Y.Z"}`,
+          # `NCC_INPUT.systems_override`.
+          optional(:systems_override) => %{String.t() => String.t()} | nil,
           optional(:mode) => String.t() | nil,
           # For `mode: "toolchain"`: the toolchain the run was queued for,
           # e.g. `%{elixir: "1.19", otp: "28"}`.
@@ -443,6 +447,7 @@ defmodule Portal.Builder do
       image_digest: image_digest,
       package: job_package(mode, args),
       systems_filter: Map.get(args, :systems_filter),
+      systems_override: Map.get(args, :systems_override),
       mode: mode,
       toolchain: Map.get(args, :toolchain),
       triple: Map.get(args, :triple),
@@ -1067,6 +1072,7 @@ defmodule Portal.Builder do
     }
     |> maybe_put("package", Map.get(job, :package))
     |> maybe_put("systems_filter", job.systems_filter)
+    |> maybe_put("systems_override", Map.get(job, :systems_override))
     |> maybe_put("mode", Map.get(job, :mode))
     |> maybe_put("toolchain", Map.get(job, :toolchain))
     |> maybe_put("triple", Map.get(job, :triple))
