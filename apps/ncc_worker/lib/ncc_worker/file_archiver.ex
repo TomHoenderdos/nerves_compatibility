@@ -7,7 +7,7 @@ defmodule NccWorker.FileArchiver do
   it will only be stored once.
   """
 
-  alias NccWorker.OptionalDepsTargets
+  alias NccWorker.{FirmwareDeterministic, OptionalDepsTargets}
 
   require Logger
 
@@ -113,7 +113,8 @@ defmodule NccWorker.FileArchiver do
 
       all_files =
         package_files ++
-          variant_files(system_result, build_path, package_name) ++ dependency_files
+          variant_files(system_result, build_path, package_name) ++
+          sibling_files(system_result, build_path, package_name) ++ dependency_files
 
       Logger.debug("Found #{length(all_files)} files to archive for #{system_name}")
       all_files
@@ -158,6 +159,27 @@ defmodule NccWorker.FileArchiver do
       |> Enum.filter(fn {source, entry} -> file_sha256(source) == field(entry, :sha256) end)
     else
       []
+    end
+  end
+
+  # A target's deterministic sibling (`NccWorker.FirmwareDeterministic`): its
+  # own `.<package>.deterministic` dir under `_build/<target>/lib`, listed in
+  # `deterministic_build.file_manifest` when it passed. As for a variant, a
+  # file whose bytes no longer hash to its entry is not archived, and the
+  # portal then leaves the sibling out.
+  defp sibling_files(_system_result, _build_path, nil), do: []
+
+  defp sibling_files(system_result, build_path, package_name) do
+    with %{} = sibling <- field(system_result, :deterministic_build),
+         %{} = manifest <- field(sibling, :file_manifest) do
+      app_dir = Path.join([build_path, "lib", FirmwareDeterministic.dir(package_name)])
+      index = app_dir |> walk_files() |> Map.new(&{Path.relative_to(&1, app_dir), &1})
+
+      %{file_manifest: manifest}
+      |> collect_manifest_entries(index, "package")
+      |> Enum.filter(fn {source, entry} -> file_sha256(source) == field(entry, :sha256) end)
+    else
+      _ -> []
     end
   end
 

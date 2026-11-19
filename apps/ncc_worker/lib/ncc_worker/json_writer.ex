@@ -147,7 +147,9 @@ defmodule NccWorker.JsonWriter do
   # the optional dependencies and also publishes its first build
   # (`NccWorker.OptionalDepsTargets`). `build_root` only on a passing
   # firmware target whose files the baked build path rule judged
-  # (`NccWorker.FirmwareBuildRoot`).
+  # (`NccWorker.FirmwareBuildRoot`). `deterministic_build` only on a passing
+  # firmware target that publishes its own build in a run asked for
+  # siblings (`NccWorker.FirmwareDeterministic`).
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
     [
@@ -155,6 +157,7 @@ defmodule NccWorker.JsonWriter do
       :optional_deps,
       :published_variants,
       :build_root,
+      :deterministic_build,
       :compile_env_rule,
       :compile_inputs,
       :toolchain,

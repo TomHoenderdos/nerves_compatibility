@@ -14,6 +14,7 @@ defmodule NccWorker.Worker do
     DepsLock,
     EgressProbe,
     FirmwareBuildRoot,
+    FirmwareDeterministic,
     FirmwareInputs,
     Footprint,
     HexCache,
@@ -117,6 +118,11 @@ defmodule NccWorker.Worker do
           # `NCC_FIRMWARE_INPUTS=0` rollback. Absent (an older portal) or
           # anything else is on.
           optional(:firmware_inputs) => boolean(),
+          # For "toolchain" and a firmware run (no `mode`): exactly `true`
+          # also builds the deterministic sibling of the toolchain build
+          # (`NccWorker.Deterministic`) or of each passing firmware target's
+          # own build (`NccWorker.FirmwareDeterministic`). Anything else is off.
+          optional(:deterministic) => boolean(),
           # For "toolchain": a `Compatibility.ConfigVariants` name; its overlay
           # is written as `config/config.exs` before the compile
           # (`NccWorker.ConfigOverlay`). Absent is `default`, no overlay.
@@ -487,6 +493,12 @@ defmodule NccWorker.Worker do
               # system's `footprint.file_manifest` (or dropped the variant
               # named under `variants`), so nothing of it is published.
               optional(:build_root) => FirmwareBuildRoot.outcome(),
+              # Only on a passing firmware target that publishes its own
+              # build, in a run asked for `deterministic: true`
+              # (`NccWorker.FirmwareDeterministic`): the build's deterministic
+              # sibling, its own files under `.<package>.deterministic`; "pass"
+              # only when it is the build but for what the option changes.
+              optional(:deterministic_build) => FirmwareDeterministic.sibling(),
               # Only on a firmware system that was passing when the per-target
               # pass ran: what it did on this target. `reason` as for the
               # run's `optional_deps`, `nil` when kept.
@@ -1106,6 +1118,7 @@ defmodule NccWorker.Worker do
       known_system_abi: List.wrap(input[:known_system_abi]),
       firmware_world: input[:firmware_world],
       firmware_inputs: FirmwareInputs.enabled?(input),
+      deterministic: Deterministic.requested?(input),
       releases: releases,
       trees: trees
     }
@@ -1538,7 +1551,8 @@ defmodule NccWorker.Worker do
          {:ok, systems, world} <- firmware_world(params, out, pass),
          :ok <- log_target_pass(pass.paths, out.systems),
          {:ok, systems} <-
-           systems |> gate_build_root(pass, envs) |> put_firmware_inputs(pass, envs) do
+           systems |> gate_build_root(pass, envs) |> put_firmware_inputs(pass, envs),
+         {:ok, systems} <- put_deterministic(systems, pass, envs) do
       optional_deps =
         out.optional_deps
         |> Map.put(:skipped, skipped)
@@ -1562,10 +1576,12 @@ defmodule NccWorker.Worker do
   # the regular path, and is the published `deps` of every target. It is
   # read before the build too: a build that changed it was not made against
   # the lock it would publish, so every target is then an `error` with no
-  # files (`deps_lock_changed`). Public for tests, which pass a stub `build`
-  # and `opts` `build_root_judge:` (`NccWorker.FirmwareBuildRoot.gate/3`'s
-  # `judge:`) and `record_inputs:` (`NccWorker.FirmwareInputs.put/3`'s
-  # `record:`).
+  # files (`deps_lock_changed`). Its one target gets a deterministic sibling
+  # as any firmware target does (`put_deterministic/4`). Public for tests,
+  # which pass a stub `build` and `opts` `build_root_judge:`
+  # (`NccWorker.FirmwareBuildRoot.gate/3`'s `judge:`), `record_inputs:`
+  # (`NccWorker.FirmwareInputs.put/3`'s `record:`) and `deterministic:`
+  # (`NccWorker.FirmwareDeterministic.put/3`'s runners).
   @spec pinned_targets((-> {map(), map()}), map(), map(), keyword()) ::
           {:ok, map(), map(), map()} | {:error, term()}
   def pinned_targets(build, pass, info, opts \\ []) do
@@ -1578,7 +1594,9 @@ defmodule NccWorker.Worker do
            |> lock_unchanged(before == run_lock)
            |> put_system_abi(pass)
            |> gate_build_root(pass, envs, judge_opts(opts, :build_root_judge, :judge))
-           |> put_firmware_inputs(pass, envs, judge_opts(opts, :record_inputs, :record)) do
+           |> put_firmware_inputs(pass, envs, judge_opts(opts, :record_inputs, :record)),
+         {:ok, systems} <-
+           put_deterministic(systems, pass, envs, judge_opts(opts, :deterministic, :runners)) do
       {:ok, systems, info, run_lock}
     end
   end
@@ -1666,6 +1684,49 @@ defmodule NccWorker.Worker do
       {systems, lines} ->
         Enum.each(lines, &log_host(pass.paths, &1))
         {:ok, systems}
+    end
+  end
+
+  # The deterministic sibling of each passing target's own build
+  # (`NccWorker.FirmwareDeterministic`) when the run asks for siblings: last,
+  # once the optional pass, the world, R2 and the compile inputs have settled
+  # what each target publishes. A published build it could not put back as
+  # it was fails the run.
+  defp put_deterministic(systems, pass, envs, opts \\ []) do
+    targets =
+      for system <- pass.systems, env = envs[system.name], env != nil do
+        log_file = Path.join([pass.paths.output_dir, "logs", "#{system.name}.log"])
+        {system.name, %{target: system.target, env: env, log_file: log_file}}
+      end
+
+    ctx = %{
+      enabled: Map.get(pass, :deterministic) == true,
+      project_dir: pass.project_dir,
+      package: pass.package,
+      targets: targets,
+      timeout_sec: pass.timeout,
+      concurrency: build_concurrency(),
+      budget_sec: deterministic_budget(),
+      run_elapsed_sec: System.monotonic_time(:second) - pass.started_at
+    }
+
+    case FirmwareDeterministic.put(systems, ctx, Keyword.get(opts, :runners, %{})) do
+      {:ok, systems, lines} ->
+        Enum.each(lines, &log_host(pass.paths, &1))
+        {:ok, systems}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # The sibling pass's own wall-clock budget,
+  # NCC_FIRMWARE_DETERMINISTIC_BUDGET_SEC (default 600): one compile of the
+  # package per target, which past it is skipped.
+  defp deterministic_budget do
+    case Integer.parse(System.get_env("NCC_FIRMWARE_DETERMINISTIC_BUDGET_SEC", "")) do
+      {n, ""} when n >= 0 -> n
+      _ -> 600
     end
   end
 

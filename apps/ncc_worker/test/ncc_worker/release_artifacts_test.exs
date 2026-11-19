@@ -235,6 +235,58 @@ defmodule NccWorker.ReleaseArtifactsTest do
     refute File.exists?(Path.join(archive, sha256("other beam")))
   end
 
+  # A target's deterministic sibling is archived from its own
+  # `.<pkg>.deterministic` dir, only the bytes its manifest names.
+  test "a deterministic sibling's files are archived from its own directory", %{
+    project: project,
+    archive: archive,
+    tmp_dir: work_dir
+  } do
+    write_tree(Path.join(project, "_build/rpi4/lib/.sample.deterministic"), %{
+      "ebin/sample.beam" => "deterministic beam",
+      "priv/data.txt" => "release data"
+    })
+
+    entry = fn path, body -> %{"path" => path, "sha256" => sha256(body)} end
+
+    manifest = %{
+      "ebin" => [
+        entry.("ebin/sample.beam", "deterministic beam"),
+        # Not the bytes its dir holds: not archived.
+        entry.("ebin/sample.app", "another app")
+      ],
+      "priv" => [entry.("priv/data.txt", "release data")]
+    }
+
+    result = %{
+      package: %{name: "sample"},
+      systems: %{
+        "nerves_system_rpi4" => %{
+          beam_scan: %{
+            "footprint" => %{
+              "file_manifest" => %{
+                "ebin" => [entry.("ebin/sample.beam", @build_files["ebin/sample.beam"])],
+                "priv" => []
+              }
+            }
+          },
+          deterministic_build: %{status: "pass", file_manifest: manifest}
+        },
+        "nerves_system_bbb" => %{
+          beam_scan: nil,
+          deterministic_build: %{status: "skipped", file_manifest: nil}
+        }
+      }
+    }
+
+    assert {:ok, %{files_archived: 3}} =
+             FileArchiver.archive_manifest_files(archive, result, work_dir)
+
+    assert File.read!(Path.join(archive, sha256("deterministic beam"))) == "deterministic beam"
+    assert File.exists?(Path.join(archive, sha256("release data")))
+    refute File.exists?(Path.join(archive, sha256("another app")))
+  end
+
   # Dependencies' files are archived but never published, and their manifests
   # come from the release scan, so they are still copied from the release.
   test "dependency files are still archived from the release", %{

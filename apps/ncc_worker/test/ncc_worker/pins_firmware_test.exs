@@ -116,6 +116,17 @@ defmodule NccWorker.PinsFirmwareTest do
   end
 
   @envs %{"nerves_system_rpi4" => [{"MIX_TARGET", "rpi4"}]}
+
+  # The env a target's build ran in, its build path the project's.
+  defp envs_with_path(pass) do
+    %{
+      "nerves_system_rpi4" => [
+        {"MIX_TARGET", "rpi4"},
+        {"MIX_BUILD_PATH", Path.join([pass.project_dir, "_build", "rpi4"])}
+      ]
+    }
+  end
+
   @info %{added: [], dropped: [], reason: "pinned", skipped: []}
 
   defp manifest(systems),
@@ -161,6 +172,61 @@ defmodule NccWorker.PinsFirmwareTest do
     assert manifest(systems) == @manifest
     assert systems["nerves_system_rpi4"].compile_inputs == inputs
     assert %{status: "pass"} = systems["nerves_system_rpi4"].build_root
+  end
+
+  # A pinned target gets its deterministic sibling as any firmware target,
+  # only when the run asks for siblings.
+  test "a passing pinned target gets a deterministic sibling when the run asks", %{tmp_dir: dir} do
+    pass = pinned_project(dir)
+    # The published build the sibling pass moves aside and puts back.
+    beam =
+      Path.join([
+        pass.project_dir,
+        "_build",
+        "rpi4",
+        "lib",
+        "sample",
+        "ebin",
+        "Elixir.Sample.beam"
+      ])
+
+    File.write!(beam, "x")
+    sha = :crypto.hash(:sha256, "x") |> Base.encode16(case: :lower)
+    entry = %{"path" => "ebin/Elixir.Sample.beam", "sha256" => sha, "size" => 1}
+    entry = Map.put(entry, "mode", File.stat!(beam).mode)
+    scan = %{"footprint" => %{"file_manifest" => %{"ebin" => [entry], "priv" => []}}}
+    result = %{passed() | beam_scan: scan}
+    build = fn -> {%{"nerves_system_rpi4" => result}, envs_with_path(pass)} end
+    parent = self()
+
+    runners = %{
+      compile: fn _proj, env, _log, _timeout ->
+        send(parent, {:compiled, Map.new(env)})
+        {:error, "mix compile exited with code 1"}
+      end,
+      reap: fn _ -> :ok end
+    }
+
+    opts = [
+      build_root_judge: fn _, _, _, _ -> :ok end,
+      record_inputs: fn _, _, _, _ -> {:error, "not traced"} end,
+      deterministic: runners
+    ]
+
+    assert {:ok, systems, @info, _lock} = Worker.pinned_targets(build, pass, @info, opts)
+    refute Map.has_key?(systems["nerves_system_rpi4"], :deterministic_build)
+    refute_received {:compiled, _}
+
+    assert {:ok, systems, @info, _lock} =
+             Worker.pinned_targets(build, Map.put(pass, :deterministic, true), @info, opts)
+
+    assert_received {:compiled, %{"ERL_COMPILER_OPTIONS" => "deterministic"}}
+
+    assert %{status: "skipped", reason: "compile failed"} =
+             systems["nerves_system_rpi4"].deterministic_build
+
+    assert systems["nerves_system_rpi4"].status == :pass
+    assert File.read!(beam) == "x"
   end
 
   # Review M2: the lock is read after the build, as on the regular path; a

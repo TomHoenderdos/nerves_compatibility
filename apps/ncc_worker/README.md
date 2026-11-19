@@ -792,8 +792,9 @@ the overlay would record the build as the wrong variant. Other modes accept the 
 `toolchain_build.config_variant` is the config variant the build was made in, echoed for the portal to check
 against the job; it is always set in a toolchain run, `"default"` without an input value.
 
-`"deterministic": true` in `NCC_INPUT` (toolchain mode; anything but exactly `true` is off, and other modes ignore
-it) also builds the build's deterministic sibling (`NccWorker.Deterministic`, judge revision 29), recorded as
+`"deterministic": true` in `NCC_INPUT` (toolchain mode and firmware runs; anything but exactly `true` is off, and
+other modes ignore it; see "Firmware targets" below for a firmware target's sibling) also builds the build's
+deterministic sibling (`NccWorker.Deterministic`, judge revision 29), recorded as
 `result.json`'s `deterministic_build`: the package's closure compiled again with `ERL_COMPILER_OPTIONS=deterministic`
 in its own traced judge compile, never a second window of the build's (Elixir reads the variable once per VM, on
 its first module), at `_build/deterministic` (the build's `_build/host` is not touched), with the build's env and
@@ -999,6 +1000,28 @@ The target then carries the trace's `compile_inputs` and its `compile_env`; anyt
 without, as before. Past the tracer's run ceiling (105 minutes into the run) no further target is tried, its Nerves env
 included. The portal's `NCC_FIRMWARE_INPUTS=0` turns it off with no image change: firmware builds, local and remote,
 get `NCC_INPUT.firmware_inputs: false`; an input without the key (an older portal) is on.
+
+With `"deterministic": true` in `NCC_INPUT`, each passing target that publishes its own build then gets that build's
+deterministic sibling (`NccWorker.FirmwareDeterministic`), last, once the optional pass, the world, R2 and the compile
+inputs have settled what the target publishes: the package alone compiled again for the target with
+`ERL_COMPILER_OPTIONS=deterministic` in a `mix compile` of its own (Elixir reads the variable once per VM), in the
+target's build env and build tree, over the closure its firmware build already compiled. The published build is
+renamed to `.<package>.det-build` with its `priv`/`include` links made its own, the compile (under `timeout(1)`,
+targets concurrently as `NCC_BUILD_CONCURRENCY` allows) builds the one app missing from `_build/<target>`, its output
+is renamed to `.<package>.deterministic`, its links owned and scanned there, and the published build goes back and
+is checked file by file against its manifest. It is recorded as the system's `deterministic_build`: `{"status":
+"pass" | "skipped", "reason", "erl_compiler_options": ["deterministic"], "judge_revision", "file_manifest",
+"build_root"}`. It passes only when it lists the build's `ebin` and `priv` paths with the build's modes, its `priv`
+files are the build's bytes, its `ebin` passes `Compatibility.DeterministicBeams.compare_ebin/2` against the build's,
+and R2 passes on its own dir (`build_root`; the option changes an Erlang module's `?FILE` literals). It is
+`"skipped"` with its reason otherwise, and also for a target that kept its optional dependencies (its build was made
+against a closure the project no longer holds), one whose recorded `compile_inputs` read `ERL_COMPILER_OPTIONS` or the
+whole environment, after a compile failure or timeout, past the pass's budget (`NCC_FIRMWARE_DETERMINISTIC_BUDGET_SEC`,
+default 600) or 75 minutes into the run, and when the compile changed `mix.lock` (put back). A target that did not
+pass or publishes nothing gets no key. Its files are archived from `.<package>.deterministic`, each only while it
+still hashes to its entry. A published build that cannot be put back or no longer hashes to its manifest, and
+writers of a build path that survive the reap, fail the run (exit `10`). The target's status, firmware, log tail and
+files never change.
 
 See `examples/input.json` and `examples/result.json` for the wire format; the full `result.json` typespec is at the top of `lib/ncc_worker/worker.ex`.
 
