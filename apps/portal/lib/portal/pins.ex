@@ -49,9 +49,13 @@ defmodule Portal.Pins do
   incomplete). The rest are checked against the signed registry
   (`Portal.HexDeps`): the package's and every pin's outer checksum must be
   the lock's, and none may be retired as `security` or `invalid`. At most
-  `cap:` (50) are queued over both paths, at priority 9: a toolchain build
+  `cap:` (50) are queued over both paths, at priority 2: a toolchain build
   on the toolchain queue `Portal.Toolchains.MemoryRouting` picks, a firmware
-  build on `:builds`; the rest are listed as `cap`.
+  build on `:builds`; the rest are listed as `cap`. A pinned build comes from
+  a real project's lock, so it runs ahead of the speculative toolchain
+  backlog (priority 3, refilled all the time, which kept the first 252
+  pinned jobs at 9 from ever running) and behind an owner's or a GitHub
+  scan request (0 and 1).
 
   It only lists unless given `dry_run: false`. Options: `target:` (the
   toolchain path's, `"host"`), `toolchain:` (the toolchain path's, the first
@@ -65,7 +69,9 @@ defmodule Portal.Pins do
   alias Portal.Pins.Lock
 
   @default_cap 50
-  @priority 9
+  # Ahead of the toolchain backlog (3), behind owner and GitHub scan
+  # requests (0, 1); see the moduledoc.
+  @priority 2
   # The firmware image's toolchain, `"<Elixir minor>/<OTP major>"`: every
   # firmware pinned build is keyed on it, and its OTP major is the one a
   # release's must be (`Portal.Catalog.Ingestion` refuses a result built on
