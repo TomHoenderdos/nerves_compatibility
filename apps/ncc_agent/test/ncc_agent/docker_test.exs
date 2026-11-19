@@ -5,7 +5,8 @@ defmodule NccAgent.DockerTest do
 
   @fake Path.expand("../support/fake_docker.sh", __DIR__)
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_SLEEP FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_KILL_LOG
-          FAKE_DOCKER_PS FAKE_DOCKER_PS_LOG)
+          FAKE_DOCKER_PS FAKE_DOCKER_PS_LOG FAKE_DOCKER_PS_IMAGES FAKE_DOCKER_IMAGES
+          FAKE_DOCKER_IMAGES_LOG FAKE_DOCKER_IMAGES_FAIL FAKE_DOCKER_RMI_LOG FAKE_DOCKER_RMI_FAIL)
 
   setup do
     dir = Path.join(System.tmp_dir!(), "agent-docker-#{System.unique_integer([:positive])}")
@@ -98,5 +99,90 @@ defmodule NccAgent.DockerTest do
 
     System.delete_env("FAKE_DOCKER_PS")
     assert [] = Docker.kill_leftovers(config)
+  end
+
+  describe "prune_old_images/2" do
+    @current "ghcr.io/x/ncc-worker@sha256:" <> String.duplicate("a", 64)
+    @old "ghcr.io/x/ncc-worker@sha256:" <> String.duplicate("b", 64)
+    @other_old "ghcr.io/x/ncc-worker@sha256:" <> String.duplicate("c", 64)
+
+    test "removes every other local digest of the repository", %{dir: dir, config: config} do
+      rmi = Path.join(dir, "rmi.log")
+      images_log = Path.join(dir, "images.log")
+      System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+      System.put_env("FAKE_DOCKER_IMAGES_LOG", images_log)
+      System.put_env("FAKE_DOCKER_IMAGES", Enum.join([@current, @old, @other_old], "\n"))
+
+      assert :ok = Docker.prune_old_images(config, @current)
+
+      assert File.read!(images_log) =~
+               "images --no-trunc --format {{.Repository}}@{{.Digest}} ghcr.io/x/ncc-worker"
+
+      removed = rmi |> File.read!() |> String.split("\n", trim: true)
+      assert Enum.sort(removed) == Enum.sort([@old, @other_old])
+    end
+
+    test "keeps the image a currently present container uses", %{dir: dir, config: config} do
+      rmi = Path.join(dir, "rmi.log")
+      System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+      System.put_env("FAKE_DOCKER_IMAGES", Enum.join([@current, @old], "\n"))
+      System.put_env("FAKE_DOCKER_PS_IMAGES", @old)
+
+      assert :ok = Docker.prune_old_images(config, @current)
+
+      refute File.exists?(rmi)
+    end
+
+    @tag :capture_log
+    test "a removal failure is logged, not raised", %{dir: dir, config: config} do
+      rmi = Path.join(dir, "rmi.log")
+      System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+      System.put_env("FAKE_DOCKER_RMI_FAIL", "1")
+      System.put_env("FAKE_DOCKER_IMAGES", Enum.join([@current, @old], "\n"))
+
+      assert :ok = Docker.prune_old_images(config, @current)
+      assert File.read!(rmi) == "#{@old}\n"
+    end
+
+    @tag :capture_log
+    test "a listing failure is logged, not raised, and nothing is removed", %{
+      dir: dir,
+      config: config
+    } do
+      rmi = Path.join(dir, "rmi.log")
+      System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+      System.put_env("FAKE_DOCKER_IMAGES_FAIL", "1")
+
+      assert :ok = Docker.prune_old_images(config, @current)
+      refute File.exists?(rmi)
+    end
+
+    test "a bare local tag has no repository and is never listed or touched", %{
+      dir: dir,
+      config: config
+    } do
+      images_log = Path.join(dir, "images.log")
+      rmi = Path.join(dir, "rmi.log")
+      System.put_env("FAKE_DOCKER_IMAGES_LOG", images_log)
+      System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+      System.put_env("FAKE_DOCKER_IMAGES", @old)
+
+      assert :ok = Docker.prune_old_images(config, "ncc-worker:local")
+
+      refute File.exists?(images_log)
+      refute File.exists?(rmi)
+    end
+
+    test "a digest kept only by a floating tag (<none>) is left alone", %{
+      dir: dir,
+      config: config
+    } do
+      rmi = Path.join(dir, "rmi.log")
+      System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+      System.put_env("FAKE_DOCKER_IMAGES", "ghcr.io/x/ncc-worker@<none>")
+
+      assert :ok = Docker.prune_old_images(config, @current)
+      refute File.exists?(rmi)
+    end
   end
 end

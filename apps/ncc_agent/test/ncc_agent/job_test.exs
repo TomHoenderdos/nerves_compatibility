@@ -11,7 +11,8 @@ defmodule NccAgent.JobTest do
   @env ~w(FAKE_DOCKER_EXIT FAKE_DOCKER_RESULT FAKE_DOCKER_ARGV_LOG FAKE_DOCKER_FILE_CONTENT
           FAKE_DOCKER_IMAGE_PRESENT FAKE_DOCKER_SLEEP FAKE_DOCKER_PLANT FAKE_DOCKER_RESULT_LINK
           FAKE_DOCKER_OUTPUT_BYTES FAKE_DOCKER_CONTAINER_PRESENT FAKE_DOCKER_DOWN
-          FAKE_DOCKER_HEX_TARBALL FAKE_DOCKER_HEX_LABEL FAKE_DOCKER_INSPECT_FAIL)
+          FAKE_DOCKER_HEX_TARBALL FAKE_DOCKER_HEX_LABEL FAKE_DOCKER_INSPECT_FAIL
+          FAKE_DOCKER_IMAGES FAKE_DOCKER_IMAGES_LOG FAKE_DOCKER_RMI_LOG FAKE_DOCKER_PS_IMAGES)
   @lease "5b0c8a8e-1111-4c2d-9e3f-0a1b2c3d4e5f"
   @digest "sha256:" <> String.duplicate("a", 64)
   @content "the archived artifact"
@@ -130,6 +131,39 @@ defmodule NccAgent.JobTest do
     # The image was absent, so it was pulled first.
     assert_received {:portal_request, "POST", "/builder/v1/jobs/" <> _, %{"phase" => "building"},
                      _}
+  end
+
+  test "once its image is ensured, the run prunes the repository's other local digests", %{
+    req: req,
+    config: config,
+    dir: dir
+  } do
+    stale = "ghcr.io/x/ncc-worker@sha256:" <> String.duplicate("f", 64)
+    current = "ghcr.io/x/ncc-worker@" <> @digest
+    rmi = Path.join(dir, "rmi.log")
+    System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+    System.put_env("FAKE_DOCKER_IMAGES", Enum.join([current, stale], "\n"))
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    assert File.read!(rmi) == "#{stale}\n"
+  end
+
+  test "a container of another slot's run keeps its image from being pruned", %{
+    req: req,
+    config: config,
+    dir: dir
+  } do
+    other_slot = "ghcr.io/x/ncc-worker@sha256:" <> String.duplicate("f", 64)
+    current = "ghcr.io/x/ncc-worker@" <> @digest
+    rmi = Path.join(dir, "rmi.log")
+    System.put_env("FAKE_DOCKER_RMI_LOG", rmi)
+    System.put_env("FAKE_DOCKER_IMAGES", Enum.join([current, other_slot], "\n"))
+    System.put_env("FAKE_DOCKER_PS_IMAGES", other_slot)
+
+    assert {:ok, :done} = Job.run(req, claim(), config)
+
+    refute File.exists?(rmi)
   end
 
   test "an offered L2 entry is fetched before the run and mounted read-only", %{

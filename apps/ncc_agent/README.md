@@ -248,6 +248,16 @@ nothing: each slot logs "unsupported architecture", reports no free slots
 and checks again a minute later. The host check and the egress ruleset
 above apply on both architectures alike.
 
+Once a job's image is confirmed present or freshly pulled, the agent prunes
+every other local digest of that same registry repository
+(`NccAgent.Docker.prune_old_images/2`): `images.json` names a new digest
+every time CI publishes, and nothing else removed the old ones, so an
+agent left running for a while otherwise fills its disk with past
+`ncc-worker` pulls. It never removes an image a currently present
+container uses (another slot's active build), never touches a local tag
+such as `ncc-worker:local` (dev/test, a different repository) or any other
+repository, and a removal failure is logged, never the job's.
+
 ## Running in dev against a local portal
 
 From the umbrella root, with the portal's builder endpoint up and a token

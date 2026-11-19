@@ -21,6 +21,14 @@ defmodule NccAgent.Job do
   run downloaded into its own `HEX_HOME` are promoted into the slot's
   read-only Hex cache once Hex.pm vouches for them (`NccAgent.HexCache.promote/3`).
 
+  Once the run's image is confirmed present or freshly pulled,
+  `Docker.prune_old_images/2` drops this repository's other local digests
+  (an `images.json` entry from before) so a builder does not fill its disk
+  with them, as an un-pruned one once did on the ops-deployed host side
+  (`ops/builder-deploy.sh`'s `builder_prune_old_images`). It never touches
+  an image a running container still uses, never another repository, and
+  a failure is logged, never the job's.
+
   A runner-side failure (a timeout, a failed pull, a crash, an upload of
   the run's files that still fails after its retries) completes the lease
   with exit code `20`, which the portal retries.
@@ -282,12 +290,21 @@ defmodule NccAgent.Job do
 
   # sobelow_skip ["Traversal.FileModule"]
   defp ensure_image(config, image, runner_log) do
-    if Docker.present?(config, image) do
-      :ok
-    else
-      File.write!(runner_log, "[agent] pulling #{image}\n", [:append])
-      Docker.pull(config, image)
-    end
+    result =
+      if Docker.present?(config, image) do
+        :ok
+      else
+        File.write!(runner_log, "[agent] pulling #{image}\n", [:append])
+        Docker.pull(config, image)
+      end
+
+    # Best effort, after the image this job needs is confirmed present:
+    # drops this repository's other local digests (an older images.json
+    # entry) so a builder does not fill its disk with them. Never changes
+    # `result`, so a prune failure never fails the job.
+    if result == :ok, do: Docker.prune_old_images(config, image)
+
+    result
   end
 
   # `claim["input"]` is `Portal.Builder.worker_input/1`, written as is.

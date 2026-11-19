@@ -1,9 +1,10 @@
 defmodule NccAgent.Docker do
   @moduledoc """
   The agent's calls to `docker` (`config.docker_bin`): pull, inspect, kill
-  (one container, or the leftovers of a previous boot), and one worker container run with its output appended to a log and a
-  wall-clock deadline, past which the container is killed. Every call has
-  a deadline; `runner.log` stops growing at `NccAgent.Caps`'
+  (one container, or the leftovers of a previous boot), prune old registry
+  image tags, and one worker container run with its output appended to a
+  log and a wall-clock deadline, past which the container is killed. Every
+  call has a deadline; `runner.log` stops growing at `NccAgent.Caps`'
   `:runner_log_bytes` while the output keeps being drained.
   """
 
@@ -14,6 +15,8 @@ defmodule NccAgent.Docker do
   @pull_timeout_ms 30 * 60_000
   @inspect_timeout_ms 60_000
   @kill_timeout_ms 60_000
+  @images_timeout_ms 60_000
+  @rmi_timeout_ms 60_000
   # What a short command's answer keeps of its output, for error messages.
   @output_bytes 65_536
 
@@ -25,6 +28,105 @@ defmodule NccAgent.Docker do
       {:ok, out, status} -> {:error, "docker pull exited #{status}: #{String.trim(out)}"}
       {:error, :timeout} -> {:error, "docker pull timed out"}
       {:error, reason} -> {:error, "docker pull failed: #{inspect(reason)}"}
+    end
+  end
+
+  @doc """
+  Removes every local image of `image_ref`'s repository except `image_ref`
+  itself and whatever image a currently present `ncc-*` container uses (one
+  still running keeps its image no matter its age; `--rm` or an explicit
+  `kill`/`rm` clears a finished one, so in steady state this is only other
+  slots' active builds). Called once `image_ref` is confirmed present or
+  freshly pulled, it is what keeps a builder from filling its disk with
+  `images.json`'s past digests the way an un-pruned builder once did
+  (`ops/builder-deploy.sh`'s `builder_prune_old_images`, the same pattern
+  host-side).
+
+  Only runs for a registry image: `image_ref` must be `repo@sha256:...`, as
+  `NccAgent.Job.image_ref/1` builds it for a name with a `/`. A bare local
+  tag (`ncc-worker:local`, dev/test) has no `@` and is skipped -- it is a
+  different repository and is never touched, nor is any other image's.
+  Each digest the agent has ever pulled is content-addressed and immutable,
+  so comparing the plain ref strings (no `docker image inspect` needed) is
+  exact.
+
+  Best effort: a listing or removal failure is logged and this still
+  answers `:ok`, so it never fails the job that just ensured its image.
+  """
+  @spec prune_old_images(Config.t(), String.t()) :: :ok
+  def prune_old_images(config, image_ref) do
+    case String.split(image_ref, "@", parts: 2) do
+      [repo, _digest] -> prune_repo(config, repo, image_ref)
+      _ -> :ok
+    end
+  end
+
+  defp prune_repo(config, repo, keep_ref) do
+    keep = MapSet.new([keep_ref | container_images(config)])
+
+    case repo_images(config, repo) do
+      {:ok, refs} ->
+        refs
+        |> Enum.reject(&MapSet.member?(keep, &1))
+        |> Enum.each(&rmi(config, &1))
+
+      {:error, reason} ->
+        Logger.warning("could not list local images of #{repo}: #{reason}")
+    end
+
+    :ok
+  end
+
+  # The ref every currently present `ncc-*` container was created with:
+  # `docker ps` prints back exactly what `docker run` was given, which for a
+  # registry pull is this same `repo@digest` string. `-a` so one still
+  # starting (`created`) counts too. A docker failure answers no
+  # containers, which prunes nothing extra rather than something in use.
+  defp container_images(config) do
+    args = ["ps", "-a", "--filter", "name=ncc-", "--format", "{{.Image}}"]
+
+    case cmd(config, args, @inspect_timeout_ms) do
+      {:ok, out, 0} -> String.split(out, "\n", trim: true)
+      _ -> []
+    end
+  end
+
+  # Every digest-addressed ref docker currently has for `repo`. An image
+  # kept only by a floating tag (no digest on file) prints `<none>` and is
+  # left alone: it is not one this module ever created, so it is not this
+  # module's to remove.
+  defp repo_images(config, repo) do
+    args = ["images", "--no-trunc", "--format", "{{.Repository}}@{{.Digest}}", repo]
+
+    case cmd(config, args, @images_timeout_ms) do
+      {:ok, out, 0} ->
+        refs =
+          out
+          |> String.split("\n", trim: true)
+          |> Enum.reject(&String.ends_with?(&1, "@<none>"))
+
+        {:ok, refs}
+
+      {:ok, out, status} ->
+        {:error, "docker images exited #{status}: #{String.trim(out)}"}
+
+      {:error, reason} ->
+        {:error, "docker images failed: #{inspect(reason)}"}
+    end
+  end
+
+  defp rmi(config, ref) do
+    case cmd(config, ["rmi", ref], @rmi_timeout_ms) do
+      {:ok, _out, 0} ->
+        Logger.info("pruned old worker image #{ref}")
+
+      {:ok, out, status} ->
+        Logger.warning(
+          "could not prune old worker image #{ref} (exit #{status}): #{String.trim(out)}"
+        )
+
+      {:error, reason} ->
+        Logger.warning("could not prune old worker image #{ref}: #{inspect(reason)}")
     end
   end
 

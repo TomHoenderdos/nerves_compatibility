@@ -12,8 +12,17 @@
 #   rm             echo, exit 0
 #   pull           echo, exit 0
 #   kill           append the container name to FAKE_DOCKER_KILL_LOG, exit 0
-#   ps             append the argv to FAKE_DOCKER_PS_LOG, print FAKE_DOCKER_PS
-#                  (container ids, one per line), exit 0
+#   ps             append the argv to FAKE_DOCKER_PS_LOG; with --format,
+#                  print FAKE_DOCKER_PS_IMAGES (one image ref per line);
+#                  else print FAKE_DOCKER_PS (container ids, one per line);
+#                  exit 0
+#   images         append the argv to FAKE_DOCKER_IMAGES_LOG, print
+#                  FAKE_DOCKER_IMAGES (one "repo@digest" per line), exit 1
+#                  with the daemon's connection error when
+#                  FAKE_DOCKER_IMAGES_FAIL=1, else exit 0
+#   rmi <ref>      append <ref> to FAKE_DOCKER_RMI_LOG, print "Untagged:
+#                  <ref>" and exit 0, or print a refusal and exit 1 when
+#                  FAKE_DOCKER_RMI_FAIL=1
 #   run ...        append the argv (one per line) to FAKE_DOCKER_ARGV_LOG,
 #                  write FAKE_DOCKER_RESULT to <out>/result.json, a log to
 #                  <out>/logs/host.log, a file named by its own sha256 with
@@ -78,9 +87,42 @@ case "${1:-}" in
     if [ -n "${FAKE_DOCKER_PS_LOG:-}" ]; then
       printf '%s\n' "$*" >>"$FAKE_DOCKER_PS_LOG"
     fi
-    if [ -n "${FAKE_DOCKER_PS:-}" ]; then
-      printf '%s\n' "$FAKE_DOCKER_PS"
+    case "$*" in
+      *--format*)
+        if [ -n "${FAKE_DOCKER_PS_IMAGES:-}" ]; then
+          printf '%s\n' "$FAKE_DOCKER_PS_IMAGES"
+        fi
+        ;;
+      *)
+        if [ -n "${FAKE_DOCKER_PS:-}" ]; then
+          printf '%s\n' "$FAKE_DOCKER_PS"
+        fi
+        ;;
+    esac
+    exit 0
+    ;;
+  images)
+    if [ -n "${FAKE_DOCKER_IMAGES_LOG:-}" ]; then
+      printf '%s\n' "$*" >>"$FAKE_DOCKER_IMAGES_LOG"
     fi
+    if [ "${FAKE_DOCKER_IMAGES_FAIL:-0}" = "1" ]; then
+      echo "Error response from daemon: dial unix docker.sock: connect: connection refused" >&2
+      exit 1
+    fi
+    if [ -n "${FAKE_DOCKER_IMAGES:-}" ]; then
+      printf '%s\n' "$FAKE_DOCKER_IMAGES"
+    fi
+    exit 0
+    ;;
+  rmi)
+    if [ -n "${FAKE_DOCKER_RMI_LOG:-}" ]; then
+      printf '%s\n' "${2:-}" >>"$FAKE_DOCKER_RMI_LOG"
+    fi
+    if [ "${FAKE_DOCKER_RMI_FAIL:-0}" = "1" ]; then
+      echo "Error response from daemon: conflict: unable to remove repository reference" >&2
+      exit 1
+    fi
+    echo "Untagged: ${2:-}"
     exit 0
     ;;
   kill)
