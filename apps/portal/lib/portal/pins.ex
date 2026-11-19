@@ -58,10 +58,36 @@ defmodule Portal.Pins do
   the time (which kept the first 252 pinned jobs at 9 from ever running),
   and never ahead of an owner's or a GitHub scan request (0 and 1).
 
+  With `deterministic: true`, and only while the `deterministic_builds_enabled`
+  setting is on (`Portal.Deterministic`), a closure served or judged by a
+  build without a deterministic sibling is queued for one: a pinned build
+  of the set asks for its sibling as any build does while the setting is
+  on, and its sibling is listed in the version's `deterministic` key, the
+  only lists a client whose project sets `ERL_COMPILER_OPTIONS=deterministic`
+  reads. A set then counts as `served` only when the format-2 manifest
+  lists a sibling of exactly its closure on the path's toolchain, at
+  `pure_elixir` or, on the firmware path, at its target and release: the
+  manifest's own selection, so whatever keeps a sibling out of it
+  (`Portal.Deterministic.served/1`, `served_pinned/1`, a firmware sibling
+  beside a build that lost its key) keeps it out here. Its key's pinned row
+  stays `judged` unless it is a served pass (passing, neither revoked nor
+  withdrawn) whose run never tried for its sibling
+  (`Portal.Catalog.PinnedBuild`'s `sibling_attempted`) and no listed sibling
+  serves its closure: the rebuild then replaces the row and records the
+  attempt, held or not, so a closure is queued for its sibling once. A
+  pinned build runs no optional pass (`optional_deps: "pinned"`), so the
+  firmware sibling's refusal of a target that kept or dropped optional
+  dependencies never applies to it; any other refusal is the recorded
+  attempt. An `error` row is no verdict, with or without the option. The
+  report then says whether the setting held sets to siblings
+  (`deterministic`), counts the sets queued for a sibling alone
+  (`no_sibling`) and marks each queued set with it.
+
   It only lists unless given `dry_run: false`. Options: `target:` (the
   toolchain path's, `"host"`), `toolchain:` (the toolchain path's, the first
   configured toolchain by default), `system:` (a `nerves_system_*` the lock
-  holds), `cap:`, `hex:` (a module with `releases/2`, for tests).
+  holds), `cap:`, `deterministic:` (`false` by default), `hex:` (a module
+  with `releases/2`, for tests).
   """
 
   require Ash.Query
@@ -94,7 +120,8 @@ defmodule Portal.Pins do
   builds; see the moduledoc. `{:ok, report}`, with `queue` (queued, or that
   would be) and `skipped` (each `%{package, version, reason}`), or
   `{:error, reason}` for a lock that cannot be read, an unknown target or
-  toolchain, or a `cap:` that is not a non-negative integer.
+  toolchain, a `cap:` that is not a non-negative integer, or a
+  `deterministic:` that is not a boolean.
   """
   @spec from_lock(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def from_lock(lock, opts \\ []) when is_binary(lock) do
@@ -103,6 +130,7 @@ defmodule Portal.Pins do
          {:ok, target} <- target(Keyword.get(opts, :target, "host")),
          {:ok, toolchain, image} <- toolchain(Keyword.get(opts, :toolchain)),
          {:ok, cap} <- cap(Keyword.get(opts, :cap, @default_cap)),
+         {:ok, deterministic} <- deterministic(Keyword.get(opts, :deterministic, false)),
          {:ok, system} <- system(entries, Keyword.get(opts, :system)) do
       {sets, refused} = derive(entries)
 
@@ -115,7 +143,10 @@ defmodule Portal.Pins do
           image: image
         },
         firmware: firmware(system),
-        cap: cap
+        cap: cap,
+        # `nil` without the option, else whether the setting holds sets to
+        # their siblings.
+        deterministic: deterministic && Portal.Deterministic.enabled?()
       }
 
       {:ok, decide(sets, refused, ctx, opts)}
@@ -207,6 +238,10 @@ defmodule Portal.Pins do
   # integer against `nil` or a string, which would lift the bound.
   defp cap(cap) when is_integer(cap) and cap >= 0, do: {:ok, cap}
   defp cap(cap), do: {:error, {:invalid_cap, cap}}
+
+  defp deterministic(false), do: {:ok, nil}
+  defp deterministic(true), do: {:ok, true}
+  defp deterministic(value), do: {:error, {:invalid_deterministic, value}}
 
   # A lock's text, or a path to one: the operator's rpc call names a file
   # on the host it runs on.
@@ -370,7 +405,7 @@ defmodule Portal.Pins do
     {queue, skipped} =
       Enum.reduce(sets, {[], []}, fn set, {queue, skipped} ->
         case verdict(set, ctx, hex, length(queue) < ctx.cap) do
-          {:queue, path} -> {[{set, path} | queue], skipped}
+          {:queue, path, need} -> {[{set, path, need} | queue], skipped}
           reason -> {queue, [skip(set, reason) | skipped]}
         end
       end)
@@ -384,13 +419,25 @@ defmodule Portal.Pins do
       target: ctx.pure.target,
       toolchain: ctx.pure.toolchain,
       system: system_summary(ctx.firmware),
-      queue: Enum.map(queued, &summary/1),
+      queue: Enum.map(queued, &summary(&1, ctx.deterministic)),
       skipped: skipped,
       counts:
         skipped
         |> Enum.frequencies_by(&(&1.reason |> String.split(":") |> hd()))
         |> Map.put("queue", length(queued))
     }
+    |> put_deterministic(queued, ctx.deterministic)
+  end
+
+  # Only with `deterministic: true`, so a call without it reports what it
+  # always did: whether the setting held sets to their siblings, and how
+  # many were queued for a sibling alone.
+  defp put_deterministic(report, _queued, nil), do: report
+
+  defp put_deterministic(report, queued, held?) do
+    report
+    |> Map.put(:deterministic, held?)
+    |> put_in([:counts, "no_sibling"], Enum.count(queued, &match?({_, _, :no_sibling}, &1)))
   end
 
   defp system_summary({:ok, _path, {name, version}}),
@@ -403,28 +450,57 @@ defmodule Portal.Pins do
 
   # A native set takes the firmware path, or its refusal; every check
   # after that is the path's own.
-  defp verdict(%{native: true} = set, %{firmware: {:ok, path, _system}}, hex, room?),
-    do: path_verdict(set, path, hex, room?)
+  defp verdict(%{native: true} = set, %{firmware: {:ok, path, _system}} = ctx, hex, room?),
+    do: path_verdict(set, path, ctx.deterministic == true, hex, room?)
 
   defp verdict(%{native: true}, %{firmware: {:refused, reason, _system}}, _hex, _room?),
     do: reason
 
-  defp verdict(set, ctx, hex, room?), do: path_verdict(set, ctx.pure, hex, room?)
+  defp verdict(set, ctx, hex, room?),
+    do: path_verdict(set, ctx.pure, ctx.deterministic == true, hex, room?)
 
-  defp path_verdict(set, path, hex, room?) do
-    cond do
-      judged?(set, path) -> "judged"
-      served?(set, path) -> "served"
-      queued?(set, path) -> "queued_dup"
-      not room? -> "cap"
-      true -> with(:queue <- registry(set, hex), do: {:queue, path})
+  defp path_verdict(set, path, siblings?, hex, room?) do
+    case need(set, path, siblings?) do
+      {:skip, reason} -> reason
+      need -> queue_verdict(set, path, need, hex, room?)
     end
   end
 
+  # A set that needs a build: its job still queued, the cap, the registry.
+  defp queue_verdict(set, path, need, hex, room?) do
+    cond do
+      queued?(set, path) -> "queued_dup"
+      not room? -> "cap"
+      true -> with(:queue <- registry(set, hex), do: {:queue, path, need})
+    end
+  end
+
+  # Whether the set needs a build: `{:skip, "judged" | "served"}`, else
+  # `:unserved`, or, holding sets to their siblings, `:no_sibling` for a
+  # closure served without a listed sibling (see the moduledoc).
+  defp need(set, path, false) do
+    cond do
+      judged(set, path) != nil -> {:skip, "judged"}
+      served?(set, path) -> {:skip, "served"}
+      true -> :unserved
+    end
+  end
+
+  defp need(set, path, true) do
+    case judged(set, path) do
+      :verdict -> {:skip, "judged"}
+      :bare_pass -> sibling(set, path, "judged")
+      nil -> if served?(set, path), do: sibling(set, path, "served"), else: :unserved
+    end
+  end
+
+  defp sibling(set, path, reason),
+    do: if(sibling_listed?(set, path), do: {:skip, reason}, else: :no_sibling)
+
   defp skip(set, reason), do: %{package: set.package, version: set.version, reason: reason}
 
-  defp summary({set, path}),
-    do: %{
+  defp summary({set, path, need}, deterministic) do
+    entry = %{
       package: set.package,
       version: set.version,
       target: path.target,
@@ -432,6 +508,9 @@ defmodule Portal.Pins do
       pin_hash: set.pins["hash"],
       deps: length(set.pins["deps"])
     }
+
+    if deterministic == nil, do: entry, else: Map.put(entry, :no_sibling, need == :no_sibling)
+  end
 
   defp args(set, path) do
     %{
@@ -454,7 +533,7 @@ defmodule Portal.Pins do
     do: Map.put(args, "system_version", version)
 
   defp insert(queue, queue_for) do
-    Enum.reduce(queue, {[], []}, fn {set, path} = item, {queued, conflicts} ->
+    Enum.reduce(queue, {[], []}, fn {set, path, _need} = item, {queued, conflicts} ->
       set
       |> args(path)
       |> Portal.Workers.PinnedBuild.new(priority: @priority, queue: queue(path, set, queue_for))
@@ -471,8 +550,12 @@ defmodule Portal.Pins do
   defp queue(%{path: :firmware}, _set, _queue_for), do: :builds
   defp queue(%{path: :toolchain}, set, queue_for), do: queue_for.(set.package)
 
+  # The key's pinned build row that is a verdict, and whether it is a
+  # served pass whose run never tried for its sibling.
   @judged_sql """
-  SELECT 1 FROM catalog_pinned_builds pb
+  SELECT pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.unpublished_at IS NULL
+         AND NOT pb.sibling_attempted
+  FROM catalog_pinned_builds pb
   JOIN catalog_packages p ON p.id = pb.package_id
   WHERE p.name = $1 AND pb.version = $2 AND pb.pin_hash = $3 AND pb.target = $4
     AND pb.system_version = $7 AND pb.toolchain = $5 AND pb.builder_version = $6
@@ -530,7 +613,10 @@ defmodule Portal.Pins do
   LIMIT 1
   """
 
-  defp judged?(set, path) do
+  # `:bare_pass` for a served pass whose run never tried for a sibling
+  # (`Portal.Catalog.PinnedBuild`'s `sibling_attempted`), `:verdict` for any
+  # other verdict, `nil` without one.
+  defp judged(set, path) do
     params = [
       set.package,
       set.version,
@@ -541,7 +627,11 @@ defmodule Portal.Pins do
       path.system_version
     ]
 
-    Portal.Repo.query!(@judged_sql, params).rows != []
+    case Portal.Repo.query!(@judged_sql, params).rows do
+      [] -> nil
+      [[true]] -> :bare_pass
+      [[_bare_pass]] -> :verdict
+    end
   end
 
   defp served?(set, path) do
@@ -557,6 +647,46 @@ defmodule Portal.Pins do
     params = [set.package, set.version, path.target, path.system_version, lock, path.toolchain]
     Portal.Repo.query!(@served_target_sql, params).rows != []
   end
+
+  # Whether the format-2 manifest lists a deterministic sibling of exactly
+  # this closure (`Portal.Catalog.precompiled_manifest_v2/1`, under the
+  # version's `deterministic` key): the manifest's own selection, so a
+  # sibling the setting, a revocation, a withdrawal of its build, a withheld
+  # closure or a missing file keeps out, or a firmware one beside a build
+  # that lost its key (`Portal.Deterministic`), is none here either. A
+  # toolchain build's sibling serves either path, as its build does
+  # (`@served_sql`); a firmware target's only its own target and release.
+  # The default config variant only, as `@served_sql`'s.
+  defp sibling_listed?(set, path) do
+    lock = Set.to_lock(set.pins["deps"])
+
+    case Portal.Catalog.precompiled_manifest_v2(set.package) do
+      %{"versions" => %{} = versions} ->
+        lists = get_in(versions, [set.version, "deterministic"]) || %{}
+
+        ~w(builds builds_with_inputs builds_closure)
+        |> Enum.flat_map(&List.wrap(lists[&1]))
+        |> Enum.any?(&sibling_of?(&1, path, lock))
+
+      _ ->
+        false
+    end
+  end
+
+  defp sibling_of?(%{"target" => target, "build" => %{} = build}, path, lock) do
+    build["deps"] == lock and build["config_variant"] in [nil, "default"] and
+      Portal.Toolchains.from_versions(build["elixir"], build["otp"]) == path.toolchain and
+      at_target?(target, build, path)
+  end
+
+  defp sibling_of?(_entry, _path, _lock), do: false
+
+  defp at_target?("pure_elixir", _build, _path), do: true
+
+  defp at_target?(target, build, %{path: :firmware, target: target} = path),
+    do: build["system_version"] == path.system_version
+
+  defp at_target?(_target, _build, _path), do: false
 
   defp queued?(set, path) do
     keys = ["package", "version", "pin_hash", "target", "toolchain", "builder_version"]
