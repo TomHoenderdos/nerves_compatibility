@@ -35,6 +35,10 @@ defmodule Portal.Deterministic do
   manifest lists for its key. A newer run of the same version, target,
   toolchain, release and lock that brought no sibling takes the key, and
   its sibling with it, as a toolchain or pinned rebuild without one does.
+
+  A build gets a sibling only when it is built while the setting is on.
+  `Portal.Pins.from_lock/2`'s `deterministic: true` queues a pinned build
+  for each closure of a project's lock that is served without one.
   """
 
   require Ash.Query
