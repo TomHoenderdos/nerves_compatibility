@@ -159,7 +159,13 @@ defmodule Portal.Catalog.ConfigVariantReadersTest do
 
     test "an unmarked named pass does not make a default's build a refresh" do
       run!("rdpkg4", "1.0.0")
-      row!("rdpkg4", "1.0.0", :fail, marked: true, finished_at: ago(8 * @day))
+      # A killed compile: the one `fail` the backlog builds again a week on.
+      row!("rdpkg4", "1.0.0", :fail,
+        marked: true,
+        reason: "compile failed: host compile failed: mix compile exited with code 137",
+        finished_at: ago(8 * @day)
+      )
+
       named_row!("rdpkg4", "1.0.0", "phx_prod", :pass, marked: false)
 
       assert [%{package: "rdpkg4", refresh: false, config_variant: "default"}] = backlog("rdpkg4")

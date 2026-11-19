@@ -48,7 +48,9 @@ defmodule Portal.Workers.ToolchainBuild do
   build's own.
 
   `max_attempts` is 2, not `Build`'s 3. A compile failure is a verdict and
-  never retried; what is left to retry (exit 10, or 20/21 from the host) is
+  never retried, here or by the sweep at the same `builder_version` (only a
+  compile a signal killed is built again a week later, see
+  `Portal.Catalog.toolchain_backlog/3`); what is left to retry (exit 10, or 20/21 from the host) is
   either a transient flake, which one more attempt covers, or something that
   fails the same way every time, such as a version whose deps do not resolve,
   where more attempts are wasted builds. The sweep's day-old-error rule gives

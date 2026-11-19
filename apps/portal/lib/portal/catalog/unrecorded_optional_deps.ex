@@ -31,8 +31,8 @@ defmodule Portal.Catalog.UnrecordedOptionalDeps do
   then on the backlog treats the row as one a build reported: an empty
   `added` wants no `without` build, a non-empty one wants it under the
   backlog's own rules, so a `without` build that fails, as it does for a
-  package that does not compile without its optional dependencies, is
-  built again a week later rather than leaving the row here. Otherwise the
+  package that does not compile without its optional dependencies, is a
+  verdict like any other `fail` rather than leaving the row here. Otherwise the
   most downloaded packages, whether they declare nothing or never build
   without, would fill every call and the ones behind them would never be
   asked about. The row's status, files and dates, and so what is served,

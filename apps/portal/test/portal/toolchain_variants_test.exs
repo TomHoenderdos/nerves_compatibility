@@ -646,8 +646,8 @@ defmodule Portal.ToolchainVariantsTest do
     # their without build fails for good. A version the registry shows
     # declares one is recorded on its with row after one look, which hands it
     # to the backlog's own rule for a recorded `added` (a failed without
-    # build again after a week) and takes it out of the set the registry is
-    # asked about, so the packages behind it get their turn.
+    # build is a verdict, at any age) and takes it out of the set the
+    # registry is asked about, so the packages behind it get their turn.
     test "one that declares a dependency to add is asked about once" do
       for i <- 0..200 do
         name = "legacy_#{String.pad_leading(Integer.to_string(i), 3, "0")}"
@@ -665,7 +665,11 @@ defmodule Portal.ToolchainVariantsTest do
           finished_at: ago(3 * @day)
         )
 
-        row!(name, "1.4.5", :fail, variant: :without, finished_at: ago(@day))
+        row!(name, "1.4.5", :fail,
+          variant: :without,
+          reason: "compile failed: host compile failed: mix compile exited with code 1",
+          finished_at: ago(@day)
+        )
       end
 
       test_pid = self()
@@ -708,13 +712,23 @@ defmodule Portal.ToolchainVariantsTest do
         assert recorded.file_manifest == row.file_manifest
       end
 
-      # The failed without build is a verdict for its week, then wanted again
-      # by the recorded `added`, without asking the registry.
+      # The failed without build is a verdict, a week on as well: the package
+      # does not compile without its optional dependencies, and building it
+      # again compiles the same thing. Only a compile a signal killed is
+      # wanted again by the recorded `added`, without asking the registry.
       refute Enum.any?(backlog(), &(&1.variant == :without))
 
       Repo.query!(
         "UPDATE catalog_toolchain_builds SET finished_at = $1 WHERE variant = 'without'",
         [ago(8 * @day)]
+      )
+
+      refute Enum.any?(backlog(), &(&1.variant == :without))
+
+      Repo.query!(
+        "UPDATE catalog_toolchain_builds SET reason = $1 " <>
+          "WHERE variant = 'without' AND version = '1.4.5'",
+        ["compile failed: host compile failed: mix compile exited with code 137"]
       )
 
       assert %{

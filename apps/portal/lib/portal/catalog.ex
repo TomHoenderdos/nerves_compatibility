@@ -1647,6 +1647,16 @@ defmodule Portal.Catalog do
    false)
   """
 
+  # A `fail` row whose `mix compile` a signal killed: the worker's host
+  # compile error as `Portal.Catalog.Ingestion` stores it, with an exit code
+  # of 128 + the signal (134 SIGABRT, 137 SIGKILL, 143 SIGTERM). The build
+  # host's memory or a watchdog stopped the compile, which says nothing about
+  # the package, so unlike every other `fail` it is no verdict. NULL (no
+  # reason) reads as a verdict.
+  @killed_compile """
+  coalesce(t.reason ~ '^compile failed: .*exited with code (12[89]|1[3-9][0-9]|2[0-5][0-9])$', false)
+  """
+
   # A live row of the identity (see `@toolchain_candidates_sql`'s comment for
   # what is live): `t` is the row; `$PKG`, `$VERSION`, `$VARIANT` and
   # `$CONFIG` are the candidate's package id, version, variant and config
@@ -1668,6 +1678,9 @@ defmodule Portal.Catalog do
             t.revoked_reason IS NOT DISTINCT FROM 'withheld closure'
             AND NOT #{records_config_reads.("t")}
             AND #{@reopen_due}
+            -- its rebuild landed as a verdict that cannot un-revoke it
+            AND NOT (t.status IN ('skipped', 'fail')
+                     AND coalesce(t.finished_at > t.revoked_at, false))
           )
         )
         OR (
@@ -1705,7 +1718,7 @@ defmodule Portal.Catalog do
         OR (
           t.revoked_at IS NULL
           AND t.status = 'fail'
-          AND coalesce(t.finished_at, t.updated_at) > $4::timestamp
+          AND NOT (#{@killed_compile} AND coalesce(t.finished_at, t.updated_at) <= $4::timestamp)
         )
       )
   )
@@ -1834,11 +1847,17 @@ defmodule Portal.Catalog do
   # `Portal.Catalog.UnrecordedOptionalDeps` asks the registry which of those
   # rows declare one, in Elixir, since the query cannot.
   #
-  # A live row for the identity, variant included, removes it: `pass` and
-  # `skipped` at any age, `error` younger than a day ($3), `fail` younger than
-  # 7 days ($4), and any revoked row, whatever its status. A revoke is a human
-  # decision, and only a `builder_version` bump makes a new identity to build
-  # again. Some rows are verdicts no longer once they are due (`@reopen_due`:
+  # A live row for the identity, variant included, removes it: `pass`,
+  # `skipped` and `fail` at any age, `error` younger than a day ($3), and any
+  # revoked row, whatever its status. A failed compile is a verdict on the
+  # package, version and toolchain, like a refusal: building it again on the
+  # same `builder_version` compiles the same thing (until 2026-11-19 a 7-day
+  # window re-queued some 10,900 such rows every week as new builds, ahead of
+  # every other build, and they failed again). Only a compile a signal killed
+  # (`@killed_compile`) is no verdict and is built again 7 days after its
+  # build ($4). A revoke is a human decision, and only a `builder_version`
+  # bump makes a new identity to build again. Some rows are verdicts no
+  # longer once they are due (`@reopen_due`:
   # 7 days after their build or last attempt, a day after a transient
   # "could not be judged", never once they have had
   # `ToolchainBuild.transient_cap/0` ($8) of those in a row): a `pass` that
@@ -1853,11 +1872,14 @@ defmodule Portal.Catalog do
   # the OS grep (`@rule1_reopen`, which has its own timing), once; and a
   # revoked row an operator marked as revoked for its withheld closure
   # (`revoked_reason`, `mark_withheld_revoked/2`) that does not record its
-  # config reads either. Each stays as it is until the new build replaces
-  # it; a rebuild that fails records its attempt on the kept row
-  # (`attempted_at`, `Portal.Workers.ToolchainBuild`, and
-  # `transient_attempts` for a transient one), and the age counts from that
-  # attempt. `finished_at` stays the build's own.
+  # config reads either, until its rebuild lands as a skip or a fail (built
+  # after the revocation): only a pass un-revokes it
+  # (`Portal.Catalog.Ingestion`), and those are verdicts the row keeps. Each
+  # stays as it is until the new build replaces it; a rebuild that fails
+  # records its attempt on the kept row (`attempted_at`,
+  # `Portal.Workers.ToolchainBuild`, and `transient_attempts` for a transient
+  # one), and the age counts from that attempt. `finished_at` stays the
+  # build's own.
   #
   # `refresh` marks a version whose only reason to build is a `pass` row that
   # does not record its config reads and is not withheld ($7,

@@ -215,6 +215,33 @@ defmodule Portal.Catalog.ToolchainBacklogR5Test do
     assert names() == ["lv_revoked"]
   end
 
+  # The mark asks for one rebuild, whose pass un-revokes the row
+  # (`Portal.Catalog.Ingestion`). A rebuild that came back skipped or failed
+  # is a verdict the row keeps, revocation included: building it again every
+  # week compiles the same thing (production had 94 such skipped rows).
+  test "a withheld-closure row whose rebuild landed skipped or failed is not rebuilt again" do
+    for {name, status, rebuilt?} <- [
+          {"skip_rebuilt", :skipped, true},
+          {"fail_rebuilt", :fail, true},
+          {"pass_rebuilt", :pass, true},
+          {"skip_unbuilt", :skipped, false}
+        ] do
+      run!(name, "1.0.0")
+      row = name |> row!("1.0.0", status, deps_lock: @lv) |> revoke!() |> mark!()
+      # Revoked 31 days ago; the row's own build is a day newer when rebuilt.
+      built = if rebuilt?, do: ago(30 * @day), else: ago(32 * @day)
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET revoked_at = $2, finished_at = $3 WHERE id = $1",
+        [Ecto.UUID.dump!(row.id), DateTime.to_naive(ago(31 * @day)), DateTime.to_naive(built)]
+      )
+    end
+
+    # A pass rebuilt without its config reads (an older worker image) still
+    # waits for one that records them.
+    assert Enum.sort(names()) == ["pass_rebuilt", "skip_unbuilt"]
+  end
+
   test "a row revoked for its withheld closure waits a week after its last attempt" do
     run!("lv_tried", "1.0.0")
 

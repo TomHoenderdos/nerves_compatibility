@@ -139,6 +139,11 @@ defmodule Portal.Workers.ToolchainSweepTest do
 
   @day 86_400
 
+  # The reasons `Portal.Catalog.Ingestion` stores for a host compile that
+  # failed, and for one whose `mix compile` a signal killed (137: SIGKILL).
+  @compile_failed "compile failed: host compile failed: mix compile exited with code 1"
+  @compile_killed "compile failed: host compile failed: mix compile exited with code 137"
+
   describe "Catalog.toolchain_backlog/3" do
     test "lists exactly the versions without a live build" do
       run!("wanted", "1.0.0")
@@ -151,9 +156,28 @@ defmodule Portal.Workers.ToolchainSweepTest do
       run!("fresh_error", "1.0.0")
       toolchain_row!("fresh_error", "1.0.0", :error, finished_at: ago(3600))
       run!("old_fail", "1.0.0")
-      toolchain_row!("old_fail", "1.0.0", :fail, finished_at: ago(8 * @day))
+
+      toolchain_row!("old_fail", "1.0.0", :fail,
+        reason: @compile_failed,
+        finished_at: ago(30 * @day)
+      )
+
       run!("fresh_fail", "1.0.0")
       toolchain_row!("fresh_fail", "1.0.0", :fail, finished_at: ago(2 * @day))
+      run!("old_killed", "1.0.0")
+
+      toolchain_row!("old_killed", "1.0.0", :fail,
+        reason: @compile_killed,
+        finished_at: ago(8 * @day)
+      )
+
+      run!("fresh_killed", "1.0.0")
+
+      toolchain_row!("fresh_killed", "1.0.0", :fail,
+        reason: @compile_killed,
+        finished_at: ago(2 * @day)
+      )
+
       run!("revoked_row", "1.0.0")
 
       toolchain_row!("revoked_row", "1.0.0", :error,
@@ -189,7 +213,7 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  backfill: false
                },
                %{
-                 package: "old_fail",
+                 package: "old_killed",
                  version: "1.0.0",
                  variant: :with,
                  config_variant: "default",
@@ -207,6 +231,45 @@ defmodule Portal.Workers.ToolchainSweepTest do
                  backfill: false
                }
              ]
+    end
+
+    # A failed compile is a verdict on the package, version and toolchain
+    # (`Portal.Workers.ToolchainBuild`): rebuilding it on the same
+    # builder_version compiles the same thing again. What production queued
+    # every week was exactly this, thousands of them as new defaults at
+    # priority 0 ahead of every new build.
+    test "a fail row is settled at any age; only a killed compile is retried after a week" do
+      for {name, reason} <- [
+            {"compile_error", @compile_failed},
+            {"no_reason", nil},
+            {"refused", "priv refused on the host: ships an executable"},
+            {"survived", "worker: processes survived the sweep: 1"},
+            {"policy", "lock policy violation"}
+          ] do
+        run!(name, "1.0.0")
+        toolchain_row!(name, "1.0.0", :fail, reason: reason, finished_at: ago(90 * @day))
+      end
+
+      for {name, code} <- [{"sigkill", 137}, {"sigabrt", 134}, {"sigterm", 143}] do
+        run!(name, "1.0.0")
+
+        toolchain_row!(name, "1.0.0", :fail,
+          reason: "compile failed: host compile failed: mix compile exited with code #{code}",
+          finished_at: ago(8 * @day)
+        )
+      end
+
+      run!("killed_recently", "1.0.0")
+
+      toolchain_row!("killed_recently", "1.0.0", :fail,
+        reason: @compile_killed,
+        finished_at: ago(6 * @day)
+      )
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) |> Enum.map(& &1.package) |> Enum.sort() ==
+               ["sigabrt", "sigkill", "sigterm"]
+
+      assert %{"1.19/28" => %{fail: 9, backlog: 3}} = Catalog.toolchain_counts()
     end
 
     test "a row for another toolchain or builder version is not live here" do
@@ -392,9 +455,20 @@ defmodule Portal.Workers.ToolchainSweepTest do
       registry_run!("fresh_fail", "1.0.0")
       toolchain_row!("fresh_fail", "1.0.0", :fail, finished_at: ago(2 * @day))
       registry_run!("old_fail", "1.0.0")
-      toolchain_row!("old_fail", "1.0.0", :fail, finished_at: ago(8 * @day))
 
-      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [wanted("old_fail")]
+      toolchain_row!("old_fail", "1.0.0", :fail,
+        reason: @compile_failed,
+        finished_at: ago(8 * @day)
+      )
+
+      registry_run!("old_killed", "1.0.0")
+
+      toolchain_row!("old_killed", "1.0.0", :fail,
+        reason: @compile_killed,
+        finished_at: ago(8 * @day)
+      )
+
+      assert Catalog.toolchain_backlog("1.19/28", 1, 100) == [wanted("old_killed")]
     end
 
     test "a version with both a host and a registry pass is listed once" do

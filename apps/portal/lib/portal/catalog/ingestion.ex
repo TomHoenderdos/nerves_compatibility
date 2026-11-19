@@ -621,8 +621,8 @@ defmodule Portal.Catalog.Ingestion do
 
   # A build whose priv files the host refused publishes none of its files,
   # beams included: its beams read data that is not published with them. It
-  # is stored as a `fail`, a verdict the sweep leaves alone for 7 days rather
-  # than one it re-queues at once.
+  # is stored as a `fail`, a verdict the sweep leaves alone rather than one
+  # it re-queues at once.
   defp refused(build, reason) do
     Map.merge(build, %{
       "status" => "fail",
@@ -1145,8 +1145,9 @@ defmodule Portal.Catalog.Ingestion do
   defp compile_observations(_observations), do: nil
 
   # The worker's `"error"` is a failed host compile, which is deterministic for
-  # this package, version and toolchain: it is stored as a `:fail` verdict so
-  # the live window for failures applies. `:error` rows mean the build gave
+  # this package, version and toolchain: it is stored as a `:fail` verdict,
+  # which the backlog does not build again at this `builder_version` (only a
+  # compile a signal killed, see `Portal.Catalog.toolchain_backlog/3`). `:error` rows mean the build gave
   # no usable result: `Portal.Workers.ToolchainBuild` writes those, and so
   # does a portal build whose process sweep could not run at all (below).
   # Processes the worker could not stop after the build
