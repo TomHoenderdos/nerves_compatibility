@@ -381,6 +381,7 @@ defmodule Portal.Builders do
   defp revoke_in_transaction(builder) do
     runs = open_runs(builder, load: :package)
     Enum.each(runs, &revoke_run!/1)
+    revoke_pinned_builds!(builder)
     {failed_leases, requeued_ids} = settle_leases(builder)
 
     packages =
@@ -407,6 +408,20 @@ defmodule Portal.Builders do
   # A retry after a failed revoke keeps the original `revoked_at`.
   defp mark_revoked(%Builder{status: :revoked} = builder), do: {:ok, builder}
   defp mark_revoked(builder), do: update(builder, :revoke, %{})
+
+  # Pinned builds (`Portal.Catalog.PinnedBuild`) the builder made are no
+  # runs, and are revoked with its runs.
+  defp revoke_pinned_builds!(%Builder{id: id}) do
+    Repo.query!(
+      """
+      UPDATE catalog_pinned_builds
+      SET revoked_at = now() AT TIME ZONE 'utc', revoked_reason = 'builder revoked',
+          updated_at = now() AT TIME ZONE 'utc'
+      WHERE builder_id = $1 AND revoked_at IS NULL
+      """,
+      [Ecto.UUID.dump!(id)]
+    )
+  end
 
   defp revoke_run!(run) do
     case run |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update(domain: Portal.Catalog) do

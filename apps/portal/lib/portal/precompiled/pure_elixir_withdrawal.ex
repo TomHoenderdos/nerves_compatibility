@@ -73,6 +73,15 @@ defmodule Portal.Precompiled.PureElixirWithdrawal do
   release's partial-run ingest copies a carried result without it (a
   later call withdraws such a copy too).
 
+  ## Pinned builds
+
+  A pinned build (`Portal.Catalog.PinnedBuild`) is never a candidate: it is
+  a toolchain build of one closure, judged by the trace at its own compile,
+  so it is never a result "built without the trace", which is all this
+  withdraws. A pinned build the trace refused is skipped and serves nothing;
+  `Portal.Precompiled.ToolchainRevocation` and `Portal.Catalog.revoke_run/1`
+  withdraw one that passed.
+
   ## Operator commands (web host)
 
       bin/portal rpc 'Portal.Precompiled.PureElixirWithdrawal.withdraw() |> IO.inspect(limit: :infinity)'

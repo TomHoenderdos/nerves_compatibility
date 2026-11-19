@@ -40,6 +40,15 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   its earlier builds matches, and revoking it hides them all. The row's
   listed `rule1_reason` is then the first matching one, its own first.
 
+  ## Pinned builds
+
+  A pinned build (`Portal.Catalog.PinnedBuild`) is a toolchain build of one
+  closure and is judged the same way, so it is selected by the same rules
+  as a toolchain build (it has no earlier builds) and revoked the same way:
+  `revoked_at` and `revoked_reason` `"rule 2 revoked"`, listed with kind
+  `:pinned_build` and variant `"pinned"`. `revocations/0` and `undo/1`
+  cover it.
+
   ## What a revocation does not cover
 
   A revocation sticks per identity and version, never per package. A
@@ -128,7 +137,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   @full_run_toolchain "1.20/29"
 
   @type row :: %{
-          kind: :toolchain_build | :system_result,
+          kind: :toolchain_build | :system_result | :pinned_build,
           package: String.t(),
           version: String.t(),
           toolchain: String.t() | nil,
@@ -212,8 +221,25 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     ORDER BY p.name, r.version_tested, s.id
     LIMIT $5::bigint
     <lock_s>
+  ), pb AS (
+    SELECT 'pinned_build'::text AS kind, b.id, p.name, b.version, b.toolchain,
+           'pinned'::text AS variant, b.config_variant, b.rule1_reason
+    FROM catalog_pinned_builds b
+    JOIN catalog_packages p ON p.id = b.package_id
+    WHERE b.builder_version = $1
+      AND b.revoked_at IS NULL
+      AND b.status = 'pass'
+      AND b.portability_rule = 2
+      AND ($7::boolean OR $8::integer IS NOT NULL OR b.rule1_reason IS NOT NULL)
+      AND ($8::integer IS NULL OR b.judge_revision >= $8)
+      AND ($4::text IS NULL OR starts_with(b.rule1_reason, $4))
+      AND ($2::text IS NULL OR p.name = $2)
+      AND ($3::text IS NULL OR b.version = $3)
+    ORDER BY p.name, b.version, b.toolchain, b.config_variant, b.id
+    LIMIT $5::bigint
+    <lock_p>
   ), cand AS (
-    SELECT * FROM tc UNION ALL SELECT * FROM sr
+    SELECT * FROM tc UNION ALL SELECT * FROM sr UNION ALL SELECT * FROM pb
     ORDER BY name, version, kind, toolchain, variant, config_variant, id
     LIMIT $5::bigint
   )
@@ -224,7 +250,8 @@ defmodule Portal.Precompiled.ToolchainRevocation do
 
   @dry_run_sql (@candidates
                 |> String.replace("<lock_t>", "")
-                |> String.replace("<lock_s>", "")) <>
+                |> String.replace("<lock_s>", "")
+                |> String.replace("<lock_p>", "")) <>
                  "SELECT #{@columns} FROM cand c #{@order}"
 
   # $9 the timestamp every row of the call carries. The updates re-check the
@@ -232,7 +259,8 @@ defmodule Portal.Precompiled.ToolchainRevocation do
   # neither changed nor listed.
   @revoke_sql (@candidates
                |> String.replace("<lock_t>", "FOR UPDATE OF t")
-               |> String.replace("<lock_s>", "FOR UPDATE OF s")) <>
+               |> String.replace("<lock_s>", "FOR UPDATE OF s")
+               |> String.replace("<lock_p>", "FOR UPDATE OF b")) <>
                 """
                 , tb_done AS (
                   UPDATE catalog_toolchain_builds
@@ -247,9 +275,16 @@ defmodule Portal.Precompiled.ToolchainRevocation do
                   WHERE id IN (SELECT id FROM cand WHERE kind = 'system_result')
                     AND unpublished_at IS NULL
                   RETURNING id
+                ), pb_done AS (
+                  UPDATE catalog_pinned_builds
+                  SET revoked_at = $9, revoked_reason = '#{@reason}', updated_at = $9
+                  WHERE id IN (SELECT id FROM cand WHERE kind = 'pinned_build')
+                    AND revoked_at IS NULL
+                  RETURNING id
                 )
                 SELECT #{@columns} FROM cand c
-                WHERE c.id IN (SELECT id FROM tb_done UNION ALL SELECT id FROM sr_done)
+                WHERE c.id IN (SELECT id FROM tb_done UNION ALL SELECT id FROM sr_done
+                               UNION ALL SELECT id FROM pb_done)
                 #{@order}
                 """
 
@@ -264,6 +299,11 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     FROM catalog_system_results
     WHERE unpublished_reason = $2 AND unpublished_at IS NOT NULL
     GROUP BY unpublished_at
+    UNION ALL
+    SELECT revoked_at, count(*)
+    FROM catalog_pinned_builds
+    WHERE revoked_reason = $1 AND revoked_at IS NOT NULL
+    GROUP BY revoked_at
   ) x
   GROUP BY at
   ORDER BY at
@@ -280,8 +320,13 @@ defmodule Portal.Precompiled.ToolchainRevocation do
     SET unpublished_at = NULL, unpublished_reason = NULL, updated_at = now() AT TIME ZONE 'utc'
     WHERE unpublished_reason = $3 AND unpublished_at = $2
     RETURNING 1
+  ), pb AS (
+    UPDATE catalog_pinned_builds
+    SET revoked_at = NULL, revoked_reason = NULL, updated_at = now() AT TIME ZONE 'utc'
+    WHERE revoked_reason = $1 AND revoked_at = $2
+    RETURNING 1
   )
-  SELECT (SELECT count(*) FROM tb) + (SELECT count(*) FROM sr)
+  SELECT (SELECT count(*) FROM tb) + (SELECT count(*) FROM sr) + (SELECT count(*) FROM pb)
   """
 
   @doc """
@@ -374,6 +419,7 @@ defmodule Portal.Precompiled.ToolchainRevocation do
 
   defp kind("toolchain_build"), do: :toolchain_build
   defp kind("system_result"), do: :system_result
+  defp kind("pinned_build"), do: :pinned_build
 
   defp positive_or_nil!(value, _name) when is_nil(value) or (is_integer(value) and value > 0),
     do: value

@@ -38,6 +38,7 @@ defmodule Portal.Catalog do
     LatestRun,
     Package,
     PackageOverride,
+    PinnedBuild,
     ReleaseDownloads,
     Run,
     RunMemory,
@@ -1157,7 +1158,10 @@ defmodule Portal.Catalog do
   # bytes it was (`format/2` reads a NULL as '', so the suffix is decided by
   # whether the package has a counted row, never by `coalesce`); so do
   # deterministic siblings (`Portal.Deterministic`) while the
-  # `deterministic_builds_enabled` setting is on, in a suffix of their own.
+  # `deterministic_builds_enabled` setting is on, in a suffix of their own;
+  # and so do pinned builds (`Portal.Catalog.PinnedBuild`), whose every
+  # revocation and withdrawal column and whose `reporters` (the manifest's
+  # cap ranks by it) are in it as values.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1231,6 +1235,20 @@ defmodule Portal.Catalog do
     JOIN catalog_deterministic_builds d ON d.id = m.deterministic_build_id
     WHERE EXISTS (SELECT 1 FROM settings st WHERE st.deterministic_builds_enabled)
     GROUP BY d.package_id
+  ), pinned AS (
+    SELECT pb.package_id,
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', pb.id, pb.xmin, pb.updated_at,
+                                 pb.status, pb.revoked_at, pb.unpublished_at, pb.reporters,
+                                 pb.builder_id, md5(pb.compile_inputs::text)),
+                          ',' ORDER BY pb.id)) AS fp
+    FROM catalog_pinned_builds pb
+    GROUP BY pb.package_id
+  ), pinned_files AS (
+    SELECT pb.package_id, count(*) AS n,
+           sum(hashtextextended(format('%s|%s|%s|%s', m.id, m.xmin, m.pinned_build_id, m.sha256), 0)) AS h
+    FROM catalog_artifact_memberships m
+    JOIN catalog_pinned_builds pb ON pb.id = m.pinned_build_id
+    GROUP BY pb.package_id
   )
   SELECT p.name,
          md5(format('%s/%s/%s/%s/%s/%s/%s/%s', p.id, runs.fp, results.fp, rf.n, rf.h,
@@ -1238,7 +1256,9 @@ defmodule Portal.Catalog do
            CASE WHEN hn.package_id IS NULL THEN ''
                 ELSE '|host_native:' || md5(format('%s/%s/%s', hn.fp, hf.n, hf.h)) END ||
            CASE WHEN dt.package_id IS NULL THEN ''
-                ELSE '|deterministic:' || md5(format('%s/%s/%s', dt.fp, df.n, df.h)) END
+                ELSE '|deterministic:' || md5(format('%s/%s/%s', dt.fp, df.n, df.h)) END ||
+           CASE WHEN pn.package_id IS NULL THEN ''
+                ELSE '|pinned:' || md5(format('%s/%s/%s', pn.fp, pf.n, pf.h)) END
   FROM catalog_packages p
   LEFT JOIN runs ON runs.package_id = p.id
   LEFT JOIN results ON results.package_id = p.id
@@ -1249,7 +1269,10 @@ defmodule Portal.Catalog do
   LEFT JOIN host_native_files hf ON hf.package_id = p.id
   LEFT JOIN deterministic dt ON dt.package_id = p.id
   LEFT JOIN deterministic_files df ON df.package_id = p.id
+  LEFT JOIN pinned pn ON pn.package_id = p.id
+  LEFT JOIN pinned_files pf ON pf.package_id = p.id
   WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL OR hn.package_id IS NOT NULL
+     OR pn.package_id IS NOT NULL
   """
 
   @doc """
@@ -1393,6 +1416,31 @@ defmodule Portal.Catalog do
   AND #{withheld_lock_clause |> String.replace("$L", "h.deps_lock") |> String.replace("$E", "(h.compile_env_rule = 1 AND h.compile_env IS NOT NULL AND h.run_id IS NOT NULL)")}
   """
 
+  # The one predicate that serves a pinned build aliased `pb` of the package
+  # `p` (`Portal.Pins.Served`, `$W` the withheld list): a pass, neither
+  # revoked nor withdrawn, the default config variant of a target this
+  # release builds, built here or by an enrolled, publishing builder, and not
+  # withheld. Its config reads are recorded by the write that records its
+  # run. The manifest's per-version cap (`Portal.Pins.Served.cap/1`) only
+  # decides which are listed, not which are served.
+  @served_pinned_clause """
+  pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.unpublished_at IS NULL
+  AND pb.config_variant = 'default'
+  AND pb.target IN (#{Enum.map_join(Portal.Workers.PinnedBuild.targets(), ", ", &"'#{&1}'")})
+  AND (pb.builder_id IS NULL
+       OR EXISTS (SELECT 1 FROM builders pbb
+                  WHERE pbb.id = pb.builder_id AND pbb.publishing AND pbb.status = 'enrolled'))
+  AND #{withheld_lock_clause |> String.replace("$L", "pb.deps_lock") |> String.replace("$E", "(pb.compile_env_rule = 1 AND pb.compile_env IS NOT NULL AND pb.run_id IS NOT NULL)")}
+  """
+
+  # A pinned build's deterministic sibling `d`: the setting on, a pass, not
+  # revoked, of the pinned build's own run, and the pinned build served.
+  @served_pinned_deterministic_clause """
+  EXISTS (SELECT 1 FROM settings st WHERE st.deterministic_builds_enabled)
+  AND d.status = 'pass' AND d.revoked_at IS NULL AND d.run_id = pb.run_id
+  AND #{@served_pinned_clause}
+  """
+
   # The one predicate that serves a deterministic sibling aliased `d` of the
   # toolchain build `r` of the package `p` (`Portal.Deterministic`, `$W` the
   # withheld list): the `deterministic_builds_enabled` setting on, a pass,
@@ -1419,6 +1467,9 @@ defmodule Portal.Catalog do
 
   # Whether the host-native build `h` lists `sha` in its own file manifest.
   @served_host_native_file_clause in_own_manifest.("h", "m.sha256")
+
+  # Whether the pinned build `pb` lists `sha` in its own file manifest.
+  @served_pinned_file_clause in_own_manifest.("pb", "m.sha256")
 
   # Whether the deterministic sibling `d` lists `sha` in its own file manifest.
   @served_deterministic_file_clause in_own_manifest.("d", "m.sha256")
@@ -1452,6 +1503,13 @@ defmodule Portal.Catalog do
   WHERE #{@served_host_native_clause}
     AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m
                 WHERE m.host_native_build_id = h.id AND #{@served_host_native_file_clause})
+  UNION
+  SELECT p.name
+  FROM catalog_packages p
+  JOIN catalog_pinned_builds pb ON pb.package_id = p.id
+  WHERE #{@served_pinned_clause}
+    AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m
+                WHERE m.pinned_build_id = pb.id AND #{@served_pinned_file_clause})
   ORDER BY 1
   """
   @packages_with_precompiled_files_sql String.replace(
@@ -2516,13 +2574,30 @@ defmodule Portal.Catalog do
 
   @doc """
   Pulls a run's files from precompiled publication. Manifests and batches skip
-  a revoked run; the next batch drops it for every client.
+  a revoked run; the next batch drops it for every client. A pinned build
+  (`Portal.Catalog.PinnedBuild`) is no run, but it was built by a run of its
+  own id: that id revokes it the same way (`revoked_at`, reason
+  `"run revoked"`), so one lever pulls either.
   """
-  @spec revoke_run(String.t()) :: {:ok, Run.t()} | {:error, :not_found}
+  @spec revoke_run(String.t()) :: {:ok, Run.t() | PinnedBuild.t()} | {:error, :not_found}
   def revoke_run(run_id) do
     case Run |> Ash.Query.filter(run_id == ^run_id) |> Ash.read_one!(domain: __MODULE__) do
-      nil -> {:error, :not_found}
+      nil -> revoke_pinned_run(run_id)
       run -> run |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update(domain: __MODULE__)
+    end
+  end
+
+  defp revoke_pinned_run(run_id) do
+    case PinnedBuild
+         |> Ash.Query.filter(run_id == ^run_id)
+         |> Ash.read_one!(domain: __MODULE__) do
+      nil ->
+        {:error, :not_found}
+
+      pinned ->
+        pinned
+        |> Ash.Changeset.for_update(:revoke, %{revoked_reason: "run revoked"})
+        |> Ash.update(domain: __MODULE__)
     end
   end
 
@@ -2693,6 +2768,23 @@ defmodule Portal.Catalog do
   JOIN catalog_packages p ON p.id = r.package_id
   WHERE m.sha256 = $1
     AND #{@served_deterministic_clause}
+    AND #{@served_deterministic_file_clause}
+  UNION ALL
+  SELECT 1
+  FROM catalog_artifact_memberships m
+  JOIN catalog_pinned_builds pb ON pb.id = m.pinned_build_id
+  JOIN catalog_packages p ON p.id = pb.package_id
+  WHERE m.sha256 = $1
+    AND #{@served_pinned_clause}
+    AND #{@served_pinned_file_clause}
+  UNION ALL
+  SELECT 1
+  FROM catalog_artifact_memberships m
+  JOIN catalog_deterministic_builds d ON d.id = m.deterministic_build_id
+  JOIN catalog_pinned_builds pb ON pb.id = d.pinned_build_id
+  JOIN catalog_packages p ON p.id = pb.package_id
+  WHERE m.sha256 = $1
+    AND #{@served_pinned_deterministic_clause}
     AND #{@served_deterministic_file_clause}
   LIMIT 1
   """
@@ -3327,9 +3419,18 @@ defmodule Portal.Catalog do
         shas_by_host_native_id =
           host_native_builds |> Enum.map(& &1.id) |> HostNative.membership_shas()
 
+        # Pinned builds (`Portal.Pins.Served`): one closure from a
+        # project's lock each, listed under `builds_closure` only.
+        pinned_builds = Portal.Pins.Served.served(package.id, package.name, withheld)
+
+        shas_by_pinned_id =
+          pinned_builds |> Enum.map(& &1.id) |> Portal.Pins.Served.membership_shas()
+
         # Empty while the `deterministic_builds_enabled` setting is off, and
-        # only beside a toolchain build served here (`Portal.Deterministic`).
-        deterministic_builds = Deterministic.served(toolchain_builds)
+        # only beside a toolchain or pinned build served here
+        # (`Portal.Deterministic`).
+        deterministic_builds =
+          Deterministic.served(toolchain_builds) ++ Deterministic.served_pinned(pinned_builds)
 
         shas_by_deterministic_id =
           deterministic_builds |> Enum.map(& &1.id) |> Deterministic.membership_shas()
@@ -3338,6 +3439,7 @@ defmodule Portal.Catalog do
           shas_by_system_result_id
           |> Map.merge(shas_by_toolchain_build_id)
           |> Map.merge(shas_by_host_native_id)
+          |> Map.merge(shas_by_pinned_id)
           |> Map.merge(shas_by_deterministic_id)
           |> stored_shas()
 
@@ -3351,6 +3453,8 @@ defmodule Portal.Catalog do
           shas_by_toolchain_build_id: shas_by_toolchain_build_id,
           host_native_builds: host_native_builds,
           shas_by_host_native_id: shas_by_host_native_id,
+          pinned_builds: pinned_builds,
+          shas_by_pinned_id: shas_by_pinned_id,
           deterministic_builds: deterministic_builds,
           shas_by_deterministic_id: shas_by_deterministic_id,
           present_shas: present,
@@ -3439,7 +3543,9 @@ defmodule Portal.Catalog do
   # Builds are `{version, finished_at, build}` until the end, so the newest of
   # each key can be picked and `updated_at` taken over what is published.
   defp manifest_v2(sources) do
-    builds = listed(run_builds(sources) ++ toolchain_builds_v2(sources))
+    builds =
+      listed(run_builds(sources) ++ toolchain_builds_v2(sources) ++ pinned_builds_v2(sources))
+
     host_native = host_native_v2(sources)
     deterministic = listed(deterministic_v2(sources))
 
@@ -3504,20 +3610,56 @@ defmodule Portal.Catalog do
   end
 
   # Each served sibling whose files this host holds, rendered as its
-  # toolchain build is (the same lock, inputs and run) with its own files
-  # and `erl_compiler_options`.
+  # toolchain or pinned build is (the same lock, inputs and run) with its own
+  # files and `erl_compiler_options`; a pinned build's sibling goes under the
+  # `deterministic` key's `builds_closure` only, as its build does.
   defp deterministic_v2(sources) do
-    builds = Map.new(sources.toolchain_builds, &{{&1.id, &1.run_id}, &1})
+    builds =
+      Map.new(sources.toolchain_builds, &{{&1.id, &1.run_id}, {:toolchain, &1}})
+      |> Map.merge(Map.new(sources.pinned_builds, &{{&1.id, &1.run_id}, {:pinned, &1}}))
 
     for d <- sources.deterministic_builds,
-        tb = Map.get(builds, {d.toolchain_build_id, d.run_id}),
-        tb != nil,
+        build = Map.get(builds, {d.toolchain_build_id || d.pinned_build_id, d.run_id}),
+        build != nil,
         stored = Map.get(sources.shas_by_deterministic_id, d.id, MapSet.new()),
         files = toolchain_files(d.file_manifest, stored, sources.present_shas),
         files != nil do
-      {version, at, entry} = toolchain_build_v2(tb, files)
+      {version, at, entry} = sibling_build_v2(build, files)
       {version, at, put_in(entry, ["build", "erl_compiler_options"], d.erl_compiler_options)}
     end
+  end
+
+  defp sibling_build_v2({:toolchain, tb}, files), do: toolchain_build_v2(tb, files)
+  defp sibling_build_v2({:pinned, pb}, files), do: pinned_build_v2(pb, files)
+
+  # Pinned builds (`Portal.Catalog.PinnedBuild`, lock-driven builds spec):
+  # rendered as the toolchain build of their closure, with `variant`
+  # "pinned" (informational, as a world build's), and marked `closure_only`,
+  # so `listed/1` puts them under `builds_closure` only: a client takes one
+  # only where its env closure is exactly the build's `deps`, and a client
+  # before 0.7.0 or a device never reads that list. Their own `deps_lock`,
+  # which ingest held to the set, is the published `deps`.
+  defp pinned_builds_v2(sources) do
+    for pb <- sources.pinned_builds,
+        stored = Map.get(sources.shas_by_pinned_id, pb.id, MapSet.new()),
+        files = toolchain_files(pb.file_manifest, stored, sources.present_shas),
+        files != nil,
+        do: pinned_build_v2(pb, files)
+  end
+
+  defp pinned_build_v2(pb, files) do
+    {version, at, entry} =
+      pb
+      |> Map.take([:version, :finished_at, :elixir, :otp, :deps_lock, :compile_env])
+      |> Map.merge(Map.take(pb, [:package_checksum, :run_id, :image_digest, :declared, :manager]))
+      |> Map.merge(%{
+        variant: :pinned,
+        config_variant: pb.config_variant,
+        compile_inputs: pb.compile_inputs
+      })
+      |> toolchain_build_v2(files)
+
+    {version, at, Map.put(entry, :closure_only, true)}
   end
 
   # A build with an input a client must check (`CompileInputs.needs_check?/1`)

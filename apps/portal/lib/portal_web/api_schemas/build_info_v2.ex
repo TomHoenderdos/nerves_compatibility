@@ -51,10 +51,11 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
         },
         variant: %Schema{
           type: :string,
-          enum: Enum.map(Compatibility.Worlds.variants(), &Atom.to_string/1),
+          enum: Enum.map(Compatibility.Worlds.variants(), &Atom.to_string/1) ++ ["pinned"],
           description:
             "Optional, informational: the world a build under `builds_closure` was made " <>
-              "in. Absent on every other build. A client matches the build by its `deps`."
+              "in, or `pinned` for a build of one closure from a project's lock. Absent " <>
+              "on every other build. A client matches the build by its `deps`."
         },
         erl_compiler_options: %Schema{
           type: :array,

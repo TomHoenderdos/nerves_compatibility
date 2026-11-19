@@ -78,6 +78,25 @@ defmodule Portal.Builders.RevokeTest do
     |> Ash.create!(domain: Builders)
   end
 
+  test "revoking a builder revokes the pinned builds it made", %{builder: builder} do
+    name = Portal.PinnedFixtures.unique()
+    pins = Portal.PinnedFixtures.pins(name)
+
+    opts =
+      name
+      |> Portal.PinnedFixtures.opts(pins, Portal.PinnedFixtures.files(["beam-" <> name]))
+      |> Map.put(:builder_id, builder.id)
+
+    {:ok, row} =
+      Portal.Catalog.Ingestion.ingest_pinned(Portal.PinnedFixtures.result(name, pins), opts)
+
+    assert row.builder_id == builder.id
+    assert {:ok, _} = Builders.revoke(builder)
+
+    assert %{revoked_at: %DateTime{}, revoked_reason: "builder revoked"} =
+             Ash.get!(Portal.Catalog.PinnedBuild, row.id, domain: Portal.Catalog)
+  end
+
   test "revoking a builder revokes its runs, requeues its leases and pins the rebuilds locally",
        %{builder: builder} do
     _other = other_builder!()

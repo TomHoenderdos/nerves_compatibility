@@ -35,6 +35,13 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   every carried copy (`carried_from_run_id`) that serves the same files is a
   candidate of its own. A blob is read once per call.
 
+  ## Pinned builds
+
+  Pinned builds (`Portal.Catalog.PinnedBuild`) are never candidates: phase 1
+  builds only `pure_elixir` ones, judged by the trace, and a firmware pinned
+  build (phase 2) is built after the worker judges firmware builds by the
+  baked build path rule, so it is never one this rule did not judge.
+
   ## Safety
 
     * `withdraw/1` counts unless given `dry_run: false`;

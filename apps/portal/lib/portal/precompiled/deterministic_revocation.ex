@@ -12,6 +12,9 @@ defmodule Portal.Precompiled.DeterministicRevocation do
   checks did not catch, or a refinement of them rolled back. Nothing runs it
   on its own.
 
+  It reaches a pinned build's sibling (`Portal.Catalog.PinnedBuild`) the same
+  way, listed with the variant `"pinned"`.
+
   A revoked sibling gets `revoked_at` and `revoked_reason`: it is not served
   (manifests, `files/{sha256}`), and its package's fingerprint changes so the
   next signed batch drops it. A rebuild writes a new sibling row (the ingest
@@ -131,24 +134,36 @@ defmodule Portal.Precompiled.DeterministicRevocation do
   end
 
   defp candidates(opts) do
+    # A sibling belongs to a toolchain build or to a pinned build
+    # (`Portal.Catalog.PinnedBuild`, listed as the variant "pinned").
     from(d in "catalog_deterministic_builds",
-      join: t in "catalog_toolchain_builds",
+      left_join: t in "catalog_toolchain_builds",
       on: t.id == d.toolchain_build_id,
+      left_join: pb in "catalog_pinned_builds",
+      on: pb.id == d.pinned_build_id,
       join: p in "catalog_packages",
       on: p.id == d.package_id,
       where: d.status == "pass" and is_nil(d.revoked_at),
-      order_by: [p.name, d.version, t.toolchain, t.variant, t.config_variant],
+      where: not is_nil(t.id) or not is_nil(pb.id),
+      order_by: [
+        p.name,
+        d.version,
+        coalesce(t.toolchain, pb.toolchain),
+        coalesce(t.variant, "pinned"),
+        coalesce(t.config_variant, pb.config_variant),
+        d.id
+      ],
       select: %{
         id: type(d.id, :binary_id),
         package: p.name,
         version: d.version,
-        toolchain: t.toolchain,
-        variant: t.variant,
-        config_variant: t.config_variant,
+        toolchain: coalesce(t.toolchain, pb.toolchain),
+        variant: coalesce(t.variant, "pinned"),
+        config_variant: coalesce(t.config_variant, pb.config_variant),
         judge_revision: d.judge_revision
       }
     )
-    |> filter(opts[:package], &where(&1, [_d, _t, p], p.name == ^&2))
+    |> filter(opts[:package], &where(&1, [_d, _t, _pb, p], p.name == ^&2))
     |> filter(opts[:version], &where(&1, [d], d.version == ^&2))
     |> filter(opts[:judge_revision], &where(&1, [d], d.judge_revision >= ^&2))
   end
