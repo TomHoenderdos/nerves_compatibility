@@ -54,6 +54,7 @@ defmodule Portal.HexDeps do
   @type release :: %{
           version: String.t(),
           retired?: boolean(),
+          retired_reason: String.t() | nil,
           deps: [dep()],
           outer_checksum: String.t() | nil
         }
@@ -342,6 +343,7 @@ defmodule Portal.HexDeps do
     %{
       version: release.version,
       retired?: Map.has_key?(release, :retired),
+      retired_reason: retired_reason(Map.get(release, :retired)),
       outer_checksum: checksum_hex(Map.get(release, :outer_checksum)),
       deps:
         release
@@ -356,6 +358,21 @@ defmodule Portal.HexDeps do
         end)
     }
   end
+
+  # Why a release was retired, as Hex names it, or nil when it was not:
+  # `Portal.Pins` refuses a release retired as "security" or "invalid".
+  defp retired_reason(%{reason: reason}) do
+    case reason do
+      :RETIRED_SECURITY -> "security"
+      :RETIRED_INVALID -> "invalid"
+      :RETIRED_DEPRECATED -> "deprecated"
+      :RETIRED_RENAMED -> "renamed"
+      _ -> "other"
+    end
+  end
+
+  defp retired_reason(nil), do: nil
+  defp retired_reason(_retired), do: "other"
 
   # 32 bytes in the protobuf; anything else is no checksum Hex could match.
   defp checksum_hex(<<_::256>> = bytes), do: Base.encode16(bytes, case: :lower)

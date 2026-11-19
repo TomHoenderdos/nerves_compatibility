@@ -47,6 +47,10 @@ defmodule Portal.NativeClosure do
           | {:registry, String.t(), :hex_registry_undecodable | :not_found}
           | :closure_too_large
 
+  @doc "The build tooling whose presence in a closure marks native code."
+  @spec markers() :: [String.t()]
+  def markers, do: @markers
+
   @doc """
   Classifies `name` at `version` from its registry dependency closure.
 

@@ -1,0 +1,198 @@
+defmodule Portal.PinsTest do
+  # The operator's entry point: a project's mix.lock to pinned builds.
+  use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
+
+  alias Portal.Catalog
+  alias Portal.Workers.PinnedBuild
+
+  defmodule FakeHex do
+    # The signed registry as the test sets it: `{name => [release]}`, and by
+    # default each release at the checksum the lock names.
+    def releases(name, _opts) do
+      case Process.get({:fake_hex, name}) do
+        nil ->
+          {:ok,
+           [
+             %{
+               version: Process.get({:fake_version, name}),
+               outer_checksum: Process.get({:fake_sum, name}),
+               retired_reason: nil
+             }
+           ]}
+
+        :down ->
+          {:error, :hex_registry_unavailable}
+
+        releases ->
+          {:ok, releases}
+      end
+    end
+  end
+
+  defp sum(char), do: String.duplicate(char, 64)
+
+  defp hex(app, version, char, deps \\ [], managers \\ "[:mix]") do
+    Process.put({:fake_version, app}, version)
+    Process.put({:fake_sum, app}, sum(char))
+
+    edges =
+      Enum.map_join(deps, ", ", fn {dep, req, optional} ->
+        ~s|{:#{dep}, "#{req}", [hex: :#{dep}, repo: "hexpm", optional: #{optional}]}|
+      end)
+
+    ~s|  "#{app}": {:hex, :#{app}, "#{version}", "inner", #{managers}, [#{edges}], "hexpm", "#{sum(char)}"},\n|
+  end
+
+  defp lock do
+    "%{\n" <>
+      hex("app_a", "1.0.0", "a", [
+        {"decimal", "~> 2.0", false},
+        {"jason", "~> 1.0", true},
+        {"floki", "~> 0.3", true},
+        {"absent_opt", "~> 1.0", true}
+      ]) <>
+      hex("decimal", "2.3.0", "b") <>
+      hex("jason", "1.4.4", "c", [{"decimal", "~> 1.0 or ~> 2.0", true}]) <>
+      hex("floki", "0.36.0", "d") <>
+      hex("needs_git", "1.0.0", "e", [{"g", "~> 1.0", false}]) <>
+      ~s|  "g": {:git, "https://example.invalid/g.git", "abc", []},\n| <>
+      hex("missing", "1.0.0", "e", [{"gone", "~> 1.0", false}]) <>
+      hex("over", "1.0.0", "f", [{"decimal", "~> 1.0", false}]) <>
+      hex("nif", "1.0.0", "1", [{"elixir_make", "~> 0.6", false}], "[:make, :mix]") <>
+      hex("elixir_make", "0.8.4", "2") <>
+      hex("nerves", "1.11.0", "3") <> "}\n"
+  end
+
+  defp run(opts \\ []), do: Portal.Pins.from_lock(lock(), [hex: FakeHex] ++ opts)
+
+  defp reasons(report), do: Map.new(report.skipped, &{&1.package, &1.reason})
+
+  test "a dry run derives each package's set from the lock and queues nothing" do
+    assert {:ok, report} = run()
+    assert report.dry_run and report.target == "pure_elixir" and report.toolchain == "1.20/29"
+    assert Enum.map(report.queue, & &1.package) == ~w(app_a decimal floki jason)
+    assert %{deps: 2} = Enum.find(report.queue, &(&1.package == "app_a"))
+
+    assert %{
+             "needs_git" => "non_hex: g",
+             "g" => "non_hex",
+             "missing" => "member_missing: gone",
+             "over" => "unsatisfied: decimal",
+             "nif" => "native (phase 2)",
+             "elixir_make" => "native (phase 2)",
+             "nerves" => "tooling"
+           } = reasons(report)
+
+    assert report.counts["queue"] == 4
+    assert all_enqueued(worker: PinnedBuild) == []
+  end
+
+  test "the set follows present optional edges, never into test tooling, and hashes like the worker" do
+    {sets, _refused} = Portal.Pins.derive(elem(Portal.Pins.Lock.parse(lock()), 1))
+    app_a = Enum.find(sets, &(&1.package == "app_a"))
+
+    assert Enum.map(app_a.pins["deps"], & &1["name"]) == ["decimal", "jason"]
+    assert {:ok, _} = Compatibility.Pins.validate("app_a", "1.0.0", app_a.pins)
+  end
+
+  test "acting queues at priority 9 and a second call finds them queued" do
+    assert {:ok, %{queue: [_, _, _, _]}} = run(dry_run: false)
+    jobs = all_enqueued(worker: PinnedBuild)
+    assert length(jobs) == 4
+    assert Enum.all?(jobs, &(&1.priority == 9 and &1.queue == "toolchain"))
+    assert %{"target" => "pure_elixir", "pins" => %{"hash" => _}} = hd(jobs).args
+
+    assert {:ok, %{queue: []} = again} = run(dry_run: false)
+    assert reasons(again)["decimal"] == "queued_dup"
+    assert length(all_enqueued(worker: PinnedBuild)) == 4
+  end
+
+  test "the cap bounds one call" do
+    assert {:ok, report} = run(cap: 2)
+    assert length(report.queue) == 2
+    assert report.counts["cap"] == 2
+  end
+
+  test "a closure already served or judged is not queued again" do
+    {sets, _} = Portal.Pins.derive(elem(Portal.Pins.Lock.parse(lock()), 1))
+    jason = Enum.find(sets, &(&1.package == "jason"))
+
+    package =
+      Catalog.Package
+      |> Ash.Changeset.for_create(:create, %{name: "jason"})
+      |> Ash.create!(domain: Catalog)
+
+    Catalog.ToolchainBuild
+    |> Ash.Changeset.for_create(:upsert, %{
+      package_id: package.id,
+      version: "1.4.4",
+      toolchain: "1.20/29",
+      builder_version: 1,
+      variant: :with,
+      config_variant: "default",
+      status: :pass,
+      deps_lock: Compatibility.Pins.to_lock(jason.pins["deps"])
+    })
+    |> Ash.create!(domain: Catalog)
+
+    decimal =
+      Catalog.Package
+      |> Ash.Changeset.for_create(:create, %{name: "decimal"})
+      |> Ash.create!(domain: Catalog)
+
+    set = Enum.find(sets, &(&1.package == "decimal"))
+
+    Catalog.PinnedBuild
+    |> Ash.Changeset.for_create(:upsert, %{
+      package_id: decimal.id,
+      version: "2.3.0",
+      pin_hash: set.pins["hash"],
+      target: "pure_elixir",
+      system_version: "",
+      toolchain: "1.20/29",
+      builder_version: 1,
+      config_variant: "default",
+      pins: set.pins,
+      status: :skipped
+    })
+    |> Ash.create!(domain: Catalog)
+
+    assert {:ok, report} = run()
+    assert reasons(report)["jason"] == "served"
+    assert reasons(report)["decimal"] == "judged"
+  end
+
+  test "the signed registry must agree with the lock" do
+    Process.put({:fake_hex, "decimal"}, [
+      %{version: "2.3.0", outer_checksum: sum("9"), retired_reason: nil}
+    ])
+
+    Process.put({:fake_hex, "floki"}, [
+      %{version: "0.36.0", outer_checksum: sum("d"), retired_reason: "security"}
+    ])
+
+    Process.put({:fake_hex, "jason"}, :down)
+
+    assert {:ok, report} = run()
+    assert reasons(report)["decimal"] == "checksum: decimal"
+    assert reasons(report)["app_a"] == "checksum: decimal"
+    assert reasons(report)["floki"] == "retired: floki"
+    assert reasons(report)["jason"] == "registry_unavailable: jason"
+  end
+
+  test "a path, a bad lock and an unknown target or toolchain" do
+    path = Path.join(System.tmp_dir!(), "pins-#{System.unique_integer([:positive])}.lock")
+    File.write!(path, lock())
+    on_exit(fn -> File.rm(path) end)
+
+    assert {:ok, %{queue: [_, _, _, _]}} = Portal.Pins.from_lock(path, hex: FakeHex)
+    assert {:error, {:unreadable, :enoent}} = Portal.Pins.from_lock("/nonexistent/mix.lock")
+    assert {:error, :unparsable} = Portal.Pins.from_lock("%{")
+
+    assert {:error, {:unsupported_target, "nerves_system_rpi4"}} =
+             run(target: "nerves_system_rpi4")
+
+    assert {:error, {:unknown_toolchain, "9.9/99"}} = run(toolchain: "9.9/99")
+  end
+end
