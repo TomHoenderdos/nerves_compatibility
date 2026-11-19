@@ -13,7 +13,9 @@ defmodule Portal.Precompiled.DeterministicRevocation do
   on its own.
 
   It reaches a pinned build's sibling (`Portal.Catalog.PinnedBuild`) the same
-  way, listed with the variant `"pinned"`.
+  way, listed with the variant `"pinned"`, and a firmware target's
+  (`NccWorker.FirmwareDeterministic`, owned by its system result), listed
+  with the variant `"firmware"` and its system as the toolchain.
 
   A revoked sibling gets `revoked_at` and `revoked_reason`: it is not served
   (manifests, `files/{sha256}`), and its package's fingerprint changes so the
@@ -134,8 +136,9 @@ defmodule Portal.Precompiled.DeterministicRevocation do
   end
 
   defp candidates(opts) do
-    # A sibling belongs to a toolchain build or to a pinned build
-    # (`Portal.Catalog.PinnedBuild`, listed as the variant "pinned").
+    # A sibling belongs to a toolchain build, a pinned build
+    # (`Portal.Catalog.PinnedBuild`, listed as the variant "pinned") or a
+    # firmware target's system result (the variant "firmware").
     from(d in "catalog_deterministic_builds",
       left_join: t in "catalog_toolchain_builds",
       on: t.id == d.toolchain_build_id,
@@ -143,23 +146,34 @@ defmodule Portal.Precompiled.DeterministicRevocation do
       on: pb.id == d.pinned_build_id,
       join: p in "catalog_packages",
       on: p.id == d.package_id,
+      left_join: s in "catalog_system_results",
+      on: s.id == d.system_result_id,
       where: d.status == "pass" and is_nil(d.revoked_at),
-      where: not is_nil(t.id) or not is_nil(pb.id),
+      where: not is_nil(t.id) or not is_nil(pb.id) or not is_nil(s.id),
       order_by: [
         p.name,
         d.version,
-        coalesce(t.toolchain, pb.toolchain),
-        coalesce(t.variant, "pinned"),
-        coalesce(t.config_variant, pb.config_variant),
+        coalesce(t.toolchain, coalesce(pb.toolchain, s.system_pkg)),
+        fragment(
+          "coalesce(?, CASE WHEN ? IS NOT NULL THEN 'pinned' ELSE 'firmware' END)",
+          t.variant,
+          pb.id
+        ),
+        coalesce(t.config_variant, coalesce(pb.config_variant, "default")),
         d.id
       ],
       select: %{
         id: type(d.id, :binary_id),
         package: p.name,
         version: d.version,
-        toolchain: coalesce(t.toolchain, pb.toolchain),
-        variant: coalesce(t.variant, "pinned"),
-        config_variant: coalesce(t.config_variant, pb.config_variant),
+        toolchain: coalesce(t.toolchain, coalesce(pb.toolchain, s.system_pkg)),
+        variant:
+          fragment(
+            "coalesce(?, CASE WHEN ? IS NOT NULL THEN 'pinned' ELSE 'firmware' END)",
+            t.variant,
+            pb.id
+          ),
+        config_variant: coalesce(t.config_variant, coalesce(pb.config_variant, "default")),
         judge_revision: d.judge_revision
       }
     )

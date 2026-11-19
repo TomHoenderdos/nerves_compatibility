@@ -2753,6 +2753,33 @@ defmodule Portal.Catalog do
     |> List.first()
   end
 
+  # The one predicate that serves the system result `s` of the run `r` of
+  # the package `p` (`b` the run it was carried from, `rb` and `bb` their
+  # builders, `$W` the withheld list): neither run revoked, both builders
+  # enrolled and publishing, and the result neither withdrawn nor withheld.
+  @served_result_clause """
+  r.revoked_at IS NULL
+    AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
+    AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
+    AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
+    AND #{@withheld_result_clause}
+  """
+
+  # A firmware target's deterministic sibling `d` of the system result `s`
+  # (`Portal.Deterministic.served_results/1`): the setting on, a pass, not
+  # revoked, of the result's own run, and the result's own build served: a
+  # pass, not refused for a missing lock (a build without its optional
+  # dependencies beside it and no lock of its own), and the result served.
+  @served_result_deterministic_clause """
+  EXISTS (SELECT 1 FROM settings st WHERE st.deterministic_builds_enabled)
+  AND d.status = 'pass' AND d.revoked_at IS NULL AND d.run_id = s.run_id::text
+  AND s.status = 'pass'
+  AND NOT (s.deps_lock IS NULL
+           AND EXISTS (SELECT 1 FROM unnest(s.published_variants) v
+                       WHERE v->>'variant' = 'without'))
+  AND #{@served_result_clause}
+  """
+
   @published_sha256_sql_template """
   SELECT 1
   FROM catalog_artifact_memberships m
@@ -2763,11 +2790,7 @@ defmodule Portal.Catalog do
   LEFT JOIN builders rb ON rb.id = r.builder_id
   LEFT JOIN builders bb ON bb.id = b.builder_id
   WHERE m.sha256 = $1
-    AND r.revoked_at IS NULL
-    AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
-    AND (r.builder_id IS NULL OR (rb.publishing AND rb.status = 'enrolled'))
-    AND (s.carried_from_run_id IS NULL OR b.builder_id IS NULL OR (bb.publishing AND bb.status = 'enrolled'))
-    AND #{@withheld_result_clause}
+    AND #{@served_result_clause}
   UNION ALL
   SELECT 1
   FROM catalog_artifact_memberships m
@@ -2811,6 +2834,19 @@ defmodule Portal.Catalog do
   WHERE m.sha256 = $1
     AND #{@served_pinned_deterministic_clause}
     AND #{@served_deterministic_file_clause}
+  UNION ALL
+  SELECT 1
+  FROM catalog_artifact_memberships m
+  JOIN catalog_deterministic_builds d ON d.id = m.deterministic_build_id
+  JOIN catalog_system_results s ON s.id = d.system_result_id
+  JOIN catalog_runs r ON r.id = s.run_id
+  JOIN catalog_packages p ON p.id = r.package_id
+  LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
+  LEFT JOIN builders rb ON rb.id = r.builder_id
+  LEFT JOIN builders bb ON bb.id = b.builder_id
+  WHERE m.sha256 = $1
+    AND #{@served_result_deterministic_clause}
+    AND #{@served_deterministic_file_clause}
   LIMIT 1
   """
   @published_sha256_sql String.replace(@published_sha256_sql_template, "$W", "$2")
@@ -2832,7 +2868,8 @@ defmodule Portal.Catalog do
   not served, though it is a membership of a served row. A deterministic
   sibling serves the files its own manifest lists while it is served
   (`@served_deterministic_clause`: the setting on and its toolchain build
-  served).
+  served; a pinned build's or a firmware target's beside that build while
+  it is served).
   """
   @spec published_sha256?(String.t()) :: boolean()
   # The SQL is a module constant; the digest is a bound parameter the caller
@@ -3455,7 +3492,8 @@ defmodule Portal.Catalog do
         # only beside a toolchain or pinned build served here
         # (`Portal.Deterministic`).
         deterministic_builds =
-          Deterministic.served(toolchain_builds) ++ Deterministic.served_pinned(pinned_builds)
+          Deterministic.served(toolchain_builds) ++
+            Deterministic.served_pinned(pinned_builds) ++ Deterministic.served_results(results)
 
         shas_by_deterministic_id =
           deterministic_builds |> Enum.map(& &1.id) |> Deterministic.membership_shas()
@@ -3635,16 +3673,22 @@ defmodule Portal.Catalog do
   end
 
   # Each served sibling whose files this host holds, rendered as its
-  # toolchain or pinned build is (the same lock, inputs and run) with its own
-  # files and `erl_compiler_options`; a pinned build's sibling goes under the
-  # `deterministic` key's `builds_closure` only, as its build does.
+  # toolchain, pinned or firmware target build is (the same lock, inputs and
+  # run) with its own files and `erl_compiler_options`; a pinned build's
+  # sibling goes under the `deterministic` key's `builds_closure` only, as
+  # its build does.
   defp deterministic_v2(sources) do
     builds =
       Map.new(sources.toolchain_builds, &{{&1.id, &1.run_id}, {:toolchain, &1}})
       |> Map.merge(Map.new(sources.pinned_builds, &{{&1.id, &1.run_id}, {:pinned, &1}}))
+      |> Map.merge(sibling_results(sources))
 
     for d <- sources.deterministic_builds,
-        build = Map.get(builds, {d.toolchain_build_id || d.pinned_build_id, d.run_id}),
+        build =
+          Map.get(
+            builds,
+            {d.toolchain_build_id || d.pinned_build_id || d.system_result_id, d.run_id}
+          ),
         build != nil,
         stored = Map.get(sources.shas_by_deterministic_id, d.id, MapSet.new()),
         files = toolchain_files(d.file_manifest, stored, sources.present_shas),
@@ -3656,6 +3700,31 @@ defmodule Portal.Catalog do
 
   defp sibling_build_v2({:toolchain, tb}, files), do: toolchain_build_v2(tb, files)
   defp sibling_build_v2({:pinned, pb}, files), do: pinned_build_v2(pb, files)
+
+  defp sibling_build_v2({:result, version, at, target, build}, files),
+    do: {version, at, Map.merge(files, %{"target" => target, "build" => build})}
+
+  # The served firmware results that own a sibling, by id and run: each
+  # rendered as `run_builds/1` renders its own build, and only while that
+  # own build is listed (not refused, every file of it held), so a sibling
+  # is never served at a target, release, lock or run its build is not.
+  defp sibling_results(sources) do
+    owners = MapSet.new(sources.deterministic_builds, & &1.system_result_id)
+    runs_by_id = Map.new(sources.runs, &{&1.id, &1})
+
+    for result <- sources.results,
+        MapSet.member?(owners, result.id),
+        stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
+        built_by = built_by(runs_by_id, result),
+        build = result_build(built_by, result),
+        own_build(result, build, stored, sources.present_shas) != [],
+        into: %{} do
+      version = Map.fetch!(runs_by_id, result.run_id).version_tested
+
+      {{result.id, result.run_id},
+       {:result, version, built_by.finished_at, result.system_pkg, build}}
+    end
+  end
 
   # Pinned builds (`Portal.Catalog.PinnedBuild`, lock-driven builds spec):
   # rendered as the toolchain build of their closure, with `variant`
