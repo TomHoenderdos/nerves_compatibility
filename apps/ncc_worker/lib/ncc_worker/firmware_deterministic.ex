@@ -28,7 +28,10 @@ defmodule NccWorker.FirmwareDeterministic do
 
     1. Nothing when the run is past 75 minutes ("run budget exhausted").
     2. Serially, per target: its published build
-       (`_build/<target>/lib/<package>`) renamed to `.<package>.det-build`
+       (`_build/<target>/lib/<package>`), once checked file by file against
+       its manifest (`NccWorker.OptionalDepsTargets.verify_files/2`; one
+       that does not hold is skipped and left alone), renamed to
+       `.<package>.det-build`
        and its `priv`/`include` links made its own
        (`NccWorker.OptionalDepsTargets.own_links/1`), so nothing the
        sibling compile writes through `deps_<target>` reaches it.
@@ -221,37 +224,39 @@ defmodule NccWorker.FirmwareDeterministic do
     end
   end
 
-  # Serial: a target whose build could not be moved aside, or whose links
-  # could not be made its own (then moved straight back), is skipped. A
-  # build that cannot be put back is the run's error.
+  # Serial: a target whose build is not what its scan recorded is left
+  # alone (the check after the sibling would fail on it), and one whose
+  # build could not be moved aside, or whose links could not be made its own
+  # (then moved straight back), is skipped. A build that cannot be put back
+  # is the run's error.
   defp move_all(systems, ctx, eligible) do
     Enum.reduce_while(eligible, {:ok, [], systems}, fn {name, t} = target, {:ok, moved, acc} ->
-      {lib, aside, _sibling} = paths(ctx, t)
+      {lib, _aside, _sibling} = dirs = paths(ctx, t)
 
-      case move_aside(lib, aside) do
-        :ok ->
-          {:cont, {:ok, moved ++ [target], acc}}
+      outcome =
+        case OptionalDepsTargets.verify_files(lib, manifest(acc[name].beam_scan)) do
+          :ok -> move_one(dirs)
+          {:error, _} -> {:skip, "the build's files are not what its scan recorded"}
+        end
 
-        {:skip, why} ->
-          {:cont, {:ok, moved, put_sibling(acc, name, skipped("build not moved aside: #{why}"))}}
-
-        {:moved, why} ->
-          case put_back(lib, aside) do
-            :ok ->
-              sibling = skipped("build links not its own: #{why}")
-              {:cont, {:ok, moved, put_sibling(acc, name, sibling)}}
-
-            {:error, _} = error ->
-              {:halt, error}
-          end
-
-        {:error, _} = error ->
-          {:halt, error}
+      case outcome do
+        :ok -> {:cont, {:ok, moved ++ [target], acc}}
+        {:skip, why} -> {:cont, {:ok, moved, put_sibling(acc, name, skipped(why))}}
+        {:error, reason} -> {:halt, {:error, {:deterministic_revert_failed, reason}}}
       end
     end)
-    |> case do
-      {:ok, moved, systems} -> {:ok, moved, systems}
-      {:error, reason} -> {:error, {:deterministic_revert_failed, reason}}
+  end
+
+  defp move_one({lib, aside, _sibling}) do
+    case move_aside(lib, aside) do
+      {:moved, why} ->
+        with :ok <- put_back(lib, aside), do: {:skip, "build links not its own: #{why}"}
+
+      {:skip, why} ->
+        {:skip, "build not moved aside: #{why}"}
+
+      other ->
+        other
     end
   end
 
@@ -290,26 +295,22 @@ defmodule NccWorker.FirmwareDeterministic do
   defp compile(ctx, r, {_name, %{env: env, log_file: log_file}}, deadline) do
     timeout_sec = min(ctx.timeout_sec, deadline - r.now.())
     {option, value} = DeterministicBeams.env()
+    env = List.keystore(env, option, 0, {option, value})
 
     if timeout_sec > 0 do
       append_log(log_file, "==> deterministic sibling: #{option}=#{value} mix compile")
 
-      case safely(fn ->
-             r.compile.(
-               ctx.project_dir,
-               List.keystore(env, option, 0, {option, value}),
-               log_file,
-               timeout_sec
-             )
-           end) do
-        :ok -> :ok
-        {:error, :timeout} -> {:error, "timeout"}
-        _error -> {:error, "compile failed"}
-      end
+      fn -> r.compile.(ctx.project_dir, env, log_file, timeout_sec) end
+      |> safely()
+      |> compiled()
     else
       {:error, "timeout"}
     end
   end
+
+  defp compiled(:ok), do: :ok
+  defp compiled({:error, :timeout}), do: {:error, "timeout"}
+  defp compiled(_error), do: {:error, "compile failed"}
 
   # Serial, in the targets' order; the first build that cannot be put back
   # stops the pass with the run's error.

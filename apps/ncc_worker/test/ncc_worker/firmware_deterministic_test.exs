@@ -325,6 +325,21 @@ defmodule NccWorker.FirmwareDeterministicTest do
              put(c, runners(self(), nil, %{compile: compile}))
   end
 
+  # A build whose files were never what its scan recorded (a link in priv,
+  # say) is left alone: the check after the sibling would fail the run.
+  test "a build that is not what its scan recorded is skipped and never moved", c do
+    File.write!(Path.join([c.lib, "ebin", "sample.app"]), "{application,other,[]}.\n")
+    never = Map.merge(runners(self(), nil), %{compile: fn _, _, _, _ -> flunk("compiled") end})
+
+    assert {:ok, systems, _} = put(c, never)
+
+    assert %{status: "skipped", reason: "the build's files are not what its scan recorded"} =
+             systems["nerves_system_rpi4"].deterministic_build
+
+    assert {:ok, %File.Stat{type: :symlink}} = File.lstat(Path.join(c.lib, "priv"))
+    refute File.exists?(Path.join(Path.dirname(c.lib), ".sample.det-build"))
+  end
+
   test "writers that survive the reap fail the run", c do
     reap = fn _ -> {:error, {:writers_survived, ["123"]}} end
 
