@@ -673,8 +673,10 @@ What it lists:
   version has no `builds` key, which is why it is never left out.
 - `versions[v].builds_closure` also lists pinned builds (`"variant": "pinned"`): the package
   compiled against exactly one closure from a project's `mix.lock`, whose `deps` is the lock Mix
-  resolved, checked equal to that closure before it is stored; at most 8 closures per version and
-  target are listed, and format 1 never lists one.
+  resolved, checked equal to that closure before it is stored; at most 8 closures per version,
+  target and system version are listed, and format 1 never lists one. A pinned firmware build (a
+  `nerves_system_*` target) was made on the project's exact system release and carries neither
+  `portable` nor `native: false`, so a client takes it at that `system_version` only.
 - `versions[v].builds_closure` — world builds, read only by clients 0.7.0 and later, which
   enforce env-closure equality: a build is taken only when the names in its whole `deps` closure
   equal the closure Mix gives the package in the project's env. A world is a named, pinned set of

@@ -738,8 +738,8 @@ dependencies that are not members. When the closure was not built, `added` is `[
 rounds had added, and `reason` is one of `deps_get_failed`, `mix_exs_edit_failed`, `stale_build_not_removed`,
 `lock_policy_violation`, `world_not_converged`, `world_extra_deps`, `deps_lock_unreadable` or `host_compile_failed`.
 
-`"optional_deps": "pinned"` with `"pins"` (toolchain mode only) is a pinned build (`NccWorker.Pins`): the package
-compiled against exactly one closure from a project's lock.
+`"optional_deps": "pinned"` with `"pins"` (toolchain mode, or a firmware run of one system, below) is a pinned build
+(`NccWorker.Pins`): the package compiled against exactly one closure from a project's lock.
 
 ```json
 {"mode": "toolchain", "optional_deps": "pinned",
@@ -750,7 +750,7 @@ compiled against exactly one closure from a project's lock.
 `deps` is the closure without the package, `hash` is `Compatibility.Pins.hash/1`, and the set is checked by
 `Compatibility.Pins.validate/3` (at most 200 deps, names, versions, lowercase checksums, no duplicates, no Nerves
 tooling, not the package itself, the hash recomputed) when the input is read; `pins` without `"pinned"`, `"pinned"`
-without `pins`, a world, or any mode but `toolchain` is refused (exit 10, no result). The package (`== version`) and
+without `pins`, a world, or any mode but `toolchain` or none is refused (exit 10, no result). The package (`== version`) and
 every pin (`== v`, `hex:` when the names differ, never `override: true`) are written into `mix.exs` before the one
 `deps.get`; the lock policy is checked as always (exit 11); then `NccWorker.DepsLock.read/2`, the package's checksum
 and the lock outside the closure must be exactly the set. A set Mix does not reproduce compiles nothing: the result's
@@ -759,6 +759,27 @@ deterministic `deps.get` failure is `pins_unresolvable`, a transient one exit 10
 run's own compile, judge and deterministic sibling with nothing added (`optional_deps.reason` `"pinned"`). The result
 echoes `requested_optional_deps: "pinned"` and carries `pins`: `{"hash", "status": "reproduced" | "refused",
 "reason", "extra", "missing", "differing"}`.
+
+The firmware path (no `mode`) builds a native set on one system's exact release: `systems_filter` must name exactly
+one system `NccWorker.Systems` builds, `systems_override` must pin that system and no other to `"== X.Y.Z"`, and there
+is no `firmware_world`; anything else is refused (exit 10, no result).
+
+```json
+{"optional_deps": "pinned", "pins": {...},
+ "systems_filter": ["nerves_system_rpi4"], "systems_override": {"nerves_system_rpi4": "== 2.1.2"}}
+```
+
+The project is `Project.create/3`'s, with that one target at that release; the package and pins are injected into the
+template as on the toolchain path (a pin the template declares is repinned in place, keeping its options). After the
+`deps.get` and the lock policy comes the template round: when every dependency the closure holds beyond the set is a
+template dependency, not Nerves tooling, that the closure reaches only through optional edges (`logger_backends`
+through ring_logger's optional edge, say), those are taken out of `mix.exs` and `mix.lock` and `deps.get` runs once
+more. The exact check is the toolchain path's without the lock outside the closure, which a Nerves template always
+fills. A refused set builds nothing: its target is `skipped` with `error` `"pins_not_reproduced"` and the refusal in
+its `log_tail`, exit 0. A reproduced set is built as any firmware run of one target (host compile, `BuildSelection`,
+the firmware build, ABI facts, the baked build path rule, compile inputs) with no optional-deps pass and no world
+(`optional_deps.reason` `"pinned"`); a retired release is built too. The result is `scope: "targets"` and carries
+`requested_optional_deps: "pinned"`, `pins`, and the run's `deps_lock`, which the target's files were built against.
 
 `"config_variant"` in `NCC_INPUT` (toolchain mode) is a `Compatibility.ConfigVariants` name; its overlay is written as
 `config/config.exs` before the compile (`NccWorker.ConfigOverlay`). Absent is `"default"`, no overlay. The overlay
