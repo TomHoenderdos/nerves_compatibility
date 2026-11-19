@@ -175,12 +175,18 @@ defmodule Portal.Catalog.Ingestion do
 
   defp stage_and_write_run(result, opts) do
     systems = Map.get(result, "systems", %{})
+    # Checked first: the checks read the targets' blobs from the run's files.
+    siblings = firmware_siblings(systems, opts)
     staged = stage_artifacts(systems, opts.files_dir)
+
+    siblings =
+      Map.new(siblings, fn {pkg, candidate} -> {pkg, stage_sibling(candidate, opts, pkg)} end)
+
     logs = systems |> log_systems(opts) |> stage_logs(Map.get(opts, :output_dir))
 
     Repo.transaction(
       fn ->
-        case do_ingest(result, opts, staged, logs) do
+        case do_ingest(result, opts, {staged, siblings}, logs) do
           {:ok, run} -> run
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -543,24 +549,48 @@ defmodule Portal.Catalog.Ingestion do
       |> gate_pins(result, opts)
       |> keyed()
 
+    # Checked first, and only for a target every gate passed: the check reads
+    # the target's blobs from the run's files.
+    sibling = pinned_sibling(build, result, opts)
     wanted = build |> Map.get("file_manifest") |> shas_from_manifest()
     staged = stage_shas(wanted, opts.files_dir)
 
     case wanted -- Enum.map(staged, & &1.sha256) do
       [] ->
-        write_pinned_target(result, put_elf_facts(build), opts, staged)
+        write_pinned_target(
+          result,
+          put_elf_facts(build),
+          opts,
+          staged,
+          stage_sibling(sibling, opts, opts.target)
+        )
 
       missing ->
         {:error, {:artifacts_unstaged, missing}}
     end
   end
 
-  defp write_pinned_target(result, build, opts, staged) do
+  # The target's deterministic sibling (`Portal.Deterministic.Ingest.firmware_candidate/3`),
+  # stored with the pinned row as a toolchain build's is.
+  defp pinned_sibling(
+         %{"status" => "pass", "file_manifest" => %{}},
+         result,
+         %{target: target} = opts
+       ) do
+    case result["systems"] do
+      %{^target => %{} = sys} -> Portal.Deterministic.Ingest.firmware_candidate(target, sys, opts)
+      _ -> :none
+    end
+  end
+
+  defp pinned_sibling(_build, _result, _opts), do: :none
+
+  defp write_pinned_target(result, build, opts, staged, sibling \\ nil) do
     Repo.transaction(
       fn ->
         :ok = lock_pinned_identity(opts)
 
-        case write_pinned(result, build, target_verdict(build), opts, {staged, nil}) do
+        case write_pinned(result, build, target_verdict(build), opts, {staged, sibling}) do
           {:ok, pinned_build} -> pinned_build
           {:error, reason} -> Repo.rollback(reason)
         end
@@ -858,11 +888,24 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
+  # Each firmware target's deterministic sibling, checked before its blobs
+  # are staged (`Portal.Deterministic.Ingest.firmware_candidate/3`).
+  defp firmware_siblings(systems, opts) when is_map(systems) do
+    for {system_pkg, %{} = sys} <- systems,
+        into: %{},
+        do: {system_pkg, Portal.Deterministic.Ingest.firmware_candidate(system_pkg, sys, opts)}
+  end
+
+  defp firmware_siblings(_systems, _opts), do: %{}
+
   # The deterministic sibling (`Portal.Deterministic.Ingest`), checked and
   # its blobs staged before the transaction, as the build's are: `nil` when
   # the result carries none or it did not hold. Every blob or none: a sibling
   # with a file missing is left out, and the build is stored without it.
-  defp stage_sibling(candidate, opts) do
+  defp stage_sibling(candidate, opts, target \\ nil) do
+    of =
+      "deterministic sibling of #{opts.package} #{opts.version}#{if target, do: " on #{target}"}"
+
     case candidate do
       {:ok, sibling} ->
         staged = stage_shas(Enum.uniq(sibling["shas"]), opts.files_dir)
@@ -872,18 +915,13 @@ defmodule Portal.Catalog.Ingestion do
             Map.put(sibling, "staged", staged)
 
           missing ->
-            Logger.warning(
-              "deterministic sibling of #{opts.package} #{opts.version} left out: " <>
-                "#{length(missing)} blobs not staged"
-            )
+            Logger.warning("#{of} left out: #{length(missing)} blobs not staged")
 
             nil
         end
 
       {:skip, reason} ->
-        Logger.warning(
-          "deterministic sibling of #{opts.package} #{opts.version} left out: " <> reason
-        )
+        Logger.warning("#{of} left out: " <> reason)
 
         nil
 
@@ -1594,7 +1632,7 @@ defmodule Portal.Catalog.Ingestion do
   defp with_job_version(package_info, %{version: version}),
     do: Map.put(package_info, "version", version)
 
-  defp do_ingest(result, opts, staged, logs) do
+  defp do_ingest(result, opts, {staged, siblings}, logs) do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
     package_name = package_name(package_info, opts)
     version = package_info["version"] || "unknown"
@@ -1618,10 +1656,10 @@ defmodule Portal.Catalog.Ingestion do
          :ok <-
            create_system_results(
              systems,
-             {run.id, rule, hold, firmware_world(result, opts)},
+             {run, rule, hold, firmware_world(result, opts)},
              package_name,
              version,
-             staged,
+             {staged, siblings},
              logs
            ),
          :ok <- copy_carried(carried, run.id),
@@ -2125,10 +2163,10 @@ defmodule Portal.Catalog.Ingestion do
   defp create_system_result(
          system_pkg,
          sys,
-         {run_id, rule, hold, world},
+         {run, rule, hold, world},
          package_name,
          version,
-         staged,
+         {staged, siblings},
          logs
        ) do
     status = Compatibility.Types.parse_status(sys["status"])
@@ -2144,7 +2182,7 @@ defmodule Portal.Catalog.Ingestion do
     result =
       SystemResult
       |> Ash.Changeset.for_create(:create, %{
-        run_id: run_id,
+        run_id: run.id,
         system_pkg: system_pkg,
         system_version: sys["system_version"],
         status: status,
@@ -2175,18 +2213,25 @@ defmodule Portal.Catalog.Ingestion do
     case result do
       {:ok, system_result} ->
         staged_blobs = Map.get(staged, system_pkg, [])
+        sibling = Map.get(siblings, system_pkg)
 
-        :ok = upsert_artifacts(staged_blobs)
+        :ok = upsert_artifacts(staged_blobs ++ ((sibling && sibling["staged"]) || []))
         :ok = upsert_memberships(system_result.id, sys, variants, staged_blobs)
 
         :ok = maybe_store_log(system_result, system_pkg, Map.get(logs, system_pkg))
 
-        {:ok, system_result}
+        # A firmware target's deterministic sibling, owned by its row.
+        with :ok <-
+               Portal.Deterministic.replace(system_result, sibling, sibling_run(run, version)),
+             do: {:ok, system_result}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp sibling_run(run, version),
+    do: %{package_id: run.package_id, version: version, finished_at: run.finished_at}
 
   # The worker writes `build_root` only on a judged firmware target; anything
   # but a map is dropped rather than stored as a verdict.

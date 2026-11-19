@@ -22,9 +22,13 @@ defmodule Portal.Catalog.DeterministicBuild do
   One row per toolchain build: an ingest that writes the toolchain build
   replaces its sibling, or removes it when the new run brought none. A
   pinned build (`Portal.Catalog.PinnedBuild`) has its sibling the same way,
-  owned by `pinned_build_id` instead: exactly one of the two is set
-  (`one_build`), and it is published only beside its served pinned build,
-  in the `builds_closure` list of the version's `deterministic` key.
+  owned by `pinned_build_id` instead, and published only beside its served
+  pinned build, in the `builds_closure` list of the version's
+  `deterministic` key. A firmware target's sibling
+  (`NccWorker.FirmwareDeterministic`) is owned by its system result
+  (`system_result_id`, `run_id` the run's id), written with the row by the
+  run's ingest, and published only beside that row's own build while it is
+  served. Exactly one of the three is set (`one_build`).
   """
 
   use Ash.Resource,
@@ -41,12 +45,13 @@ defmodule Portal.Catalog.DeterministicBuild do
 
     identity_index_names(
       unique_toolchain_build: "catalog_deterministic_builds_unique_toolchain_build_index",
-      unique_pinned_build: "catalog_deterministic_builds_unique_pinned_build_index"
+      unique_pinned_build: "catalog_deterministic_builds_unique_pinned_build_index",
+      unique_system_result: "catalog_deterministic_builds_unique_system_result_index"
     )
 
     check_constraints do
       check_constraint(:toolchain_build_id, "one_build",
-        check: "num_nonnulls(toolchain_build_id, pinned_build_id) = 1",
+        check: "num_nonnulls(toolchain_build_id, pinned_build_id, system_result_id) = 1",
         message: "exactly one build"
       )
     end
@@ -59,6 +64,7 @@ defmodule Portal.Catalog.DeterministicBuild do
       accept([
         :toolchain_build_id,
         :pinned_build_id,
+        :system_result_id,
         :package_id,
         :version,
         :run_id,
@@ -81,6 +87,7 @@ defmodule Portal.Catalog.DeterministicBuild do
   identities do
     identity(:unique_toolchain_build, [:toolchain_build_id])
     identity(:unique_pinned_build, [:pinned_build_id])
+    identity(:unique_system_result, [:system_result_id])
   end
 
   attributes do
@@ -117,6 +124,11 @@ defmodule Portal.Catalog.DeterministicBuild do
     end
 
     belongs_to :pinned_build, Portal.Catalog.PinnedBuild do
+      allow_nil?(true)
+      public?(true)
+    end
+
+    belongs_to :system_result, Portal.Catalog.SystemResult do
       allow_nil?(true)
       public?(true)
     end

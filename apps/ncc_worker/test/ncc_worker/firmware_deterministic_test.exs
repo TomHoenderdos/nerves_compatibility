@@ -211,7 +211,7 @@ defmodule NccWorker.FirmwareDeterministicTest do
 
     cases = [
       {"never compiled with the option", c.normal, "not compiled with the option"},
-      {"other code", other, "chunks"}
+      {"other code", other, "Code"}
     ]
 
     for {label, beam, why} <- cases do
@@ -226,7 +226,8 @@ defmodule NccWorker.FirmwareDeterministicTest do
 
   defp erl_other(c) do
     path = Path.join([c.proj, "deps_rpi4", "sample", "src", c.module <> ".erl"])
-    File.write!(path, "-module(#{c.module}).\n-export([f/0]).\nf() -> other.\n")
+    # The same chunks, other code.
+    File.write!(path, "-module(#{c.module}).\n-export([f/0]).\nf() -> {?FILE, self()}.\n")
     beam = erl(path, [:deterministic])
     File.write!(path, "-module(#{c.module}).\n-export([f/0]).\nf() -> ?FILE.\n")
     beam

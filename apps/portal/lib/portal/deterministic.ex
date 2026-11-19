@@ -22,11 +22,26 @@ defmodule Portal.Deterministic do
   itself passed and is not revoked
   (`Portal.Precompiled.DeterministicRevocation`). Every file its manifest
   lists must be a stored membership of it.
+
+  A pinned build's sibling is served beside its served pinned build, and a
+  firmware target's (`NccWorker.FirmwareDeterministic`, asked for by a
+  firmware run while the setting is on) beside its system result's own
+  build while that result is served: not withdrawn
+  (`Portal.Precompiled.FirmwareRefusal`,
+  `Portal.Precompiled.FirmwareBuildPathWithdrawal`), not withheld, of an
+  unrevoked run whose builder publishes, and its own build listed.
   """
 
   require Ash.Query
 
-  alias Portal.Catalog.{ArtifactMembership, DeterministicBuild, PinnedBuild, ToolchainBuild}
+  alias Portal.Catalog.{
+    ArtifactMembership,
+    DeterministicBuild,
+    PinnedBuild,
+    SystemResult,
+    ToolchainBuild
+  }
+
   alias Portal.Repo
 
   @doc "Whether siblings are asked for and published."
@@ -74,6 +89,31 @@ defmodule Portal.Deterministic do
     end
   end
 
+  @doc """
+  The siblings to publish beside `results`, the served system results of
+  one package (`Portal.Catalog`'s: not withdrawn, not withheld, of an
+  unrevoked, published run): none while the setting is off; else each
+  passing, unrevoked sibling of a firmware target among them, written by
+  that row's own run (`NccWorker.FirmwareDeterministic`). A carried copy of
+  a row is a row of its own and has none.
+  """
+  @spec served_results([map()]) :: [DeterministicBuild.t()]
+  def served_results(results) do
+    firmware = Enum.filter(results, &match?("nerves_system_" <> _, &1.system_pkg))
+
+    if firmware != [] and enabled?() do
+      runs = MapSet.new(firmware, &{&1.id, &1.run_id})
+      ids = Enum.map(firmware, & &1.id)
+
+      DeterministicBuild
+      |> Ash.Query.filter(system_result_id in ^ids and status == :pass and is_nil(revoked_at))
+      |> Ash.read!(domain: Portal.Catalog)
+      |> Enum.filter(&MapSet.member?(runs, {&1.system_result_id, &1.run_id}))
+    else
+      []
+    end
+  end
+
   @doc "The stored file shas of each sibling, by sibling id."
   @spec membership_shas([Ecto.UUID.t()]) :: %{Ecto.UUID.t() => MapSet.t()}
   def membership_shas([]), do: %{}
@@ -96,16 +136,34 @@ defmodule Portal.Deterministic do
   """
   @spec replace(ToolchainBuild.t() | PinnedBuild.t(), map() | nil) :: :ok | {:error, term()}
   def replace(%ToolchainBuild{} = toolchain_build, sibling),
-    do: replace(toolchain_build, :toolchain_build_id, sibling)
+    do: replace_owned(toolchain_build, :toolchain_build_id, sibling)
 
   # A pinned build's sibling, the same way (`Portal.Catalog.Ingestion`).
   def replace(%PinnedBuild{} = pinned_build, sibling),
-    do: replace(pinned_build, :pinned_build_id, sibling)
+    do: replace_owned(pinned_build, :pinned_build_id, sibling)
+
+  @doc """
+  In the transaction that wrote the firmware target's `system_result`
+  (`Portal.Catalog.Ingestion`): stores its sibling
+  (`Portal.Deterministic.Ingest.firmware_candidate/3`'s, its files' blobs
+  registered already) when the result passed. `run` is the result's run,
+  `%{package_id, version, finished_at}`; the sibling's `run_id` is the
+  result's own. `nil` stores none.
+  """
+  @spec replace(SystemResult.t(), map() | nil, map()) :: :ok | {:error, term()}
+  def replace(%SystemResult{} = result, sibling, run) do
+    build =
+      run
+      |> Map.take([:package_id, :version, :finished_at])
+      |> Map.merge(%{id: result.id, run_id: result.run_id, status: result.status})
+
+    replace_owned(build, :system_result_id, sibling)
+  end
 
   # `owner` is the column the sibling's build is named by. The SQL is one of
-  # two literals (`delete_sql/1`); the id is a bound parameter.
+  # three literals (`delete_sql/1`); the id is a bound parameter.
   # sobelow_skip ["SQL.Query"]
-  defp replace(build, owner, sibling) do
+  defp replace_owned(build, owner, sibling) do
     Repo.query!(delete_sql(owner), [Ecto.UUID.dump!(build.id)])
 
     case {build.status, sibling} do
@@ -119,6 +177,9 @@ defmodule Portal.Deterministic do
 
   defp delete_sql(:pinned_build_id),
     do: "DELETE FROM catalog_deterministic_builds WHERE pinned_build_id = $1"
+
+  defp delete_sql(:system_result_id),
+    do: "DELETE FROM catalog_deterministic_builds WHERE system_result_id = $1"
 
   defp insert(build, owner, sibling) do
     attrs = %{

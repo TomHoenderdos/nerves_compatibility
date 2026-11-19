@@ -23,6 +23,27 @@ defmodule Portal.Deterministic.Ingest do
   `candidate/3` is `{:ok, sibling}` (with `"shas"`, every blob it lists),
   `{:skip, reason}` (logged by the caller; the build is stored without a
   sibling) or `:none` for a result that carries none. Never raises.
+
+  A firmware target's sibling (`systems[target].deterministic_build`,
+  `NccWorker.FirmwareDeterministic`) is checked by `firmware_candidate/3`
+  for the system result or the pinned firmware build the ingest stores from
+  that target, the same way on what a firmware build records:
+
+    * the sibling passed, is tagged as above, and its own R2 outcome
+      (`build_root`) is a pass; the target passed with its own file
+      manifest;
+    * the target's build was made against the run's lock: no `deps_lock`
+      of its own and no published build without its optional dependencies,
+      so the closure the sibling was compiled over is the one its build is
+      published under;
+    * its manifest lists the build's paths under the same keys with the
+      same modes, and every `priv` file is the build's, byte for byte (a
+      firmware build has no own-priv list);
+    * its `ebin` blobs pass `Compatibility.DeterministicBeams.compare_ebin/2`
+      against the build's.
+
+  The build's compile env and inputs are not the sibling's to state: it is
+  served with its build's.
   """
 
   alias Compatibility.DeterministicBeams
@@ -67,6 +88,67 @@ defmodule Portal.Deterministic.Ingest do
          "shas" => shas(manifest)
        }}
     end
+  end
+
+  @doc """
+  The check of a firmware target's sibling (see the moduledoc): `system_pkg`
+  is the target, `sys` its system result as `result.json` records it.
+  `:none` for a target that carries none, and for anything but a Nerves
+  system. Never raises.
+  """
+  @spec firmware_candidate(String.t(), map(), map()) :: {:ok, map()} | {:skip, String.t()} | :none
+  def firmware_candidate(
+        "nerves_system_" <> _,
+        %{"deterministic_build" => %{} = sibling} = sys,
+        opts
+      ) do
+    check_firmware(sibling, sys, opts)
+  rescue
+    e -> {:skip, "could not be checked: " <> Exception.message(e)}
+  end
+
+  def firmware_candidate(_system_pkg, _sys, _opts), do: :none
+
+  defp check_firmware(sibling, sys, opts) do
+    build = %{
+      "status" => sys["status"],
+      "file_manifest" => get_in(sys, ["beam_scan", "footprint", "file_manifest"])
+    }
+
+    with :ok <- passed(sibling, build),
+         :ok <- tagged(sibling),
+         :ok <- own_r2(sibling),
+         :ok <- run_closure(sys),
+         {:ok, manifest} <- same_paths(sibling["file_manifest"], build["file_manifest"]),
+         :ok <- same_priv(manifest, build["file_manifest"], []),
+         :ok <- beams(manifest, build["file_manifest"], opts.files_dir) do
+      {:ok,
+       %{
+         "judge_revision" => sibling["judge_revision"],
+         "file_manifest" => manifest,
+         "compile_observations" => %{"build_root" => sibling["build_root"]},
+         "shas" => shas(manifest)
+       }}
+    end
+  end
+
+  # R2 on the sibling's own beams (`NccWorker.FirmwareBuildRoot`): an Erlang
+  # module's `?FILE` literals are not its build's.
+  defp own_r2(%{"build_root" => %{"status" => "pass"}}), do: :ok
+  defp own_r2(_sibling), do: {:skip, "its own R2 did not pass"}
+
+  # A target that kept its optional dependencies published a build made
+  # against its own lock, and the sibling was compiled against the run's.
+  defp run_closure(sys) do
+    without? =
+      Enum.any?(
+        List.wrap(sys["published_variants"]),
+        &(is_map(&1) and &1["variant"] == "without")
+      )
+
+    if sys["deps_lock"] == nil and not without?,
+      do: :ok,
+      else: {:skip, "its build was made against another closure than the run's"}
   end
 
   defp passed(%{"status" => "pass"}, %{"status" => "pass", "file_manifest" => %{}}), do: :ok
