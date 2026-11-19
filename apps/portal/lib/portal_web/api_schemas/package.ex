@@ -14,13 +14,14 @@ defmodule PortalWeb.ApiSchemas.Package do
         latest_version: %Schema{
           type: :string,
           nullable: true,
-          description: "Latest version on Hex.pm."
+          description:
+            "The highest version tested, by Hex's version precedence. A build of an older release never lowers it."
         },
         last_run_at: %Schema{
           type: :string,
           format: :"date-time",
           nullable: true,
-          description: "When the package was last built."
+          description: "When its latest version was last built."
         },
         native_components: NativeComponents,
         systems: %Schema{

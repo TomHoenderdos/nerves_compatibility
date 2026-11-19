@@ -35,6 +35,7 @@ defmodule Portal.Catalog do
     CoverageReport,
     FindingTriage,
     Cache,
+    LatestRun,
     Package,
     PackageOverride,
     ReleaseDownloads,
@@ -331,18 +332,7 @@ defmodule Portal.Catalog do
   load the findings for nothing.
   """
   def latest_argus(package_name) do
-    with [package] <- packages(package_name),
-         [run] <-
-           Run
-           |> Ash.Query.filter(package_id == ^package.id)
-           |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
-           |> Ash.Query.select([:id, :argus])
-           |> Ash.Query.limit(1)
-           |> Ash.read!(domain: __MODULE__) do
-      run.argus
-    else
-      _ -> nil
-    end
+    Repo.one(from([r, p] in LatestRun.query(), where: p.name == ^package_name, select: r.argus))
   end
 
   @doc "Fingerprints of `package_name`'s findings an admin has triaged as ignored."
@@ -875,15 +865,23 @@ defmodule Portal.Catalog do
     for {id, stale?} <- page, row = rows[id], do: %{triage: row, stale?: stale?}
   end
 
-  # Per package, the newest run whose argus result is `ok`; a run without a
-  # finished_at sorts after every finished one (Postgres puts NULLs first under
-  # DESC otherwise). DISTINCT ON keeps
+  # Per package, the newest run whose argus result is `ok`, of its latest
+  # version first (`LatestRun`), as ingest records triage sightings only for
+  # that version; a run without a finished_at sorts after every finished one
+  # (Postgres puts NULLs first under DESC otherwise). DISTINCT ON keeps
   # it to one row per package in Postgres instead of loading run history.
   defp latest_argus_runs do
     from(r in "catalog_runs",
+      join: p in "catalog_packages",
+      on: p.id == r.package_id,
       where: fragment("?->>'status' = 'ok'", r.argus),
       distinct: r.package_id,
-      order_by: [asc: r.package_id, desc_nulls_last: r.finished_at, desc: r.inserted_at],
+      order_by: [
+        asc: r.package_id,
+        desc: fragment("? IS NOT DISTINCT FROM ?", r.version_tested, p.latest_version),
+        desc_nulls_last: r.finished_at,
+        desc: r.inserted_at
+      ],
       select: %{package_id: r.package_id, id: r.id, version: r.version_tested}
     )
   end
@@ -3182,6 +3180,7 @@ defmodule Portal.Catalog do
 
   defp latest_runs([]), do: %{}
 
+  # The rule of `LatestRun`: each package's newest run of its latest version.
   defp latest_runs(packages) do
     package_ids = Enum.map(packages, & &1.id)
 
@@ -3190,7 +3189,7 @@ defmodule Portal.Catalog do
     |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
     |> Ash.Query.select(@run_fields)
     |> Ash.read!(domain: __MODULE__)
-    |> Enum.reduce(%{}, fn run, acc -> Map.put_new(acc, run.package_id, run) end)
+    |> LatestRun.pick(Map.new(packages, &{&1.id, &1.latest_version}))
   end
 
   defp json_results_for_runs([]), do: []
@@ -4155,21 +4154,19 @@ defmodule Portal.Catalog do
   end
 
   # The system results of every package's latest run, as `[s, r]`. Latest is
-  # the rule `latest_runs/1` and `Portal.Catalog.Browse` apply -- newest
+  # the rule of `LatestRun`, which `latest_runs/1` and `Portal.Catalog.Browse`
+  # apply too -- the newest run of the package's latest version: newest
   # `finished_at`, then newest `inserted_at`; plain `DESC`, so an unfinished
   # run sorts first. Postgres 17 has no loose index scan for DISTINCT ON, so
-  # it does not skip through `catalog_runs_package_latest_index` one package at
-  # a time; on production-shaped data the planner reads `catalog_runs` with a
-  # seq scan and a small sort, ~3ms.
+  # the planner reads `catalog_runs` with a seq scan, joined to its packages,
+  # and a sort.
   #
   # Public for `Portal.Catalog.TopFailing`, so `/failing` and `/packages/<name>`
   # share this one rule; `version_tested` and `finished_at` are selected for it.
   @doc false
   def latest_results do
     latest =
-      from(r in "catalog_runs",
-        distinct: r.package_id,
-        order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
+      from([r] in LatestRun.query(),
         select: %{
           id: r.id,
           package_id: r.package_id,

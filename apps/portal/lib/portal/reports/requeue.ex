@@ -34,12 +34,13 @@ defmodule Portal.Reports.Requeue do
        package's latest tested version (`Build.latest_version_tested/1`) nor
        Hex's newest release without a run yet (the highest listed version,
        pre-releases included, as `Portal.HexPm.latest_version/1` picks it
-       for the update check). Ingest moves `latest_version` to whatever
-       version it built, so any other build, an older version or a newer
-       one that is still not Hex's newest, could become the package's public
-       result; and `Build.scope_args/3` honours `targets` only for the latest
-       tested version, so it would rebuild every system. Toolchain builds
-       never move `latest_version` and are not checked.
+       for the update check). A report builds only the version the
+       catalog shows or is about to. An older release's build would no
+       longer become the package's public result (`latest_version` only
+       moves up, `Portal.Catalog.LatestRun`), and `Build.scope_args/3`
+       would build only its target, but nothing here decides which older
+       releases are worth a build. Toolchain builds never move
+       `latest_version` and are not checked.
     6. `skipped:judged`: a pass, fail or skipped result already stands for
        the tuple. An error or unknown one (a timeout, retries spent) does not.
        For a `closure_mismatch` line (args `[dep, built_version,
@@ -674,7 +675,7 @@ defmodule Portal.Reports.Requeue do
   defp reporter_bucket(nil), do: "none"
 
   # `current/2` let through only the latest tested version (a forced target,
-  # which `Build.scope_args/3` honours for exactly that version) or a version
+  # which `Build.scope_args/3` honours for a version with a run) or a version
   # with no run (a full build, which nothing needs to force).
   defp job({:system, package, version, system, _sv}, report) do
     args =
@@ -710,12 +711,11 @@ defmodule Portal.Reports.Requeue do
     )
   end
 
-  # Whether building `version` keeps the package's public result current:
-  # the latest tested version itself, or Hex's newest release (pre-releases
-  # included, as `Portal.HexPm.latest_version/1` and so the update check
-  # pick it) when it has no run yet. Any other version, newer than the
-  # latest tested one or not, could end up the public result if its build
-  # finished last.
+  # Whether `version` is one the catalog shows or is about to: the latest
+  # tested version itself, or Hex's newest release (pre-releases included,
+  # as `Portal.HexPm.latest_version/1` and so the update check pick it) when
+  # it has no run yet. A newer version that is not Hex's newest would
+  # become the public result only until the update check builds Hex's.
   defp current({:toolchain, _package, _version, _toolchain}, _versions), do: :ok
 
   defp current({:system, package, version, _system, _sv}, versions) do

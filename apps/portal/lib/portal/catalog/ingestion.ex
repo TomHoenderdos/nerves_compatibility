@@ -54,6 +54,7 @@ defmodule Portal.Catalog.Ingestion do
     Artifact,
     ArtifactMembership,
     FindingTriage,
+    LatestRun,
     LogSanitizer,
     Package,
     Run,
@@ -1159,7 +1160,7 @@ defmodule Portal.Catalog.Ingestion do
            ),
          :ok <- copy_carried(carried, run.id),
          _withdrawn = FirmwareRefusal.withdraw_superseded(package.id, version),
-         :ok <- record_triage(package_name, version, run.id, result["argus"]) do
+         :ok <- record_triage(package, version, run.id, result["argus"]) do
       {:ok, run}
     end
   end
@@ -1171,7 +1172,20 @@ defmodule Portal.Catalog.Ingestion do
   # skipped here rather than handed to Postgres, where an insert error would
   # abort the whole ingest -- and duplicates are collapsed first, because one
   # INSERT ... ON CONFLICT cannot touch the same row twice.
-  defp record_triage(package_name, version, run_id, %{"status" => "ok", "findings" => findings})
+  #
+  # Only for a run of the package's latest version: the triage list is of the
+  # latest argus run's findings (`Portal.Catalog`'s `latest_argus_runs/0`), and
+  # a sighting on an older release's run would mark them all stale.
+  defp record_triage(%{latest_version: latest}, version, _run_id, _argus)
+       when latest != version,
+       do: :ok
+
+  defp record_triage(
+         %{name: package_name},
+         version,
+         run_id,
+         %{"status" => "ok", "findings" => findings}
+       )
        when is_list(findings) do
     inputs =
       findings
@@ -1200,7 +1214,7 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
-  defp record_triage(_package_name, _version, _run_id, _argus), do: :ok
+  defp record_triage(_package, _version, _run_id, _argus), do: :ok
 
   defp sighting(package_name, version, run_id, finding) do
     %{
@@ -1224,16 +1238,53 @@ defmodule Portal.Catalog.Ingestion do
 
   defp triageable?(_), do: false
 
+  # The package's latest version only ever moves up (`LatestRun`): a run of
+  # an older release leaves the row as it is, since every field written here
+  # describes the latest version. The row is read `FOR UPDATE`, so two ingests
+  # of one package decide in turn, each on the other's committed row.
   defp upsert_package(name, info, last_run_at) do
-    Package
-    |> Ash.Changeset.for_create(:upsert, %{
-      name: name,
+    version = info["version"]
+
+    attrs = %{
       description: info["description"],
-      latest_version: info["version"],
+      latest_version: version,
       last_run_at: last_run_at,
       native_components: info["native_components"]
-    })
-    |> Ash.create(domain: @domain)
+    }
+
+    case locked_package(name) do
+      nil ->
+        Package
+        |> Ash.Changeset.for_create(:upsert, Map.put(attrs, :name, name))
+        |> Ash.create(domain: @domain)
+
+      package ->
+        if LatestRun.supersedes?(version, package.latest_version) or
+             not run_of_latest?(package) do
+          package |> Ash.Changeset.for_update(:ingested, attrs) |> Ash.update(domain: @domain)
+        else
+          {:ok, package}
+        end
+    end
+  end
+
+  defp locked_package(name) do
+    Package
+    |> Ash.Query.filter(name == ^name)
+    |> Ash.Query.lock(:for_update)
+    |> Ash.read_one!(domain: @domain)
+  end
+
+  # Only asked when the package has a latest version (`LatestRun.supersedes?/2`
+  # takes any version over none).
+  defp run_of_latest?(package) do
+    Repo.exists?(
+      from(r in "catalog_runs",
+        where:
+          r.package_id == type(^package.id, Ecto.UUID) and
+            r.version_tested == ^package.latest_version
+      )
+    )
   end
 
   # A worker that predates argus sends nothing; anything that is not a map is
@@ -1466,14 +1517,15 @@ defmodule Portal.Catalog.Ingestion do
   @partial_scopes ["targets", "argus_only"]
 
   # A partial run rebuilt only some systems. The rest are copied from the
-  # package's previous run on the same version, so the latest run -- which
-  # every page, badge and API reads as the whole picture -- stays complete.
-  # Across versions nothing carries: an old version's target results say
-  # nothing about the new one.
+  # newest run of the same version, so the run stays complete: of the latest
+  # version, it is the latest run, which every page, badge and API reads as
+  # the whole picture, and of an older release, it is the run the
+  # precompiled manifests serve for that version. Across versions nothing
+  # carries: an old version's target results say nothing about the new one.
   defp carry_candidates(%{"scope" => scope}, package_name, version, systems)
        when scope in @partial_scopes do
-    case previous_run(package_name) do
-      %{id: run_id, version_tested: ^version, footprint: footprint, argus: argus} ->
+    case previous_run(package_name, version) do
+      %{id: run_id, footprint: footprint, argus: argus} ->
         rows =
           Repo.all(
             from(s in "catalog_system_results",
@@ -1497,23 +1549,14 @@ defmodule Portal.Catalog.Ingestion do
 
   defp carry_candidates(_result, _package_name, _version, _systems), do: nil
 
-  # The latest-run rule of `Portal.Catalog`: newest `finished_at`, then newest
-  # `inserted_at`, plain `DESC`. Carrying from any other run would copy rows
-  # the pages were not showing as current.
-  defp previous_run(package_name) do
+  # The newest run of the version (`LatestRun.of_version/2`): newest
+  # `finished_at`, then newest `inserted_at`, plain `DESC`. Of the latest
+  # version it is the latest run; carrying from any other run would copy
+  # rows the pages were not showing as current.
+  defp previous_run(package_name, version) do
     Repo.one(
-      from(r in "catalog_runs",
-        join: p in "catalog_packages",
-        on: p.id == r.package_id,
-        where: p.name == ^package_name,
-        order_by: [desc: r.finished_at, desc: r.inserted_at],
-        limit: 1,
-        select: %{
-          id: type(r.id, Ecto.UUID),
-          version_tested: r.version_tested,
-          footprint: r.footprint,
-          argus: r.argus
-        }
+      from([r] in LatestRun.of_version(package_name, version),
+        select: %{id: type(r.id, Ecto.UUID), footprint: r.footprint, argus: r.argus}
       )
     )
   end

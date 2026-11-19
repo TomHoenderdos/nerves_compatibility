@@ -14,7 +14,8 @@ defmodule PortalWeb.ApiSchemas.FailingPackage do
         latest_version: %Schema{
           type: :string,
           nullable: true,
-          description: "Latest version on Hex.pm."
+          description:
+            "The highest version tested, by Hex's version precedence. A build of an older release never lowers it."
         },
         version_tested: %Schema{
           type: :string,

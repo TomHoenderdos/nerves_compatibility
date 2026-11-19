@@ -60,11 +60,15 @@ The latest test results for each package across all systems.
 - **generated_at**: Timestamp when this response was generated
 - **packages**: Map of package name to package data
   - **description**: Human-readable package description
-  - **latest_version**: Latest version from Hex.pm
-  - **last_run_at**: Timestamp of most recent test run for this package
+  - **latest_version**: The highest version of the package the tracker has
+    tested, by Hex's version precedence (a pre-release counts, and sorts below
+    its own release). A build of an older release is kept and served for that
+    version, but never lowers this
+  - **last_run_at**: Timestamp of the most recent test run of `latest_version`
   - **native_components**: What native code the package carries, or `null`.
     `compatibility_basis` is set for assessed results (see below)
-  - **systems**: Map of system key to the result of the package's latest run
+  - **systems**: Map of system key to the result of the package's latest run,
+    its newest run of `latest_version`
     - **Key format**: `"<system_pkg>@<system_version>"`, with nothing after
       the `@` when `system_version` is `null` (`"pure_elixir@"`, `"host@"`)
     - **system_pkg**: Name of the Nerves system package, or an assessment

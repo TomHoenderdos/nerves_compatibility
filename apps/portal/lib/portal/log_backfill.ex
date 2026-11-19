@@ -26,18 +26,14 @@ defmodule Portal.LogBackfill do
   require Logger
 
   alias Portal.Builders.Routing
+  alias Portal.Catalog.LatestRun
 
-  # The `DISTINCT ON` ordering mirrors `Portal.Catalog.latest_runs/1` and
-  # `Portal.Workers.LogRetention`'s rule 1 exactly, including the plain `DESC`
-  # -- Ash's `:desc` renders to Ecto's `:desc`, which is Postgres's NULLS FIRST.
-  # A run with no `finished_at` is therefore the latest run in all three places,
-  # so the run this rebuilds is the run the page shows and the run whose log
-  # retention will keep.
+  # The latest run is `Portal.Catalog.LatestRun`'s, as in `Portal.Catalog`
+  # and `Portal.Workers.LogRetention`'s rule 1, so the run this rebuilds is the
+  # run the page shows and the run whose log retention will keep.
   @candidates_sql """
   WITH latest AS (
-    SELECT DISTINCT ON (package_id) id, package_id, version_tested
-    FROM catalog_runs
-    ORDER BY package_id, finished_at DESC, inserted_at DESC
+    #{LatestRun.sql("r.id, r.package_id, r.version_tested")}
   )
   SELECT DISTINCT p.name, latest.version_tested
   FROM catalog_system_results sr

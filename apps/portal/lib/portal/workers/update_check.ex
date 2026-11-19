@@ -7,8 +7,9 @@ defmodule Portal.Workers.UpdateCheck do
   current when the package was last built, and it silently rots: nothing in the
   system ever asks hex.pm whether a version has moved. `Package.latest_version`
   does not answer that question either -- despite the name it records the
-  version *we tested*, written from the build result in
-  `Portal.Catalog.Ingestion`, so it only moves when a build happens.
+  highest version *we tested*, written from the build result in
+  `Portal.Catalog.Ingestion`, so it only moves when a build happens, and
+  never back (`Portal.Catalog.LatestRun`).
 
   ## Stateless, and not a window
 
@@ -26,16 +27,19 @@ defmodule Portal.Workers.UpdateCheck do
   would then never repair.
 
   Re-offering the same package on every run is free because the work is
-  idempotent three layers deep: this worker only acts on a version that differs
-  from the one on record, `Portal.Workers.Backfill` is unique per package per
+  idempotent three layers deep: this worker only acts on a version newer
+  than the one on record, `Portal.Workers.Backfill` is unique per package per
   day, `Portal.ScanRequests.create_once/1` is idempotent against an already-open
   request, and `Portal.Workers.Build` is unique on package/version/image.
 
   ## What earns a rebuild
 
-  Not every release is worth a build. A version that differs from the one on
-  record is a candidate; `significant?/2` decides which updates earn a
-  rebuild. Every eligible update is offered to the queue; existing job and
+  Not every release is worth a build. A registry version newer than the one
+  on record, by Hex's precedence (`Portal.Catalog.LatestRun.newer?/2`), is a
+  candidate. An older one is not: `latest_version` never moves back, so when
+  a release we built leaves the registry (reverted within Hex's window),
+  rebuilding the registry's version would change nothing and repeat on every
+  run. `significant?/2` decides which updates earn a rebuild. Every eligible update is offered to the queue; existing job and
   request uniqueness prevents duplicate builds.
 
   ## A toolchain build for the release that earns no full run
@@ -98,11 +102,10 @@ defmodule Portal.Workers.UpdateCheck do
 
   import Ecto.Query, only: [from: 2]
 
-  require Ash.Query
   require Logger
 
+  alias Portal.Catalog.LatestRun
   alias Portal.Catalog.Package
-  alias Portal.Catalog.Run
   alias Portal.Workers.Backfill
 
   @doc """
@@ -239,8 +242,13 @@ defmodule Portal.Workers.UpdateCheck do
       |> Ash.read!(domain: Portal.Catalog)
       |> Enum.flat_map(fn package ->
         case Map.fetch(by_name, package.name) do
-          {:ok, entry} when entry.latest_version != package.latest_version -> [{package, entry}]
-          _ -> []
+          {:ok, entry} ->
+            if LatestRun.newer?(entry.latest_version, package.latest_version),
+              do: [{package, entry}],
+              else: []
+
+          :error ->
+            []
         end
       end)
 
@@ -382,16 +390,17 @@ defmodule Portal.Workers.UpdateCheck do
 
   defp latest_run_statuses([]), do: %{}
 
+  # The status of each package's latest run (`LatestRun`). Named columns on
+  # purpose: `catalog_runs.log` holds the whole runner log of every run, and
+  # an unselected read would load all of it to answer a question about one
+  # atom.
   defp latest_run_statuses(package_ids) do
-    # Named columns on purpose: `catalog_runs.log` holds the whole runner log of
-    # every run, and an unselected read would load all of it to answer a
-    # question about one atom.
-    Run
-    |> Ash.Query.filter(package_id in ^package_ids)
-    |> Ash.Query.sort(finished_at: :desc, inserted_at: :desc)
-    |> Ash.Query.select([:package_id, :overall_status, :finished_at, :inserted_at])
-    |> Ash.read!(domain: Portal.Catalog)
-    |> Enum.reduce(%{}, fn run, acc -> Map.put_new(acc, run.package_id, run.overall_status) end)
+    from([r] in LatestRun.query(),
+      where: r.package_id in type(^package_ids, {:array, Ecto.UUID}),
+      select: {type(r.package_id, Ecto.UUID), r.overall_status}
+    )
+    |> Portal.Repo.all()
+    |> Map.new(fn {id, status} -> {id, String.to_existing_atom(status)} end)
   end
 
   # `source: update_check` is what separates these from a bulk catalogue seed.

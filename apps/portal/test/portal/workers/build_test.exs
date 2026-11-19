@@ -133,8 +133,31 @@ defmodule Portal.Workers.BuildTest do
              }
     end
 
-    # A partial run only makes sense on top of a full one for the same
-    # version: there is nothing to carry from an older release.
+    # An older release's run is that version's and never the package's
+    # latest (`Portal.Catalog.LatestRun`), and ingest carries from the newest
+    # run of the version built, so a partial scope applies to it as well.
+    test "a partial scope applies to an older version with a run" do
+      previous_run!("scopedold", "1.0.0")
+      previous_run!("scopedold", "2.0.0")
+
+      assert Build.scope_args("scopedold", "1.0.0", %{
+               "scope" => "targets",
+               "systems" => ["nerves_system_rpi4"]
+             }) == %{systems_filter: ["nerves_system_rpi4"], mode: nil}
+
+      assert Build.scope_args("scopedold", "1.0.0", %{"scope" => "argus_only"}) == %{
+               systems_filter: nil,
+               mode: "argus_only"
+             }
+
+      assert Build.scope_args("scopedold", "1.5.0", %{
+               "scope" => "targets",
+               "systems" => ["nerves_system_rpi4"]
+             }) == %{systems_filter: nil, mode: nil}
+    end
+
+    # A partial run only makes sense on top of a run of the same version:
+    # there is nothing to carry from another release.
     test "a partial scope on a new version becomes a full build" do
       previous_run!("scoped3", "1.0.0")
 
@@ -161,9 +184,8 @@ defmodule Portal.Workers.BuildTest do
     end
 
     # A closure drift rebuild waits at priority 8, behind the build of a new
-    # release (`UpdateCheck`, 7). Built in full, the old version's run would
-    # become the package's latest and set its `latest_version` back, so
-    # `UpdateCheck` would build the new release again.
+    # release (`UpdateCheck`, 7). Once that release has a run, the next drift
+    # run judges it instead, and the old version's targets are not wanted.
     test "a drift rebuild of a version no longer the latest tested is dropped" do
       previous_run!("drifted", "1.0.0")
       previous_run!("drifted", "2.0.0")
@@ -180,10 +202,10 @@ defmodule Portal.Workers.BuildTest do
       assert {:cancel, _} = perform_job(Build, args)
       refute_received :stub_build_called
 
-      # Any other targets build of an older version still builds in full.
+      # Any other targets build of an older version builds only its targets.
       ok_response()
       assert :ok = perform_job(Build, Map.delete(args, "reason"))
-      assert_received {:stub_build_args, %{systems_filter: nil}}
+      assert_received {:stub_build_args, %{systems_filter: ["nerves_system_rpi4"]}}
     end
 
     test "a targets scope with no systems builds everything" do

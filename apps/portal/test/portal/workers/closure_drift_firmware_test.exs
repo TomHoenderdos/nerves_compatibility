@@ -176,6 +176,19 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
              Build.scope_args(name, "0.4.0", job.args)
   end
 
+  # An older release's run built since is not the package's latest run
+  # (`Portal.Catalog.LatestRun`), so it neither hides the newest release's
+  # drifted targets nor is rebuilt itself.
+  test "a build of an older release since leaves the newest release's run judged" do
+    name = name()
+    world([name])
+    run!(name, "0.4.0")
+    run!(name, "0.3.0", finished_at: "2026-11-12T00:00:00Z")
+
+    assert {:ok, %{firmware: %{enqueued: 1}}} = ClosureDrift.run()
+    assert [%{args: %{"version" => "0.4.0"}}] = firmware_jobs()
+  end
+
   test "an older release and a current lock are left alone" do
     [old, current] = [name(), name()]
     world([old, current])

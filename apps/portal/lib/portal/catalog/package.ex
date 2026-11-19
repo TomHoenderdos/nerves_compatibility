@@ -33,6 +33,13 @@ defmodule Portal.Catalog.Package do
       accept([:description, :latest_version, :last_run_at])
     end
 
+    # What a run of the package's latest version, or of a newer one, writes
+    # (`Portal.Catalog.Ingestion`). A run of an older release writes nothing
+    # here (`Portal.Catalog.LatestRun`).
+    update :ingested do
+      accept([:description, :latest_version, :last_run_at, :native_components])
+    end
+
     # Separate from `:update` because the two have different writers and
     # different cadences: `:update` follows a build, this follows a hex.pm
     # lookup. Sharing one action would let a stale metadata fetch clobber a
@@ -66,6 +73,8 @@ defmodule Portal.Catalog.Package do
       public?(true)
     end
 
+    # The highest version with a run, by Hex's precedence; ingest only moves
+    # it up (`Portal.Catalog.LatestRun`).
     attribute :latest_version, :string do
       public?(true)
     end

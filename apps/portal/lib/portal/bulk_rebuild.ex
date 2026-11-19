@@ -20,6 +20,7 @@ defmodule Portal.BulkRebuild do
 
   alias Portal.AdminEvents
   alias Portal.Catalog.BulkSweep
+  alias Portal.Catalog.LatestRun
   alias Portal.Repo
   alias Portal.Workers.Backfill
 
@@ -128,12 +129,9 @@ defmodule Portal.BulkRebuild do
   defp what(other), do: {:error, {:invalid_what, other}}
 
   defp selection(limit, opts) do
-    # The latest-run rule `Portal.Catalog` applies everywhere: newest
-    # `finished_at`, then newest `inserted_at`, plain DESC.
+    # The latest-run rule `Portal.Catalog` applies everywhere (`LatestRun`).
     latest =
-      from(r in "catalog_runs",
-        distinct: r.package_id,
-        order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
+      from([r] in LatestRun.query(),
         select: %{id: r.id, package_id: r.package_id, overall_status: r.overall_status}
       )
 

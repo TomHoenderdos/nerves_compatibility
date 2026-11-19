@@ -127,6 +127,41 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert queued_packages() == []
     end
 
+    # `latest_version` never moves back (`Portal.Catalog.LatestRun`), so a
+    # registry version below it -- a release we built that Hex then reverted --
+    # would be rebuilt on every run and change nothing.
+    test "queues nothing when hex's latest is older than the one on record" do
+      package("alpha", "0.7.0")
+      package("beta", "1.1.0")
+      hex_says([{"alpha", "0.6.10"}, {"beta", "1.1.0-rc.1"}])
+
+      assert {:ok, %{seen: 2, moved: 0, enqueued: 0}} = UpdateCheck.run()
+      assert queued_packages() == []
+    end
+
+    # The patch-release skip reads the latest run's status: the newest run of
+    # the latest version, not an older release's run built since.
+    test "a passing latest version keeps its patch skip after an older failing run" do
+      package = passing_package("gamma", "1.2.0")
+
+      Ash.create!(
+        Run,
+        %{
+          run_id: "gamma-old",
+          package_id: package.id,
+          version_tested: "1.1.0",
+          overall_status: :fail,
+          finished_at: DateTime.add(DateTime.utc_now(), 60)
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+      hex_says([{"gamma", "1.2.1"}])
+
+      assert {:ok, %{moved: 0, enqueued: 0}} = UpdateCheck.run()
+    end
+
     # hex.pm updates ~130 packages a day across a registry we cover about a
     # seventh of. Queueing the rest would be seeding new packages, which is
     # `Portal.UpstreamBackfill`'s job and a very different amount of work.

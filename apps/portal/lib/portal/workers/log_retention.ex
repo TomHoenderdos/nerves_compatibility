@@ -71,6 +71,7 @@ defmodule Portal.Workers.LogRetention do
 
   require Logger
 
+  alias Portal.Catalog.LatestRun
   alias Portal.Repo
 
   # A policy choice, not a ceiling — see the moduledoc; nothing caps this
@@ -153,19 +154,15 @@ defmodule Portal.Workers.LogRetention do
 
   # ── Rule 1: unreachable per-system logs ────────────────────────────────────
 
-  # The `DISTINCT ON` ordering mirrors `Portal.Catalog.latest_runs/1` exactly,
-  # including the plain `DESC` — Ash's `:desc` renders to Ecto's `:desc`, which
-  # is Postgres's NULLS FIRST. A run with no `finished_at` is therefore the
-  # latest run in both places, and a log the page can still reach is never the
-  # log this deletes.
+  # The latest run is `Portal.Catalog.LatestRun`'s, the one rule
+  # `Portal.Catalog.system_log/2` resolves too, so a log the page can still
+  # reach is never the log this deletes.
   defp prune_unreachable(opts) do
     execute(
       opts,
       """
       WITH latest AS (
-        SELECT DISTINCT ON (package_id) id
-        FROM catalog_runs
-        ORDER BY package_id, finished_at DESC, inserted_at DESC
+        #{LatestRun.sql("r.id")}
       )
       DELETE FROM catalog_system_logs l
       USING catalog_system_results sr
@@ -180,9 +177,7 @@ defmodule Portal.Workers.LogRetention do
       JOIN catalog_system_results sr ON sr.id = l.system_result_id
       WHERE NOT EXISTS (
         SELECT 1 FROM (
-          SELECT DISTINCT ON (package_id) id
-          FROM catalog_runs
-          ORDER BY package_id, finished_at DESC, inserted_at DESC
+          #{LatestRun.sql("r.id")}
         ) latest WHERE latest.id = sr.run_id
       )
       """

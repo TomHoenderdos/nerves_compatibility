@@ -26,7 +26,7 @@ defmodule Portal.Workers.LogRetentionTest do
       %{
         run_id: "rid-#{System.unique_integer([:positive])}",
         package_id: package.id,
-        version_tested: "1.0.0",
+        version_tested: Keyword.get(opts, :version, "1.0.0"),
         image_digest: "sha256:deadbeef",
         overall_status: Keyword.get(opts, :status, :fail),
         log: Keyword.get(opts, :log),
@@ -96,6 +96,24 @@ defmodule Portal.Workers.LogRetentionTest do
 
       stale = log(old, "old log")
       kept = log(new, "new log")
+
+      assert %{} = LogRetention.run()
+
+      assert stored_log_ids() == MapSet.new([kept.id])
+      refute stale.id in stored_log_ids()
+    end
+
+    # The latest run is the newest of the package's latest version
+    # (`Portal.Catalog.LatestRun`): a build of an older release since is not
+    # what the package page shows, and its log is the unreachable one.
+    test "keeps the latest version's log over an older release's newer run" do
+      package = package("ssh_subsystem_fwup")
+
+      latest = run(package, finished_at: ago(3600))
+      older = run(package, finished_at: ago(60), version: "0.9.0")
+
+      kept = log(latest, "latest version log")
+      stale = log(older, "older release log")
 
       assert %{} = LogRetention.run()
 

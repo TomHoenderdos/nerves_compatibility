@@ -21,6 +21,7 @@ defmodule Portal.Catalog.Browse do
 
   import Ecto.Query
 
+  alias Portal.Catalog.LatestRun
   alias Portal.Repo
 
   @placeholder_statuses ["accepted", "queued", "error"]
@@ -152,17 +153,13 @@ defmodule Portal.Catalog.Browse do
   end
 
   # The system statuses of each package's latest run, for the packages on the
-  # page only. Same latest-run rule as `Portal.Catalog`: newest `finished_at`,
-  # then newest `inserted_at`; plain `DESC`, so an unfinished run sorts first
-  # there too.
+  # page only. Same latest-run rule as `Portal.Catalog` (`LatestRun`).
   defp statuses_by_package([]), do: %{}
 
   defp statuses_by_package(package_ids) do
     latest =
-      from(r in "catalog_runs",
+      from([r] in LatestRun.query(),
         where: r.package_id in type(^package_ids, {:array, Ecto.UUID}),
-        distinct: r.package_id,
-        order_by: [asc: r.package_id, desc: r.finished_at, desc: r.inserted_at],
         select: %{id: r.id, package_id: r.package_id}
       )
 

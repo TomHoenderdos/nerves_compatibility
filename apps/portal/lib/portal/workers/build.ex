@@ -66,6 +66,7 @@ defmodule Portal.Workers.Build do
   alias Portal.Builder.AutoPause
   alias Portal.BulkRebuild
   alias Portal.Catalog.BuildTimeout
+  alias Portal.Catalog.LatestRun
   alias Portal.Catalog.LogSanitizer
   alias Portal.Catalog.Run
   alias Portal.Catalog.RunMemory
@@ -366,8 +367,8 @@ defmodule Portal.Workers.Build do
   # rebuild -- so it errors the request and cancels.
   #
   # An argus-only run builds no target, so its timeout has no result to
-  # record: the previous run of the version stays the package's latest, and
-  # the request closes on it, as the dedup path closes one on a run on file.
+  # record: the previous run of the version stays its newest, and the
+  # request closes on it, as the dedup path closes one on a run on file.
   defp record_timeout(ctx, build_args, started_at, seconds) do
     {package, version, image_digest, scan_request_id, run_id, _attempt, _max, _sweep_id} = ctx
     Logger.warning("Build of #{package} #{version} exceeded the #{seconds}s wall clock")
@@ -375,7 +376,7 @@ defmodule Portal.Workers.Build do
     case timeout_systems(build_args) do
       :argus_only ->
         Builder.cleanup(run_id)
-        close_on_latest_run(package, scan_request_id)
+        close_on_version_run(package, version, scan_request_id)
 
       {scope, systems} ->
         attrs = %{
@@ -424,8 +425,8 @@ defmodule Portal.Workers.Build do
     {:cancel, message}
   end
 
-  defp close_on_latest_run(package, scan_request_id) do
-    case latest_run(package) do
+  defp close_on_version_run(package, version, scan_request_id) do
+    case version_run(package, version) do
       %{id: id, overall_status: status} ->
         Progress.mark(scan_request_id, :built, run_id: id)
 
@@ -627,9 +628,13 @@ defmodule Portal.Workers.Build do
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   @doc false
-  # A partial scope only makes sense on top of a full run of the same version:
-  # ingestion carries the systems it leaves out from that run, and an older
-  # release's results say nothing about this one. Anything else builds in full.
+  # A partial scope only makes sense on top of a run of the same version:
+  # ingestion carries the systems it leaves out from that version's newest
+  # run (`Portal.Catalog.LatestRun.of_version/2`), and another release's
+  # results say nothing about this one. Any version with a run qualifies, an
+  # older release too: its run stays that version's and never becomes the
+  # package's latest (`Portal.Catalog.LatestRun`). Anything else builds in
+  # full.
   #
   # So does a targets scope naming a system the worker does not build by
   # default (`Portal.BulkRebuild.targets/0`), such as a bare target "rpi4":
@@ -640,12 +645,23 @@ defmodule Portal.Workers.Build do
           mode: String.t() | nil
         }
   def scope_args(package, version, args) do
-    case {args["scope"], args["systems"], latest_version_tested(package)} do
-      {"argus_only", _systems, ^version} -> %{systems_filter: nil, mode: "argus_only"}
-      {"targets", [_ | _] = systems, ^version} -> targets_scope(package, version, systems)
-      _ -> %{systems_filter: nil, mode: nil}
+    case {args["scope"], args["systems"]} do
+      {"argus_only", _systems} ->
+        if version_run(package, version),
+          do: %{systems_filter: nil, mode: "argus_only"},
+          else: full_scope()
+
+      {"targets", [_ | _] = systems} ->
+        if version_run(package, version),
+          do: targets_scope(package, version, systems),
+          else: full_scope()
+
+      _ ->
+        full_scope()
     end
   end
+
+  defp full_scope, do: %{systems_filter: nil, mode: nil}
 
   defp targets_scope(package, version, systems) do
     case systems -- BulkRebuild.targets() do
@@ -661,15 +677,10 @@ defmodule Portal.Workers.Build do
     end
   end
 
-  # The same latest-run rule as `latest_version_tested/1`.
-  defp latest_run(package) do
+  # The newest run of the version, which a partial run of it carries from.
+  defp version_run(package, version) do
     Repo.one(
-      from(r in "catalog_runs",
-        join: p in "catalog_packages",
-        on: p.id == r.package_id,
-        where: p.name == ^package,
-        order_by: [desc: r.finished_at, desc: r.inserted_at],
-        limit: 1,
+      from([r] in LatestRun.of_version(package, version),
         select: %{id: type(r.id, Ecto.UUID), overall_status: r.overall_status}
       )
     )
@@ -679,10 +690,10 @@ defmodule Portal.Workers.Build do
   Whether `args` are a targets rebuild that `Portal.Workers.ClosureDrift`
   queued (`reason` `"closure_drift"`) of a version that is no longer the
   package's latest tested one (`latest_version_tested/1`). Such a job waits
-  at a low priority, behind the build of a new release, and `scope_args/3`
-  would build the old version in full instead: its run would become the
-  package's latest, set `latest_version` back and have `UpdateCheck` build
-  the new release again. The next drift run judges the new release's run.
+  at a low priority, behind the build of a new release, and `ClosureDrift`
+  only judges the latest run of a package's newest release: the next drift
+  run judges the new release's run, and rebuilding the old one's targets
+  would spend a firmware build on a version nothing asked about.
   """
   @spec superseded_drift?(map()) :: boolean()
   def superseded_drift?(%{
@@ -696,23 +707,14 @@ defmodule Portal.Workers.Build do
   def superseded_drift?(_args), do: false
 
   @doc """
-  The version of the package's latest run, the run `Portal.Catalog.Ingestion`
-  will carry from: newest `finished_at`, then newest `inserted_at`, plain
-  `DESC` -- the same rule `Portal.Catalog.Ingestion.previous_run/1` and the
-  pages use for "latest". A partial scope (`scope_args/3`) is only valid for
-  this version. `nil` when the package has no run.
+  The version of the package's latest run (`Portal.Catalog.LatestRun`): the
+  newest run of its latest version, the run the pages, badge and API show.
+  `nil` when the package has no run.
   """
   @spec latest_version_tested(String.t()) :: String.t() | nil
   def latest_version_tested(package) do
     Repo.one(
-      from(r in "catalog_runs",
-        join: p in "catalog_packages",
-        on: p.id == r.package_id,
-        where: p.name == ^package,
-        order_by: [desc: r.finished_at, desc: r.inserted_at],
-        limit: 1,
-        select: r.version_tested
-      )
+      from([r, p] in LatestRun.query(), where: p.name == ^package, select: r.version_tested)
     )
   end
 

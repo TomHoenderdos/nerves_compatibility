@@ -48,6 +48,7 @@ defmodule Portal.Catalog.FirmwareDrift do
 
   alias Compatibility.Elf
   alias Portal.Catalog.ClosureDrift
+  alias Portal.Catalog.LatestRun
   alias Portal.Catalog.ToolchainBuild
   alias Portal.Repo
 
@@ -186,8 +187,9 @@ defmodule Portal.Catalog.FirmwareDrift do
   defp same_series_newer?(candidate, current),
     do: candidate.major == current.major and Version.compare(candidate, current) == :gt
 
-  # The served passing firmware targets of each package's latest run (the
-  # rule `Portal.Workers.Build.latest_version_tested/1` uses), when that run
+  # The served passing firmware targets of each package's latest run
+  # (`LatestRun`, the rule `Portal.Workers.Build.latest_version_tested/1`
+  # uses), when that run
   # is of the package's newest stable release, and only runs with a target
   # whose lock has a dependency, or whose system, at anything but its
   # newest release, or no lock from before locks were recorded. A carried
@@ -201,10 +203,7 @@ defmodule Portal.Catalog.FirmwareDrift do
   WITH newest AS (
     SELECT * FROM unnest($1::text[], $2::text[]) AS n(name, version)
   ), latest AS (
-    SELECT DISTINCT ON (r.package_id) r.id, r.package_id, r.version_tested, r.finished_at,
-           r.deps_lock, r.revoked_at, r.builder_id, r.toolchain
-    FROM catalog_runs r
-    ORDER BY r.package_id, r.finished_at DESC, r.inserted_at DESC
+    #{LatestRun.sql("r.id, r.package_id, r.version_tested, r.finished_at, r.deps_lock, r.revoked_at, r.builder_id, r.toolchain")}
   ), served AS (
     SELECT l.id AS run_id, p.name, l.version_tested AS version,
            coalesce(p.hex_downloads_recent, 0) AS downloads,

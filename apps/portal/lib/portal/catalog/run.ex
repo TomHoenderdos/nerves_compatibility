@@ -19,10 +19,10 @@ defmodule Portal.Catalog.Run do
       # per builder.
       index([:builder_id])
 
-      # The latest run of a package: `DISTINCT ON (package_id) ORDER BY
-      # package_id, finished_at DESC, inserted_at DESC`, which `/packages` asks
-      # per page. Matching the sort lets Postgres read the first entry per
-      # package instead of sorting each package's history.
+      # A package's runs newest first: the latest run
+      # (`Portal.Catalog.LatestRun`) is the first of them of the package's
+      # latest version, which `/packages` asks per page, and a partial run's
+      # carry source the first of its own version.
       #
       # It also replaces the plain `package_id` index, of which it is a strict
       # prefix: lookups by package, and the foreign key, use it just as well.
