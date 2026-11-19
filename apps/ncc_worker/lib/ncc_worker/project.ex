@@ -305,8 +305,11 @@ defmodule NccWorker.Project do
     end)
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   defp write_changed(_path, content, content), do: :ok
+
+  # A config file of the generated worker project, as `unconfigure_files/2`
+  # listed it.
+  # sobelow_skip ["Traversal.FileModule"]
   defp write_changed(path, _content, changed), do: File.write(path, changed)
 
   @doc """
