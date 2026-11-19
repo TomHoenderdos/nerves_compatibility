@@ -48,6 +48,93 @@ defmodule NccWorker.PinsFirmwareTest do
     dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
   end
 
+  @lock """
+  %{
+    "sample": {:hex, :sample, "1.0.0", "i", [:mix], [{:ring_logger, "~> 0.11", [hex: :ring_logger, repo: "hexpm", optional: false]}], "hexpm", "#{@a}"},
+    "ring_logger": {:hex, :ring_logger, "0.11.3", "i", [:mix], [{:logger_backends, "~> 1.0", [hex: :logger_backends, repo: "hexpm", optional: true]}], "hexpm", "#{@b}"},
+  }
+  """
+
+  # A pinned firmware project after its target built `sample` for rpi4:
+  # the lock, the package's source (reading the env at module level) and
+  # its target build.
+  defp pinned_project(dir) do
+    proj = Path.join(dir, "proj")
+    File.mkdir_p!(Path.join([proj, "deps", "sample", "lib"]))
+    File.mkdir_p!(Path.join([proj, "_build", "rpi4", "lib", "sample", "ebin"]))
+    File.write!(Path.join(proj, "mix.lock"), @lock)
+
+    File.write!(
+      Path.join([proj, "deps", "sample", "lib", "sample.ex"]),
+      ~s|defmodule Sample do\n  @mode System.get_env("SAMPLE_MODE")\n  def mode, do: @mode\nend\n|
+    )
+
+    out = Path.join(dir, "out")
+    File.mkdir_p!(Path.join(out, "logs"))
+
+    %{
+      project_dir: proj,
+      package: "sample",
+      systems: Systems.select(["nerves_system_rpi4"]),
+      paths: %{work_dir: dir, output_dir: out, logs_dir: Path.join(out, "logs")},
+      timeout: 60,
+      started_at: System.monotonic_time(:second),
+      known_system_abi: [],
+      firmware_world: nil,
+      firmware_inputs: true,
+      releases: nil,
+      trees: nil
+    }
+  end
+
+  @manifest %{
+    "ebin" => [
+      %{"path" => "ebin/Elixir.Sample.beam", "sha256" => @a, "size" => 1, "mode" => 33_188}
+    ],
+    "priv" => []
+  }
+
+  defp passed do
+    %{
+      status: :pass,
+      duration_sec: 1.0,
+      firmware_size_bytes: 1000,
+      log_tail: "ok",
+      system_version: "2.1.2",
+      beam_scan: %{"footprint" => %{"file_manifest" => @manifest}},
+      dependency_scans: nil,
+      error: nil
+    }
+  end
+
+  @envs %{"nerves_system_rpi4" => [{"MIX_TARGET", "rpi4"}]}
+  @info %{added: [], dropped: [], reason: "pinned", skipped: []}
+
+  defp manifest(systems),
+    do: get_in(systems, ["nerves_system_rpi4", :beam_scan, "footprint", "file_manifest"])
+
+  # Review M2: the lock is read after the build, as on the regular path; a
+  # build that changed it is no build of the set.
+  test "a target build that rewrote the lock is an error, never served", %{tmp_dir: dir} do
+    pass = pinned_project(dir)
+    lock_path = Path.join(pass.project_dir, "mix.lock")
+
+    build = fn ->
+      File.write!(lock_path, String.replace(@lock, "0.11.3", "0.11.4"))
+      {%{"nerves_system_rpi4" => passed()}, @envs}
+    end
+
+    assert {:ok, systems, @info, run_lock} =
+             Worker.pinned_targets(build, pass, @info,
+               build_root_judge: fn _, _, _, _ -> :ok end,
+               record_inputs: fn _, _, _, _ -> {:error, "not traced"} end
+             )
+
+    assert %{status: :error, error: "deps_lock_changed"} = systems["nerves_system_rpi4"]
+    assert manifest(systems) == nil
+    assert run_lock.deps_lock["ring_logger"]["version"] == "0.11.4"
+  end
+
   test "a refused set skips its target, builds nothing and says why", %{tmp_dir: dir} do
     outcome = outcome("refused", "pins_closure_mismatch", ["logger_backends"])
     systems = Systems.select(["nerves_system_rpi4"])

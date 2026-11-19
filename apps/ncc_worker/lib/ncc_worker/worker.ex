@@ -1554,26 +1554,58 @@ defmodule NccWorker.Worker do
   # closure, so neither the per-target optional pass nor a firmware world
   # runs; everything else a firmware run does to its targets is kept, the
   # ABI facts, R2 on the files they publish and their compile inputs. The
-  # lock is read before the build, the one the status build saw, and it is
-  # the published `deps` of every target. Public for tests, which pass a
-  # stub `build`.
-  @spec pinned_targets((-> {map(), map()}), map(), map()) ::
+  # lock is read after the build, as `OptionalDepsTargets.run/1` reads it on
+  # the regular path, and is the published `deps` of every target. It is
+  # read before the build too: a build that changed it was not made against
+  # the lock it would publish, so every target is then an `error` with no
+  # files (`deps_lock_changed`). Public for tests, which pass a stub `build`
+  # and `opts` `build_root_judge:` (`NccWorker.FirmwareBuildRoot.gate/3`'s
+  # `judge:`) and `record_inputs:` (`NccWorker.FirmwareInputs.put/3`'s
+  # `record:`).
+  @spec pinned_targets((-> {map(), map()}), map(), map(), keyword()) ::
           {:ok, map(), map(), map()} | {:error, term()}
-  def pinned_targets(build, pass, info) do
-    run_lock = %{
+  def pinned_targets(build, pass, info, opts \\ []) do
+    before = run_lock(pass)
+    {results, envs} = build.()
+    run_lock = run_lock(pass)
+
+    with {:ok, systems} <-
+           results
+           |> lock_unchanged(before == run_lock)
+           |> put_system_abi(pass)
+           |> gate_build_root(pass, envs, judge_opts(opts, :build_root_judge, :judge))
+           |> put_firmware_inputs(pass, envs, judge_opts(opts, :record_inputs, :record)) do
+      {:ok, systems, info, run_lock}
+    end
+  end
+
+  defp run_lock(pass) do
+    %{
       deps_lock: DepsLock.read(pass.project_dir, pass.package),
       package_checksum: DepsLock.package_checksum(pass.project_dir, pass.package),
       declared: DepsLock.declared(pass.project_dir, pass.package)
     }
+  end
 
-    {results, envs} = build.()
+  defp lock_unchanged(results, true), do: results
 
-    with {:ok, systems} <-
-           results
-           |> put_system_abi(pass)
-           |> gate_build_root(pass, envs)
-           |> put_firmware_inputs(pass, envs) do
-      {:ok, systems, info, run_lock}
+  defp lock_unchanged(results, false) do
+    Map.new(results, fn {name, result} ->
+      scan = result[:beam_scan]
+
+      scan =
+        if is_map(scan) and is_map(scan["footprint"]),
+          do: put_in(scan, ["footprint"], Map.delete(scan["footprint"], "file_manifest")),
+          else: scan
+
+      {name, %{result | status: :error, error: "deps_lock_changed", beam_scan: scan}}
+    end)
+  end
+
+  defp judge_opts(opts, key, as) do
+    case Keyword.fetch(opts, key) do
+      {:ok, fun} -> [{as, fun}]
+      :error -> []
     end
   end
 
@@ -1581,18 +1613,18 @@ defmodule NccWorker.Worker do
   # has settled which builds those are (`NccWorker.FirmwareBuildRoot`): a
   # build that bakes the build tree into what it runs is withheld, its
   # status kept.
-  defp gate_build_root(systems, pass, envs) do
+  defp gate_build_root(systems, pass, envs, opts \\ []) do
     targets =
       for system <- pass.systems, env = envs[system.name], env != nil, into: %{} do
         {system.name, {system.target, env}}
       end
 
     {systems, lines} =
-      FirmwareBuildRoot.gate(systems, %{
-        project_dir: pass.project_dir,
-        package: pass.package,
-        targets: targets
-      })
+      FirmwareBuildRoot.gate(
+        systems,
+        %{project_dir: pass.project_dir, package: pass.package, targets: targets},
+        opts
+      )
 
     Enum.each(lines, &log_host(pass.paths, &1))
     systems
@@ -1602,24 +1634,27 @@ defmodule NccWorker.Worker do
   # environment at compile time (`NccWorker.FirmwareInputs`), once R2 has
   # settled which files each target publishes. A target's dirs left
   # otherwise than its build left them fail the run.
-  defp put_firmware_inputs(systems, pass, envs) do
+  defp put_firmware_inputs(systems, pass, envs, opts \\ []) do
     targets =
       for system <- pass.systems, env = envs[system.name], env != nil, into: %{} do
         {system.name, {system.target, env}}
       end
 
     systems
-    |> FirmwareInputs.put(%{
-      project_dir: pass.project_dir,
-      package: pass.package,
-      targets: targets,
-      releases: Map.get(pass, :releases),
-      trees: Map.get(pass, :trees),
-      started_at: pass.started_at,
-      work_dir: pass.paths.work_dir,
-      log_dir: Path.join(pass.paths.output_dir, "logs"),
-      enabled: Map.get(pass, :firmware_inputs, true)
-    })
+    |> FirmwareInputs.put(
+      %{
+        project_dir: pass.project_dir,
+        package: pass.package,
+        targets: targets,
+        releases: Map.get(pass, :releases),
+        trees: Map.get(pass, :trees),
+        started_at: pass.started_at,
+        work_dir: pass.paths.work_dir,
+        log_dir: Path.join(pass.paths.output_dir, "logs"),
+        enabled: Map.get(pass, :firmware_inputs, true)
+      },
+      opts
+    )
     |> case do
       {:error, _} = error ->
         error
