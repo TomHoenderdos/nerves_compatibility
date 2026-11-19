@@ -42,8 +42,14 @@ defmodule Portal.Builder.AutoPause do
       resume and theirs a pause, the producer ends up running against their
       wish, so it sends their pause again, and does not hold it.
     * The builder deploy calls `let_go/2` before it pauses, which ends every
-      hold on its queues, so none is resumed afterwards, and a resume still
-      pending then is undone by the rule above. It also asks
+      hold on its queues, so none is resumed afterwards. It waits for this
+      process's answer, so every resume decided on before has been sent by
+      the time the deploy pauses, and it fails rather than let the deploy
+      go on when no answer comes. From then on this process takes none of
+      those queues again, until someone else resumes one (a failed deploy's
+      cleanup) or the node restarts: a job refused between `let_go/2` and
+      the deploy's own pause would otherwise pause a queue still running, as
+      its own, and resume it after the deploy's pause. The deploy also asks
       `held_queues/0`: a queue paused here is no operator's pause, which
       would refuse the deploy.
     * A crash gives back the queues it holds (`terminate/2`); a node restart
@@ -92,6 +98,8 @@ defmodule Portal.Builder.AutoPause do
   @probe_timeout_ms :timer.minutes(3)
   # A signal of its own that has not come back by then is taken as lost.
   @pending_ttl_ms 30_000
+  # How long the builder deploy waits for `let_go/2` before it gives up.
+  @let_go_timeout_ms :timer.minutes(1)
   @channel :ncc_auto_pause
 
   @doc """
@@ -166,11 +174,26 @@ defmodule Portal.Builder.AutoPause do
 
   @doc """
   Ends this process's hold on `queues`, which the builder deploy is about to
-  pause: it never resumes them after this.
+  pause: it never resumes them after this, nor takes them again until
+  someone else resumes them.
+
+  Answers `:ok` once this process has handled it, so every resume it
+  decided on earlier has been sent, or when no such process runs here.
+  Exits when it does not answer within a minute: the deploy must then not
+  pause and drain, because a resume of its own could still land after.
   """
   @spec let_go([atom() | String.t()], GenServer.server()) :: :ok
-  def let_go(queues, server \\ __MODULE__),
-    do: call(server, {:let_go, Enum.map(queues, &to_string/1)}, :ok)
+  def let_go(queues, server \\ __MODULE__) do
+    timeout = Application.get_env(:portal, __MODULE__, [])[:let_go_timeout_ms]
+
+    GenServer.call(
+      server,
+      {:let_go, Enum.map(queues, &to_string/1)},
+      timeout || @let_go_timeout_ms
+    )
+  catch
+    :exit, {:noproc, _call} -> :ok
+  end
 
   @doc "Every queue paused by this module on any node heard from lately, by node and queue."
   @spec cluster(GenServer.server()) :: [entry()]
@@ -238,6 +261,9 @@ defmodule Portal.Builder.AutoPause do
        held: %{},
        # queue => [%{id, action, at}], its own signals not yet back, oldest first
        pending: %{},
+       # queue => true: `let_go/2` handed it to the deploy, and it is not
+       # taken again until someone else resumes it.
+       kept: %{},
        next_id: 1,
        probing: nil,
        peers: %{}
@@ -275,6 +301,11 @@ defmodule Portal.Builder.AutoPause do
   def handle_call({:hold, queue, _check}, _from, state) when is_map_key(state.held, queue),
     do: {:reply, :paused, state}
 
+  # The deploy's to pause: whatever runs now, its pause is on its way.
+  def handle_call({:hold, queue, _check}, _from, state)
+      when is_map_key(state.kept, queue),
+      do: {:reply, :unavailable, state}
+
   def handle_call({:hold, queue, check}, _from, state) do
     case state.ops.check_queue.(queue) do
       %{paused: true} ->
@@ -295,7 +326,7 @@ defmodule Portal.Builder.AutoPause do
     state =
       Enum.reduce(queues, state, &release(&2, &1, "the builder deploy takes the pause over"))
 
-    {:reply, :ok, state}
+    {:reply, :ok, %{state | kept: Map.merge(state.kept, Map.new(queues, &{&1, true}))}}
   end
 
   def handle_call(:cluster, _from, state) do
@@ -345,7 +376,8 @@ defmodule Portal.Builder.AutoPause do
     if payload["auto_pause"] == state.tag do
       {:noreply, come_back(state, queue, payload["auto_pause_id"])}
     else
-      {:noreply, foreign(state, queue, if(action == "pause", do: :pause, else: :resume))}
+      action = if action == "pause", do: :pause, else: :resume
+      {:noreply, state |> free(queue, action) |> foreign(queue, action)}
     end
   end
 
@@ -438,6 +470,12 @@ defmodule Portal.Builder.AutoPause do
 
     %{state | pending: pending}
   end
+
+  # Someone else's resume gives back what `let_go/2` kept: a deploy that
+  # failed resumes the queues it paused.
+  defp free(state, "*", :resume), do: %{state | kept: %{}}
+  defp free(state, queue, :resume), do: %{state | kept: Map.delete(state.kept, queue)}
+  defp free(state, _queue, :pause), do: state
 
   defp foreign(state, "*", action) do
     (Map.keys(state.held) ++ Map.keys(state.pending))

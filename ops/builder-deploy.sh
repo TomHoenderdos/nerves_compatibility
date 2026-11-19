@@ -227,8 +227,9 @@ builder_own_pause() {
 
 # The release lets go of every pause of its own on these queues first, in
 # its own order: a resume it decided on before is sent by then, so none can
-# land after this pause, and it never resumes them afterwards
-# (Portal.Builder.AutoPause.let_go/1).
+# land after this pause, and it neither resumes nor pauses them afterwards
+# (Portal.Builder.AutoPause.let_go/1). When it does not answer in time the
+# call raises, so this rpc fails before any pause and the cleanup resumes.
 builder_pause() {
   builder_rpc "queues = $builder_queues
   if Code.ensure_loaded?(Portal.Builder.AutoPause) and

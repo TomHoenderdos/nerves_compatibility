@@ -351,6 +351,76 @@ defmodule Portal.Builder.AutoPauseTest do
       assert paused?(ctx, "toolchain")
     end
 
+    # The deploy pauses right after let_go/2 returns, then drains once and
+    # restarts minutes later. A let_go that gave up on a busy server and
+    # answered :ok let the deploy pause while a resume the server had already
+    # decided on still waited in its mailbox: that resume then landed after
+    # the deploy's pause, and a job could start in a queue the drain had
+    # already found idle.
+    test "let_go/2 fails, rather than answering :ok, when the server is too busy to answer",
+         ctx do
+      previous = Application.get_env(:portal, AutoPause)
+      Application.put_env(:portal, AutoPause, let_go_timeout_ms: 100)
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:portal, AutoPause, previous),
+          else: Application.delete_env(:portal, AutoPause)
+      end)
+
+      :sys.suspend(ctx.server)
+
+      try do
+        assert catch_exit(AutoPause.let_go(["toolchain"], ctx.server))
+      after
+        :sys.resume(ctx.server)
+      end
+    end
+
+    test "let_go/2 on a node without the server is nothing to let go of" do
+      assert :ok = AutoPause.let_go(["toolchain"], :no_auto_pause_here)
+    end
+
+    # Between let_go/2 and the deploy's own pause, a job refused on a queue
+    # still running found it running and paused it again, as its own; a
+    # re-check that passed then resumed it, possibly after the deploy's pause.
+    test "after let_go/2 it takes none of those queues again until someone resumes them", ctx do
+      capture_log(fn -> assert :ok = AutoPause.let_go(["toolchain"], ctx.server) end)
+
+      assert {:snooze, 900} = AutoPause.defer("toolchain", :egress, ctx.server)
+      refute_received {:signal, :pause, _}
+      assert AutoPause.held_queues(ctx.server) == []
+
+      # Other queues are still its own to pause.
+      capture_log(fn -> assert {:snooze, 60} = AutoPause.defer("builds", :egress, ctx.server) end)
+      assert_received {:signal, :pause, "builds"}
+
+      # A failed deploy resumes what it paused: the queue is free again.
+      signal(ctx.server, %{"action" => "resume", "queue" => "toolchain"})
+
+      capture_log(fn ->
+        assert {:snooze, 60} = AutoPause.defer("toolchain", :egress, ctx.server)
+      end)
+
+      assert_received {:signal, :pause, "toolchain"}
+    end
+
+    test "a resume of every queue frees what let_go/2 kept", ctx do
+      capture_log(fn -> AutoPause.let_go(["toolchain"], ctx.server) end)
+      signal(ctx.server, %{"action" => "resume", "queue" => "*"})
+
+      capture_log(fn ->
+        assert {:snooze, 60} = AutoPause.defer("toolchain", :egress, ctx.server)
+      end)
+    end
+
+    test "its own resume does not free what let_go/2 kept", ctx do
+      capture_log(fn -> AutoPause.let_go(["toolchain"], ctx.server) end)
+      signal(ctx.server, own(:resume, "toolchain", 99))
+
+      assert {:snooze, 900} = AutoPause.defer("toolchain", :egress, ctx.server)
+    end
+
     test "a crash gives back the queues it still holds, a shutdown does not", ctx do
       capture_log(fn -> AutoPause.defer("toolchain", :egress, ctx.server) end)
       assert_received {:signal, :pause, "toolchain"}
