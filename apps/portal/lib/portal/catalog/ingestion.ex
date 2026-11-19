@@ -1508,6 +1508,7 @@ defmodule Portal.Catalog.Ingestion do
     with {:ok, package} <- ensure_package(package_name(package_info, opts), %{}) do
       case backfill_kept(verdict, staged, package.id, opts) do
         {:ok, _row} = kept -> kept
+        {:error, _reason} = error -> error
         nil -> write_pinned_verdict(result, build, verdict, opts, package.id, staged)
       end
     end
@@ -1540,10 +1541,12 @@ defmodule Portal.Catalog.Ingestion do
   # timeout, another toolchain, or a pass whose sibling was refused or
   # absent. The key's row stays as it is, its status, files, memberships
   # and sibling, and only records the attempt (`sibling_attempted`):
-  # `{:ok, row}`. `nil` when the key has no row: nothing pinned is served to
-  # keep, and the rebuild's verdict is written as any pinned build's, with
-  # the attempt. Under the identity's lock, which the caller holds.
-  @spec backfill_attempted(Ecto.UUID.t(), map()) :: {:ok, PinnedBuild.t()} | nil
+  # `{:ok, row}`, or `{:error, reason}` when that write failed. `nil` when
+  # the key has no row: nothing pinned is served to keep, and the rebuild's
+  # verdict is written as any pinned build's, with the attempt. Under the
+  # identity's lock, which the caller holds.
+  @spec backfill_attempted(Ecto.UUID.t(), map()) ::
+          {:ok, PinnedBuild.t()} | {:error, term()} | nil
   def backfill_attempted(package_id, opts) do
     case pinned_row(package_id, opts, [:pass, :skipped, :fail, :error], false) do
       nil ->

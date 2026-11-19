@@ -91,6 +91,16 @@ defmodule Portal.Pins do
   siblings (`deterministic`), counts the sets queued for a sibling alone
   (`no_sibling`) and marks each queued set with it.
 
+  Run `deterministic: true` on a node that holds the artifact store (the
+  web host): a set is served with a sibling only when the rendered manifest
+  lists it, and the manifest lists only files this node holds, so on a node
+  without them every served closure looks sibling-less and is queued once.
+  Before the first call with `dry_run: false`, every node that runs
+  `:toolchain` or `:builds` must run this release: a node before it ignores
+  `sibling_backfill` and may write a failed or skipped rebuild over the
+  served row (the attempt recorded when the job was queued still holds, so
+  the closure is not queued again).
+
   It only lists unless given `dry_run: false`. Options: `target:` (the
   toolchain path's, `"host"`), `toolchain:` (the toolchain path's, the first
   configured toolchain by default), `system:` (a `nerves_system_*` the lock

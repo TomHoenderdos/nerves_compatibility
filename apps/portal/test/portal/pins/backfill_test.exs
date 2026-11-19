@@ -318,14 +318,12 @@ defmodule Portal.Pins.BackfillTest do
   defp snapshot(row), do: {Map.take(row(row), @kept), shas(row), siblings(row)}
 
   # A closure a regular build serves without a sibling has no pinned row to
-  # keep: its backfill writes the rebuild's verdict, here an error, with the
+  # keep: its backfill writes the rebuild's own verdict row, with the
   # attempt, which holds the closure as judged.
-  test "a backfill of a closure no pinned row serves that errors is not queued again" do
-    set = set("jason")
-
+  defp regular_served!(set) do
     Catalog.ToolchainBuild
     |> Ash.Changeset.for_create(:upsert, %{
-      package_id: Ingestion.ensure_package_id("jason") |> elem(1),
+      package_id: Ingestion.ensure_package_id(set.package) |> elem(1),
       version: set.version,
       toolchain: "1.20/29",
       builder_version: 1,
@@ -335,20 +333,43 @@ defmodule Portal.Pins.BackfillTest do
       deps_lock: lock_of(set)
     })
     |> Ash.create!(domain: Catalog)
+  end
 
-    job = backfill!(set)
-    rebuild!(job, {:exit, 10})
+  defp pinned_rows(name) do
+    PinnedBuild |> Ash.Query.filter(package.name == ^name) |> Ash.read!(domain: Catalog)
+  end
 
-    assert [%PinnedBuild{status: :error, sibling_attempted: true}] =
-             PinnedBuild
-             |> Ash.Query.filter(package.name == "jason")
-             |> Ash.read!(domain: Catalog)
-
+  defp judged_again!(set) do
     done!()
     assert {:ok, report} = run(dry_run: false)
-    assert reasons(report)["jason"] == "judged"
+    assert reasons(report)[set.package] == "judged"
     assert report.counts["no_sibling"] == 0
-    assert all_enqueued(worker: PinnedBuildWorker, args: %{"package" => "jason"}) == []
+    assert all_enqueued(worker: PinnedBuildWorker, args: %{"package" => set.package}) == []
+  end
+
+  test "a backfill of a closure no pinned row serves that errors is not queued again" do
+    set = set("jason")
+    regular_served!(set)
+
+    rebuild!(backfill!(set), {:exit, 10})
+
+    assert [%PinnedBuild{status: :error, sibling_attempted: true}] = pinned_rows("jason")
+    judged_again!(set)
+  end
+
+  # Its result carries no sibling at all: the setting was turned off before
+  # the job ran, or an image before firmware siblings built it. The row it
+  # writes still records the attempt.
+  test "a backfill of a closure no pinned row serves that passes without a sibling is not queued again" do
+    set = set("jason")
+    regular_served!(set)
+    {normal, _det} = beams = beams("jason-rebuilt")
+
+    rebuild!(backfill!(set), {:ingest, result(:toolchain, set, beams, []), [normal]})
+
+    assert [%PinnedBuild{status: :pass, sibling_attempted: true} = row] = pinned_rows("jason")
+    assert siblings(row) == []
+    judged_again!(set)
   end
 
   # Each outcome that is not a pass with its sibling, on each path.

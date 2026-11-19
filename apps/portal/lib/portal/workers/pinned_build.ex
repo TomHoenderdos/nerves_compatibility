@@ -30,14 +30,16 @@ defmodule Portal.Workers.PinnedBuild do
   set `Portal.Pins.from_lock/2` queued only for its missing deterministic
   sibling. Enqueued by `Portal.Pins.from_lock/2`.
 
-  A sibling backfill's rebuild replaces the key's row only with a pass whose
-  sibling held. Any other outcome, a fail, a skip, an error, a timeout,
-  another toolchain or a pass without its sibling, leaves the row, its
-  files, memberships and status as they were and records only the attempt
-  (`Portal.Catalog.Ingestion.backfill_attempted/2`); its ingest and the
-  rows written here when no ingest will both take that rule. A set that does not validate, whose hash is not
-  the job's, of a target this release does not build, or of a firmware
-  target without one exact release, is cancelled before anything runs.
+  A set that does not validate, whose hash is not the job's, of a target
+  this release does not build, or of a firmware target without one exact
+  release, is cancelled before anything runs.
+
+  A sibling backfill's rebuild replaces the key's row only with a pass
+  whose sibling held. Any other outcome, a fail, a skip, an error, a
+  timeout, another toolchain or a pass without its sibling, leaves the
+  row, its files, memberships and status as they were and records only the
+  attempt (`Portal.Catalog.Ingestion.backfill_attempted/2`); its ingest and
+  the rows written here when no ingest will both take that rule.
   """
 
   use Oban.Worker,
@@ -156,8 +158,11 @@ defmodule Portal.Workers.PinnedBuild do
   defp write_locked(args, identity, status, reason, run_id, image_digest) do
     {:ok, package_id} = Ingestion.ensure_package_id(args["package"])
 
+    # A failed write raises, as the other writes here do: `write_row/5`
+    # rolls back and logs it.
     case backfill_kept(args, package_id, identity) do
       {:ok, _row} -> :ok
+      {:error, error} -> raise Ash.Error.to_error_class(error)
       nil -> write_verdict(package_id, args, identity, status, reason, run_id, image_digest)
     end
   end
