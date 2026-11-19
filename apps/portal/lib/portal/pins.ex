@@ -61,19 +61,26 @@ defmodule Portal.Pins do
   Derives, dedupes and (with `dry_run: false`) queues the lock's pinned
   builds; see the moduledoc. `{:ok, report}`, with `queue` (queued, or that
   would be) and `skipped` (each `%{package, version, reason}`), or
-  `{:error, reason}` for a lock that cannot be read or an unknown target or
-  toolchain.
+  `{:error, reason}` for a lock that cannot be read, an unknown target or
+  toolchain, or a `cap:` that is not a non-negative integer.
   """
   @spec from_lock(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def from_lock(lock, opts \\ []) when is_binary(lock) do
     with {:ok, content} <- read(lock),
          {:ok, entries} <- Lock.parse(content),
          {:ok, target} <- target(Keyword.get(opts, :target, "host")),
-         {:ok, toolchain, image} <- toolchain(Keyword.get(opts, :toolchain)) do
+         {:ok, toolchain, image} <- toolchain(Keyword.get(opts, :toolchain)),
+         {:ok, cap} <- cap(Keyword.get(opts, :cap, @default_cap)) do
       {sets, refused} = derive(entries)
-      {:ok, decide(sets, refused, %{target: target, toolchain: toolchain, image: image}, opts)}
+      ctx = %{target: target, toolchain: toolchain, image: image, cap: cap}
+      {:ok, decide(sets, refused, ctx, opts)}
     end
   end
+
+  # A count, or the call is refused: `length(queue) < cap` holds for every
+  # integer against `nil` or a string, which would lift the bound.
+  defp cap(cap) when is_integer(cap) and cap >= 0, do: {:ok, cap}
+  defp cap(cap), do: {:error, {:invalid_cap, cap}}
 
   # A lock's text, or a path to one: the operator's rpc call names a file
   # on the host it runs on.
@@ -231,13 +238,12 @@ defmodule Portal.Pins do
 
   defp decide(sets, refused, ctx, opts) do
     dry_run = Keyword.get(opts, :dry_run, true)
-    cap = Keyword.get(opts, :cap, @default_cap)
     hex = Keyword.get(opts, :hex, Portal.HexDeps)
     queue_for = Portal.Toolchains.MemoryRouting.router(Enum.map(sets, & &1.package))
 
     {queue, skipped} =
       Enum.reduce(sets, {[], []}, fn set, {queue, skipped} ->
-        case verdict(set, ctx, hex, length(queue) < cap) do
+        case verdict(set, ctx, hex, length(queue) < ctx.cap) do
           :queue -> {[set | queue], skipped}
           reason -> {queue, [skip(set, reason) | skipped]}
         end

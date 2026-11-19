@@ -116,6 +116,17 @@ defmodule Portal.PinsTest do
     assert report.counts["cap"] == 3
   end
 
+  # The cap is phase 1's one bound on what a call costs: a value that is no
+  # count (in Erlang's term order every integer is below `nil` or a string)
+  # must not lift it.
+  test "a cap that is not a count is refused, not unbounded" do
+    for cap <- [nil, "2", -1, 2.5] do
+      assert {:error, {:invalid_cap, ^cap}} = run(cap: cap, dry_run: false)
+    end
+
+    assert all_enqueued(worker: PinnedBuild) == []
+  end
+
   test "a closure already served or judged is not queued again" do
     {sets, _} = Portal.Pins.derive(elem(Portal.Pins.Lock.parse(lock()), 1))
     jason = Enum.find(sets, &(&1.package == "jason"))
