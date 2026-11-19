@@ -113,7 +113,7 @@ defmodule Portal.FirmwareDeterministicTest do
     dir
   end
 
-  defp ingest!(name, result, blobs) do
+  defp ingest!(name, result, blobs, builder_id \\ nil) do
     result = Map.put(result, "run_id", "fd-#{System.unique_integer([:positive])}")
 
     {:ok, run} =
@@ -124,7 +124,8 @@ defmodule Portal.FirmwareDeterministicTest do
         image_digest: "sha256:fd",
         files_dir: files(blobs),
         scan_request_id: nil,
-        log: "log"
+        log: "log",
+        builder_id: builder_id
       })
 
     run
@@ -423,6 +424,46 @@ defmodule Portal.FirmwareDeterministicTest do
       File.rm!(ArtifactStore.blob_path(sha(ctx.normal)))
       refute Map.has_key?(version(ctx.name) || %{}, "deterministic")
     end
+  end
+
+  # Review focus 2: a remote builder's run publishes nothing, its siblings
+  # included, until the builder publishes, and again nothing once revoked.
+  test "a remote run's sibling follows its builder's publishing" do
+    on!()
+
+    builder =
+      Portal.Builders.Builder
+      |> Ash.Changeset.for_create(:enrol, %{
+        name: "fd-builder",
+        fingerprint: "fp-fd-builder",
+        cert_pem: "p",
+        cert_expires_at: DateTime.utc_now(),
+        enrolled_at: DateTime.utc_now()
+      })
+      |> Ash.create!(domain: Portal.Builders)
+
+    name = unique()
+    module = "fdm#{System.unique_integer([:positive])}"
+    {normal, det} = beams(module)
+    result = run_result(name, module, normal, sibling(module, det))
+    ingest!(name, result, [normal, det, @nif], builder.id)
+
+    served? = fn ->
+      version = version(name)
+
+      is_map(version) and Map.has_key?(version, "deterministic") and
+        Catalog.published_sha256?(sha(det))
+    end
+
+    refute served?.()
+    refute Catalog.published_sha256?(sha(det))
+
+    {:ok, builder} = Portal.Builders.set_publishing(builder, true)
+    assert served?.()
+
+    {:ok, _} = Portal.Builders.revoke(builder)
+    refute served?.()
+    refute Catalog.published_sha256?(sha(det))
   end
 
   # Review focus 4: a carried copy of a row is a row of its own, with no
