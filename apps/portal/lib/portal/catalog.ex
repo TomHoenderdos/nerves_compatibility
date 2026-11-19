@@ -1160,8 +1160,9 @@ defmodule Portal.Catalog do
   # deterministic siblings (`Portal.Deterministic`) while the
   # `deterministic_builds_enabled` setting is on, in a suffix of their own;
   # and so do pinned builds (`Portal.Catalog.PinnedBuild`), whose every
-  # revocation and withdrawal column and whose `reporters` (the manifest's
-  # cap ranks by it) are in it as values.
+  # revocation and withdrawal column, whose `reporters` (the manifest's
+  # cap ranks by it) and whose builder's publishing state, as a run's, are
+  # in it as values.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1237,11 +1238,13 @@ defmodule Portal.Catalog do
     GROUP BY d.package_id
   ), pinned AS (
     SELECT pb.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', pb.id, pb.xmin, pb.updated_at,
-                                 pb.status, pb.revoked_at, pb.unpublished_at, pb.reporters,
-                                 pb.builder_id, md5(pb.compile_inputs::text)),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', pb.id, pb.xmin,
+                                 pb.updated_at, pb.status, pb.revoked_at, pb.unpublished_at,
+                                 pb.reporters, pb.builder_id, md5(pb.compile_inputs::text),
+                                 pbb.publishing, pbb.status, pbb.xmin, pbb.updated_at),
                           ',' ORDER BY pb.id)) AS fp
     FROM catalog_pinned_builds pb
+    LEFT JOIN builders pbb ON pbb.id = pb.builder_id
     GROUP BY pb.package_id
   ), pinned_files AS (
     SELECT pb.package_id, count(*) AS n,

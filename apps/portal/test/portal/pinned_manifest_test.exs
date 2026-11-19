@@ -107,6 +107,40 @@ defmodule Portal.PinnedManifestTest do
     refute fingerprints[other] =~ "|pinned:"
   end
 
+  # The publishing gate (`@served_pinned_clause`) reads the builder's row,
+  # so the batch fingerprint must carry that row's state, as a run's does
+  # (`Portal.Catalog.PublishingGateTest`), or a batch keeps serving a build
+  # whose builder stopped publishing.
+  test "the fingerprint follows the publishing flag of a pinned build's builder" do
+    builder =
+      Portal.Builders.Builder
+      |> Ash.Changeset.for_create(:enrol, %{
+        name: unique(),
+        fingerprint: "fp-" <> unique(),
+        cert_pem: "p",
+        cert_expires_at: DateTime.utc_now(),
+        enrolled_at: DateTime.utc_now()
+      })
+      |> Ash.create!(domain: Portal.Builders)
+
+    {:ok, builder} = Portal.Builders.set_publishing(builder, true)
+    name = unique()
+    pins = pins(name)
+
+    {:ok, _row} =
+      Catalog.Ingestion.ingest_pinned(
+        result(name, pins),
+        name |> opts(pins, files(["beam-" <> name])) |> Map.put(:builder_id, builder.id)
+      )
+
+    assert %{"builds_closure" => [_]} = version(name)
+    before = Catalog.precompiled_fingerprints()[name]
+
+    {:ok, _} = Portal.Builders.set_publishing(builder, false)
+    assert version(name) == nil
+    assert Catalog.precompiled_fingerprints()[name] != before
+  end
+
   test "at most 8 closures of one version are listed" do
     name = unique()
 
