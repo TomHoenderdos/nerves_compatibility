@@ -114,35 +114,37 @@ defmodule Portal.PinnedFixtures do
 
   # A pinned firmware run's result.json (phase 2): the target `target` at
   # `system_version`, its files `beams` and `priv` (`{path, bytes}`), the
-  # run's lock `lock`.
+  # run's lock `lock`. `build_root:` is the worker's R2 verdict on the
+  # target (`NccWorker.FirmwareBuildRoot.outcome()`); a "skipped" one drops
+  # `file_manifest`, as the worker's own `apply_own/3` does.
   def firmware_result(name, pins, opts \\ []) do
     beams = Keyword.get(opts, :beams, ["beam-" <> name])
     priv = Keyword.get(opts, :priv, [])
     target = Keyword.get(opts, :target, "nerves_system_rpi4")
+    build_root = Keyword.get(opts, :build_root)
 
-    sys = %{
-      "status" => Keyword.get(opts, :status, "pass"),
-      "duration_sec" => 90.0,
-      "firmware_size_bytes" => 1_000_000,
-      "log_tail" => Keyword.get(opts, :log_tail, "built"),
-      "system_version" => Keyword.get(opts, :system_version, "2.1.2"),
-      "compile_env" => [],
-      "compile_inputs" => [],
-      "toolchain" => %{
-        "package" => "nerves_toolchain_aarch64_nerves_linux_gnu",
-        "version" => "15.3.1"
-      },
-      "otp_full" => "29.0.6",
-      "error" => Keyword.get(opts, :error),
-      "beam_scan" => %{
-        "footprint" => %{
-          "file_manifest" => %{
-            "ebin" => Enum.with_index(beams, &entry("ebin/m#{&2}.beam", &1)),
-            "priv" => Enum.map(priv, fn {path, bytes} -> entry(path, bytes) end)
+    sys =
+      %{
+        "status" => Keyword.get(opts, :status, "pass"),
+        "duration_sec" => 90.0,
+        "firmware_size_bytes" => 1_000_000,
+        "log_tail" => Keyword.get(opts, :log_tail, "built"),
+        "system_version" => Keyword.get(opts, :system_version, "2.1.2"),
+        "compile_env" => [],
+        "compile_inputs" => [],
+        "toolchain" => %{
+          "package" => "nerves_toolchain_aarch64_nerves_linux_gnu",
+          "version" => "15.3.1"
+        },
+        "otp_full" => "29.0.6",
+        "error" => Keyword.get(opts, :error),
+        "beam_scan" => %{
+          "footprint" => %{
+            "file_manifest" => firmware_manifest(build_root, beams, priv)
           }
         }
       }
-    }
+      |> put_build_root(build_root)
 
     %{
       "scope" => Keyword.get(opts, :scope, "targets"),
@@ -163,6 +165,21 @@ defmodule Portal.PinnedFixtures do
       }
     }
   end
+
+  # The worker withholds a withheld target's files at the source
+  # (`NccWorker.FirmwareBuildRoot.apply_own/3` deletes
+  # `footprint.file_manifest`), so a "skipped" `build_root` never ships one.
+  defp firmware_manifest(%{"status" => "skipped"}, _beams, _priv), do: nil
+
+  defp firmware_manifest(_build_root, beams, priv) do
+    %{
+      "ebin" => Enum.with_index(beams, &entry("ebin/m#{&2}.beam", &1)),
+      "priv" => Enum.map(priv, fn {path, bytes} -> entry(path, bytes) end)
+    }
+  end
+
+  defp put_build_root(sys, nil), do: sys
+  defp put_build_root(sys, build_root), do: Map.put(sys, "build_root", build_root)
 
   def firmware_opts(name, pins, files_dir) do
     name

@@ -537,6 +537,7 @@ defmodule Portal.Catalog.Ingestion do
     build =
       result
       |> target_build(opts)
+      |> gate_build_root()
       |> gate_manifest()
       |> gate_release(result, opts)
       |> gate_pins(result, opts)
@@ -596,9 +597,26 @@ defmodule Portal.Catalog.Ingestion do
       "toolchain_pkg" => toolchain_pkg,
       "toolchain_version" => toolchain_version,
       "otp_full" => fact_string(sys["otp_full"]),
-      "system_libs" => if(is_map(sys["system_libs"]), do: sys["system_libs"])
+      "system_libs" => if(is_map(sys["system_libs"]), do: sys["system_libs"]),
+      "build_root" => sys["build_root"]
     }
   end
+
+  # A passing target the baked build path rule withheld
+  # (`NccWorker.FirmwareBuildRoot`) already has no files: the worker deletes
+  # the target's own `footprint.file_manifest`, but leaves its `status` at
+  # "pass" -- only `build_root` records the refusal. Stored as a pass, the
+  # row would show as served when nothing of it is, so it is stored as the
+  # regular firmware path's own result reads it: skipped, with the worker's
+  # reason. Absent on the toolchain path, whose `build_root` key the worker
+  # never writes.
+  defp gate_build_root(
+         %{"status" => "pass", "build_root" => %{"status" => "skipped"} = build_root} = build
+       ) do
+    skip_variant(build, build_root["reason"] || "files withheld on the target (R2)")
+  end
+
+  defp gate_build_root(build), do: build
 
   defp not_built(%{"pure_elixir" => _}, _target),
     do: "pinned target not built: the worker judged the closure pure Elixir"

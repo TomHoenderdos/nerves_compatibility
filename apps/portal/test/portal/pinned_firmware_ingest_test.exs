@@ -49,6 +49,35 @@ defmodule Portal.PinnedFirmwareIngestTest do
     assert shas(row) == [sha("beam-" <> name)]
   end
 
+  # The bug: R2 (`NccWorker.FirmwareBuildRoot`) withholds a passing target's
+  # files but leaves its own `status` at "pass"; only `build_root` says so.
+  # Stored as a pass, the row would show as served when nothing of it is.
+  test "a target withheld by the baked build path rule (R2) is skipped with the reason and no files" do
+    name = unique()
+    reason = "bakes the build path: Elixir.Foo string table \"<root>\""
+
+    assert {:ok, row} =
+             ingest_firmware(name, pins(name),
+               build_root: %{"status" => "skipped", "reason" => reason}
+             )
+
+    assert row.status == :skipped
+    assert row.reason == reason
+    assert row.file_manifest == nil
+    assert row.native == nil and row.portable == nil
+    assert shas(row) == []
+  end
+
+  test "a target R2 passed is still stored as pass with its files" do
+    name = unique()
+
+    assert {:ok, row} =
+             ingest_firmware(name, pins(name), build_root: %{"status" => "pass", "reason" => nil})
+
+    assert row.status == :pass
+    assert shas(row) == [sha("beam-" <> name)]
+  end
+
   test "a native priv file is recorded as native" do
     name = unique()
     elf = <<0x7F, "ELF", "not a real one">>
