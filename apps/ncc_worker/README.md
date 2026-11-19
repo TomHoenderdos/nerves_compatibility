@@ -806,7 +806,8 @@ ERL_COMPILER_OPTIONS"`. It passes only when it is the build but for what the opt
 `package_checksum`, `declared`, `manager`, `compile_env`, `compile_env_rule`, `compile_inputs` and `built_priv`, the
 same `priv` files (bytes too, but for `built_priv`), and an `ebin` `Compatibility.DeterministicBeams.compare_ebin/2`
 takes (every beam compiled with the option; an Elixir module's code and md5 the build's, only `CInf`, `Dbgi`, `Docs`
-and `ExCk` differing; an Erlang module's only `CInf`, `Dbgi`, `Docs`, `Line`, `LitT` and `Attr`). Else it is
+and `ExCk` differing; an Erlang module's only `CInf`, `Dbgi`, `Docs`, `Line`, `LitT`, `Attr` and its funs'
+`old_uniq` in `FunT`, which the compiler takes from the md5). Else it is
 `"skipped"`, its reason the judge's or `"differs from the build: ..."`. Its fields are a toolchain build's plus
 `erl_compiler_options: ["deterministic"]`; a sibling that was not tried carries only `status`, `reason`,
 `erl_compiler_options`, `elixir`, `otp`, `judge_revision` and a nil `file_manifest`. Its files are archived from

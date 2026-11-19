@@ -752,7 +752,8 @@ What it lists:
   declared dependencies, manager, `compile_env`, `compile_inputs` and own-priv list, the same
   `priv` bytes, every beam compiled with the option (`CInf` without `options` and `source`), each
   Elixir module's code and md5 its build's (only `CInf`, `Dbgi`, `Docs` and `ExCk` differ) and each
-  Erlang module's changes confined to `CInf`, `Dbgi`, `Docs`, `Line`, `LitT` and `Attr`
+  Erlang module's changes confined to `CInf`, `Dbgi`, `Docs`, `Line`, `LitT`, `Attr` and its funs'
+  `old_uniq` in `FunT`, which the compiler takes from the module's md5
   (`Compatibility.DeterministicBeams`). The portal checks all of it again at ingest on the blobs it
   stores (`Portal.Deterministic.Ingest`), its `priv` as for the build. Host-native builds have no
   siblings.

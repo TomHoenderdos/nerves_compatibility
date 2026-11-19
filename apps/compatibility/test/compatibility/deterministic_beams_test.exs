@@ -23,6 +23,20 @@ defmodule Compatibility.DeterministicBeamsTest do
     beam
   end
 
+  # `beam` with chunk `id` rewritten by `fun`, rebuilt uncompressed.
+  defp rewrite_chunk(beam, id, fun) do
+    {:ok, _, chunks} = :beam_lib.all_chunks(beam)
+    key = String.to_charlist(id)
+
+    chunks
+    |> Enum.map(fn
+      {^key, bytes} -> {key, fun.(bytes)}
+      chunk -> chunk
+    end)
+    |> :beam_lib.build_module()
+    |> elem(1)
+  end
+
   defp erlang_pair(dir, name, body) do
     path = Path.join(dir, "#{name}.erl")
     File.write!(path, "-module(#{name}).\n-export([f/0]).\n" <> body)
@@ -46,6 +60,45 @@ defmodule Compatibility.DeterministicBeamsTest do
 
     assert :beam_lib.md5(normal) != :beam_lib.md5(sibling)
     assert DeterministicBeams.compare_beam(normal, sibling) == :ok
+  end
+
+  # telemetry_poller: a `?LOG_*` (`?FILE`) and a fun in one module. The
+  # compiler takes each fun's `old_uniq` in `FunT` from the module's md5,
+  # which the literal changed.
+  test "an Erlang module with a ?FILE literal and a fun passes; FunT's uniq alone differs",
+       %{tmp_dir: dir} do
+    body = "-export([g/2]).\nf() -> ?FILE.\ng(X, L) -> lists:map(fun(Y) -> {X, Y} end, L).\n"
+    {normal, sibling} = erlang_pair(dir, "fx_fun", body)
+
+    {:ok, _, a} = :beam_lib.all_chunks(normal)
+    {:ok, _, b} = :beam_lib.all_chunks(sibling)
+    refute List.keyfind(a, ~c"FunT", 0) == List.keyfind(b, ~c"FunT", 0)
+    assert DeterministicBeams.compare_beam(normal, sibling) == :ok
+  end
+
+  test "a FunT that differs in more than the funs' uniq is refused", %{tmp_dir: dir} do
+    body = "-export([g/2]).\nf() -> ?FILE.\ng(X, L) -> lists:map(fun(Y) -> {X, Y} end, L).\n"
+    {normal, sibling} = erlang_pair(dir, "fx_fun2", body)
+
+    # The fun's arity (its second word) changed, its uniq kept.
+    tampered =
+      rewrite_chunk(sibling, "FunT", fn <<n::32, name::32, _arity::32, rest::binary>> ->
+        <<n::32, name::32, 7::32, rest::binary>>
+      end)
+
+    assert {:error, "chunks FunT differ"} = DeterministicBeams.compare_beam(normal, tampered)
+  end
+
+  test "an Elixir module whose FunT differs is refused" do
+    {normal, sibling} =
+      elixir_pair(FunT, "def f(l), do: Enum.map(l, &g/1)\ndef g(x), do: x")
+
+    tampered =
+      rewrite_chunk(sibling, "FunT", fn <<n::32, keep::binary-size(20), uniq::32>> ->
+        <<n::32, keep::binary, uniq + 1::32>>
+      end)
+
+    assert {:error, "chunks FunT differ"} = DeterministicBeams.compare_beam(normal, tampered)
   end
 
   test "a sibling the option never reached is refused" do

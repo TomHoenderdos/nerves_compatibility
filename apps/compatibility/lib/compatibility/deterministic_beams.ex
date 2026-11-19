@@ -26,10 +26,12 @@ defmodule Compatibility.DeterministicBeams do
         the build without the option, and so is its `beam_lib:md5/1`, which
         covers no chunk outside them;
       * an Erlang module (`erl_abstract_code`): `CInf`, `Dbgi`, `Docs`,
-        `Line`, `LitT` and `Attr`. The option gives epp the source's base
-        name, which is the line table's file and `?FILE`, so the literal
-        table, the md5 and with it the default `vsn` change; the code does
-        not;
+        `Line`, `LitT` and `Attr`, and `FunT` in each fun's `old_uniq`
+        alone. The option gives epp the source's base name, which is the
+        line table's file and `?FILE`, so the literal table, the md5 and
+        with it the default `vsn` change, and so does every fun's
+        `old_uniq`, which the compiler takes from the md5
+        (`beam_asm:finalize_fun_table/2`); the code does not;
       * any other backend, or no `Dbgi`: held to the Elixir rule.
 
   The beams are untrusted: package code wrote them, and the portal checks
@@ -114,9 +116,10 @@ defmodule Compatibility.DeterministicBeams do
          :ok <- same_module(a, b),
          :ok <- deterministic_info(b),
          :ok <- same_ids(a, b) do
+      kind = kind(a, b)
       differ = for {id, bytes} <- a, List.keyfind(b, id, 0) != {id, bytes}, do: id
 
-      case differ -- allowed(kind(a, b)) do
+      case Enum.reject(differ -- allowed(kind), &uniq_only?(&1, kind, a, b)) do
         [] -> :ok
         ids -> {:error, "chunks #{Enum.join(ids, ", ")} differ"}
       end
@@ -288,4 +291,27 @@ defmodule Compatibility.DeterministicBeams do
 
   defp allowed(:erlang), do: @erlang_chunks
   defp allowed(_kind), do: @elixir_chunks
+
+  # An Erlang module's `FunT` that differs only in its funs' `old_uniq`
+  # (the last of each entry's six words), the one value the md5 gives every
+  # fun of the module: the same funs, in the same order, at the same labels,
+  # indices and free variable counts.
+  defp uniq_only?("FunT", :erlang, a, b) do
+    with {_, normal} <- List.keyfind(a, "FunT", 0),
+         {_, sibling} <- List.keyfind(b, "FunT", 0),
+         {:ok, normal_funs} <- funs(normal),
+         {:ok, sibling_funs} <- funs(sibling) do
+      Enum.map(normal_funs, &elem(&1, 0)) == Enum.map(sibling_funs, &elem(&1, 0)) and
+        length(Enum.uniq_by(sibling_funs, &elem(&1, 1))) <= 1
+    else
+      _ -> false
+    end
+  end
+
+  defp uniq_only?(_id, _kind, _a, _b), do: false
+
+  defp funs(<<count::32, table::binary>>) when byte_size(table) == count * 24,
+    do: {:ok, for(<<keep::binary-size(20), uniq::32 <- table>>, do: {keep, uniq})}
+
+  defp funs(_bytes), do: :error
 end
