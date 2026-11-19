@@ -31,7 +31,10 @@ defmodule Portal.Deterministic do
   build while that result is served: not withdrawn
   (`Portal.Precompiled.FirmwareRefusal`,
   `Portal.Precompiled.FirmwareBuildPathWithdrawal`), not withheld, of an
-  unrevoked run whose builder publishes, and its own build listed.
+  unrevoked run whose builder publishes, and its own build the one the
+  manifest lists for its key. A newer run of the same version, target,
+  toolchain, release and lock that brought no sibling takes the key, and
+  its sibling with it, as a toolchain or pinned rebuild without one does.
   """
 
   require Ash.Query

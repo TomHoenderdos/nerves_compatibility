@@ -762,10 +762,12 @@ What it lists:
   sibling too, its entry its build's (the same `target`, `system_version`, `deps`, ABI facts,
   `compile_inputs`, `run_id`, ...) with its own files and `erl_compiler_options`, in the
   `deterministic` list its build is in (a pinned firmware build's in `builds_closure`). It is served
-  only beside that build while the build is served: the result neither withdrawn
-  (`Portal.Precompiled.FirmwareRefusal`, `Portal.Precompiled.FirmwareBuildPathWithdrawal`) nor
-  withheld, of an unrevoked run whose builder publishes, and its own build listed; a carried copy of
-  a result has none. The builder (`NccWorker.FirmwareDeterministic`) compiles the package alone for
+  only beside that build while the build is served and is the one the version lists for its key:
+  the result neither withdrawn (`Portal.Precompiled.FirmwareRefusal`,
+  `Portal.Precompiled.FirmwareBuildPathWithdrawal`) nor withheld, of an unrevoked run whose builder
+  publishes, and its own build the entry `builds` or `builds_with_inputs` picked. A newer run of
+  the same key that brought no sibling withdraws the older one's, as a toolchain rebuild does; a
+  carried copy of a result has none. The builder (`NccWorker.FirmwareDeterministic`) compiles the package alone for
   the target with the option, in the target's build env and build tree over the closure its
   firmware build compiled, and keeps it only when the target passed and publishes its own build
   (R2 did not withhold it), the build was made against the run's lock (a target that kept its

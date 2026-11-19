@@ -3610,7 +3610,7 @@ defmodule Portal.Catalog do
       listed(run_builds(sources) ++ toolchain_builds_v2(sources) ++ pinned_builds_v2(sources))
 
     host_native = host_native_v2(sources)
-    deterministic = listed(deterministic_v2(sources))
+    deterministic = listed(deterministic_v2(sources, builds))
 
     if builds == [] and host_native == [] and deterministic == [] do
       nil
@@ -3676,12 +3676,14 @@ defmodule Portal.Catalog do
   # toolchain, pinned or firmware target build is (the same lock, inputs and
   # run) with its own files and `erl_compiler_options`; a pinned build's
   # sibling goes under the `deterministic` key's `builds_closure` only, as
-  # its build does.
-  defp deterministic_v2(sources) do
+  # its build does. `listed` is the version lists' builds as `listed/1`
+  # picked them: a firmware target's sibling is listed only beside the build
+  # that won its key there (`sibling_results/2`).
+  defp deterministic_v2(sources, listed) do
     builds =
       Map.new(sources.toolchain_builds, &{{&1.id, &1.run_id}, {:toolchain, &1}})
       |> Map.merge(Map.new(sources.pinned_builds, &{{&1.id, &1.run_id}, {:pinned, &1}}))
-      |> Map.merge(sibling_results(sources))
+      |> Map.merge(sibling_results(sources, listed))
 
     for d <- sources.deterministic_builds,
         build =
@@ -3706,21 +3708,31 @@ defmodule Portal.Catalog do
 
   # The served firmware results that own a sibling, by id and run: each
   # rendered as `run_builds/1` renders its own build, and only while that
-  # own build is listed (not refused, every file of it held), so a sibling
-  # is never served at a target, release, lock or run its build is not.
-  defp sibling_results(sources) do
+  # own build is the entry `listed/1` picked for its key in `builds` or
+  # `builds_with_inputs` (`listed`). So a sibling is never served at a
+  # target, release, lock or run its build is not, nor beside a newer build
+  # of its key: a rebuild that brought no sibling leaves its key without
+  # one, as a toolchain or pinned rebuild does.
+  defp sibling_results(sources, listed) do
     owners = MapSet.new(sources.deterministic_builds, & &1.system_result_id)
     runs_by_id = Map.new(sources.runs, &{&1.id, &1})
+
+    winners =
+      for {tag, {version, _at, entry}} <- listed,
+          tag in [:plain, :checked],
+          into: MapSet.new(),
+          do: {version, entry}
 
     for result <- sources.results,
         MapSet.member?(owners, result.id),
         stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
         built_by = built_by(runs_by_id, result),
         build = result_build(built_by, result),
-        own_build(result, build, stored, sources.present_shas) != [],
+        [{files, ^build}] <- [own_build(result, build, stored, sources.present_shas)],
+        version = Map.fetch!(runs_by_id, result.run_id).version_tested,
+        entry = Map.merge(files, %{"target" => result.system_pkg, "build" => build}),
+        MapSet.member?(winners, {version, entry}),
         into: %{} do
-      version = Map.fetch!(runs_by_id, result.run_id).version_tested
-
       {{result.id, result.run_id},
        {:result, version, built_by.finished_at, result.system_pkg, build}}
     end

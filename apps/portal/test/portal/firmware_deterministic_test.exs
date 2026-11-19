@@ -466,6 +466,51 @@ defmodule Portal.FirmwareDeterministicTest do
     refute Catalog.published_sha256?(sha(det))
   end
 
+  # Review I1: a sibling is served only beside the build it belongs to. A
+  # newer run of the same key that brought none wins `builds`, so the older
+  # run's sibling is not served beside a build that is not its own; the key
+  # then misses as not built for a deterministic client.
+  test "a newer build of the same key without a sibling withdraws the older run's sibling" do
+    on!()
+    ctx = ingested()
+    assert %{"builds" => [_]} = version(ctx.name)["deterministic"]
+
+    # The same version, target, toolchain, release and deps; other code.
+    {newer, _det} = beams(ctx.module, "f() -> {?FILE, 2}.\n")
+
+    result =
+      run_result(ctx.name, ctx.module, newer, nil, finished_at: "2026-11-20T12:00:00Z")
+
+    second = ingest!(ctx.name, result, [newer, @nif])
+
+    version = version(ctx.name)
+    [listed] = Enum.filter(version["builds"], &(&1["target"] == "nerves_system_rpi4"))
+    assert listed["build"]["run_id"] == second.run_id
+    assert ebin_sha(listed) == sha(newer)
+
+    refute Map.has_key?(version, "deterministic")
+  end
+
+  # The other side of I1: a newer run at another key (here another release
+  # of the system) leaves the older run's build, and so its sibling, listed.
+  test "a newer build of another key keeps the older run's sibling" do
+    on!()
+    ctx = ingested()
+    {newer, _det} = beams(ctx.module, "f() -> {?FILE, 2}.\n")
+
+    result =
+      ctx.name
+      |> run_result(ctx.module, newer, nil, finished_at: "2026-11-20T12:00:00Z")
+      |> put_in(["systems", "nerves_system_rpi4", "system_version"], "2.3.0")
+
+    ingest!(ctx.name, result, [newer, @nif])
+
+    assert %{"builds" => [sibling]} = version(ctx.name)["deterministic"]
+    assert sibling["build"]["system_version"] == "2.2.2"
+    assert sibling["build"]["run_id"] == ctx.run.run_id
+    assert ebin_sha(sibling) == sha(ctx.det)
+  end
+
   # Review focus 4: a carried copy of a row is a row of its own, with no
   # sibling; the sibling stays its own row's.
   test "a partial run's carried copy of the target carries no sibling" do
