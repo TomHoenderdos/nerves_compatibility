@@ -8,6 +8,13 @@ defmodule NccWorker.PinsFirmwareTest do
 
   @moduletag :tmp_dir
 
+  # `:tmp_dir` is cleared only before the same test runs again; the mix.lock
+  # fixture written here must not outlive it (mix_audit scans
+  # `apps/**/mix.lock`).
+  setup %{tmp_dir: dir} do
+    on_exit(fn -> File.rm_rf(dir) end)
+  end
+
   @a String.duplicate("a", 64)
   @b String.duplicate("b", 64)
 
