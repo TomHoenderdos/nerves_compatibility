@@ -722,8 +722,9 @@ What it lists:
   installs one, the client reads every staged priv ELF file back: a 64-bit library of the host's
   machine that an origin names, or it is not installed. The build
   is ABI-compatible with what the host would compile, not byte-identical to it.
-- `versions[v].deterministic` — deterministic siblings: toolchain builds compiled again, in the same
-  run and on the same toolchain and lock, with `ERL_COMPILER_OPTIONS=deterministic`, read only by a
+- `versions[v].deterministic` — deterministic siblings: toolchain, pinned and firmware target builds
+  compiled again, in the same run and on the same toolchain and lock, with
+  `ERL_COMPILER_OPTIONS=deterministic`, read only by a
   client whose project's `ERL_COMPILER_OPTIONS` parses (as `compile:env_default_opts/0` parses it) to
   exactly `[deterministic]` (clients after 0.7.2), which then reads this object **in place of** the
   version's other lists and never takes a build from those. It is an object of the same lists as the
@@ -753,8 +754,25 @@ What it lists:
   Elixir module's code and md5 its build's (only `CInf`, `Dbgi`, `Docs` and `ExCk` differ) and each
   Erlang module's changes confined to `CInf`, `Dbgi`, `Docs`, `Line`, `LitT` and `Attr`
   (`Compatibility.DeterministicBeams`). The portal checks all of it again at ingest on the blobs it
-  stores (`Portal.Deterministic.Ingest`), its `priv` as for the build. Firmware targets and
-  host-native builds have no siblings yet.
+  stores (`Portal.Deterministic.Ingest`), its `priv` as for the build. Host-native builds have no
+  siblings.
+
+  A firmware target's build (a run's target, and a pinned firmware build's one target) has a
+  sibling too, its entry its build's (the same `target`, `system_version`, `deps`, ABI facts,
+  `compile_inputs`, `run_id`, ...) with its own files and `erl_compiler_options`, in the
+  `deterministic` list its build is in (a pinned firmware build's in `builds_closure`). It is served
+  only beside that build while the build is served: the result neither withdrawn
+  (`Portal.Precompiled.FirmwareRefusal`, `Portal.Precompiled.FirmwareBuildPathWithdrawal`) nor
+  withheld, of an unrevoked run whose builder publishes, and its own build listed; a carried copy of
+  a result has none. The builder (`NccWorker.FirmwareDeterministic`) compiles the package alone for
+  the target with the option, in the target's build env and build tree over the closure its
+  firmware build compiled, and keeps it only when the target passed and publishes its own build
+  (R2 did not withhold it), the build was made against the run's lock (a target that kept its
+  optional dependencies gets none), its recorded `compile_inputs` read neither
+  `ERL_COMPILER_OPTIONS` nor the whole environment, and the sibling lists the build's `ebin` and
+  `priv` paths and modes, has its `priv` bytes, passes the same `ebin` comparison, and passes R2 on
+  its own beams. The portal checks the closure, paths, priv bytes, beams and R2 outcome again at
+  ingest (`Portal.Deterministic.Ingest.firmware_candidate/3`).
 - `build.erl_compiler_options` — only on a build under `versions[v].deterministic`:
   `["deterministic"]`, the `ERL_COMPILER_OPTIONS` it was compiled with.
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),

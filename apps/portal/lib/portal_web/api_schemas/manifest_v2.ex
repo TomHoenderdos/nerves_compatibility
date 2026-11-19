@@ -50,7 +50,8 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
               deterministic: %Schema{
                 type: :object,
                 description:
-                  "Deterministic siblings: the version's toolchain builds compiled again " <>
+                  "Deterministic siblings: the version's toolchain, pinned and firmware " <>
+                    "target builds compiled again " <>
                     "with `ERL_COMPILER_OPTIONS=deterministic`, each with " <>
                     "`build.erl_compiler_options: [\"deterministic\"]`, in the same lists as " <>
                     "the version's own. Only a client whose project's `ERL_COMPILER_OPTIONS` " <>
