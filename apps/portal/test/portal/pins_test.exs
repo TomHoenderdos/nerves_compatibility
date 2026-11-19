@@ -44,8 +44,9 @@ defmodule Portal.PinsTest do
     ~s|  "#{app}": {:hex, :#{app}, "#{version}", "inner", #{managers}, [#{edges}], "hexpm", "#{sum(char)}"},\n|
   end
 
-  defp lock do
+  defp lock(extra \\ "") do
     "%{\n" <>
+      extra <>
       hex("app_a", "1.0.0", "a", [
         {"decimal", "~> 2.0", false},
         {"jason", "~> 1.0", true},
@@ -65,7 +66,8 @@ defmodule Portal.PinsTest do
       hex("ranch", "1.8.0", "4", [], "[:make, :rebar3]") <> "}\n"
   end
 
-  defp run(opts \\ []), do: Portal.Pins.from_lock(lock(), [hex: FakeHex] ++ opts)
+  defp run(opts \\ []),
+    do: Portal.Pins.from_lock(Keyword.get(opts, :lock, lock()), [hex: FakeHex] ++ opts)
 
   defp reasons(report), do: Map.new(report.skipped, &{&1.package, &1.reason})
 
@@ -81,8 +83,9 @@ defmodule Portal.PinsTest do
              "g" => "non_hex",
              "missing" => "member_missing: gone",
              "over" => "unsatisfied: decimal",
-             "nif" => "native (phase 2)",
-             "elixir_make" => "native (phase 2)",
+             # Native sets need the lock's Nerves system (phase 2).
+             "nif" => "no_system",
+             "elixir_make" => "no_system",
              "nerves" => "tooling"
            } = reasons(report)
 
@@ -207,5 +210,182 @@ defmodule Portal.PinsTest do
              run(target: "nerves_system_rpi4")
 
     assert {:error, {:unknown_toolchain, "9.9/99"}} = run(toolchain: "9.9/99")
+  end
+
+  # Phase 2: native sets are firmware builds of the lock's one system at its
+  # exact release.
+  describe "native sets" do
+    defp system(name, version), do: hex(name, version, "9", [{"nerves", "~> 1.0", false}])
+
+    defp abi!(system, version, otp) do
+      {:ok, _} =
+        Portal.Catalog.SystemAbi.observe(%{
+          system_pkg: system,
+          version: version,
+          source: "lock",
+          otp: otp,
+          toolchain_pkg: "nerves_toolchain_aarch64_nerves_linux_gnu",
+          toolchain_version: "15.3.1"
+        })
+    end
+
+    defp with_system(lines), do: lock(lines <> hex("nerves_system_br", "1.35.3", "8"))
+
+    test "are queued on :builds for the lock's system at its release" do
+      abi!("nerves_system_rpi4", "2.1.2", "29.0.6")
+      lock = with_system(system("nerves_system_rpi4", "2.1.2"))
+
+      assert {:ok, report} = run(lock: lock, dry_run: false)
+      assert report.system == %{name: "nerves_system_rpi4", version: "2.1.2", refused: nil}
+
+      assert Enum.map(report.queue, &{&1.package, &1.target}) == [
+               {"app_a", "pure_elixir"},
+               {"decimal", "pure_elixir"},
+               {"elixir_make", "nerves_system_rpi4"},
+               {"floki", "pure_elixir"},
+               {"jason", "pure_elixir"},
+               {"nif", "nerves_system_rpi4"},
+               {"ranch", "pure_elixir"}
+             ]
+
+      firmware = all_enqueued(worker: PinnedBuild, queue: :builds)
+      assert length(firmware) == 2
+      assert length(all_enqueued(worker: PinnedBuild, queue: :toolchain)) == 5
+
+      assert %{
+               "package" => "nif",
+               "target" => "nerves_system_rpi4",
+               "system_version" => "2.1.2",
+               "toolchain" => "1.20/29",
+               "pins" => %{"deps" => [%{"name" => "elixir_make"}]}
+             } = Enum.find(firmware, &(&1.args["package"] == "nif")).args
+
+      assert Enum.all?(firmware, &(&1.priority == 9 and not Map.has_key?(&1.args, "image")))
+      assert reasons(report)["nerves_system_rpi4"] == "tooling"
+
+      assert {:ok, again} = run(lock: lock, dry_run: false)
+      assert reasons(again)["nif"] == "queued_dup"
+      assert length(all_enqueued(worker: PinnedBuild, queue: :builds)) == 2
+    end
+
+    test "a 1.x release is unbuildable, one the ABI table lacks or holds on another OTP is named" do
+      abi!("nerves_system_rpi4", "2.0.0", "28.0.2")
+
+      for {version, reason} <- [
+            {"1.24.0", "unbuildable_system: nerves_system_rpi4 1.24.0"},
+            {"2.2.0", "system_abi_unknown: nerves_system_rpi4 2.2.0"},
+            {"2.0.0", "system_otp: nerves_system_rpi4 2.0.0 (OTP 28.0.2)"}
+          ] do
+        lock = with_system(system("nerves_system_rpi4", version))
+        assert {:ok, report} = run(lock: lock)
+        assert reasons(report)["nif"] == reason
+        assert reasons(report)["elixir_make"] == reason
+        assert report.system.refused == reason
+        assert length(report.queue) == 5
+      end
+    end
+
+    test "a system the worker does not build, several systems, and the system: option" do
+      abi!("nerves_system_rpi4", "2.1.2", "29.0.6")
+
+      assert {:ok, report} = run(lock: with_system(system("nerves_system_rpi3", "2.1.2")))
+      assert reasons(report)["nif"] == "unsupported_system: nerves_system_rpi3"
+
+      both =
+        with_system(
+          system("nerves_system_rpi4", "2.1.2") <> system("nerves_system_rpi5", "2.1.2")
+        )
+
+      assert {:ok, report} = run(lock: both)
+      assert reasons(report)["nif"] == "ambiguous_system: nerves_system_rpi4, nerves_system_rpi5"
+
+      assert {:ok, report} = run(lock: both, system: "nerves_system_rpi4")
+      assert %{target: "nerves_system_rpi4"} = Enum.find(report.queue, &(&1.package == "nif"))
+
+      assert {:error, {:system_not_in_lock, "nerves_system_bbb"}} =
+               run(lock: both, system: "nerves_system_bbb")
+    end
+
+    test "a firmware build already judged or served is not queued again" do
+      abi!("nerves_system_rpi4", "2.1.2", "29.0.6")
+      lock = with_system(system("nerves_system_rpi4", "2.1.2"))
+      {sets, _} = Portal.Pins.derive(elem(Portal.Pins.Lock.parse(lock), 1))
+      nif = Enum.find(sets, &(&1.package == "nif"))
+      elixir_make = Enum.find(sets, &(&1.package == "elixir_make"))
+
+      package =
+        Catalog.Package
+        |> Ash.Changeset.for_create(:create, %{name: "elixir_make"})
+        |> Ash.create!(domain: Catalog)
+
+      Catalog.PinnedBuild
+      |> Ash.Changeset.for_create(:upsert, %{
+        package_id: package.id,
+        version: "0.8.4",
+        pin_hash: elixir_make.pins["hash"],
+        target: "nerves_system_rpi4",
+        system_version: "2.1.2",
+        toolchain: "1.20/29",
+        builder_version: Portal.Toolchains.builder_version(),
+        config_variant: "default",
+        pins: elixir_make.pins,
+        status: :fail
+      })
+      |> Ash.create!(domain: Catalog)
+
+      served_run!("nif", "1.0.0", Compatibility.Pins.to_lock(nif.pins["deps"]))
+
+      assert {:ok, report} = run(lock: lock)
+      assert reasons(report)["elixir_make"] == "judged"
+      assert reasons(report)["nif"] == "served"
+
+      # The same build on another release serves nothing here.
+      abi!("nerves_system_rpi4", "2.2.0", "29.1.2")
+      assert {:ok, report} = run(lock: with_system(system("nerves_system_rpi4", "2.2.0")))
+
+      assert Enum.map(report.queue, & &1.package) -- ~w(app_a decimal floki jason ranch) ==
+               ~w(elixir_make nif)
+    end
+
+    test "the cap counts both paths" do
+      abi!("nerves_system_rpi4", "2.1.2", "29.0.6")
+      lock = with_system(system("nerves_system_rpi4", "2.1.2"))
+      assert {:ok, report} = run(lock: lock, cap: 6)
+      assert length(report.queue) == 6
+      assert report.counts["cap"] == 1
+    end
+  end
+
+  # A regular run of `package` whose rpi4 2.1.2 target passed with `lock`.
+  defp served_run!(package, version, lock) do
+    fixture = Path.join([__DIR__, "..", "support", "fixtures", "result.json"])
+
+    result =
+      fixture
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.merge(%{
+        "run_id" => "served-#{System.unique_integer([:positive])}",
+        "package" => %{"name" => package, "version" => version},
+        "toolchain" => %{"elixir" => "1.20.5", "erlang" => "29"},
+        "deps_lock" => lock
+      })
+      |> update_in(["systems"], &Map.take(&1, ["nerves_system_rpi4"]))
+      |> put_in(["systems", "nerves_system_rpi4", "system_version"], "2.1.2")
+
+    dir = Path.join(System.tmp_dir!(), "pins-served-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf(dir) end)
+
+    {:ok, _run} =
+      Portal.Catalog.Ingestion.ingest(result, %{
+        package: package,
+        version: version,
+        run_id: result["run_id"],
+        image_digest: "sha256:served",
+        files_dir: dir,
+        scan_request_id: nil,
+        log: "log"
+      })
   end
 end

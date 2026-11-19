@@ -18,34 +18,59 @@ defmodule Portal.Pins do
   the public repository (`non_hex`: a git, path or private dependency), is
   Nerves tooling (`tooling`), does not satisfy an edge's requirement into it
   (`unsatisfied`, which is what an `override: true` leaves), or the set does
-  not validate. Phase 1 builds only pure-BEAM sets: a set with a member that
-  is a native marker (`Portal.NativeClosure.markers/0`) or a `nerves*`
-  package, as `Portal.NativeClosure` reads a closure, is left for phase 2
-  (`native`). A lock's `make` manager says nothing: erlang.mk packages such
+  not validate. A lock's `make` manager says nothing: erlang.mk packages such
   as cowboy list it and are pure Erlang.
 
-  Then, in package order, each set is skipped when its build is already
-  `judged` (a pinned build row of the key that is not an `error`),
-  `served` (a toolchain build of the version on the toolchain, of any
-  builder version or variant, passing, unrevoked, with exactly these `deps`,
-  itself or as an earlier build), or `queued_dup` (a pinned build job of
-  the key still incomplete). The rest are checked against the signed
-  registry (`Portal.HexDeps`): the package's and every pin's outer checksum
-  must be the lock's, and none may be retired as `security` or `invalid`.
-  At most `cap:` (50) are queued, at priority 9, on the toolchain queue
-  `Portal.Toolchains.MemoryRouting` picks; the rest are listed as `cap`.
+  A pure-BEAM set is built on the toolchain path (phase 1, target
+  `pure_elixir`). A set with a member that is a native marker
+  (`Portal.NativeClosure.markers/0`) or a `nerves*` package, as
+  `Portal.NativeClosure` reads a closure, is built on the firmware path
+  (phase 2, `Portal.Pins.FirmwareBuild`): one target, the lock's
+  `nerves_system_*` entry (`nerves_system_br` aside), at its exact release.
+  A lock with several needs `system:` naming one, or every native set is
+  skipped as `ambiguous_system`; one with none skips them as `no_system`.
+  The release must be one this release can build exactly: a system the
+  worker builds (`unsupported_system` otherwise), a 2.x release
+  (`unbuildable_system` otherwise: a Nerves 1 era system requires
+  `nerves ~> 1.x`, and the worker's template pins Nerves 2), in the ABI table
+  with its OTP (`system_abi_unknown` otherwise; a `system_abi` run reads
+  it), and on the firmware image's OTP major (`system_otp` otherwise, phase
+  4). Each reason names the system and release.
 
-  It only lists unless given `dry_run: false`. Options: `target:` (`"host"`,
-  the only one phase 1 builds), `toolchain:` (the first configured
-  toolchain by default), `cap:`, `hex:` (a module with `releases/2`, for
-  tests).
+  Then, in package order, each set is skipped when its build is already
+  `judged` (a pinned build row of the key, its target and release included,
+  that is not an `error`), `served` (on the toolchain path, a toolchain build
+  of the version on the toolchain, of any builder version or variant,
+  passing, unrevoked, with exactly these `deps`, itself or as an earlier
+  build; on the firmware path, that or a passing, served system result of
+  the version for the target at the release, of a run on the firmware
+  toolchain, whose own lock or a published variant's is exactly these
+  `deps`), or `queued_dup` (a pinned build job of the key still
+  incomplete). The rest are checked against the signed registry
+  (`Portal.HexDeps`): the package's and every pin's outer checksum must be
+  the lock's, and none may be retired as `security` or `invalid`. At most
+  `cap:` (50) are queued over both paths, at priority 9: a toolchain build
+  on the toolchain queue `Portal.Toolchains.MemoryRouting` picks, a firmware
+  build on `:builds`; the rest are listed as `cap`.
+
+  It only lists unless given `dry_run: false`. Options: `target:` (the
+  toolchain path's, `"host"`), `toolchain:` (the toolchain path's, the first
+  configured toolchain by default), `system:` (a `nerves_system_*` the lock
+  holds), `cap:`, `hex:` (a module with `releases/2`, for tests).
   """
+
+  require Ash.Query
 
   alias Compatibility.Pins, as: Set
   alias Portal.Pins.Lock
 
   @default_cap 50
   @priority 9
+  # The firmware image's toolchain, `"<Elixir minor>/<OTP major>"`: every
+  # firmware pinned build is keyed on it, and its OTP major is the one a
+  # release's must be (`Portal.Catalog.Ingestion` refuses a result built on
+  # another).
+  @firmware_toolchain "1.20/29"
   @dev_only Set.dev_only()
   @incomplete ~w(available scheduled executing retryable suspended)
 
@@ -70,10 +95,104 @@ defmodule Portal.Pins do
          {:ok, entries} <- Lock.parse(content),
          {:ok, target} <- target(Keyword.get(opts, :target, "host")),
          {:ok, toolchain, image} <- toolchain(Keyword.get(opts, :toolchain)),
-         {:ok, cap} <- cap(Keyword.get(opts, :cap, @default_cap)) do
+         {:ok, cap} <- cap(Keyword.get(opts, :cap, @default_cap)),
+         {:ok, system} <- system(entries, Keyword.get(opts, :system)) do
       {sets, refused} = derive(entries)
-      ctx = %{target: target, toolchain: toolchain, image: image, cap: cap}
+
+      ctx = %{
+        pure: %{
+          path: :toolchain,
+          target: target,
+          system_version: "",
+          toolchain: toolchain,
+          image: image
+        },
+        firmware: firmware(system),
+        cap: cap
+      }
+
       {:ok, decide(sets, refused, ctx, opts)}
+    end
+  end
+
+  @doc "The firmware image's toolchain, which every firmware pinned build is keyed on."
+  @spec firmware_toolchain() :: String.t()
+  def firmware_toolchain do
+    :portal
+    |> Application.get_env(__MODULE__, [])
+    |> Keyword.get(:firmware_toolchain, @firmware_toolchain)
+  end
+
+  # The lock's system: `{name, version}`, or `{:none, reason}` when native
+  # sets have none to build on.
+  defp system(entries, nil) do
+    case systems(entries) do
+      [] -> {:ok, {:none, "no_system"}}
+      [{name, version}] -> {:ok, {name, version}}
+      many -> {:ok, {:none, "ambiguous_system: " <> Enum.map_join(many, ", ", &elem(&1, 0))}}
+    end
+  end
+
+  defp system(entries, name) do
+    case List.keyfind(systems(entries), name, 0) do
+      {^name, version} -> {:ok, {name, version}}
+      nil -> {:error, {:system_not_in_lock, name}}
+    end
+  end
+
+  # Every public `nerves_system_*` release the lock holds but the Buildroot
+  # base every system depends on.
+  defp systems(entries) do
+    for {app, %{source: :hex, repo: "hexpm", hex: hex, version: version}} <- entries,
+        String.starts_with?(app, "nerves_system_"),
+        hex == app and app != "nerves_system_br",
+        do: {app, version}
+  end
+
+  # The firmware path's context for the lock's system, or the reason every
+  # native set is refused (see the moduledoc).
+  defp firmware({:none, reason}), do: {:refused, reason, nil}
+
+  defp firmware({name, version} = system) do
+    release = "#{name} #{version}"
+
+    cond do
+      name not in Portal.Workers.PinnedBuild.firmware_targets() ->
+        {:refused, "unsupported_system: " <> name, system}
+
+      not match?({:ok, %Version{major: 2}}, Version.parse(version)) ->
+        {:refused, "unbuildable_system: " <> release, system}
+
+      true ->
+        abi(system, release)
+    end
+  end
+
+  defp abi({name, version} = system, release) do
+    toolchain = firmware_toolchain()
+    [_elixir, otp_major] = String.split(toolchain, "/")
+
+    case abi_otp(name, version) do
+      nil ->
+        {:refused, "system_abi_unknown: " <> release, system}
+
+      otp ->
+        if hd(String.split(otp, ".")) == otp_major,
+          do:
+            {:ok, %{path: :firmware, target: name, system_version: version, toolchain: toolchain},
+             system},
+          else: {:refused, "system_otp: #{release} (OTP #{otp})", system}
+    end
+  end
+
+  defp abi_otp(name, version) do
+    Portal.Catalog.SystemAbi
+    |> Ash.Query.filter(system_pkg == ^name and version == ^version)
+    |> Ash.Query.select([:otp])
+    |> Ash.read_one!(domain: Portal.Catalog)
+    |> case do
+      %{otp: otp} when is_binary(otp) -> otp
+      _ -> nil
     end
   end
 
@@ -244,19 +363,20 @@ defmodule Portal.Pins do
     {queue, skipped} =
       Enum.reduce(sets, {[], []}, fn set, {queue, skipped} ->
         case verdict(set, ctx, hex, length(queue) < ctx.cap) do
-          :queue -> {[set | queue], skipped}
+          {:queue, path} -> {[{set, path} | queue], skipped}
           reason -> {queue, [skip(set, reason) | skipped]}
         end
       end)
 
     queue = Enum.reverse(queue)
-    {queued, conflicts} = if dry_run, do: {queue, []}, else: insert(queue, ctx, queue_for)
+    {queued, conflicts} = if dry_run, do: {queue, []}, else: insert(queue, queue_for)
     skipped = Enum.reverse(skipped) ++ conflicts ++ refused
 
     %{
       dry_run: dry_run,
-      target: ctx.target,
-      toolchain: ctx.toolchain,
+      target: ctx.pure.target,
+      toolchain: ctx.pure.toolchain,
+      system: system_summary(ctx.firmware),
       queue: Enum.map(queued, &summary/1),
       skipped: skipped,
       counts:
@@ -266,60 +386,89 @@ defmodule Portal.Pins do
     }
   end
 
-  defp verdict(set, ctx, hex, room?) do
+  defp system_summary({:ok, _path, {name, version}}),
+    do: %{name: name, version: version, refused: nil}
+
+  defp system_summary({:refused, reason, system}) do
+    {name, version} = system || {nil, nil}
+    %{name: name, version: version, refused: reason}
+  end
+
+  # A native set takes the firmware path, or its refusal; every check
+  # after that is the path's own.
+  defp verdict(%{native: true} = set, %{firmware: {:ok, path, _system}}, hex, room?),
+    do: path_verdict(set, path, hex, room?)
+
+  defp verdict(%{native: true}, %{firmware: {:refused, reason, _system}}, _hex, _room?),
+    do: reason
+
+  defp verdict(set, ctx, hex, room?), do: path_verdict(set, ctx.pure, hex, room?)
+
+  defp path_verdict(set, path, hex, room?) do
     cond do
-      set.native -> "native (phase 2)"
-      judged?(set, ctx) -> "judged"
-      served?(set, ctx) -> "served"
-      queued?(set, ctx) -> "queued_dup"
+      judged?(set, path) -> "judged"
+      served?(set, path) -> "served"
+      queued?(set, path) -> "queued_dup"
       not room? -> "cap"
-      true -> registry(set, hex)
+      true -> with(:queue <- registry(set, hex), do: {:queue, path})
     end
   end
 
   defp skip(set, reason), do: %{package: set.package, version: set.version, reason: reason}
 
-  defp summary(set),
+  defp summary({set, path}),
     do: %{
       package: set.package,
       version: set.version,
+      target: path.target,
+      system_version: path.system_version,
       pin_hash: set.pins["hash"],
       deps: length(set.pins["deps"])
     }
 
-  defp args(set, ctx) do
+  defp args(set, path) do
     %{
       "package" => set.package,
       "version" => set.version,
-      "toolchain" => ctx.toolchain,
-      "image" => ctx.image,
+      "toolchain" => path.toolchain,
       "builder_version" => Portal.Toolchains.builder_version(),
-      "target" => ctx.target,
+      "target" => path.target,
       "pin_hash" => set.pins["hash"],
       "pins" => set.pins
     }
+    |> put_path(path)
   end
 
-  defp insert(queue, ctx, queue_for) do
-    Enum.reduce(queue, {[], []}, fn set, {queued, conflicts} ->
+  # The toolchain path names its image; the firmware path its release, and
+  # its build host its own worker image.
+  defp put_path(args, %{path: :toolchain, image: image}), do: Map.put(args, "image", image)
+
+  defp put_path(args, %{path: :firmware, system_version: version}),
+    do: Map.put(args, "system_version", version)
+
+  defp insert(queue, queue_for) do
+    Enum.reduce(queue, {[], []}, fn {set, path} = item, {queued, conflicts} ->
       set
-      |> args(ctx)
-      |> Portal.Workers.PinnedBuild.new(priority: @priority, queue: queue_for.(set.package))
+      |> args(path)
+      |> Portal.Workers.PinnedBuild.new(priority: @priority, queue: queue(path, set, queue_for))
       |> Oban.insert()
       |> case do
         {:ok, %Oban.Job{conflict?: true}} -> {queued, [skip(set, "queued_dup") | conflicts]}
-        {:ok, _job} -> {[set | queued], conflicts}
+        {:ok, _job} -> {[item | queued], conflicts}
         {:error, error} -> {queued, [skip(set, "insert_failed: " <> inspect(error)) | conflicts]}
       end
     end)
     |> then(fn {queued, conflicts} -> {Enum.reverse(queued), Enum.reverse(conflicts)} end)
   end
 
+  defp queue(%{path: :firmware}, _set, _queue_for), do: :builds
+  defp queue(%{path: :toolchain}, set, queue_for), do: queue_for.(set.package)
+
   @judged_sql """
   SELECT 1 FROM catalog_pinned_builds pb
   JOIN catalog_packages p ON p.id = pb.package_id
   WHERE p.name = $1 AND pb.version = $2 AND pb.pin_hash = $3 AND pb.target = $4
-    AND pb.system_version = '' AND pb.toolchain = $5 AND pb.builder_version = $6
+    AND pb.system_version = $7 AND pb.toolchain = $5 AND pb.builder_version = $6
     AND pb.config_variant = 'default' AND pb.status <> 'error'
   LIMIT 1
   """
@@ -337,35 +486,75 @@ defmodule Portal.Pins do
   LIMIT 1
   """
 
+  # A regular firmware build of the version for the target at the release,
+  # passing and served (an unrevoked run and, for a carried result, the run
+  # that built it; built here or by an enrolled, publishing builder), of a
+  # run on the firmware toolchain, whose own lock (else its run's) or a
+  # published variant's serves exactly this closure.
+  @served_target_sql """
+  SELECT 1 FROM catalog_system_results s
+  JOIN catalog_runs r ON r.id = s.run_id
+  JOIN catalog_packages p ON p.id = r.package_id
+  LEFT JOIN catalog_runs b ON b.id = s.carried_from_run_id
+  CROSS JOIN LATERAL (
+    SELECT CASE WHEN s.carried_from_run_id IS NULL THEN r.toolchain ELSE b.toolchain END AS tc,
+           CASE WHEN s.carried_from_run_id IS NULL THEN r.builder_id ELSE b.builder_id END AS bid,
+           coalesce(s.deps_lock,
+                    CASE WHEN s.carried_from_run_id IS NULL THEN r.deps_lock ELSE b.deps_lock END)
+             AS lock
+  ) x
+  WHERE p.name = $1 AND r.version_tested = $2 AND s.system_pkg = $3 AND s.system_version = $4
+    AND s.status = 'pass' AND s.unpublished_at IS NULL AND r.revoked_at IS NULL
+    AND (s.carried_from_run_id IS NULL OR b.revoked_at IS NULL)
+    AND (x.bid IS NULL
+         OR EXISTS (SELECT 1 FROM builders bb
+                    WHERE bb.id = x.bid AND bb.publishing AND bb.status = 'enrolled'))
+    AND split_part(x.tc->>'elixir', '.', 1) || '.' || split_part(x.tc->>'elixir', '.', 2) ||
+          '/' || split_part(x.tc->>'erlang', '.', 1) = $6
+    AND (x.lock = $5::jsonb
+         OR EXISTS (SELECT 1 FROM unnest(coalesce(s.published_variants, '{}')) AS v
+                    WHERE v->'deps_lock' = $5::jsonb))
+  LIMIT 1
+  """
+
   @queued_sql """
   SELECT 1 FROM oban_jobs
   WHERE worker = 'Portal.Workers.PinnedBuild' AND state::text = ANY($1::text[]) AND args @> $2::jsonb
   LIMIT 1
   """
 
-  defp judged?(set, ctx) do
+  defp judged?(set, path) do
     params = [
       set.package,
       set.version,
       set.pins["hash"],
-      ctx.target,
-      ctx.toolchain,
-      Portal.Toolchains.builder_version()
+      path.target,
+      path.toolchain,
+      Portal.Toolchains.builder_version(),
+      path.system_version
     ]
 
     Portal.Repo.query!(@judged_sql, params).rows != []
   end
 
-  defp served?(set, ctx) do
+  defp served?(set, path) do
     lock = Set.to_lock(set.pins["deps"])
-    Portal.Repo.query!(@served_sql, [set.package, set.version, ctx.toolchain, lock]).rows != []
+
+    Portal.Repo.query!(@served_sql, [set.package, set.version, path.toolchain, lock]).rows != [] or
+      served_target?(set, path, lock)
   end
 
-  defp queued?(set, ctx) do
-    key =
-      set
-      |> args(ctx)
-      |> Map.take(["package", "version", "pin_hash", "target", "toolchain", "builder_version"])
+  defp served_target?(_set, %{path: :toolchain}, _lock), do: false
+
+  defp served_target?(set, path, lock) do
+    params = [set.package, set.version, path.target, path.system_version, lock, path.toolchain]
+    Portal.Repo.query!(@served_target_sql, params).rows != []
+  end
+
+  defp queued?(set, path) do
+    keys = ["package", "version", "pin_hash", "target", "toolchain", "builder_version"]
+    keys = if path.path == :firmware, do: ["system_version" | keys], else: keys
+    key = set |> args(path) |> Map.take(keys)
 
     Portal.Repo.query!(@queued_sql, [@incomplete, key]).rows != []
   end
