@@ -237,6 +237,66 @@ defmodule NccWorker.Project do
   end
 
   @doc """
+  The applications the project's `mix.exs` declares, one per `{:app, ...}`
+  line, in file order: for a generated Nerves project before anything is
+  injected, the template's own top-level dependencies. `[]` when `mix.exs`
+  cannot be read.
+  """
+  @spec declared_deps(String.t()) :: [String.t()]
+  # Reads only the generated worker project's mix.exs.
+  # sobelow_skip ["Traversal.FileModule"]
+  def declared_deps(project_dir) do
+    case File.read(Path.join(project_dir, "mix.exs")) do
+      {:ok, content} ->
+        ~r/^\s*\{:([a-z][a-z0-9_]*),/m
+        |> Regex.scan(content, capture: :all_but_first)
+        |> List.flatten()
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  @doc """
+  Takes `apps` out of the project: each one's `{:app, ...}` line out of
+  `mix.exs` and its entry out of `mix.lock`, which Mix writes one entry per
+  line. A pinned firmware build's template round (`NccWorker.Pins`): Mix
+  merges every `deps.get`'s lock over the old one, so an entry left in the
+  lock would stay resolved, and the optional edge into it with it. `:error`
+  when an app has no line in `mix.exs` to take out; nothing is written then.
+  """
+  @spec remove_deps(String.t(), [String.t()]) :: :ok | :error | {:error, term()}
+  # Edits only the generated worker project's mix.exs and mix.lock.
+  # sobelow_skip ["Traversal.FileModule"]
+  def remove_deps(project_dir, apps) do
+    mix_exs_path = Path.join(project_dir, "mix.exs")
+    lock_path = Path.join(project_dir, "mix.lock")
+
+    with {:ok, mix_exs} <- File.read(mix_exs_path),
+         {:ok, lock} <- File.read(lock_path),
+         {:ok, mix_exs} <- remove_mix_lines(mix_exs, apps) do
+      # A lock line Mix never wrote is nothing to take out.
+      lock =
+        Enum.reduce(apps, lock, fn app, acc ->
+          Regex.replace(~r/^\s*"#{Regex.escape(app)}":[^\n]*\n/m, acc, "", global: false)
+        end)
+
+      with :ok <- File.write(mix_exs_path, mix_exs), do: File.write(lock_path, lock)
+    end
+  end
+
+  # Every app's `mix.exs` line, once each, or `:error` when one has none.
+  defp remove_mix_lines(content, apps) do
+    Enum.reduce_while(apps, {:ok, content}, fn app, {:ok, acc} ->
+      regex = ~r/^\s*\{:#{Regex.escape(app)},[^\n]*\n/m
+
+      if Regex.match?(regex, acc),
+        do: {:cont, {:ok, Regex.replace(regex, acc, "", global: false)}},
+        else: {:halt, :error}
+    end)
+  end
+
+  @doc """
   Splits optional dependencies from `NccWorker.DepsLock.unresolved_optional_deps/2`
   into `{to_add, skipped}`, where `skipped` holds the application names on
   `Compatibility.OptionalDeps.never_added/0` (see the module doc), matched by

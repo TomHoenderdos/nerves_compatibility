@@ -343,4 +343,228 @@ defmodule NccWorker.PinsTest do
     defp mutate([_first | rest], 3), do: rest
     defp mutate(deps, 4), do: deps ++ [dep("zz", "1.0.0", @a)]
   end
+
+  # Phase 2: the same steps in a Nerves project, whose template declares
+  # deps of its own, plus the template round (spec section 1, step 5).
+  describe "Pins.reproduce/6 on the firmware path" do
+    @template """
+      defp deps do
+        [
+          # Dependencies for all targets
+          {:nerves, "== 2.0.0-pre.3", runtime: false},
+          {:logger_backends, "~> 1.0"},
+          {:ring_logger, "~> 0.11"},
+          {:toolshed, "~> 0.4"},
+          {:nerves_runtime, "~> 0.13"},
+          {:nerves_system_rpi4, "== 2.1.2", runtime: false, targets: :rpi4}
+        ]
+      end
+    """
+
+    defp nerves_project(dir) do
+      proj = Path.join(dir, "proj")
+      File.mkdir_p!(proj)
+      File.write!(Path.join(proj, "mix.exs"), @template)
+      proj
+    end
+
+    # One lock line as Mix writes it; `edges` are `{dep, optional?}`.
+    defp line(name, version, checksum, edges \\ []) do
+      deps =
+        Enum.map_join(
+          edges,
+          ", ",
+          fn {dep, optional} ->
+            ~s|{:#{dep}, "~> 0.0", [hex: :#{dep}, repo: "hexpm", optional: #{optional}]}|
+          end
+        )
+
+      ~s|  "#{name}": {:hex, :#{name}, "#{version}", "inner", [:mix], [#{deps}], "hexpm", "#{checksum}"},\n|
+    end
+
+    # The template's own deps, outside every package's closure.
+    defp template_lines do
+      line("nerves", "2.0.0-pre.3", @c) <>
+        line("toolshed", "0.4.2", @c) <>
+        line("nerves_runtime", "0.13.9", @c) <>
+        line("nerves_system_rpi4", "2.1.2", @c, [{"nerves", false}])
+    end
+
+    # `sample` 1.0.0 depends on ring_logger; ring_logger optionally on
+    # logger_backends, which the template declares, so Mix locks it and the
+    # closure reaches it.
+    defp with_backends(edge_optional \\ true) do
+      "%{\n" <>
+        line("sample", "1.0.0", @a, [{"ring_logger", false}]) <>
+        line("ring_logger", "0.11.3", @b, [{"logger_backends", edge_optional}]) <>
+        line("logger_backends", "1.0.0", @b) <> template_lines() <> "}\n"
+    end
+
+    # A `deps.get` that writes `first` and, the second time, leaves the lock
+    # as the round edited it (Mix merges its new lock over the old one).
+    defp round_trip(first) do
+      parent = self()
+
+      fn proj, _env ->
+        mix = File.read!(Path.join(proj, "mix.exs"))
+        lock = Path.join(proj, "mix.lock")
+
+        if File.exists?(lock) do
+          send(parent, {:second, mix, File.read!(lock)})
+        else
+          send(parent, {:first, mix})
+          File.write!(lock, first)
+        end
+
+        :ok
+      end
+    end
+
+    defp ring_pins, do: pins([dep("ring_logger", "0.11.3", @b)])
+
+    test "the template's deps outside the closure do not refuse the set", %{tmp_dir: dir} do
+      lock =
+        "%{\n" <>
+          line("sample", "1.0.0", @a, [{"ring_logger", false}]) <>
+          line("ring_logger", "0.11.3", @b) <> template_lines() <> "}\n"
+
+      assert {:ok, %{"status" => "reproduced"}} =
+               Pins.reproduce(
+                 nerves_project(dir),
+                 @package,
+                 ring_pins(),
+                 [],
+                 writes(lock),
+                 :firmware
+               )
+
+      # The toolchain path holds the same lock to its whole closure.
+      assert {:ok, %{"status" => "refused", "extra" => extra}} =
+               Pins.reproduce(
+                 nerves_project(Path.join(dir, "t")),
+                 @package,
+                 ring_pins(),
+                 [],
+                 writes(lock)
+               )
+
+      assert "toolshed" in extra
+    end
+
+    test "a template dep the closure reaches only by an optional edge is taken out once", %{
+      tmp_dir: dir
+    } do
+      assert {:ok, %{"status" => "reproduced"}} =
+               Pins.reproduce(
+                 nerves_project(dir),
+                 @package,
+                 ring_pins(),
+                 [],
+                 round_trip(with_backends()),
+                 :firmware
+               )
+
+      assert_received {:first, first}
+      assert first =~ "{:logger_backends,"
+      assert first =~ ~s|{:ring_logger, "== 0.11.3"}|
+      assert_received {:second, second, lock}
+      refute second =~ "logger_backends"
+      assert second =~ ~s|{:ring_logger, "== 0.11.3"}|
+      assert second =~ "{:toolshed,"
+      refute lock =~ ~s|"logger_backends":|
+      assert lock =~ ~s|"ring_logger":|
+    end
+
+    test "an extra a required edge reaches refuses the set, with no round", %{tmp_dir: dir} do
+      assert {:ok,
+              %{
+                "status" => "refused",
+                "reason" => "pins_closure_mismatch",
+                "extra" => ["logger_backends"]
+              }} =
+               Pins.reproduce(
+                 nerves_project(dir),
+                 @package,
+                 ring_pins(),
+                 [],
+                 round_trip(with_backends(false)),
+                 :firmware
+               )
+
+      refute_received {:second, _, _}
+    end
+
+    test "an extra the template does not declare refuses the set", %{tmp_dir: dir} do
+      lock =
+        "%{\n" <>
+          line("sample", "1.0.0", @a, [{"ring_logger", false}]) <>
+          line("ring_logger", "0.11.3", @b, [{"jason", true}]) <>
+          line("jason", "1.4.4", @b) <> template_lines() <> "}\n"
+
+      assert {:ok, %{"status" => "refused", "extra" => ["jason"]}} =
+               Pins.reproduce(
+                 nerves_project(dir),
+                 @package,
+                 ring_pins(),
+                 [],
+                 round_trip(lock),
+                 :firmware
+               )
+
+      refute_received {:second, _, _}
+    end
+
+    test "Nerves tooling is never taken out of the template", %{tmp_dir: dir} do
+      lock =
+        "%{\n" <>
+          line("sample", "1.0.0", @a, [{"ring_logger", false}]) <>
+          line("ring_logger", "0.11.3", @b, [{"nerves", true}]) <> template_lines() <> "}\n"
+
+      assert {:ok, %{"status" => "refused", "extra" => ["nerves"]}} =
+               Pins.reproduce(
+                 nerves_project(dir),
+                 @package,
+                 ring_pins(),
+                 [],
+                 round_trip(lock),
+                 :firmware
+               )
+
+      refute_received {:second, _, _}
+    end
+
+    test "the round's deps.get failing for good refuses the set as unresolvable", %{tmp_dir: dir} do
+      first = with_backends()
+
+      deps_get = fn proj, _env ->
+        lock = Path.join(proj, "mix.lock")
+
+        if File.exists?(lock) do
+          {:error, {:deps_get_failed, "Failed to use \"ring_logger\" because"}}
+        else
+          File.write!(lock, first)
+          :ok
+        end
+      end
+
+      assert {:ok, %{"status" => "refused", "reason" => "pins_unresolvable"}} =
+               Pins.reproduce(nerves_project(dir), @package, ring_pins(), [], deps_get, :firmware)
+    end
+
+    # Random pin sets that do not reproduce never pass the exact check here
+    # either, the template round included.
+    test "a set Mix does not reproduce is never reported reproduced", %{tmp_dir: dir} do
+      :rand.seed(:exsss, {3, 2, 1})
+
+      for i <- 1..60 do
+        deps = for j <- 1..:rand.uniform(5), do: dep("d#{j}", "1.0.#{:rand.uniform(3)}", @b)
+        locked = mutate(deps, :rand.uniform(4))
+        proj = nerves_project(Path.join(dir, "p#{i}"))
+        lock = lock(locked, more: template_lines())
+
+        assert {:ok, %{"status" => "refused"}} =
+                 Pins.reproduce(proj, @package, pins(deps), [], round_trip(lock), :firmware)
+      end
+    end
+  end
 end

@@ -184,6 +184,36 @@ defmodule NccWorker.DepsLock do
   end
 
   @doc """
+  The ones of `names` that the package's closure, itself included, reaches
+  only through optional edges: every edge from a member into the name is
+  optional, and there is at least one. A pinned firmware build
+  (`NccWorker.Pins`) takes such a dependency out of the Nerves template,
+  which declared it and so made the optional edge resolve. `[]` when the
+  lock is missing or does not name the package.
+  """
+  @spec optional_only(String.t(), String.t(), [String.t()]) :: [String.t()]
+  def optional_only(project_dir, package, names) do
+    with {:ok, lock} <- read_lock(project_dir),
+         {:ok, name} <- lock_name(lock, package) do
+      members = lock |> graph() |> BuildCache.closure(name) |> MapSet.put(name)
+
+      edges =
+        for member <- members,
+            {dep, _requirement, opts} <- lock_deps(lock[member]),
+            dep = to_string(dep),
+            dep in names,
+            do: {dep, is_list(opts) and opts[:optional] == true}
+
+      Enum.filter(names, fn name ->
+        optional = for {^name, optional} <- edges, do: optional
+        optional != [] and Enum.all?(optional)
+      end)
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
   The dependencies `package` declares, from its own lock entry, as
   `%{"app", "name", "requirement", "optional"}` sorted by app: every one,
   optional or not, resolved or not. `[]` for a package that declares
