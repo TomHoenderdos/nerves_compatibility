@@ -450,6 +450,27 @@ the package, applies the lock policy (exit 11), adds the package's optional depe
 in `prod`, traced, and judges `_build/host/lib/<package>` with `NccWorker.BuildSelection.static_rules/4` **and**
 the compile-time trace (`NccWorker.Portability`).
 
+The package is declared as a user declares it. A Hex package whose OTP application has another name (hpack_erl's is
+`hpack`, ts_chatterbox's `chatterbox`, uuid_erl's `uuid`) is declared `{:hpack, "== 0.3.0", hex: :hpack_erl}`
+after its first `deps.get` (`NccWorker.Project.hex_app/2` reads the application from the `hex_metadata.config` Hex
+wrote, `declare_as_app/5` replaces the entry and fetches again): under its Hex name Mix builds it and then stops at
+"could not find an app file". Everything under the project (`deps/`, `_build/host/lib/<app>`, the lock's key,
+`deps_lock`) is then the application's, and `package.name` in `result.json` stays the Hex name, as a precompiled
+client looks a manifest up by the lock entry's Hex name and installs it by application.
+
+A closure Mix cannot build is not compiled (`NccWorker.Gleam`): a Gleam release carries its `gleam.toml` and the
+Erlang it generated but no `mix.exs`, `rebar.config` or `Makefile`, and Hex locks it with no manager Mix has, so Mix
+stops at `Could not compile :<app>, no "mix.exs", "rebar.config" or "Makefile"`. Such a build is `skipped` with the
+full run's reason, `Package uses gleam build tool`, or `dependency uses gleam build tool: <apps>` when only
+dependencies are Gleam ones, with the judge revision and no files. One Mix can build (a manager it has in the lock,
+or a build file) is compiled as any other.
+
+A host compile that fails records the first compiler error of its log in `compile_observations.compile_error`
+(`NccWorker.CompileError`: an `error:` diagnostic with its file and line, an Erlang or C compiler's `file:line:`
+error, rebar3's failed file with its message, an exception, then Mix's own account; the project dir cut from its
+paths, at most 1000 bytes), and the portal names it in the stored reason, cleaned and bounded
+(`Compatibility.Portability.with_compile_error/2`), unless a signal ended the compile.
+
 `"judge": {"makefile_rule2": true}` in `NCC_INPUT` turns on item 1 of the judge refinements: a dependency whose
 `Makefile` (or another native build file) Mix never runs, because its checksum-verified Hex tarball's
 `build_tools` name `mix` or `rebar3` (never `mix.lock`, which an untraced `deps.get` can rewrite), is not native
