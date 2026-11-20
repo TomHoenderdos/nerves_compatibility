@@ -1,7 +1,7 @@
 defmodule PortalWeb.Admin.NotPrecompiledLive do
   @moduledoc """
   Admin Not precompiled tab: why packages have no precompiled build, from
-  the current `skipped` toolchain builds grouped by root cause
+  the current `skipped` toolchain builds and failed host compiles grouped by root cause
   (`Portal.Catalog.NotPrecompiled`, `Portal.Catalog.SkipReasons`).
 
   Read-only. `?class=`, `?detail=` and `?blocker=` filter the package list,
@@ -100,7 +100,7 @@ defmodule PortalWeb.Admin.NotPrecompiledLive do
       title="Not precompiled"
     >
       <:subtitle>
-        Why packages have no precompiled build: each package's newest skipped toolchain build, by root cause.
+        Why packages have no precompiled build: each package's newest skipped or failed toolchain build, by root cause.
       </:subtitle>
 
       <section id="np-classes" class="grid grid-cols-2 gap-3 sm:grid-cols-3">

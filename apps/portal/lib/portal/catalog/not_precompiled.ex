@@ -1,8 +1,11 @@
 defmodule Portal.Catalog.NotPrecompiled do
   @moduledoc """
   Why packages are not precompiled: the current `skipped` toolchain builds
-  (`Portal.Catalog.ToolchainBuild`), each reason sorted into a root cause by
-  `Portal.Catalog.SkipReasons`, for the admin Not precompiled tab.
+  (`Portal.Catalog.ToolchainBuild`) and the `fail` ones whose host compile
+  failed (`"compile failed: ..."`, which name their compiler error), each
+  reason sorted into a root cause by `Portal.Catalog.SkipReasons`, for the
+  admin Not precompiled tab. A `fail` the worker gave for itself
+  (`"worker: ..."`) says nothing about the package and is left out.
 
   ## Which builds count
 
@@ -41,6 +44,7 @@ defmodule Portal.Catalog.NotPrecompiled do
   alias Portal.Repo
 
   @default_config "default"
+  @compile_failed "compile failed: %"
   @variants Enum.map(ToolchainBuild.optional_deps_variants(), &Atom.to_string/1)
 
   @type row :: %{
@@ -67,7 +71,9 @@ defmodule Portal.Catalog.NotPrecompiled do
           join: p in "catalog_packages",
           on: p.id == b.package_id,
           where:
-            is_nil(b.revoked_at) and b.status == "skipped" and
+            is_nil(b.revoked_at) and
+              (b.status == "skipped" or
+                 (b.status == "fail" and like(b.reason, ^@compile_failed))) and
               b.config_variant == ^@default_config and b.variant in ^@variants,
           distinct: true,
           select: %{

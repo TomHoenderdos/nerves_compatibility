@@ -98,6 +98,22 @@ defmodule Portal.Catalog.SkipReasonsTest do
     assert SkipReasons.label(:not_mix) == "Not a Mix build (Gleam)"
   end
 
+  test "a failed compile's compiler error is its detail" do
+    failed = "compile failed: host compile failed: mix compile exited with code 1"
+
+    assert SkipReasons.classify(failed <> " (error: module Plug.Conn is not loaded (lib/x.ex:4))") ==
+             c(:compile_failed, "error: module Plug.Conn is not loaded (lib/x.ex:4)")
+
+    assert SkipReasons.classify(failed) == c(:compile_failed)
+
+    assert SkipReasons.classify(
+             "compile failed: host compile failed: no time left for the host compile"
+           ) ==
+             c(:compile_failed)
+
+    assert SkipReasons.label(:compile_failed) == "Failed to compile"
+  end
+
   test "nil and unknown reasons are :other" do
     assert SkipReasons.classify(nil) == c(:other)
     assert SkipReasons.classify("") == c(:other)

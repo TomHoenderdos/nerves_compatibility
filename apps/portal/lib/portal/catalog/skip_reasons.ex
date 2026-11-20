@@ -1,7 +1,7 @@
 defmodule Portal.Catalog.SkipReasons do
   @moduledoc """
-  Sorts the `reason` of a `skipped` toolchain build (`Portal.Catalog.ToolchainBuild`)
-  into a root cause, for the admin Not precompiled tab
+  Sorts the `reason` of a `skipped` toolchain build (`Portal.Catalog.ToolchainBuild`),
+  or of one whose host compile failed, into a root cause, for the admin Not precompiled tab
   (`Portal.Catalog.NotPrecompiled`).
 
   The reasons are the worker's, and this follows their real shapes rather
@@ -25,6 +25,9 @@ defmodule Portal.Catalog.SkipReasons do
       full run's Gleam skip, and `NccWorker.Gleam`'s for a toolchain
       build) and `"dependency uses gleam build tool: <apps>"`, whose first
       app is the `blocker`;
+    * a failed host compile (a `fail` row, `"compile failed: ..."`), whose
+      compiler error (`Compatibility.Portability.compile_error_of/1`) is
+      the `detail`;
     * `Compatibility.Portability.could_not_judge/0`, with the
       `" (transient N times)"` suffix `Portal.Catalog.Ingestion` adds at the
       transient cap, and the cause it names
@@ -42,6 +45,7 @@ defmodule Portal.Catalog.SkipReasons do
           | :nerves_specific
           | :no_beams
           | :not_mix
+          | :compile_failed
           | :could_not_judge
           | :other
 
@@ -56,6 +60,7 @@ defmodule Portal.Catalog.SkipReasons do
     :nerves_specific,
     :no_beams,
     :not_mix,
+    :compile_failed,
     :could_not_judge,
     :other
   ]
@@ -69,6 +74,7 @@ defmodule Portal.Catalog.SkipReasons do
     nerves_specific: "Nerves-specific source",
     no_beams: "No compiled beams",
     not_mix: "Not a Mix build (Gleam)",
+    compile_failed: "Failed to compile",
     could_not_judge: "Could not be judged",
     other: "Other"
   }
@@ -138,6 +144,10 @@ defmodule Portal.Catalog.SkipReasons do
   defp own("no compiled beams"), do: {:no_beams, nil}
   defp own("nerves-specific source"), do: {:nerves_specific, nil}
   defp own("Package uses gleam build tool" <> _), do: {:not_mix, "gleam"}
+
+  defp own("compile failed: " <> _ = reason),
+    do: {:compile_failed, Compatibility.Portability.compile_error_of(reason)}
+
   defp own("reads the target or ships native code"), do: {:native_code, nil}
   defp own("calls a NIF or port driver"), do: {:native_code, nil}
   defp own(@natively_built <> mfa), do: {:native_code, first_token(mfa)}

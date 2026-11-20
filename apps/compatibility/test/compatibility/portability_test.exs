@@ -346,6 +346,22 @@ defmodule Compatibility.PortabilityTest do
       end
     end
 
+    test "compile_error_of/1 reads the error back" do
+      for error <- ["error: boom", ~s|error: undefined variable "package" (deps/x/mix.exs:9)|] do
+        assert @failed |> Portability.with_compile_error(error) |> Portability.compile_error_of() ==
+                 error
+      end
+
+      for reason <- [
+            @failed,
+            "compile failed: host compile failed: mix compile exited with code 137",
+            "portability could not be judged (tracer: :timeout)",
+            nil
+          ] do
+        assert Portability.compile_error_of(reason) == nil, inspect(reason)
+      end
+    end
+
     test "the named reason is still a compile failure that the signal rule does not match" do
       reason = Portability.with_compile_error(@failed, "error: boom")
       assert String.starts_with?(reason, "compile failed: ")

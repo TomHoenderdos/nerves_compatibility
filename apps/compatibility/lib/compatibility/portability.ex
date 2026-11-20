@@ -215,6 +215,17 @@ defmodule Compatibility.Portability do
 
   def with_compile_error(reason, _error), do: reason
 
+  @doc "The compiler error `with_compile_error/2` named in `reason`, or nil when it named none."
+  @spec compile_error_of(term()) :: String.t() | nil
+  def compile_error_of("compile failed: " <> _ = reason) do
+    case Regex.run(~r/exited with code \d{1,3} \((.+)\)\z/su, reason) do
+      [_, error] -> error
+      nil -> nil
+    end
+  end
+
+  def compile_error_of(_reason), do: nil
+
   defp compile_error(error) when is_binary(error) do
     if String.valid?(error) do
       error

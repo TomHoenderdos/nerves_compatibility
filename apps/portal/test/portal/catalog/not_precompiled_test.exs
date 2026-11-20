@@ -35,6 +35,26 @@ defmodule Portal.Catalog.NotPrecompiledTest do
     assert [%{package: "flaky", version: "1.0.0", class: :no_beams}] = NotPrecompiled.rows()
   end
 
+  # A failed host compile is not precompiled either; its compiler error
+  # (`Compatibility.Portability.with_compile_error/2`) is the detail. A
+  # `fail` the worker's sweep made says nothing about the package.
+  test "a failed compile counts, its compiler error the detail; a worker's fail does not" do
+    failed = "compile failed: host compile failed: mix compile exited with code 1"
+    error = ~s|error: undefined variable "package" (deps/pkcs7/mix.exs:11)|
+    build!("pkcs7", "1.0.2", status: :fail, reason: failed <> " (" <> error <> ")")
+    build!("old_fail", "1.0.0", status: :fail, reason: failed)
+
+    build!("swept", "1.0.0",
+      status: :fail,
+      reason: "worker: processes survived the sweep and could not be stopped: 40 (sh)"
+    )
+
+    assert [
+             %{package: "old_fail", class: :compile_failed, detail: nil},
+             %{package: "pkcs7", class: :compile_failed, detail: ^error, version: "1.0.2"}
+           ] = Enum.sort_by(NotPrecompiled.rows(), & &1.package)
+  end
+
   test "a config variant other than the default does not count" do
     build!("overlay", "1.0.0", reason: "no compiled beams", config_variant: "phx_prod")
     assert NotPrecompiled.rows() == []
