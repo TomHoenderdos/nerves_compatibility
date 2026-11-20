@@ -456,7 +456,7 @@ defmodule NccWorker.Portability.ProbesTest do
     test "of an application on every compile's path is no concern", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => []})
 
-      for app <- ~w(kernel stdlib compiler erts elixir mix iex ex_unit),
+      for app <- ~w(kernel stdlib compiler erts elixir mix iex ex_unit logger),
           do: assert(Probes.decide(otp("m", app), c, :outside) == :ignore, app)
     end
 

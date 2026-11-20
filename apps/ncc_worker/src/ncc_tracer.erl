@@ -10,7 +10,7 @@
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0, object_verdict/4,
          installed_app/3, cache_hit/2, canary_patterns/0, code_prepared/3, code_finished/2,
-         prepared_ref/2, on_load_ran/2, toolchain_code/2]).
+         prepared_ref/2, on_load_ran/2, toolchain_code/2, installed_modules/2]).
 
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
@@ -22,6 +22,13 @@
 %% not `preloaded`. Pinned per toolchain by the host-mode fixture suite
 %% (`loaded_by_mix/0`). Not in a child VM, which is rebar3, not Mix.
 -define(LOADED_BY_MIX, [crypto, gen_tcp]).
+%% Applications on the code path of every compile Mix makes of an Elixir
+%% project's dependency, whatever it lists: Mix.AppLoader's extra
+%% applications (ex_unit, iex, mix, elixir), what they list, and erts; and
+%% logger, which Mix has loaded before any compile (as app_calls/1 and
+%% NccWorker.Portability.Probes take it).
+-define(ON_EVERY_PATH, [<<"kernel">>, <<"stdlib">>, <<"compiler">>, <<"erts">>, <<"elixir">>,
+                        <<"mix">>, <<"iex">>, <<"ex_unit">>, <<"logger">>]).
 -define(SENTINEL, "NCC_TRACE_SENTINEL:").
 -define(TIMEOUT, 120000).
 -define(WRITE_BUFFER, 262144).
@@ -360,12 +367,16 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
         ++ [wanted(Session, MFA, ?NEVER) || MFA <- Canaries],
     Preloaded = preloaded(Before, Role),
     put(preloaded, Preloaded),
+    Installed = installed(Role, Before, Preloaded),
+    put(installed, Installed),
     Calls = app_calls(Preloaded),
     put(app_calls, Calls),
     %% Never a probe or call pattern without a module to filter it to: an
     %% empty set would trace every call.
-    ProbeWanted = [wanted(Session, MFA, probe_spec(MFA, Preloaded, Depth))
-                   || Preloaded =/= #{}, MFA <- ncc_tracer_channels:probe_mfas()]
+    Watched = maps:from_keys([binary_to_atom(M) || M <- maps:keys(Installed)], true),
+    ProbeWanted = [wanted(Session, MFA, MS)
+                   || MFA <- ncc_tracer_channels:probe_mfas(),
+                      MS <- [probe_spec(MFA, Preloaded, Watched, Depth)], MS =/= []]
         ++ [wanted(Session, {M, '_', '_'}, match_spec(M, Role, Depth))
             || M <- maps:keys(Calls)],
     write(St0, maps:merge((start_line(Role, App, Depth))#{mix_script => script_bin(Script),
@@ -620,19 +631,64 @@ app_calls(Preloaded) ->
                     not lists:member(App, [<<"ncc_tracer">> | ?ALWAYS_ON_PATH]),
                     M =/= <<"crypto">>]).
 
-%% Only calls naming a module we loaded fire.
-probe_spec({erlang, function_exported, 3}, Preloaded, Depth) ->
-    [{[binary_to_atom(M), '_', '_'], [], [{message, {current_stacktrace, Depth}}]}
-     || M <- maps:keys(Preloaded)];
-probe_spec(_MFA, Preloaded, Depth) ->
-    [{[binary_to_atom(M)], [], [{message, {current_stacktrace, Depth}}]}
-     || M <- maps:keys(Preloaded)].
+%% Only calls naming a module we loaded, or one of `installed` (Watched,
+%% #{Module => true}: one clause, a map lookup, not a clause per module),
+%% fire.
+probe_spec(MFA, Preloaded, Watched, Depth) ->
+    Msg = [{message, {current_stacktrace, Depth}}],
+    [{probe_head(MFA, binary_to_atom(M)), [], Msg} || M <- maps:keys(Preloaded)]
+        ++ [{probe_head(MFA, '$1'), [{is_map_key, '$1', {const, Watched}}], Msg}
+            || map_size(Watched) > 0].
 
-%% A probe's application, as this VM's `preloaded` names it, and for it or
-%% a call into such a module whether the type checker made it
+probe_head({erlang, function_exported, 3}, M) -> [M, '_', '_'];
+probe_head(_MFA, M) -> [M].
+
+%% Every module of an installed OTP or Elixir application off every
+%% compile's path (?ON_EVERY_PATH), as #{Module => App}, both binaries:
+%% Mix compiles a dependency on a code path pruned to the applications its
+%% closure lists, Mix.install does not (`prune_code_paths: false`), so a
+%% probe of one answers differently there (NccWorker.Portability.Probes,
+%% which the event's `otp_app` names it to). Read from the installs' ebin
+%% dirs, not the code path. Not a module loaded before the tracer started
+%% or one Mix loads in every compile anyway (loaded either way, as
+%% preloaded/2 takes them), nor one the tracer loaded (`preloaded`, judged
+%% as such). The Mix VM only: rebar3 prunes nothing. Listed in a process of
+%% its own, so the listing's garbage never counts against the collector's
+%% max_heap_size; a listing that fails fails the tracer's start, never
+%% leaves the set empty.
+installed(main, Before, Preloaded) ->
+    {Pid, Ref} = spawn_monitor(fun() -> exit({installed, installed_modules(Before, Preloaded)}) end),
+    receive
+        {'DOWN', Ref, process, Pid, {installed, Installed}} -> Installed;
+        {'DOWN', Ref, process, Pid, Reason} -> erlang:error({installed_modules, Reason})
+    end;
+installed(child, _Before, _Preloaded) -> #{}.
+
+installed_modules(Before, Preloaded) ->
+    Libs = [filename:join(code:root_dir(), "lib") | elixir_lib()],
+    maps:from_list([{atom_to_binary(M), App}
+                    || Lib <- Libs, Beam <- filelib:wildcard("*/ebin/*.beam", Lib),
+                       App <- [app_from_path(filename:join(Lib, Beam))],
+                       not lists:member(App, ?ON_EVERY_PATH),
+                       M <- [list_to_atom(filename:basename(Beam, ".beam"))],
+                       not is_map_key(M, Before),
+                       not lists:member(M, ?LOADED_BY_MIX),
+                       not is_map_key(atom_to_binary(M), Preloaded)]).
+
+elixir_lib() ->
+    case code:lib_dir(elixir) of
+        Dir when is_list(Dir) -> [filename:dirname(Dir)];
+        _ -> []
+    end.
+
+%% A probe's application, as this VM's `preloaded` names it, the installed
+%% application of one we did not load (`installed`), and for it or a call
+%% into such a module whether the type checker made it
 %% (ncc_tracer_stack:checker/2; each frame's kind looked up afresh).
 probed({probe, #{module := Module} = Arg}, Stack) ->
-    {probe, Arg#{app => maps:get(Module, get(preloaded), null), checker => checker(Stack)}};
+    {probe, Arg#{app => maps:get(Module, get(preloaded), null),
+                 otp_app => maps:get(Module, get(installed), null),
+                 checker => checker(Stack)}};
 probed({app_call, Arg}, Stack) ->
     {app_call, Arg#{checker => checker(Stack), caller_app => caller_app(caller(Stack))}};
 probed(Class, _Stack) -> Class.

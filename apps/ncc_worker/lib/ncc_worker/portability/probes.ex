@@ -134,9 +134,10 @@ defmodule NccWorker.Portability.Probes do
   @always ~w(kernel stdlib elixir compiler logger)
   # On the path of every compile Mix makes of an Elixir project's
   # dependency, whatever it lists: Mix.AppLoader's extra applications
-  # (`:ex_unit`, `:iex`, `:mix`, `:elixir`), what they list, and erts. The
-  # tracer names no module of theirs (`otp_app`).
-  @every_path ~w(kernel stdlib compiler erts elixir mix iex ex_unit)
+  # (`:ex_unit`, `:iex`, `:mix`, `:elixir`), what they list, and erts; and
+  # logger, as `@always` takes it. The tracer names no module of theirs
+  # (`otp_app`).
+  @every_path ~w(kernel stdlib compiler erts elixir mix iex ex_unit logger)
   # Elixir's modules whose functions probe for the package.
   @elixir_wrappers ~w(Code Kernel)
   # The stacks the tracer judged (`NccWorker.Portability.Events`).

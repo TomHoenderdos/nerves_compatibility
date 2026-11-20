@@ -269,6 +269,33 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     end
   end
 
+  # A compile-time probe of an installed OTP application off the package's
+  # code path: vega_lite 0.1.11's `VegaLite.WxViewer` picks its body by
+  # `Code.ensure_loaded?(:wx)` in its module body, and vega_lite lists no
+  # wx. Mix prunes the code path of a dependency's compile, Mix.install
+  # does not, so a Mix project builds the stub that raises and Mix.install
+  # the `:wx_object` viewer: the build was served to Mix.install users
+  # (a false hit, revoked 2026-11-20). The worker images carry wx; an OTP
+  # without it answers `false` either way, which this test cannot show.
+  @otp_probe [{"vega_lite", "0.1.11", "wx", "Code.ensure_loaded?/1"}]
+
+  for {package, version, app, via} <- @otp_probe do
+    @tag package: package, version: version, variant: "include", app: app, via: via
+    test "OTP application probe: #{package} #{version} refuses", ctx do
+      %{package: package, version: version, app: app, via: via} = ctx
+      {golden, stats} = build(ctx, package, version, "include")
+      report(ctx, golden, stats)
+
+      assert is_list(:code.lib_dir(String.to_atom(app))),
+             "#{app} is not installed in this OTP: the probe answers the same pruned or not"
+
+      assert golden["status"] == "skipped", inspect(Map.take(golden, ["status", "reason"]))
+
+      assert golden["reason"] ==
+               "compile-time probe of an OTP application outside the closure: #{app} via #{via}"
+    end
+  end
+
   # --- the run -----------------------------------------------------------------
 
   defp build(ctx, package, version, variant, judge \\ nil) do
