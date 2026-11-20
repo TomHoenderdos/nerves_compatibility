@@ -502,6 +502,51 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert tb.transient_attempts == 5
     end
 
+    # The worker's reason is the bare one; the row names the cause, one of
+    # the trace's own problems (`Compatibility.Portability.with_cause/2`),
+    # so the next look at a could-not-judge starts with why.
+    test "names its cause, the trace break before the lines it took away" do
+      name = unique_name()
+
+      result =
+        name
+        |> could_not_judge(%{"judge_compile" => "finished", "transient" => false})
+        |> put_in(["toolchain_build", "compile_observations", "problems"], [
+          "no end line",
+          "stats missing or unjudged events",
+          "trace collector died: killed"
+        ])
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+
+      assert {tb.status, tb.reason} ==
+               {:skipped, "portability could not be judged (trace collector died: killed)"}
+
+      assert length(tb.compile_observations["problems"]) == 3
+    end
+
+    test "transiently, names its cause and still counts, up to the cap" do
+      name = unique_name()
+
+      transient =
+        name
+        |> could_not_judge(%{"judge_compile" => "not_finished", "transient" => true})
+        |> put_in(["toolchain_build", "compile_observations", "problems"], ["tracer: :timeout"])
+
+      for n <- 1..4 do
+        assert {:ok, tb} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+
+        assert {tb.status, tb.reason, tb.transient_attempts} ==
+                 {:error, "portability could not be judged (tracer: :timeout)", n}
+      end
+
+      assert {:ok, tb} = Ingestion.ingest_toolchain(transient, opts(name, files_dir_with([])))
+
+      assert {tb.status, tb.reason} ==
+               {:skipped,
+                "portability could not be judged (tracer: :timeout) (transient 5 times)"}
+    end
+
     test "a verdict resets the count" do
       name = unique_name()
       transient = could_not_judge(name, %{"judge_compile" => "not_finished", "transient" => true})

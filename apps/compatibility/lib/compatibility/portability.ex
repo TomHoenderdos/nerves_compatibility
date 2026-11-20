@@ -54,6 +54,37 @@ defmodule Compatibility.Portability do
   @withdrawal_judge_revision 3
 
   @could_not_judge "portability could not be judged"
+  @transient ~r/\A \(transient \d+ times\)\z/
+
+  # A trace that broke shows that first and every other problem because of
+  # it ("no end line", "no stats line", a window never closed, a dependency
+  # with no digest): the break is the cause. Matched anywhere in a problem,
+  # so a child VM's ("child trace of x: trace collector died: killed")
+  # counts too.
+  @trace_breaks [
+    "trace collector died",
+    "trace watcher died",
+    "the trace files exceed the report's read budget",
+    "tracer refused to start",
+    "trace overflowed"
+  ]
+
+  # The traced compile or the judge itself failed.
+  @run_failures [
+    "tracer: ",
+    "traced compile exited ",
+    "traced compile ended ",
+    "judge failed: ",
+    "not a trace report",
+    "after the traced compile: ",
+    "processes left running "
+  ]
+
+  # Exception and tracer messages can quote a value the compile handled:
+  # only the words before their first value are kept.
+  @value_after ["judge failed: ", "tracer: ", "not a trace report: ", "second build failed: "]
+
+  @max_cause 200
   @manager_mismatch "manager mismatch: "
   @tree_differs "dependency tree differs from its tarball: "
   @priv_not_reproduced "compile-time priv write not reproducible: "
@@ -83,6 +114,114 @@ defmodule Compatibility.Portability do
   @doc "The reason for a build whose trace could not be used."
   @spec could_not_judge() :: String.t()
   def could_not_judge, do: @could_not_judge
+
+  @doc "Whether `reason` is a could-not-judge reason, with or without its cause."
+  @spec could_not_judge?(term()) :: boolean()
+  def could_not_judge?(reason) when is_binary(reason),
+    do: String.starts_with?(reason, @could_not_judge)
+
+  def could_not_judge?(_reason), do: false
+
+  @doc """
+  `reason` naming its cause when it is the bare could-not-judge reason
+  (`could_not_judge/0`, or the portal's `"... (transient N times)"` of it):
+  `"portability could not be judged (<cause>)"`, the suffix kept. Any other
+  reason is returned as it is.
+
+  The cause is one of `problems` (a build's
+  `compile_observations.problems`, in the judge's order): the first that
+  says the trace itself broke (its collector died, it overflowed, it was
+  over the report's read budget), else the first that says the traced
+  compile or the judge failed, else the first. It is made safe to store
+  and show: one line, every absolute path cut to its last segment, the
+  words of an exception or tracer message before any value it quotes, and
+  at most #{@max_cause} characters. With no usable problem the reason stays
+  bare.
+  """
+  @spec with_cause(term(), term()) :: term()
+  def with_cause(@could_not_judge <> rest = reason, problems) do
+    if rest == "" or Regex.match?(@transient, rest) do
+      case cause(problems) do
+        nil -> reason
+        cause -> "#{@could_not_judge} (#{cause})#{rest}"
+      end
+    else
+      reason
+    end
+  end
+
+  def with_cause(reason, _problems), do: reason
+
+  @doc "The cause `with_cause/2` named in `reason`, or nil when it named none."
+  @spec cause_of(term()) :: String.t() | nil
+  def cause_of(@could_not_judge <> " (" <> rest) do
+    rest = String.replace(rest, ~r/\) \(transient \d+ times\)\z/, ")")
+
+    if String.ends_with?(rest, ")") and not Regex.match?(~r/\Atransient \d+ times\)\z/, rest),
+      do: String.slice(rest, 0..-2//1)
+  end
+
+  def cause_of(_reason), do: nil
+
+  defp cause(problems) when is_list(problems) do
+    problems = for p <- problems, is_binary(p), p = clean(p), p != "", do: p
+
+    (Enum.find(problems, &trace_break?/1) || Enum.find(problems, &run_failure?/1) ||
+       List.first(problems))
+    |> bounded()
+  end
+
+  defp cause(_problems), do: nil
+
+  defp trace_break?(problem), do: Enum.any?(@trace_breaks, &String.contains?(problem, &1))
+  defp run_failure?(problem), do: Enum.any?(@run_failures, &String.starts_with?(problem, &1))
+
+  # A problem that is itself a could-not-judge ("portability could not be
+  # judged (dependency tree changed ...)") contributes what it wraps.
+  defp clean(problem) do
+    problem
+    |> String.replace(~r/[[:cntrl:]]+/u, " ")
+    |> unwrap()
+    |> without_value()
+    |> String.replace(
+      ~r|(?<![\w.~-])/(?:[^\s,;:()\[\]{}"'<>]*/)?([^\s,;:()\[\]{}"'<>/]+)|u,
+      "…/\\1"
+    )
+    |> String.trim()
+  end
+
+  defp unwrap(@could_not_judge <> " (" <> rest) do
+    if String.ends_with?(rest, ")"), do: String.slice(rest, 0..-2//1), else: rest
+  end
+
+  defp unwrap(problem), do: problem
+
+  defp without_value(problem) do
+    case Enum.find(@value_after, &String.starts_with?(problem, &1)) do
+      nil ->
+        problem
+
+      prefix ->
+        rest = String.replace_prefix(problem, prefix, "")
+
+        kept =
+          case Regex.run(~r/\A\{?:(\w+)/u, rest) do
+            # An atom (`:timeout`), or an error tuple's tag.
+            [_, atom] -> ":" <> atom
+            nil -> rest |> String.split(~r/[:\[{(<"'%#~]|\d/u, parts: 2) |> hd()
+          end
+
+        String.trim_trailing(prefix <> kept)
+    end
+  end
+
+  defp bounded(nil), do: nil
+
+  defp bounded(cause) do
+    if String.length(cause) > @max_cause,
+      do: String.slice(cause, 0, @max_cause - 1) <> "…",
+      else: cause
+  end
 
   @doc """
   The prefix of a refusal of a dependency rule 2 took off the native list

@@ -99,6 +99,22 @@ defmodule Portal.PinnedIngestTest do
              )
   end
 
+  test "a could-not-judge names its cause" do
+    name = unique()
+
+    assert {:ok, %PinnedBuild{status: :skipped, reason: reason}} =
+             ingest(name, pins(name),
+               status: "skipped",
+               reason: Compatibility.Portability.could_not_judge(),
+               observations: %{
+                 "trace_stats" => %{"transient" => false},
+                 "problems" => ["no end line", "trace collector died: killed"]
+               }
+             )
+
+    assert reason == "portability could not be judged (trace collector died: killed)"
+  end
+
   test "a failed compile is a fail verdict on a new key" do
     name = unique()
 

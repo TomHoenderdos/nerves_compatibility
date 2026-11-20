@@ -39,7 +39,7 @@ defmodule Portal.HostNative.Ingest do
 
   alias Compatibility.{Elf, HostTriple, NifOrigin, StaticPriv}
   alias Portal.ArtifactStore
-  alias Portal.Catalog.{Artifact, ArtifactMembership, HostNativeBuild}
+  alias Portal.Catalog.{Artifact, ArtifactMembership, HostNativeBuild, Ingestion}
   alias Portal.Catalog.ToolchainPriv
   alias Portal.Precompiled.ElfFacts
 
@@ -109,8 +109,10 @@ defmodule Portal.HostNative.Ingest do
     end
   end
 
-  defp judged(%{"status" => "skipped"} = build, result, opts),
-    do: {:ok, without_files(attrs(build, result, opts, :skipped, build["reason"], nil)), []}
+  defp judged(%{"status" => "skipped"} = build, result, opts) do
+    reason = Ingestion.judged_reason(build["reason"], build)
+    {:ok, without_files(attrs(build, result, opts, :skipped, reason, nil)), []}
+  end
 
   defp judged(build, result, opts),
     do: {:ok, without_files(attrs(build, result, opts, :fail, build["reason"], nil)), []}

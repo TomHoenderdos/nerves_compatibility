@@ -23,7 +23,8 @@ defmodule Portal.Catalog.SkipReasons do
       `<app>` is the `blocker`;
     * `Compatibility.Portability.could_not_judge/0`, with the
       `" (transient N times)"` suffix `Portal.Catalog.Ingestion` adds at the
-      transient cap.
+      transient cap, and the cause it names
+      (`Compatibility.Portability.with_cause/2`), which is the `detail`.
 
   Anything else is `:other`. Pure: no database, no state.
   """
@@ -117,7 +118,9 @@ defmodule Portal.Catalog.SkipReasons do
     end
   end
 
-  defp own("portability could not be judged" <> _), do: {:could_not_judge, nil}
+  defp own("portability could not be judged" <> _ = reason),
+    do: {:could_not_judge, Compatibility.Portability.cause_of(reason)}
+
   defp own("beam scan incomplete"), do: {:could_not_judge, nil}
   defp own("no compiled beams"), do: {:no_beams, nil}
   defp own("nerves-specific source"), do: {:nerves_specific, nil}

@@ -1346,7 +1346,7 @@ defmodule Portal.Catalog.Ingestion do
       variant: Map.get(opts, :variant, :with),
       config_variant: Map.get(opts, :config_variant, ConfigVariants.default()),
       status: status,
-      reason: reason,
+      reason: judged_reason(reason, build),
       elixir: build["elixir"],
       otp: build["otp"],
       image_digest: opts.image_digest,
@@ -1391,6 +1391,21 @@ defmodule Portal.Catalog.Ingestion do
 
   defp manager(manager) when manager in ["mix", "rebar3", "make"], do: manager
   defp manager(_manager), do: nil
+
+  @doc """
+  The reason a build's row stores: a could-not-judge names its cause
+  (`Compatibility.Portability.with_cause/2`), one of the problems of the
+  build's own trace (`compile_observations.problems`, which the row keeps
+  in full); any other reason as the worker gave it. The worker's reason is
+  the bare one, so this runs after the transient check and count, which
+  read it.
+  """
+  @spec judged_reason(term(), map()) :: term()
+  def judged_reason(reason, build),
+    do: Compatibility.Portability.with_cause(reason, trace_problems(build))
+
+  defp trace_problems(%{"compile_observations" => %{"problems" => problems}}), do: problems
+  defp trace_problems(_build), do: nil
 
   defp bounded_reason(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)
   defp bounded_reason(_reason), do: nil
@@ -1608,7 +1623,7 @@ defmodule Portal.Catalog.Ingestion do
       config_variant: Map.get(opts, :config_variant, ConfigVariants.default()),
       pins: opts.pins,
       status: status,
-      reason: reason,
+      reason: judged_reason(reason, build),
       elixir: build["elixir"],
       otp: build["otp"],
       image_digest: opts.image_digest,

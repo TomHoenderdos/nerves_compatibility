@@ -194,6 +194,27 @@ defmodule Portal.HostNativeTest do
       assert reason == "refused at ingest: ships a native file outside priv (ebin/libextra.so)"
     end
 
+    test "a could-not-judge names its cause, with no files" do
+      name = unique()
+      tarball = hex_tarball(%{})
+
+      result =
+        name
+        |> result(tarball, [])
+        |> update_in(["host_native_build"], fn build ->
+          Map.merge(build, %{
+            "status" => "skipped",
+            "reason" => "portability could not be judged",
+            "compile_observations" => %{"problems" => ["traced compile exited 1"]}
+          })
+        end)
+
+      assert {:ok, %{status: :skipped, reason: reason, file_manifest: nil}} =
+               Ingest.ingest(result, opts(name, files_dir([]), tarball))
+
+      assert reason == "portability could not be judged (traced compile exited 1)"
+    end
+
     test "a NIF of another machine is refused, with no files" do
       name = unique()
       tarball = hex_tarball(%{})

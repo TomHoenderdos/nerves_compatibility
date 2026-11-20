@@ -93,4 +93,138 @@ defmodule Compatibility.PortabilityTest do
     assert Compatibility.Portability.refusal?(reason)
     refute Compatibility.Portability.withdraws?(reason)
   end
+
+  describe "with_cause/2" do
+    test "names the trace break, not the lines missing because of it" do
+      problems = [
+        "no end line",
+        "stats missing or unjudged events",
+        "trace collector died: killed",
+        "no stats line",
+        "date_time_parser's window was never closed"
+      ]
+
+      assert Portability.with_cause(Portability.could_not_judge(), problems) ==
+               "portability could not be judged (trace collector died: killed)"
+    end
+
+    test "a child VM's collector and the read budget are trace breaks too" do
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "rebar3 app has no verified Hex tarball",
+               "child trace of dns_erlang: trace collector died: killed"
+             ]) ==
+               "portability could not be judged (child trace of dns_erlang: trace collector died: killed)"
+
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "no start line",
+               "the host build is not the traced compile",
+               "the trace files exceed the report's read budget"
+             ]) ==
+               "portability could not be judged (the trace files exceed the report's read budget)"
+    end
+
+    test "a failed traced compile comes before what follows from it" do
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "the host build is not the traced compile",
+               "traced compile exited 1"
+             ]) == "portability could not be judged (traced compile exited 1)"
+    end
+
+    test "otherwise the first problem, unwrapped when it is a could-not-judge itself" do
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "unreviewed toolchain config read: elixir dbg_callback from Elixir.Kernel",
+               "compile-time probe of a module the trace loaded: httpc (inets)"
+             ]) ==
+               "portability could not be judged " <>
+                 "(unreviewed toolchain config read: elixir dbg_callback from Elixir.Kernel)"
+
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "portability could not be judged (dependency tree changed after the check: " <>
+                 "gpb (read descr_src/gpb_descriptor.erl))"
+             ]) ==
+               "portability could not be judged (dependency tree changed after the check: " <>
+                 "gpb (read descr_src/gpb_descriptor.erl))"
+    end
+
+    test "keeps the portal's transient count after the cause" do
+      reason = Portability.could_not_judge() <> " (transient 5 times)"
+
+      assert Portability.with_cause(reason, ["tracer: :timeout", "no end line"]) ==
+               "portability could not be judged (tracer: :timeout) (transient 5 times)"
+    end
+
+    test "never stores a path, a quoted value or more than 200 characters" do
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "built outside the trace: kino (digest failed now: {:enoent, ~c\"/work/proj/_build/host/lib/kino/ebin\"})"
+             ]) ==
+               "portability could not be judged " <>
+                 "(built outside the trace: kino (digest failed now: {:enoent, ~c\"…/ebin\"}))"
+
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "judge failed: no match of right hand side value: %{\"value\" => \"s3cr3t\"}"
+             ]) ==
+               "portability could not be judged (judge failed: no match of right hand side value)"
+
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "tracer: {:install_failed, \"could not write /home/me/x\"}"
+             ]) == "portability could not be judged (tracer: :install_failed)"
+
+      long = "windows [" <> Enum.join(List.duplicate("plug_crypto", 100), ", ") <> "]"
+      reason = Portability.with_cause(Portability.could_not_judge(), [long])
+      cause = reason |> String.replace_prefix("portability could not be judged (", "")
+      assert String.length(cause) == 201
+      assert String.ends_with?(cause, "…)")
+
+      assert Portability.with_cause(Portability.could_not_judge(), ["one\nline\ttwo"]) ==
+               "portability could not be judged (one line two)"
+    end
+
+    test "leaves every other reason, and a could-not-judge with no problems, as it is" do
+      for reason <- [
+            "compile-time host read: os:type/0",
+            "portability could not be judged (unknown variant)",
+            nil
+          ] do
+        assert Portability.with_cause(reason, ["trace collector died: killed"]) == reason
+      end
+
+      for problems <- [[], nil, [""], [1, :x]] do
+        assert Portability.with_cause(Portability.could_not_judge(), problems) ==
+                 Portability.could_not_judge()
+      end
+    end
+
+    test "cause_of/1 reads the cause back" do
+      for problems <- [
+            ["trace collector died: killed"],
+            ["built outside the trace: quicer (digest failed at window close: outside_tree)"]
+          ],
+          suffix <- ["", " (transient 5 times)"] do
+        reason = Portability.with_cause(Portability.could_not_judge() <> suffix, problems)
+        assert Portability.cause_of(reason) == hd(problems), reason
+      end
+
+      for reason <- [
+            Portability.could_not_judge(),
+            Portability.could_not_judge() <> " (transient 5 times)",
+            "compile-time host read: os:type/0 (x)",
+            nil
+          ] do
+        assert Portability.cause_of(reason) == nil, inspect(reason)
+      end
+    end
+
+    test "a reason with its cause is still a could-not-judge and no refusal" do
+      reason =
+        Portability.with_cause(Portability.could_not_judge(), [
+          "compile-time host read: os:type/0"
+        ])
+
+      assert Portability.could_not_judge?(reason)
+      refute Portability.refusal?(reason)
+      refute Portability.withdraws?(reason)
+      refute Portability.could_not_judge?("compile-time host read: os:type/0")
+      refute Portability.could_not_judge?(nil)
+    end
+  end
 end

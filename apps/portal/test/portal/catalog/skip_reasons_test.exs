@@ -64,6 +64,26 @@ defmodule Portal.Catalog.SkipReasonsTest do
              c(:host_read, "application:get_env/2 (ssl)")
   end
 
+  # Since the portal names a could-not-judge's cause
+  # (`Compatibility.Portability.with_cause/2`), that cause is the detail.
+  test "a could-not-judge's cause is its detail" do
+    assert SkipReasons.classify("portability could not be judged (trace collector died: killed)") ==
+             c(:could_not_judge, "trace collector died: killed")
+
+    assert SkipReasons.classify(
+             "portability could not be judged (tracer: :timeout) (transient 5 times)"
+           ) == c(:could_not_judge, "tracer: :timeout")
+
+    assert SkipReasons.classify(
+             "portability could not be judged (built outside the trace: quicer " <>
+               "(digest failed at window close: outside_tree))"
+           ) ==
+             c(
+               :could_not_judge,
+               "built outside the trace: quicer (digest failed at window close: outside_tree)"
+             )
+  end
+
   test "nil and unknown reasons are :other" do
     assert SkipReasons.classify(nil) == c(:other)
     assert SkipReasons.classify("") == c(:other)
