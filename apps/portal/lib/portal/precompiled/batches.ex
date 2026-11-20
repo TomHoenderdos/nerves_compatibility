@@ -21,6 +21,23 @@ defmodule Portal.Precompiled.Batches do
   package again. Equal inputs give equal bytes, so a reused sha names exactly
   what a render would store now. The memo lives in this node's memory only, so
   the first batch after a restart renders everything, as every batch used to.
+  A deploy is such a restart: blue/green starts the new release on the other
+  colour with an empty memo.
+
+  ## Renders run in lanes
+
+  A full render rendered 14,350 packages on production in 1,000 to 2,300
+  seconds, one at a time, and every deploy needs one. A render is mostly CPU
+  in this node, so the packages to render go through `Portal.Precompiled.Lanes`,
+  four at once by default (`config :portal, Portal.Precompiled.Batches,
+  lanes:`, `NCC_PRECOMPILED_BATCH_LANES`). A render's memory grows with its manifest
+  (the largest, near 50 MB of manifest, peaked near 0.9 GB), so a package
+  whose manifests the newest batch named at 1 MB or more (`heavy_bytes:`), or
+  that it did not name, renders in no lane beside another such package. The
+  lanes share the node's database pool, holding a connection only while a
+  query runs, so they open no connection to Postgres. Results do not depend on
+  the lanes: each package's manifests are its own render, and the batch maps
+  them by name.
 
   Content origins (`Portal.Precompiled.Content`) are read for every batch and
   go into the payload only; no manifest depends on them, so they are not part
@@ -32,10 +49,26 @@ defmodule Portal.Precompiled.Batches do
   require Ash.Query
   require Logger
   alias Portal.{ArtifactStore, Catalog}
-  alias Portal.Precompiled.{Batch, Content, Envelope, Keys, ManifestRefs, Manifests, SystemAbi}
+
+  alias Portal.Precompiled.{
+    Batch,
+    Content,
+    Envelope,
+    Keys,
+    Lanes,
+    ManifestRefs,
+    Manifests,
+    SystemAbi
+  }
 
   # `{name, fingerprint, v1_sha | nil, v2_sha | nil, absent_shas}` per package.
   @memo Module.concat(__MODULE__, Memo)
+
+  # Packages rendered at once, and the manifest bytes (both formats, as the
+  # newest batch named them) from which a package renders as heavy, one at a
+  # time; see the moduledoc.
+  @lanes 4
+  @heavy_bytes 1_048_576
 
   # A batch is signed every 15 minutes; clients refuse one older than 24 hours
   # anyway (freshness bound), so a longer lifetime only widens the window in
@@ -73,17 +106,22 @@ defmodule Portal.Precompiled.Batches do
   end
 
   defp do_build(key) do
+    started = System.monotonic_time(:millisecond)
+    lanes = lanes()
+
     # Read before any manifest and again after the last one: a package is
     # remembered only when both reads agree, so no write that landed while it
     # was rendered, even one undone again by the second read, can leave a
-    # memo entry vouching for bytes its fingerprint does not describe.
+    # memo entry vouching for bytes its fingerprint does not describe. The
+    # package list is read beside the first read, also before any manifest.
+    names_task = Task.async(&Catalog.packages_with_precompiled_files/0)
     fingerprints = Catalog.precompiled_fingerprints()
-    names = Catalog.packages_with_precompiled_files()
+    names = Task.await(names_task, :infinity)
 
-    {manifests, manifests_v2, rendered} =
-      Enum.reduce(names, {%{}, %{}, []}, fn name, acc ->
-        add_package(acc, name, Map.get(fingerprints, name))
-      end)
+    {reused, stale} = split_remembered(names, fingerprints, lanes)
+    rendered = render_packages(stale, fingerprints, lanes)
+
+    {manifests, manifests_v2} = Enum.reduce(reused ++ rendered, {%{}, %{}}, &put_package/2)
 
     remember(rendered, Catalog.precompiled_fingerprints())
     forget_all_but(names)
@@ -130,23 +168,44 @@ defmodule Portal.Precompiled.Batches do
 
     # One transaction: once a client can see the batch, every sha it names is
     # servable by sha, and a batch whose insert fails leaves no refs behind.
-    Portal.Repo.transaction(fn ->
-      with :ok <- ManifestRefs.record(sequence, manifests, manifests_v2),
-           :ok <- store_systems(systems),
-           {:ok, batch} <- Ash.create(changeset, domain: Portal.Precompiled) do
-        batch
-      else
-        {:error, error} -> Portal.Repo.rollback(error)
-      end
-    end)
+    result =
+      Portal.Repo.transaction(fn ->
+        with :ok <- ManifestRefs.record(sequence, manifests, manifests_v2),
+             :ok <- store_systems(systems),
+             {:ok, batch} <- Ash.create(changeset, domain: Portal.Precompiled) do
+          batch
+        else
+          {:error, error} -> Portal.Repo.rollback(error)
+        end
+      end)
+
+    with {:ok, _batch} <- result do
+      Logger.info(
+        "Precompiled batch #{sequence}: rendered #{length(stale)} of #{length(names)} " <>
+          "packages in #{lanes} lanes, #{System.monotonic_time(:millisecond) - started} ms"
+      )
+    end
+
+    result
   end
 
-  defp add_package(acc, name, fingerprint) do
-    case remembered(name, fingerprint) do
-      {:ok, nil, nil} -> drop_none(acc, name)
-      {:ok, v1_sha, v2_sha} -> put_shas(acc, name, v1_sha, v2_sha)
-      :render -> render_package(acc, name, fingerprint)
-    end
+  # Each package as `{name, v1_sha, v2_sha}` when the memo vouches for its
+  # manifests, else by name, to be rendered. Reads each remembered manifest
+  # back, so the checks share the lanes too.
+  defp split_remembered(names, fingerprints, lanes) do
+    names
+    |> Task.async_stream(&{&1, remembered(&1, Map.get(fingerprints, &1))},
+      max_concurrency: lanes,
+      ordered: false,
+      timeout: :infinity
+    )
+    |> Enum.reduce({[], []}, fn
+      {:ok, {name, {:ok, v1_sha, v2_sha}}}, {reused, stale} ->
+        {[{name, v1_sha, v2_sha} | reused], stale}
+
+      {:ok, {name, :render}}, {reused, stale} ->
+        {reused, [name | stale]}
+    end)
   end
 
   defp remembered(_name, nil), do: :render
@@ -161,36 +220,55 @@ defmodule Portal.Precompiled.Batches do
     end
   end
 
-  defp drop_none(acc, name) do
-    Logger.warning("Dropping #{name} from precompiled batch: :none")
-    acc
+  # Renders and stores each package in `Portal.Precompiled.Lanes`, by the
+  # size the newest batch named its manifests at: a render's memory grows
+  # with its manifest, so a heavy one never runs beside another.
+  defp render_packages([], _fingerprints, _lanes), do: []
+
+  defp render_packages(names, fingerprints, lanes) do
+    sizes = last_sizes()
+    {heavy, light} = Lanes.split(names, &Map.get(sizes, &1), heavy_bytes())
+
+    heavy
+    |> Lanes.map(light, &render_package(&1, Map.get(fingerprints, &1)), lanes)
+    |> Enum.map(&elem(&1, 1))
   end
-
-  defp put_shas({v1_acc, v2_acc, rendered}, name, v1_sha, v2_sha),
-    do: {put_sha(v1_acc, name, v1_sha), put_sha(v2_acc, name, v2_sha), rendered}
-
-  defp put_sha(acc, _name, nil), do: acc
-  defp put_sha(acc, name, sha), do: Map.put(acc, name, sha)
 
   # Both formats of one package from one catalog load. A package can have one
   # format and not the other (a run without toolchain keys is format 1 only, a
   # toolchain build format 2 only), so only a package with neither, or a
   # manifest that fails to store, is worth a warning. A failed store is not
   # remembered, so the next batch renders and stores the package again.
-  defp render_package({v1_acc, v2_acc, rendered}, name, fingerprint) do
+  defp render_package(name, fingerprint) do
     %{v1: v1, v2: v2, absent: absent} = Manifests.render_both(name)
-    v1_sha = store(name, v1, "format 1")
-    v2_sha = store(name, v2, "format 2")
 
-    acc =
-      if v1_sha != :error and v2_sha != :error and fingerprint != nil,
-        do: {v1_acc, v2_acc, [{name, fingerprint, v1_sha, v2_sha, absent} | rendered]},
-        else: {v1_acc, v2_acc, rendered}
-
-    if v1 == :none and v2 == :none,
-      do: drop_none(acc, name),
-      else: put_shas(acc, name, ok_sha(v1_sha), ok_sha(v2_sha))
+    %{
+      name: name,
+      fingerprint: fingerprint,
+      v1: store(name, v1, "format 1"),
+      v2: store(name, v2, "format 2"),
+      absent: absent,
+      none?: v1 == :none and v2 == :none
+    }
   end
+
+  defp put_package({name, nil, nil}, acc), do: drop_none(acc, name)
+  defp put_package({name, v1_sha, v2_sha}, acc), do: put_shas(acc, name, v1_sha, v2_sha)
+  defp put_package(%{none?: true, name: name}, acc), do: drop_none(acc, name)
+
+  defp put_package(%{name: name, v1: v1, v2: v2}, acc),
+    do: put_shas(acc, name, ok_sha(v1), ok_sha(v2))
+
+  defp drop_none(acc, name) do
+    Logger.warning("Dropping #{name} from precompiled batch: :none")
+    acc
+  end
+
+  defp put_shas({v1_acc, v2_acc}, name, v1_sha, v2_sha),
+    do: {put_sha(v1_acc, name, v1_sha), put_sha(v2_acc, name, v2_sha)}
+
+  defp put_sha(acc, _name, nil), do: acc
+  defp put_sha(acc, name, sha), do: Map.put(acc, name, sha)
 
   defp store(_name, :none, _format), do: nil
 
@@ -207,6 +285,58 @@ defmodule Portal.Precompiled.Batches do
 
   defp ok_sha(:error), do: nil
   defp ok_sha(sha), do: sha
+
+  # The bytes of each package's manifests in the newest batch, both formats
+  # summed, by name. A package that batch did not name, or one of whose
+  # manifests is not in the store, has no size, and so renders as heavy.
+  defp last_sizes do
+    case latest() do
+      nil ->
+        %{}
+
+      %Batch{payload: payload} ->
+        doc = JSON.decode!(payload)
+
+        [doc["manifests"] || %{}, doc["manifests_v2"] || %{}]
+        |> Enum.flat_map(&Map.to_list/1)
+        |> Enum.reduce(%{}, fn {name, sha}, sizes ->
+          size = blob_size(sha)
+          Map.update(sizes, name, size, &(&1 && size && &1 + size))
+        end)
+    end
+  end
+
+  defp blob_size(sha) do
+    with true <- ArtifactStore.valid_sha256?(sha),
+         {:ok, %File.Stat{type: :regular, size: size}} <- File.lstat(ArtifactStore.blob_path(sha)) do
+      size
+    else
+      _ -> nil
+    end
+  end
+
+  # How many packages render at once, `config :portal, Portal.Precompiled.Batches,
+  # lanes:` (`NCC_PRECOMPILED_BATCH_LANES`), and from how many manifest bytes
+  # a package renders as heavy (`heavy_bytes:`). Anything but a positive
+  # integer, or a string of one, keeps the default.
+  defp lanes, do: positive(:lanes, @lanes)
+  defp heavy_bytes, do: positive(:heavy_bytes, @heavy_bytes)
+
+  defp positive(key, default) do
+    case Application.get_env(:portal, __MODULE__, [])[key] do
+      n when is_integer(n) and n > 0 ->
+        n
+
+      text when is_binary(text) ->
+        case Integer.parse(String.trim(text)) do
+          {n, ""} when n > 0 -> n
+          _ -> default
+        end
+
+      _ ->
+        default
+    end
+  end
 
   # Additive: a client that does not know `content` ignores it, and without
   # origins the payload is byte-for-byte what it was before the field existed.
@@ -230,11 +360,14 @@ defmodule Portal.Precompiled.Batches do
   defp store_systems({sha, body}), do: SystemAbi.store(sha, body)
 
   # Packages whose fingerprint changed during the batch are left for the next
-  # one to render again.
+  # one to render again, and so is a package one of whose manifests failed to
+  # store.
   defp remember(rendered, fingerprints_after) do
-    for {name, fingerprint, _v1, _v2, _absent} = entry <- rendered,
+    for %{name: name, fingerprint: fingerprint, v1: v1, v2: v2, absent: absent} <- rendered,
+        fingerprint != nil,
+        v1 != :error and v2 != :error,
         Map.get(fingerprints_after, name) == fingerprint do
-      true = :ets.insert(@memo, entry)
+      true = :ets.insert(@memo, {name, fingerprint, v1, v2, absent})
     end
 
     :ok

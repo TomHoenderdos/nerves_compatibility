@@ -126,7 +126,9 @@ defmodule Portal.Catalog.PublishingGateTest do
       flip_after_first_fingerprint_read(fn -> Builders.set_publishing(builder, not start) end)
       {:ok, _b1} = Batches.build_and_sign()
 
+      # The flip ran: the batch read its first fingerprints in this process.
       {:ok, builder} = Builders.get_builder(builder.id)
+      assert builder.publishing == not start
       {:ok, _} = Builders.set_publishing(builder, start)
       {:ok, b2} = Batches.build_and_sign()
 

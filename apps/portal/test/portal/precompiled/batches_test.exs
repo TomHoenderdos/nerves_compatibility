@@ -214,6 +214,114 @@ defmodule Portal.Precompiled.BatchesTest do
     end
   end
 
+  describe "lanes" do
+    setup do
+      old = Application.fetch_env(:portal, Batches)
+
+      on_exit(fn ->
+        case old do
+          {:ok, value} -> Application.put_env(:portal, Batches, value)
+          :error -> Application.delete_env(:portal, Batches)
+        end
+      end)
+
+      names =
+        for i <- 1..6 do
+          name = "tc_lanes_#{i}_#{System.unique_integer([:positive])}"
+          ingest_toolchain_build(name, "0.1.0")
+          name
+        end
+
+      %{names: names}
+    end
+
+    test "a full render in lanes signs the bytes one lane signs", %{names: names} do
+      Application.put_env(:portal, Batches, lanes: 1)
+      {:ok, b1} = Batches.build_and_sign()
+      forget_memo()
+      Application.put_env(:portal, Batches, lanes: 4)
+      {:ok, b2} = Batches.build_and_sign()
+
+      assert Batches.manifests_v2(b2) == Batches.manifests_v2(b1)
+      assert names -- Map.keys(Batches.manifests_v2(b2)) == []
+      assert_stored_bytes_are_fresh_renders(b2)
+    end
+
+    test "packages the last batch named small render beside each other" do
+      Application.put_env(:portal, Batches, lanes: 3)
+      {:ok, _} = Batches.build_and_sign()
+      forget_memo()
+
+      {renders, {:ok, batch}} = render_spans(fn -> Batches.build_and_sign() end)
+
+      assert most_at_once(renders) > 1
+      assert_stored_bytes_are_fresh_renders(batch)
+    end
+
+    # The first batch knows no package's size, so it may not run two
+    # renders at once, nor may a batch whose packages were named heavy.
+    test "packages of unknown or heavy size render one at a time" do
+      Application.put_env(:portal, Batches, lanes: 3)
+      {first, {:ok, _}} = render_spans(fn -> Batches.build_and_sign() end)
+      assert map_size(first) >= 6
+      assert most_at_once(first) == 1
+
+      forget_memo()
+      Application.put_env(:portal, Batches, lanes: 3, heavy_bytes: 1)
+      {heavy, {:ok, batch}} = render_spans(fn -> Batches.build_and_sign() end)
+      assert map_size(heavy) >= 6
+      assert most_at_once(heavy) == 1
+      assert_stored_bytes_are_fresh_renders(batch)
+    end
+  end
+
+  # What a node that never ran a batch has: an empty memo.
+  defp forget_memo, do: true = :ets.delete_all_objects(Portal.Precompiled.Batches.Memo)
+
+  # The time from the first to the last Ash query of each process `fun`
+  # starts, other than this one: a render's span, since rendering is what
+  # reads through Ash outside the calling process.
+  defp render_spans(fun) do
+    id = {__MODULE__, make_ref()}
+    me = self()
+    table = :ets.new(:render_spans, [:public, :bag])
+
+    :ok =
+      :telemetry.attach(
+        id,
+        [:portal, :repo, :query],
+        fn _event, _measurements, meta, _ ->
+          if self() != me and me in Process.get(:"$callers", []) and meta[:source] != nil,
+            do: :ets.insert(table, {self(), System.monotonic_time()})
+        end,
+        nil
+      )
+
+    try do
+      result = fun.()
+
+      spans =
+        table
+        |> :ets.tab2list()
+        |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+        |> Map.new(fn {pid, times} -> {pid, {Enum.min(times), Enum.max(times)}} end)
+
+      {spans, result}
+    after
+      :telemetry.detach(id)
+    end
+  end
+
+  # The most spans that overlap at one time.
+  defp most_at_once(spans) do
+    spans
+    |> Map.values()
+    |> Enum.flat_map(fn {from, to} -> [{from, 1}, {to, -1}] end)
+    |> Enum.sort_by(fn {at, step} -> {at, step} end)
+    |> Enum.scan(0, fn {_at, step}, n -> n + step end)
+    |> Enum.max(fn -> 0 end)
+  end
+
   describe "a package with config variants" do
     setup do
       drop_legacy_identity_index!()
@@ -478,7 +586,7 @@ defmodule Portal.Precompiled.BatchesTest do
     end
   end
 
-  # Repo queries this process runs inside `fun`.
+  # Repo queries this process, and the processes it starts, run inside `fun`.
   defp count_queries(fun) do
     id = {__MODULE__, make_ref()}
     me = self()
@@ -487,7 +595,10 @@ defmodule Portal.Precompiled.BatchesTest do
       :telemetry.attach(
         id,
         [:portal, :repo, :query],
-        fn _event, _measurements, _meta, pid -> if self() == pid, do: send(pid, {id, :query}) end,
+        fn _event, _measurements, _meta, pid ->
+          if self() == pid or pid in Process.get(:"$callers", []),
+            do: send(pid, {id, :query})
+        end,
         me
       )
 
