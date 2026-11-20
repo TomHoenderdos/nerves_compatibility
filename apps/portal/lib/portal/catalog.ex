@@ -1531,12 +1531,17 @@ defmodule Portal.Catalog do
   variant that is not served beside its default
   (`Portal.Precompiled.Withheld.config_variant_served?/2`). A toolchain
   build's earlier builds count as virtual rows of it, by the same predicate
-  (`@served_toolchain_builds`).
+  (`@served_toolchain_builds`). One query over the catalog, for
+  `Portal.Precompiled.Batches`, with the fingerprints' bound: on production
+  it takes 15 s on a quiet host, and has outrun the pool's 60 s timeout under
+  load.
   """
   @spec packages_with_precompiled_files() :: [String.t()]
   def packages_with_precompiled_files do
     %{rows: rows} =
-      Portal.Repo.query!(@packages_with_precompiled_files_sql, [Withheld.packages()])
+      Portal.Repo.query!(@packages_with_precompiled_files_sql, [Withheld.packages()],
+        timeout: :timer.minutes(2)
+      )
 
     List.flatten(rows)
   end
