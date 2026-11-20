@@ -15,6 +15,11 @@ defmodule Portal.Reports.Requeue do
   Per line, in order; the first rule that applies is written to the line's
   `requeue`:
 
+    0. `skipped:foreign_priv_client`: a `not_built_*` miss from a client
+       before 0.8.0 (or one that names no version) for a version with a
+       counted foreign priv build, or of kino (foreign priv spec 4.4, item
+       5): that client never reads those builds, so a rebuild changes
+       nothing for it.
     1. The tuple: `(package, version, system, system_version)` for a report
        with a Nerves system, `(package, version, toolchain)` for a host report
        (`Portal.Toolchains.from_versions/2` of its Elixir and OTP), and
@@ -90,12 +95,15 @@ defmodule Portal.Reports.Requeue do
   require Logger
 
   alias Portal.Builders.Routing
+  alias Portal.Precompiled.ForeignPriv
   alias Portal.Reports.Quotas
   alias Portal.Repo
   alias Portal.Toolchains
   alias Portal.Workers.{Build, ToolchainBuild}
 
   @codes ["not_built_version", "not_built_target", "closure_mismatch"]
+  # The first client that reads a version's `foreign_priv` object.
+  @foreign_priv_client Version.parse!("0.8.0")
   @incomplete ~w(available scheduled executing retryable)
   @judged ~w(pass fail skipped)
   # Only rows of a variant this release knows are its verdicts.
@@ -275,11 +283,47 @@ defmodule Portal.Reports.Requeue do
 
   # Everything the database alone decides, before Hex is asked.
   defp precheck(report, line, known) do
-    with {:ok, key} <- key(report, line),
+    with :ok <- old_client_foreign(report, line),
+         {:ok, key} <- key(report, line),
          :ok <- known(known, line.package),
          :ok <- buildable(key) do
       {:ok, key}
     end
+  end
+
+  # Foreign priv spec 4.4, item 5: a client before 0.8.0 never reads a
+  # version's foreign builds (spec 4.5), nor kino at all (phase 0b), so its
+  # `not_built_*` miss there says nothing a rebuild could change.
+  defp old_client_foreign(report, %{reason_code: "not_built_" <> _} = line) do
+    if before_080?(report.client) and foreign_version?(line.package, line.version),
+      do: {:skip, "foreign_priv_client"},
+      else: :ok
+  end
+
+  defp old_client_foreign(_report, _line), do: :ok
+
+  defp before_080?(client) when is_binary(client) do
+    case Version.parse(client) do
+      {:ok, version} -> Version.compare(version, @foreign_priv_client) == :lt
+      :error -> true
+    end
+  end
+
+  defp before_080?(_client), do: true
+
+  defp foreign_version?(package, version) do
+    ForeignPriv.target?(package) or
+      Enum.any?(["catalog_toolchain_builds", "catalog_pinned_builds"], fn table ->
+        Repo.exists?(
+          from(t in table,
+            join: p in "catalog_packages",
+            on: p.id == t.package_id,
+            where:
+              p.name == ^package and t.version == ^version and
+                t.foreign_priv_run_id == t.run_id and is_nil(t.revoked_at)
+          )
+        )
+      end)
   end
 
   defp decision({:skip, why}, _line, _report, _hex, _opts), do: "skipped:" <> why
@@ -326,6 +370,7 @@ defmodule Portal.Reports.Requeue do
         {type(r.id, Ecto.UUID),
          %{
            id: type(r.id, Ecto.UUID),
+           client: r.client,
            elixir: r.elixir,
            otp: r.otp,
            target: r.target,

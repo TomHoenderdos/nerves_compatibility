@@ -118,6 +118,27 @@ defmodule Portal.Reports.RequeueTest do
         {"nerves_system_rpi4", "1.31.0", :pass}
       ])
 
+  # Foreign priv spec 4.4, item 5: a client before 0.8.0 never reads a
+  # version's `foreign_priv` object, nor kino at all (phase 0b).
+  test "a not_built miss from a client before 0.8.0 for a foreign version triggers nothing" do
+    {:ok, _writer} = Portal.Test.ForeignPrivFixtures.ingest!()
+    old = miss!("kino_vega_lite", "0.1.13", body: %{"client" => "0.7.3"})
+    assert :ok = requeue(old)
+    assert decision(old) == "skipped:foreign_priv_client"
+
+    kino = miss!("kino", "0.19.1", body: %{"client" => "0.7.3"})
+    assert :ok = requeue(kino)
+    assert decision(kino) == "skipped:foreign_priv_client"
+
+    new = miss!("kino_vega_lite", "0.1.13", body: %{"client" => "0.8.0"})
+    assert :ok = requeue(new)
+    refute decision(new) == "skipped:foreign_priv_client"
+
+    other = miss!("jason", "1.4.5", body: %{"client" => "0.7.3"})
+    assert :ok = requeue(other)
+    refute decision(other) == "skipped:foreign_priv_client"
+  end
+
   test "an unknown package is skipped and nothing is asked of Hex" do
     Process.delete({Portal.Test.FakeHexDeps, :releases})
     id = miss!("never_seen", "1.0.0")

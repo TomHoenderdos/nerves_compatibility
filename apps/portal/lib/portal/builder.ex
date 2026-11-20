@@ -227,18 +227,29 @@ defmodule Portal.Builder do
   def egress_check?, do: config(:egress_check, true) != false
 
   @doc """
-  The `NCC_INPUT.judge` options for a build of `mode` (precompiled judge
-  refinements, item 1): `%{"makefile_rule2" => true}` for a toolchain
-  build while `NCC_JUDGE_MAKEFILE_RULE2=1` (`:judge_makefile_rule2`), else
-  nil, which the worker reads as off. Remote builds never run toolchain
-  builds, so the builder API sends none.
+  The `NCC_INPUT.judge` options for a build of `mode`: for a toolchain
+  build (pinned toolchain builds included), `"makefile_rule2" => true`
+  while `NCC_JUDGE_MAKEFILE_RULE2=1` (`:judge_makefile_rule2`, precompiled
+  judge refinements, item 1), and `"foreign_priv" => true` while the
+  `foreign_priv_enabled` setting is on (foreign priv spec 3.1, gate 1);
+  nil when neither, which the worker reads as off. Remote builds never run
+  toolchain builds, so the builder API sends none.
   """
   @spec judge_input(String.t() | nil) :: map() | nil
   def judge_input("toolchain") do
-    if config(:judge_makefile_rule2, false) == true, do: %{"makefile_rule2" => true}
+    %{}
+    |> put_on("makefile_rule2", config(:judge_makefile_rule2, false) == true)
+    |> put_on("foreign_priv", Portal.Precompiled.ForeignPriv.enabled?())
+    |> case do
+      options when map_size(options) == 0 -> nil
+      options -> options
+    end
   end
 
   def judge_input(_mode), do: nil
+
+  defp put_on(options, key, true), do: Map.put(options, key, true)
+  defp put_on(options, _key, _on), do: options
 
   @doc """
   The `NCC_INPUT.deterministic` of a build of `mode` whose args are `args`:

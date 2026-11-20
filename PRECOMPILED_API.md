@@ -1023,8 +1023,15 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `needed_lib_missing`, `symbol_version_missing`, `system_unknown`,
 `system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
 `config_unrecorded`, `config_order_differs`, `rebar3_global_config`,
-`erl_compiler_options`, `platform_define_differs`, `endian_differs`, `os_type_differs`. Another
-code is stored as `unknown`.
+`erl_compiler_options`, `platform_define_differs`, `endian_differs`, `os_type_differs`,
+`triple_differs`, `nif_version_newer`, `origin_unverified`, `deterministic_not_built`, and the
+foreign priv codes of client 0.8.0: `foreign_priv_target_compiles` ("writes into {0}'s priv; {0}
+compiles from source in this run"), `foreign_priv_target_missing` ("writes into {0}'s priv; {0} is
+not in this build"), `foreign_priv_target_linked` ("writes into {0}'s priv, which links to its
+sources"), `foreign_priv_conflict` ("writes {0}'s priv/assets/{1}, which {2} also claims"),
+`foreign_priv_rule_unknown` ("writes into {0}'s priv under rule {1}, which this client does not
+know") and `foreign_priv_device` ("writes into {0}'s priv at compile time; not installed on a
+device"). Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300
@@ -1041,10 +1048,12 @@ stored, nor logged at the production log level.
 A `miss` line whose code is `not_built_version` or `not_built_target` may
 queue a build of what was missed. Each such line gets one decision, the
 first rule in this order that applies (a device report without a public
-system is `skipped:unbuildable` before anything else is checked):
+system is `skipped:unbuildable` before anything else but
+`skipped:foreign_priv_client` is checked):
 
 | Decision | When |
 | --- | --- |
+| `skipped:foreign_priv_client` | A `not_built_*` miss from a client before 0.8.0 (or one that names no version) for a version with a foreign priv build, or of kino. That client never reads a version's `foreign_priv` object, so no build changes what it is served. |
 | `skipped:unknown_package` | The catalog has no run of the package. |
 | `skipped:unbuildable` | No build here produces the missed tuple: a device report without a public system (`custom` included), a system version no run of the last 30 days recorded, or a toolchain no worker image builds. |
 | `skipped:superseded` | A run of the last 30 days recorded a newer version of that system. A build now produces the newer one, so the older tuple would never be judged. |

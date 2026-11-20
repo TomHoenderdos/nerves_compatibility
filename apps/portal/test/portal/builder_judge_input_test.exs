@@ -1,6 +1,7 @@
 defmodule Portal.BuilderJudgeInputTest do
-  # Not async: swaps the `Portal.Builder` application env.
-  use ExUnit.Case, async: false
+  # Not async: swaps the `Portal.Builder` application env. A data case: the
+  # judge options read the `foreign_priv_enabled` setting.
+  use Portal.DataCase, async: false
 
   alias Portal.Builder
 
@@ -32,6 +33,28 @@ defmodule Portal.BuilderJudgeInputTest do
 
     for mode <- [nil, "argus_only", "warm_nerves"],
         do: assert(Builder.judge_input(mode) == nil, inspect(mode))
+  end
+
+  # Foreign priv spec 3.1, gate 1: the flag goes to toolchain builds (pinned
+  # toolchain builds are `mode: "toolchain"` too) while the setting is on,
+  # never from a host env var.
+  test "foreign_priv: toolchain builds only, and only with the setting on", %{previous: previous} do
+    Application.put_env(:portal, Builder, Keyword.delete(previous, :judge_makefile_rule2))
+    {:ok, _} = Portal.Settings.save(%{foreign_priv_enabled: false})
+    assert Builder.judge_input("toolchain") == nil
+
+    {:ok, _} = Portal.Settings.save(%{foreign_priv_enabled: true})
+    assert Builder.judge_input("toolchain") == %{"foreign_priv" => true}
+
+    for mode <- [nil, "argus_only", "warm_nerves", "host_native"],
+        do: assert(Builder.judge_input(mode) == nil, inspect(mode))
+
+    Application.put_env(:portal, Builder, Keyword.put(previous, :judge_makefile_rule2, true))
+
+    assert Builder.judge_input("toolchain") == %{
+             "foreign_priv" => true,
+             "makefile_rule2" => true
+           }
   end
 
   test "worker_input carries judge only when set" do
