@@ -426,6 +426,34 @@ defmodule NccWorker.Tracer.StackTest do
     refute :ncc_tracer_stack.checker([cache], fn m -> m in [:code] end)
   end
 
+  # `@behaviour m`: Module.preprocess_attribute/2 calls Code.ensure_compiled/1,
+  # which tail-calls ensure_compiled/2, and drops the answer.
+  test "attribute_lookup/2: exactly the toolchain's @behaviour lookup" do
+    tc = [Code, Module]
+    lookup? = &:ncc_tracer_stack.attribute_lookup(&1, fn m -> m in tc end)
+    ensure = f(Code, :ensure_compiled, 2)
+    attribute = f(Module, :preprocess_attribute, 2)
+
+    assert lookup?.([ensure, attribute, f(Module, :put_attribute, 7)])
+    assert lookup?.([ensure, attribute])
+
+    refute lookup?.([attribute])
+    refute lookup?.([ensure, f(:elixir_compiler_3, :__MODULE__, 1)])
+    refute lookup?.([f(Code, :ensure_loaded?, 1), attribute])
+    refute lookup?.([f(:code, :ensure_loaded, 1), ensure, attribute])
+    refute lookup?.([ensure, f(Module, :put_attribute, 7)])
+    refute lookup?.([])
+    refute lookup?.(:no_stack)
+    # A package's module of either name is not the toolchain's.
+    refute :ncc_tracer_stack.attribute_lookup([ensure, attribute], fn m -> m == Code end)
+    refute :ncc_tracer_stack.attribute_lookup([ensure, attribute], fn m -> m == Module end)
+
+    assert :ncc_tracer_stack.attribute_lookup_frames() == [
+             {Code, :ensure_compiled, 2},
+             {Module, :preprocess_attribute, 2}
+           ]
+  end
+
   test "made_by_toolchain/2: who called past the glue, a hook dispatcher being package code" do
     tc = [Module.Types.Descr, Module.Types.Expr, Task.Supervised | @toolchain]
     by_tc = &:ncc_tracer_stack.made_by_toolchain(&1, fn m -> m in tc end)

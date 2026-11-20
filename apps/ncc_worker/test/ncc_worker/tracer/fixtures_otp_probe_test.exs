@@ -149,6 +149,57 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert "mnesia" in modules and "mnesia_lib" in modules, inspect(modules)
   end
 
+  # Calls the package makes only at run time, and a behaviour it declares,
+  # of an application it does not list: the compiler's own lookups (the
+  # type checker's, which also checks behaviours) reach its warnings only.
+  test "run-time calls and a behaviour of an unlisted OTP application pass", %{tmp_dir: dir} do
+    body = """
+    defmodule FxProbe do
+      @behaviour :mnesia_frag_hash
+      def init_state(_tab, state), do: state
+      def add_frag(state), do: {state, [], []}
+      def del_frag(state), do: {state, [], []}
+      def key_to_frag_number(_state, _key), do: 1
+      def match_spec_to_frag_numbers(_state, _spec), do: [1]
+      def x, do: :mnesia.system_info(:version)
+      def y, do: :mnesia_lib.dir()
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => body}}
+      })
+
+    compile(proj)
+    untraced = published(proj)
+    File.rm_rf!(Path.join(proj, "_build"))
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert BuildIdentity.differences(published(proj), untraced) == []
+
+    verdict = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+    # The lookup `@behaviour` makes, pinned on this toolchain.
+    assert [lookup] =
+             Enum.filter(
+               probes(traced),
+               &(&1["arg"]["module"] == "mnesia_frag_hash" and &1["mfa"] == "code:ensure_loaded/1")
+             )
+
+    assert lookup["arg"]["attribute"] == true
+    assert lookup["arg"]["otp_app"] == "mnesia"
+    assert lookup["caller"]["module"] == "Elixir.Code"
+    assert lookup["caller"]["function"] == "ensure_compiled"
+
+    # And what makes it no concern: unpruned, the beams are the same.
+    unpruned!(proj)
+    File.rm_rf!(Path.join(proj, "_build"))
+    compile(proj)
+    assert BuildIdentity.differences(published(proj), untraced) == []
+  end
+
   # Whether a module is loaded now: untraced and pruned, nothing loads
   # mnesia; under Mix.install another compile may have.
   test "a loaded-now probe of an OTP application the package does not list is refused",

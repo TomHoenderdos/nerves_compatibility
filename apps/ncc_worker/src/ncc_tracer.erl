@@ -428,7 +428,8 @@ reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 %% caller_kind), the type checker's pool-size frame
 %% (checker_pool_frames/0, first_kind and caller_kind), the wrappers strip/3
 %% skips (ncc_tracer_stack:wrappers/0), the code-loading shapes' modules
-%% (code_load/5), the epp server whose
+%% (code_load/5), the @behaviour lookup's frames (attribute_lookup/1),
+%% the epp server whose
 %% predefined-macro reads the judge ignores, and erlang (the judge's
 %% big_binary_to_int/2 caller). Sticky modules are no exception:
 %% erlang:load_module/2 does not ask the code server. A canary is held only
@@ -438,7 +439,8 @@ canary_patterns() ->
     Named = [binary_to_atom(M)
              || {M, _F, _A} <- ncc_tracer_channels:path_os_frames()
                     ++ ncc_tracer_channels:os_family_callers()
-                    ++ ncc_tracer_channels:checker_pool_frames()],
+                    ++ ncc_tracer_channels:checker_pool_frames()]
+        ++ [M || {M, _F, _A} <- ncc_tracer_stack:attribute_lookup_frames()],
     Shapes = [M || Shape <- ncc_tracer_stack:code_loading_shapes(
                                erlang:system_info(otp_release)),
                    {M, _F, _A} <- Shape],
@@ -682,12 +684,14 @@ elixir_lib() ->
     end.
 
 %% A probe's application, as this VM's `preloaded` names it, the installed
-%% application of one we did not load (`installed`), and for it or a call
+%% application of one we did not load (`installed`), whether it is the
+%% lookup `@behaviour` makes (attribute_lookup/2), and for it or a call
 %% into such a module whether the type checker made it
 %% (ncc_tracer_stack:checker/2; each frame's kind looked up afresh).
 probed({probe, #{module := Module} = Arg}, Stack) ->
     {probe, Arg#{app => maps:get(Module, get(preloaded), null),
                  otp_app => maps:get(Module, get(installed), null),
+                 attribute => attribute_lookup(Stack),
                  checker => checker(Stack)}};
 probed({app_call, Arg}, Stack) ->
     {app_call, Arg#{checker => checker(Stack), caller_app => caller_app(caller(Stack))}};
@@ -717,6 +721,11 @@ installed_app(_M, _Path, _Toolchain) -> null.
 
 checker(Stack) ->
     try ncc_tracer_stack:checker(Stack, fun toolchain_module/1)
+    catch _:_ -> false
+    end.
+
+attribute_lookup(Stack) ->
+    try ncc_tracer_stack:attribute_lookup(Stack, fun toolchain_module/1)
     catch _:_ -> false
     end.
 

@@ -511,6 +511,22 @@ defmodule NccWorker.Portability.ProbesTest do
                Probes.decide(event, c, "pkg")
     end
 
+    # `@behaviour :wx_object`: Elixir's `Module.preprocess_attribute/2`
+    # calls `Code.ensure_compiled/1` and drops the answer; only the
+    # checker's warnings see the behaviour after that.
+    test "the attribute lookup @behaviour makes is no concern", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+      event = otp("wx_object", "wx", arg: %{"attribute" => true})
+      assert Probes.decide(event, c, "pkg") == :ignore
+
+      assert {:refuse, _} =
+               Probes.decide(otp("wx_object", "wx", arg: %{"attribute" => false}), c, "pkg")
+
+      # Only the code:ensure_loaded/1 that lookup is.
+      other = otp("wx_object", "wx", mfa: "code:which/1", arg: %{"attribute" => true})
+      assert {:refuse, _} = Probes.decide(other, c, "pkg")
+    end
+
     test "inside a traced probe, it is that probe's", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => []})
       nested = otp("wx", "wx", mfa: "erlang:module_loaded/1", caller: frame("code", "which", 1))

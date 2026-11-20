@@ -119,9 +119,12 @@ defmodule NccWorker.Portability.Probes do
   probe from one refuses whatever its application lists (` in mix.exs`).
   Only that one in a firmware target's trace (`Context` `firmware`): its
   build is installed only by `mix firmware`, a Mix project, which prunes
-  as the builder did. A probe the code server makes inside another, and
-  the type checker's outside a window with a nested compile, are dropped
-  as above.
+  as the builder did. A probe the code server makes inside another, the
+  type checker's outside a window with a nested compile (as above), and
+  the lookup `@behaviour m` makes in a module body, whose answer Elixir's
+  `Module.preprocess_attribute/2` drops (the tracer's `attribute`), are no
+  concern: inky_host_dev 1.0.0's `@behaviour :wx_object` without wx
+  listed compiles the same beams pruned or not.
 
   An event this module cannot read could not be judged.
   """
@@ -283,7 +286,7 @@ defmodule NccWorker.Portability.Probes do
   # does, Mix.install as the whole install does.
   defp outside(event, %{"otp_app" => app}, ctx, owner) when is_binary(app) do
     cond do
-      nested?(event) or app in @every_path ->
+      nested?(event) or app in @every_path or attribute_lookup?(event) ->
         :ignore
 
       is_binary(Context.mix_exs(ctx, event, owner)) ->
@@ -301,6 +304,13 @@ defmodule NccWorker.Portability.Probes do
   end
 
   defp outside(_event, _arg, _ctx, _owner), do: :ignore
+
+  # `@behaviour m`'s own lookup, whose answer Elixir drops (the tracer's
+  # `attribute`, `:ncc_tracer_stack.attribute_lookup/2`).
+  defp attribute_lookup?(%{"mfa" => "code:ensure_loaded/1", "arg" => %{"attribute" => true}}),
+    do: true
+
+  defp attribute_lookup?(_event), do: false
 
   defp otp_probe(app, event), do: Reasons.otp_probe() <> "#{app} via #{via(event)}"
 

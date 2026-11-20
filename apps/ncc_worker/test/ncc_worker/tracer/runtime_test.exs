@@ -807,6 +807,8 @@ defmodule NccWorker.Tracer.RuntimeTest do
               :ncc_tracer_channels.checker_pool_frames(),
           do: String.to_atom(m)
 
+    named = named ++ for {m, _f, _a} <- :ncc_tracer_stack.attribute_lookup_frames(), do: m
+
     shapes =
       for shape <- :ncc_tracer_stack.code_loading_shapes(:erlang.system_info(:otp_release)),
           {m, _f, _a} <- shape,

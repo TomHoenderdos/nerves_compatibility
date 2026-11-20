@@ -6,7 +6,8 @@
          uncached/0, printers/0, diagnosers/0, checker/2, made_by_toolchain/2,
          made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1,
          code_loading/1, code_loading/2, code_loading_shapes/1,
-         code_loading_read/4, code_loading_read/5, wrappers/0]).
+         code_loading_read/4, code_loading_read/5, wrappers/0, attribute_lookup/2,
+         attribute_lookup_frames/0]).
 
 -include("ncc_code_loading_shapes.hrl").
 
@@ -292,6 +293,24 @@ grouped_run([{A, _, _, _} | Rest], M, Checker, Groupers, IsToolchain) ->
     lists:member(A, ?FOLDS) andalso IsToolchain(A)
         andalso grouped_run(Rest, M, Checker, Groupers, IsToolchain);
 grouped_run([], _M, _Checker, _Groupers, _IsToolchain) -> false.
+
+%% `@behaviour m` in a module body: Elixir's Module.preprocess_attribute/2
+%% calls Code.ensure_compiled/1, which tail-calls ensure_compiled/2, and
+%% drops the answer (Elixir 1.19 and 1.20; pinned on the running toolchain
+%% by NccWorker.Tracer.FixturesOtpProbeTest). Only the type checker's
+%% warnings look at the behaviour after that.
+-define(ATTRIBUTE_LOOKUP, [{'Elixir.Code', ensure_compiled, 2},
+                           {'Elixir.Module', preprocess_attribute, 2}]).
+
+attribute_lookup_frames() -> ?ATTRIBUTE_LOOKUP.
+
+%% Whether a probe is that lookup: its stack's top two frames are exactly
+%% those, each the toolchain's (by the code loaded for its module, which a
+%% canary guards: ncc_tracer canary_patterns/0).
+attribute_lookup([{M1, F1, A1, _}, {M2, F2, A2, _} | _], IsToolchain) ->
+    [{M1, F1, A1}, {M2, F2, A2}] =:= ?ATTRIBUTE_LOOKUP
+        andalso IsToolchain(M1) andalso IsToolchain(M2);
+attribute_lookup(_Stack, _IsToolchain) -> false.
 
 %% The toolchain frames a lookup is made through on its way from the type
 %% checker: the code server's loading functions and the error handlers.
