@@ -2145,7 +2145,7 @@ defmodule NccWorker.Worker do
     with {:ok, compiled} <-
            toolchain_compile(
              project_dir,
-             compile_request(input),
+             not_mix_request(compile_request(input), project_dir, package_name),
              package_name,
              paths,
              compile_opts
@@ -2310,6 +2310,17 @@ defmodule NccWorker.Worker do
 
   defp compile_request(input), do: input[:optional_deps]
 
+  # A closure Mix cannot build (`NccWorker.Gleam`) compiles nothing, whatever
+  # was asked; a pinned set Mix did not reproduce stays that refusal.
+  defp not_mix_request({:pins_refused, _} = request, _project_dir, _package_name), do: request
+
+  defp not_mix_request(request, project_dir, package_name) do
+    case NccWorker.Gleam.skip_reason(project_dir, package_name) do
+      nil -> request
+      reason -> {:not_mix, reason}
+    end
+  end
+
   defp requested_optional_deps(%{optional_deps: "world", world: name}), do: "world:" <> name
   defp requested_optional_deps(input), do: input[:optional_deps]
 
@@ -2321,12 +2332,16 @@ defmodule NccWorker.Worker do
   defp compiled_build(%{pins_skip: reason}, _project_dir, _package_name, toolchain, opts),
     do: unbuilt(toolchain, "pins not reproduced: " <> reason, opts)
 
+  defp compiled_build(%{not_mix: reason}, _project_dir, _package_name, toolchain, opts),
+    do: unbuilt(toolchain, reason, opts)
+
   defp compiled_build(compiled, project_dir, package_name, toolchain, opts),
     do:
       toolchain_build(project_dir, package_name, compiled.host, toolchain, compiled.verdict, opts)
 
   defp put_run_deps_lock(result, %{world_skip: _}, _project_dir, _package_name), do: result
   defp put_run_deps_lock(result, %{pins_skip: _}, _project_dir, _package_name), do: result
+  defp put_run_deps_lock(result, %{not_mix: _}, _project_dir, _package_name), do: result
 
   defp put_run_deps_lock(result, _compiled, project_dir, package_name),
     do: put_deps_lock(result, :toolchain, nil, project_dir, package_name)
@@ -2403,13 +2418,20 @@ defmodule NccWorker.Worker do
   # `host` or `verdict`, and `optional_deps` naming what was dropped.
   @spec toolchain_compile(
           String.t(),
-          String.t() | nil | {:world, String.t(), [String.t()]},
+          String.t()
+          | nil
+          | :pinned
+          | {:world, String.t(), [String.t()]}
+          | {:pins_refused, String.t()}
+          | {:not_mix, String.t()},
           String.t(),
           map(),
           keyword()
         ) ::
           {:ok, %{host: map(), verdict: Portability.verdict(), optional_deps: map() | nil}}
           | {:ok, %{world_skip: String.t(), optional_deps: map()}}
+          | {:ok, %{pins_skip: String.t(), optional_deps: map()}}
+          | {:ok, %{not_mix: String.t(), optional_deps: nil}}
           | {:error, term()}
   def toolchain_compile(project_dir, {:world, name, members}, package_name, paths, opts) do
     log_host(paths, "World build #{name}: adding its members at every depth of the closure")
@@ -2435,6 +2457,13 @@ defmodule NccWorker.Worker do
   def toolchain_compile(_project_dir, {:pins_refused, reason}, _package_name, paths, _opts) do
     log_host(paths, "Pinned closure not reproduced, nothing is compiled: " <> reason)
     {:ok, %{pins_skip: reason, optional_deps: pinned_info()}}
+  end
+
+  # A closure that is not a Mix build (`not_mix_request/3`): nothing is
+  # added or compiled, and the build is skipped with `reason`.
+  def toolchain_compile(_project_dir, {:not_mix, reason}, _package_name, paths, _opts) do
+    log_host(paths, "Not a Mix build, nothing is compiled: " <> reason)
+    {:ok, %{not_mix: reason, optional_deps: nil}}
   end
 
   def toolchain_compile(project_dir, :pinned, package_name, paths, opts) do

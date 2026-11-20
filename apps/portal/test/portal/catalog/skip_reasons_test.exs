@@ -84,6 +84,20 @@ defmodule Portal.Catalog.SkipReasonsTest do
              )
   end
 
+  # A toolchain build of a closure Mix cannot build (`NccWorker.Gleam`), and
+  # a full run's Gleam skip.
+  test "a Gleam package or dependency is not a Mix build" do
+    assert SkipReasons.classify("Package uses gleam build tool") == c(:not_mix, "gleam")
+
+    assert SkipReasons.classify("Package uses gleam build tool (gleam, rebar3)") ==
+             c(:not_mix, "gleam")
+
+    assert SkipReasons.classify("dependency uses gleam build tool: gleam_stdlib, gleam_json") ==
+             c(:not_mix, "gleam", "gleam_stdlib")
+
+    assert SkipReasons.label(:not_mix) == "Not a Mix build (Gleam)"
+  end
+
   test "nil and unknown reasons are :other" do
     assert SkipReasons.classify(nil) == c(:other)
     assert SkipReasons.classify("") == c(:other)

@@ -1097,6 +1097,81 @@ defmodule NccWorker.ToolchainModeTest do
     end
   end
 
+  describe "a Gleam package" do
+    # What `mix deps.get` leaves for a Gleam release: its `gleam.toml`, the
+    # Erlang it generated, no file Mix picks a build tool by, and a lock
+    # entry naming no manager Mix has (gleam_json 3.1.0, gleam_stdlib 1.1.0).
+    defp gleam(proj, app, managers) do
+      dir = Path.join([proj, "deps", app])
+      File.rm_rf!(dir)
+      File.mkdir_p!(Path.join(dir, "src"))
+      File.write!(Path.join(dir, "gleam.toml"), ~s(name = "#{app}"\n))
+      File.write!(Path.join(dir, "src/#{app}.erl"), "-module(#{app}).\n")
+
+      lock = File.read!(Path.join(proj, "mix.lock"))
+      entry = ~r/("#{app}": \{:hex, :#{app}, "[^"]*", "[^"]*", )\[[^\]]*\]/
+      File.write!(Path.join(proj, "mix.lock"), Regex.replace(entry, lock, "\\1#{managers}"))
+    end
+
+    defp never_compiled, do: fn _, _, _, _ -> flunk("compiled a Gleam closure") end
+
+    test "is skipped with the full run's reason, compiling nothing", %{tmp_dir: dir} do
+      {proj, input, paths} = toolchain_run(dir)
+      gleam(proj, "sample", "[:gleam]")
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain,
+                 host_trace: never_compiled()
+               )
+
+      assert %{
+               status: "skipped",
+               reason: "Package uses gleam build tool",
+               file_manifest: nil,
+               deps_lock: nil,
+               judge_revision: revision
+             } = result.toolchain_build
+
+      assert is_integer(revision)
+      assert result.package.name == "sample"
+      assert File.read!(Path.join([paths.output_dir, "logs", "host.log"])) =~ "gleam"
+    end
+
+    test "a dependency of one is skipped as well, by name", %{tmp_dir: dir} do
+      {proj, input, paths} = toolchain_run(dir)
+      gleam(proj, "dep", "[]")
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain,
+                 host_trace: never_compiled()
+               )
+
+      assert %{status: "skipped", reason: "dependency uses gleam build tool: dep"} =
+               result.toolchain_build
+    end
+
+    test "one Mix builds with a build tool it has is compiled as any other", %{tmp_dir: dir} do
+      parent = self()
+
+      for {managers, extra} <- [{"[:gleam, :rebar3]", nil}, {"[:gleam]", "rebar.config"}] do
+        sub = Path.join(dir, "case#{System.unique_integer([:positive])}")
+        {proj, input, paths} = toolchain_run(sub)
+        gleam(proj, "sample", managers)
+        if extra, do: File.write!(Path.join([proj, "deps", "sample", extra]), "{erl_opts, []}.\n")
+
+        host_trace = fn _, _, _, _ ->
+          send(parent, :compiled)
+          passing_host_trace()
+        end
+
+        assert {:ok, _result} =
+                 Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+        assert_received :compiled
+      end
+    end
+  end
+
   test "a config variant whose overlay cannot be written is a worker failure", %{tmp_dir: dir} do
     {proj, input, paths} = toolchain_run(dir)
     File.mkdir_p!(Path.join(proj, "config"))

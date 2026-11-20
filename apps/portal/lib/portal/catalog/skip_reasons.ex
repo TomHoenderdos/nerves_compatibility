@@ -21,6 +21,10 @@ defmodule Portal.Catalog.SkipReasons do
     * R3 taint, `"closure dependency observed the host: <app> (<its own
       reason>)"`, whose inner reason is classified the same way and whose
       `<app>` is the `blocker`;
+    * a closure Mix cannot build: `"Package uses gleam build tool"` (a
+      full run's Gleam skip, and `NccWorker.Gleam`'s for a toolchain
+      build) and `"dependency uses gleam build tool: <apps>"`, whose first
+      app is the `blocker`;
     * `Compatibility.Portability.could_not_judge/0`, with the
       `" (transient N times)"` suffix `Portal.Catalog.Ingestion` adds at the
       transient cap, and the cause it names
@@ -37,6 +41,7 @@ defmodule Portal.Catalog.SkipReasons do
           | :build_hooks
           | :nerves_specific
           | :no_beams
+          | :not_mix
           | :could_not_judge
           | :other
 
@@ -50,6 +55,7 @@ defmodule Portal.Catalog.SkipReasons do
     :build_hooks,
     :nerves_specific,
     :no_beams,
+    :not_mix,
     :could_not_judge,
     :other
   ]
@@ -62,11 +68,13 @@ defmodule Portal.Catalog.SkipReasons do
     build_hooks: "rebar3 build hooks",
     nerves_specific: "Nerves-specific source",
     no_beams: "No compiled beams",
+    not_mix: "Not a Mix build (Gleam)",
     could_not_judge: "Could not be judged",
     other: "Other"
   }
 
   @closure "closure dependency observed the host: "
+  @gleam_dependency "dependency uses gleam build tool: "
   @host_read "compile-time host read: "
   @host_read_mix_exs "compile-time host read in mix.exs: "
   @elixir_patch "compile-time Elixir patch dependence: "
@@ -102,6 +110,11 @@ defmodule Portal.Catalog.SkipReasons do
     %{class: class, detail: detail, blocker: blocker}
   end
 
+  def classify(@gleam_dependency <> apps) do
+    blocker = apps |> String.split(", ") |> hd() |> String.trim()
+    %{class: :not_mix, detail: "gleam", blocker: if(blocker == "", do: nil, else: blocker)}
+  end
+
   def classify(reason) when is_binary(reason) do
     {class, detail} = own(reason)
     %{class: class, detail: detail, blocker: nil}
@@ -124,6 +137,7 @@ defmodule Portal.Catalog.SkipReasons do
   defp own("beam scan incomplete"), do: {:could_not_judge, nil}
   defp own("no compiled beams"), do: {:no_beams, nil}
   defp own("nerves-specific source"), do: {:nerves_specific, nil}
+  defp own("Package uses gleam build tool" <> _), do: {:not_mix, "gleam"}
   defp own("reads the target or ships native code"), do: {:native_code, nil}
   defp own("calls a NIF or port driver"), do: {:native_code, nil}
   defp own(@natively_built <> mfa), do: {:native_code, first_token(mfa)}
