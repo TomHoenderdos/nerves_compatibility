@@ -483,11 +483,18 @@ by_module(M, _F, _Args) ->
         false -> unknown
     end.
 
+%% A RAM file's "path" is its contents (`:erl_tar.extract({:binary, Bytes},
+%% ...)` opens its archive that way): tens of MB, never a path, and never
+%% written into an event (the collector died JSON-encoding a 31 MB one). The
+%% judge refuses it as it did the contents taken for a path
+%% (NccWorker.Portability.Events).
 open(Path, Modes) ->
     List = case is_list(Modes) of true -> Modes; false -> [Modes] end,
-    case lists:any(fun(Mode) -> lists:member(Mode, ?WRITE_MODES) end, List) of
-        true -> {file_write, #{path => chars(Path)}};
-        false -> {file_read, #{path => chars(Path)}}
+    Write = lists:any(fun(Mode) -> lists:member(Mode, ?WRITE_MODES) end, List),
+    case {lists:member(ram, List), Write} of
+        {true, _} -> {file_read, #{ram => true}};
+        {false, true} -> {file_write, #{path => chars(Path)}};
+        {false, false} -> {file_read, #{path => chars(Path)}}
     end.
 
 %% A wildcard lists the literal directory it starts from (`listing`).

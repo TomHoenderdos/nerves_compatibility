@@ -879,6 +879,14 @@ defmodule NccWorker.Portability.Events do
   defp detail(%{"channel" => "env", "arg" => %{"name" => name}}) when is_binary(name),
     do: " (#{name})"
 
+  # A RAM file's open (`:erl_tar.extract({:binary, bytes}, ...)`), which the
+  # tracer records without its "path", the file's contents. It refuses as
+  # every open of a path no rule allows does, as it did while the contents
+  # were taken for one: a reviewed tool's unpack is set apart before that
+  # (`NccWorker.Portability`, `@reviewed_unpacks`).
+  defp detail(%{"channel" => "file_read", "arg" => %{"ram" => true}}),
+    do: " (an in-memory file)"
+
   defp detail(_event), do: ""
 
   defp via(%{"first" => %{"module" => m, "function" => f, "arity" => a}, "user" => user})

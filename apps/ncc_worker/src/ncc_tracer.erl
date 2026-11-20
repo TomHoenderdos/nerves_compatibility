@@ -29,6 +29,10 @@
 %% distinct value is written once; one past this is recorded `unrecordable`,
 %% so values never overflow a trace nor outgrow the report's read budget.
 -define(MAX_VALUE_BYTES, 8388608).
+%% How far past twice what its last collection left the collector's heap
+%% may grow before it collects again, once it has handled a message
+%% (collected/1): 2^20 words, 8 MiB.
+-define(GC_GROWTH, 1048576).
 -define(INTROSPECTION, ['__info__', module_info, behaviour_info]).
 %% A match spec that never matches: the pattern is set, no call is traced.
 -define(NEVER, [{'_', [false], []}]).
@@ -76,6 +80,7 @@
 %% returns: per process, a stack of the return-traced calls awaiting their return ({call, CallId, Args} or skip).
 %% values: each recorded value's ETF => its value_id; value_bytes: the bytes
 %% of value lines written, at most max_value_bytes.
+%% gc_at: the heap size, in words, past which collected/1 collects.
 -record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
              spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce, unloaded = [],
@@ -83,7 +88,7 @@
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0, path_os_reads = 0,
              max_calls, max_user, max_queue, overflow = false, final = false,
              returns = #{}, values = #{}, value_bytes = 0, max_value_bytes,
-             consolidated = none, sweep = off}).
+             consolidated = none, sweep = off, gc_at = ?GC_GROWTH}).
 
 %% --- API used by the driver ---------------------------------------------
 
@@ -691,8 +696,8 @@ return_action(_Module) -> [].
 
 loop(St) ->
     receive
-        {trace_ts, _Pid, _What, _, _} = Msg -> loop(traced(Msg, St));
-        {trace_ts, _Pid, _What, _, _, _} = Msg -> loop(traced(Msg, St));
+        {trace_ts, _Pid, _What, _, _} = Msg -> loop(collected(traced(Msg, St)));
+        {trace_ts, _Pid, _What, _, _, _} = Msg -> loop(collected(traced(Msg, St)));
         {ncc_call, From, Ref, Auth, Req} when Auth =:= St#st.token; Req =:= flush ->
             {Reply, St1} = request(Req, From, St),
             ok = write_out(St1#st.fd),
@@ -706,6 +711,31 @@ loop(St) ->
             loop(watcher_down(Reason, St));
         _Other ->
             loop(St)
+    end.
+
+%% A trace message carries a copy of its call's arguments, and a spawn's of
+%% its fun with everything in the fun's environment: several copies for one
+%% spawn (each traced spawn call on the way, the `spawn` and `spawned`
+%% messages), and the compiler spawns the checker of every module it
+%% compiles with that module in the environment, tens of MB for a large
+%% generated one. Each copy is garbage once handled, but a copy live at a
+%% minor collection moves to the old heap and stays there until a major
+%% one, and a collection that meets several such copies needs more than
+%% max_heap_size: the collector was killed for the size of the code it
+%% traces, every copy already handled (date_time_parser, poison). So once
+%% the heap is ?GC_GROWTH words past twice what the last collection left
+%% (a heap and an old heap of live data), it is collected as soon as the
+%% message in hand is handled: no handled copy survives the next large
+%% message. One message too large to copy under max_heap_size still kills
+%% it (tabler_icons: a live 11M-word message).
+collected(#st{gc_at = At} = St) ->
+    case process_info(self(), total_heap_size) of
+        {total_heap_size, Words} when Words > At ->
+            true = garbage_collect(),
+            {total_heap_size, Left} = process_info(self(), total_heap_size),
+            St#st{gc_at = 2 * Left + ?GC_GROWTH};
+        _ ->
+            St
     end.
 
 traced({trace_ts, Pid, call, {erts_internal, prepare_loading, [M, Bin]}, code_load, Ts}, St) ->
@@ -872,8 +902,10 @@ await_parent(Child, Parent, St, Deadline) ->
         false ->
             Left = max(Deadline - erlang:monotonic_time(millisecond), 0),
             receive
-                {trace_ts, Parent, _, _, _} = Msg -> await_parent(Child, Parent, traced(Msg, St), Deadline);
-                {trace_ts, Parent, _, _, _, _} = Msg -> await_parent(Child, Parent, traced(Msg, St), Deadline)
+                {trace_ts, Parent, _, _, _} = Msg ->
+                    await_parent(Child, Parent, collected(traced(Msg, St)), Deadline);
+                {trace_ts, Parent, _, _, _, _} = Msg ->
+                    await_parent(Child, Parent, collected(traced(Msg, St)), Deadline)
             after Left -> St
             end
     end.

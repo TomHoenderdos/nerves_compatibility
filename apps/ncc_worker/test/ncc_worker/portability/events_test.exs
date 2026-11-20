@@ -352,6 +352,13 @@ defmodule NccWorker.Portability.EventsTest do
     end
   end
 
+  # The tracer records a RAM file's open without its contents, which it
+  # used to take for a path: still the host read it was then, now saying so.
+  test "an open of a RAM file refuses as a host read, without its contents", %{ctx: ctx} do
+    assert {:refuse, "compile-time host read: file:open/2 (an in-memory file) in " <> _} =
+             Events.decide(ev("file_read", "file:open/2", %{"ram" => true}), ctx, "pkg")
+  end
+
   test "an unjudged stack, an unknown channel or a malformed event could not be judged",
        %{ctx: ctx} do
     assert {:unjudged, "portability could not be judged" <> _} =

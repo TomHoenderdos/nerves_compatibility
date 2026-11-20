@@ -65,6 +65,21 @@ defmodule NccWorker.Tracer.ChannelsTest do
     refute Map.has_key?(elem(classify(:file, :read_file, ["a"]), 1), :listing)
   end
 
+  # `:erl_tar.extract({:binary, bytes}, ...)` opens its archive as a RAM
+  # file: the first argument is the archive's bytes, tens of MB for an icon
+  # set (material_symbols), not a path. It is never written into an event:
+  # the collector JSON-encoded one 31 MB "path" past its heap cap.
+  test "a RAM file's open records no path, only that it is one" do
+    data = :binary.copy(<<0, 1, 2>>, 1_000_000)
+
+    for modes <- [[:ram, :binary, :read], [:read, :ram], [:ram, :write]] do
+      assert {:file_read, arg} = classify(:file, :open, [data, modes])
+      assert arg == %{ram: true}, inspect(modes)
+    end
+
+    assert {:file_read, %{path: "a"}} = classify(:file, :open, ["a", :read])
+  end
+
   # Item 5b: Path.wildcard/2 passes Path.Wildcard as filelib:wildcard/2's
   # second argument, a module, not a directory.
   test "a wildcard's module argument is not a directory; wildcard/3 is traced" do
