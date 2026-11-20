@@ -276,6 +276,11 @@ defmodule Compatibility.PortabilityTest do
       end
     end
 
+    test "a compile failure's reason is never given a could-not-judge cause" do
+      reason = "compile failed: host compile failed: mix compile exited with code 1"
+      assert Portability.with_cause(reason, ["trace collector died: killed"]) == reason
+    end
+
     test "a reason with its cause is still a could-not-judge and no refusal" do
       reason =
         Portability.with_cause(Portability.could_not_judge(), [
@@ -287,6 +292,66 @@ defmodule Compatibility.PortabilityTest do
       refute Portability.withdraws?(reason)
       refute Portability.could_not_judge?("compile-time host read: os:type/0")
       refute Portability.could_not_judge?(nil)
+    end
+  end
+
+  describe "with_compile_error/2" do
+    @failed "compile failed: host compile failed: mix compile exited with code 1"
+
+    test "names the compiler error of a compile that exited with an error code" do
+      assert Portability.with_compile_error(
+               @failed,
+               "error: module Plug.Conn is not loaded and could not be found (lib/prom_ex/plug.ex:44)"
+             ) ==
+               @failed <>
+                 " (error: module Plug.Conn is not loaded and could not be found (lib/prom_ex/plug.ex:44))"
+
+      assert Portability.with_compile_error(
+               "compile failed: host compile failed: mix command exited with code 2",
+               ~s|** (Mix) :elixirc_paths should be a list of string paths, got: [~c"lib"]|
+             ) ==
+               "compile failed: host compile failed: mix command exited with code 2 " <>
+                 ~s|(** (Mix) :elixirc_paths should be a list of string paths, got: [~c"lib"])|
+    end
+
+    test "one line, every absolute path cut out whole, at most 200 bytes" do
+      assert Portability.with_compile_error(
+               @failed,
+               "** (RuntimeError) git_hooks: /work/proj/deps/git_hooks is not inside\na git working tree."
+             ) == @failed <> " (** (RuntimeError) git_hooks: … is not inside a git working tree.)"
+
+      long = "error: " <> String.duplicate("é", 300)
+      reason = Portability.with_compile_error(@failed, long)
+      cause = String.replace_prefix(reason, @failed <> " (", "") |> String.replace_suffix(")", "")
+      assert byte_size(cause) <= 200
+      assert String.ends_with?(cause, "…")
+      assert String.valid?(cause)
+    end
+
+    test "a compile a signal ended, one out of time, any other reason or no error stays as it is" do
+      for reason <- [
+            "compile failed: host compile failed: mix compile exited with code 137",
+            "compile failed: host compile failed: mix compile exited with code 128",
+            "compile failed: host compile failed: the untraced host compile timed out",
+            "compile failed: host compile failed: no time left for the host compile",
+            "portability could not be judged",
+            "compile failed: host compile failed: mix compile exited with code 1 (x)",
+            nil
+          ] do
+        assert Portability.with_compile_error(reason, "error: boom") == reason, inspect(reason)
+      end
+
+      for error <- [nil, "", "  \n ", 1, ["error: boom"], <<0xFF>>] do
+        assert Portability.with_compile_error(@failed, error) == @failed, inspect(error)
+      end
+    end
+
+    test "the named reason is still a compile failure that the signal rule does not match" do
+      reason = Portability.with_compile_error(@failed, "error: boom")
+      assert String.starts_with?(reason, "compile failed: ")
+      refute Regex.match?(~r/exited with code (12[89]|1[3-9][0-9]|2[0-5][0-9])$/, reason)
+      refute Portability.could_not_judge?(reason)
+      refute Portability.refusal?(reason)
     end
   end
 end

@@ -98,6 +98,10 @@ defmodule Compatibility.Portability do
   # space (a line number, a message), or the end: spaces included, so a
   # directory with spaces in its name goes whole.
   @path ~r/(?<![\w.~-])~?\/(?:[^"'()\[\]{}<>,;:]|:(?![\d\s]|\z))*/u
+  # The same, up to the first white space as well: a compiler error goes on
+  # after the path it names ("git_hooks: /work/proj/deps/git_hooks is not
+  # inside a git working tree.").
+  @word_path ~r/(?<![\w.~-])~?\/(?:[^\s"'()\[\]{}<>,;:]|:(?![\d\s]|\z))*/u
   # Line and paragraph separators, controls and format characters (bidi
   # overrides included).
   @breaks ~r/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/u
@@ -183,6 +187,46 @@ defmodule Compatibility.Portability do
   end
 
   def cause_of(_reason), do: nil
+
+  @doc """
+  `reason`, a failed host compile's (`"compile failed: ..."` ending in
+  `"exited with code N"`), naming the compiler error `error` gives (a
+  build's `compile_observations.compile_error`, the first error line of the
+  compile's log): `"<reason> (<error>)"`. Made safe to store and show the
+  way `with_cause/2` makes a cause: one line, every absolute path and every
+  path under `~` cut out up to the first white space (`…`), at most
+  #{@max_cause} bytes; the value
+  an error quotes is kept, since it is what names the error. A code of 128
+  or more is a signal (`Portal.Catalog`'s killed-compile rule matches those
+  reasons, which stay as they are), and a compile that ran out of time has
+  no error of its own. Any other reason, or an `error` that is not text or
+  cleans to nothing, leaves `reason` as it is.
+  """
+  @spec with_compile_error(term(), term()) :: term()
+  def with_compile_error("compile failed: " <> _ = reason, error) do
+    with [_, code] <- Regex.run(~r/exited with code (\d{1,3})\z/, reason),
+         true <- String.to_integer(code) in 1..127,
+         error when is_binary(error) and error != "" <- compile_error(error) do
+      "#{reason} (#{error})"
+    else
+      _ -> reason
+    end
+  end
+
+  def with_compile_error(reason, _error), do: reason
+
+  defp compile_error(error) when is_binary(error) do
+    if String.valid?(error) do
+      error
+      |> String.replace(@breaks, " ")
+      |> String.replace(@word_path, "…")
+      |> String.replace(~r/\s+/u, " ")
+      |> String.trim()
+      |> bounded()
+    end
+  end
+
+  defp compile_error(_error), do: nil
 
   defp cause(problems) when is_list(problems) do
     problems = for p <- problems, is_binary(p), p = clean(p), p != "", do: p
