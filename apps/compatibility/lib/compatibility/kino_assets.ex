@@ -38,6 +38,7 @@ defmodule Compatibility.KinoAssets do
   import Bitwise
 
   alias Compatibility.{ForeignPriv, StaticPriv}
+  alias Compatibility.KinoAssets.Term
 
   @block 512
   @cdn "https://repo.hex.pm/preview/"
@@ -210,28 +211,37 @@ defmodule Compatibility.KinoAssets do
   @doc """
   The `hash` and `cdn_url` literals of `module`'s `__assets_info__/0`, from
   the beam's Elixir debug info read as a term; `{:error, "inline or
-  unrecognised Kino.JS assets"}` for anything else.
+  unrecognised Kino.JS assets"}` for anything else, a compressed beam
+  included. The beam is read by its own IFF chunks and its `Dbgi` term
+  without making an atom (`Compatibility.KinoAssets.Term`), so the portal
+  can read a package's beam on a node that lives on across ingests.
   """
   @spec assets_info(binary(), String.t()) ::
           {:ok, %{hash: String.t(), cdn_url: String.t()}} | {:error, String.t()}
-  def assets_info(beam, module) when is_binary(beam) and is_binary(module) do
-    with {:ok,
-          {mod,
-           [debug_info: {:debug_info_v1, :elixir_erl, {:elixir_v1, %{definitions: defs}, _}}]}} <-
-           :beam_lib.chunks(beam, [:debug_info]),
-         true <- Atom.to_string(mod) == module,
-         [{_fa, :def, _meta, [{_clause_meta, [], [], {:%{}, _map_meta, pairs}}]}] <-
-           Enum.filter(defs, &match?({{:__assets_info__, 0}, _, _, _}, &1)),
-         true <- is_list(pairs) and Enum.all?(pairs, &match?({key, _} when is_atom(key), &1)),
-         [hash] when is_binary(hash) <- Keyword.get_values(pairs, :hash),
-         [cdn_url] when is_binary(cdn_url) <- Keyword.get_values(pairs, :cdn_url) do
+  def assets_info(<<"FOR1", size::32, "BEAM", rest::binary>>, module)
+      when is_binary(module) and size >= 4 and size - 4 <= byte_size(rest) do
+    with {:ok, chunks} <- beam_chunks(binary_part(rest, 0, size - 4), %{}),
+         {:ok, [^module | _]} <- atom_table(chunks["AtU8"]),
+         dbgi when is_binary(dbgi) <- chunks["Dbgi"],
+         {:ok, {{:atom, "debug_info_v1"}, {:atom, "elixir_erl"}, {{:atom, "elixir_v1"}, meta, _}}}
+         when is_map(meta) <- Term.decode(dbgi, ForeignPriv.max_inflated()),
+         defs when is_list(defs) <- Map.get(meta, {:atom, "definitions"}),
+         [{_fa, {:atom, "def"}, _meta, [{_clause_meta, [], [], {{:atom, "%{}"}, _, pairs}}]}] <-
+           Enum.filter(defs, &match?({{{:atom, "__assets_info__"}, 0}, _, _, _}, &1)),
+         true <- is_list(pairs) and Enum.all?(pairs, &match?({{:atom, _key}, _value}, &1)),
+         [hash] when is_binary(hash) <- values(pairs, "hash"),
+         [cdn_url] when is_binary(cdn_url) <- values(pairs, "cdn_url") do
       {:ok, %{hash: hash, cdn_url: cdn_url}}
     else
       _ -> {:error, @inline}
     end
+  rescue
+    _ -> {:error, @inline}
   end
 
   def assets_info(_beam, _module), do: {:error, @inline}
+
+  defp values(pairs, key), do: for({{:atom, ^key}, value} <- pairs, do: value)
 
   defp assets_path(cdn_url, app, version) do
     prefix = @cdn <> app <> "/" <> version <> "/"

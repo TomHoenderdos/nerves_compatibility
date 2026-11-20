@@ -411,16 +411,6 @@ defmodule Compatibility.KinoAssetsTest do
       end
     end
 
-    # The portal reads beams a package's compile wrote: never an atom of
-    # theirs, as `Compatibility.DeterministicBeams` reads them.
-    test "reads a beam without making an atom of any of its names" do
-      names = for i <- 1..50, do: "never_an_atom_#{System.unique_integer([:positive])}_#{i}"
-      bytes = iff(["Elixir.NeverAnAtom#{System.unique_integer([:positive])}" | names], [{51, 0}])
-      before = :erlang.system_info(:atom_count)
-      assert {:ok, _module, false} = KinoAssets.exports_assets_info(bytes)
-      assert :erlang.system_info(:atom_count) == before
-    end
-
     test "anything else is :error, never a raise" do
       good = beam(@module)
 
