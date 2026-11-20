@@ -110,6 +110,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
       firmware_world_enabled: Portal.Settings.get().firmware_world_enabled,
       host_native_enabled: Portal.Settings.get().host_native_enabled,
       deterministic_enabled: Portal.Settings.get().deterministic_builds_enabled,
+      foreign_priv_enabled: Portal.Settings.get().foreign_priv_enabled,
       worlds: Portal.Toolchains.worlds(),
       world_top_packages: Portal.Toolchains.world_top_packages(),
       rows: nil
@@ -247,6 +248,23 @@ defmodule PortalWeb.Admin.MaintenanceLive do
              :info,
              "Deterministic builds turned #{if enabled, do: "on", else: "off"}."
            )
+           |> load_panels()}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, AdminMessages.error(reason)) |> load_panels()}
+      end
+    end)
+  end
+
+  def handle_event("toggle_foreign_priv", params, socket) do
+    as_admin(socket, fn socket, user ->
+      enabled = params["enabled"] == "true"
+
+      case Portal.Admin.set_foreign_priv_enabled(enabled, user) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "Foreign priv builds turned #{if enabled, do: "on", else: "off"}.")
            |> load_panels()}
 
         {:error, reason} ->
@@ -912,6 +930,39 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               {if @toolchains.deterministic_enabled,
                 do: "Turn deterministic builds off",
                 else: "Turn deterministic builds on"}
+            </button>
+          </div>
+
+          <div
+            id="foreign-priv-builds"
+            class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <h3 class="font-semibold">Foreign priv builds</h3>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                <span id="foreign-priv-state">
+                  Foreign priv builds are {if @toolchains.foreign_priv_enabled,
+                    do: "on",
+                    else: "off"}.
+                </span>
+                Writers that pack Kino.JS assets into kino's priv, and kino's own builds, for
+                clients 0.8.0 and later. Off withdraws every one at the next batch, and no build
+                job asks for the judge's foreign priv rule.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="foreign-priv-toggle"
+              phx-click="toggle_foreign_priv"
+              phx-value-enabled={to_string(not @toolchains.foreign_priv_enabled)}
+              class={[
+                "btn btn-sm",
+                if(@toolchains.foreign_priv_enabled, do: "btn-ghost", else: "btn-primary")
+              ]}
+            >
+              {if @toolchains.foreign_priv_enabled,
+                do: "Turn foreign priv builds off",
+                else: "Turn foreign priv builds on"}
             </button>
           </div>
 

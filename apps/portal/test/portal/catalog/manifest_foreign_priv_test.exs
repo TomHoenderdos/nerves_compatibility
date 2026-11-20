@@ -136,4 +136,58 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
       assert Catalog.precompiled_manifest(name) == nil, name
     end
   end
+
+  describe "files route and fingerprints" do
+    test "a foreign blob is served while the setting is on and the mark is the row's",
+         %{writer: writer} do
+      [%{"sha256" => sha} | _] = writer.foreign_priv
+      off!()
+      refute Catalog.published_sha256?(sha)
+      on!()
+      assert Catalog.published_sha256?(sha)
+      assert "kino_vega_lite" in Catalog.packages_with_precompiled_files()
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET run_id = 'old-release-run' WHERE id = $1",
+        [Ecto.UUID.dump!(writer.id)]
+      )
+
+      refute Catalog.published_sha256?(sha)
+    end
+
+    test "a foreign blob of a revoked or withheld build is not served", %{writer: writer} do
+      on!()
+      [%{"sha256" => sha} | _] = writer.foreign_priv
+      assert Catalog.published_sha256?(sha)
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET revoked_at = now() WHERE id = $1",
+        [Ecto.UUID.dump!(writer.id)]
+      )
+
+      refute Catalog.published_sha256?(sha)
+    end
+
+    test "a sibling's foreign blob is served with the sibling only" do
+      {sibling, beams} = F.sibling()
+      result = Map.put(F.writer_result(), "deterministic_build", sibling)
+      {:ok, _row} = Catalog.Ingestion.ingest_toolchain(result, F.ingest_opts(F.files_dir!(beams)))
+      {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
+      [%{"sha256" => sha} | _] = F.entries("otp29")
+
+      off!()
+      refute Catalog.published_sha256?(sha)
+      on!()
+      assert Catalog.published_sha256?(sha)
+    end
+
+    test "flipping the setting changes the fingerprints of kino and the writer only" do
+      off!()
+      before = Catalog.precompiled_fingerprints()
+      on!()
+      now = Catalog.precompiled_fingerprints()
+      changed = for {name, fp} <- now, before[name] != fp, do: name
+      assert Enum.sort(changed) == ["kino", "kino_vega_lite"]
+    end
+  end
 end

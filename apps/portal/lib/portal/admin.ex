@@ -646,6 +646,26 @@ defmodule Portal.Admin do
     end
   end
 
+  @doc """
+  Turns foreign priv builds (Kino.JS writers, foreign priv spec 4) on or
+  off: the `foreign_priv_enabled` setting under which toolchain jobs ask
+  the judge for its foreign priv rule (`Portal.Builder.judge_input/1`), and
+  foreign builds and kino's own are listed under a version's `foreign_priv`
+  object and their archives served. Off withdraws every one at the next
+  batch; the rows already stored stay, unserved.
+  """
+  @spec set_foreign_priv_enabled(boolean(), %{username: String.t()}) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, term()}
+  def set_foreign_priv_enabled(enabled, actor) when is_boolean(enabled) do
+    with {:ok, setting} <- Portal.Settings.save(%{foreign_priv_enabled: enabled}) do
+      Logger.warning(
+        "Foreign priv builds turned #{if enabled, do: "on", else: "off"} by #{actor.username}"
+      )
+
+      {:ok, setting}
+    end
+  end
+
   defp remote_mode(mode) when mode in ~w(auto on off), do: {:ok, String.to_existing_atom(mode)}
   defp remote_mode(_mode), do: :error
 

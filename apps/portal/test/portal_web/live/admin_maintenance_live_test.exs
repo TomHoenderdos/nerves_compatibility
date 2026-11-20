@@ -445,6 +445,30 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
     end
   end
 
+  describe "foreign priv builds" do
+    test "the toggle turns foreign priv builds on and off", %{conn: conn} do
+      {view, _html} = live_maintenance(conn)
+
+      refute Portal.Settings.get().foreign_priv_enabled
+      assert view |> element("#foreign-priv-state") |> render() =~ "off"
+
+      view |> element("#foreign-priv-toggle") |> render_click()
+      assert Portal.Settings.get().foreign_priv_enabled
+      assert view |> element("#foreign-priv-state") |> render() =~ "on"
+
+      view |> element("#foreign-priv-toggle") |> render_click()
+      refute Portal.Settings.get().foreign_priv_enabled
+    end
+
+    test "a demoted admin cannot turn it on", %{conn: conn, admin: admin} do
+      {view, _html} = live_maintenance(conn)
+      demote!(admin)
+
+      view |> element("#foreign-priv-toggle") |> render_click()
+      refute Portal.Settings.get().foreign_priv_enabled
+    end
+  end
+
   describe "world builds" do
     test "the toggle turns world builds on and off and the counts show beside the backlog",
          %{conn: conn} do

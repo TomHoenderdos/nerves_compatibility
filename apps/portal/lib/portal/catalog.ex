@@ -1171,6 +1171,12 @@ defmodule Portal.Catalog do
   # trigger counts up on every change to either: by the gated suffixes alone,
   # a setting turned on and off again would read as no change. Not their
   # `xmin`: the enqueue path writes `remote_auto_on`.
+  # And kino and the packages with foreign priv builds while
+  # `foreign_priv_enabled` is on, in a suffix of their own: the setting
+  # decides whether their builds are listed (`Portal.Precompiled.ForeignPriv`),
+  # so its flip renders exactly those packages again. They are setting-bound
+  # too, and the settings trigger counts that setting's changes, so it turned
+  # on and off again within a batch is a change as well.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1260,10 +1266,17 @@ defmodule Portal.Catalog do
     FROM catalog_artifact_memberships m
     JOIN catalog_pinned_builds pb ON pb.id = m.pinned_build_id
     GROUP BY pb.package_id
+  ), foreign_pkgs AS (
+    SELECT t.package_id FROM catalog_toolchain_builds t WHERE t.foreign_priv_run_id = t.run_id
+    UNION SELECT pb.package_id FROM catalog_pinned_builds pb WHERE pb.foreign_priv_run_id = pb.run_id
+    UNION SELECT d.package_id FROM catalog_deterministic_builds d WHERE d.foreign_priv_run_id = d.run_id
+    UNION SELECT p.id FROM catalog_packages p WHERE p.name = '#{Compatibility.ForeignPriv.target()}'
   ), setting_bound AS (
     SELECT package_id FROM catalog_host_native_builds
     UNION
     SELECT package_id FROM catalog_deterministic_builds
+    UNION
+    SELECT package_id FROM foreign_pkgs
   ), setting_changes AS (
     SELECT string_agg(format('%s/%s', st.id, st.publication_changes), ',' ORDER BY st.id) AS c
     FROM settings st
@@ -1278,7 +1291,10 @@ defmodule Portal.Catalog do
            CASE WHEN pn.package_id IS NULL THEN ''
                 ELSE '|pinned:' || md5(format('%s/%s/%s', pn.fp, pf.n, pf.h)) END ||
            CASE WHEN sb.package_id IS NULL THEN ''
-                ELSE '|settings:' || coalesce(sc.c, '') END
+                ELSE '|settings:' || coalesce(sc.c, '') END ||
+           CASE WHEN fpk.package_id IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM settings st WHERE st.foreign_priv_enabled)
+                THEN '|foreign' ELSE '' END
   FROM catalog_packages p
   CROSS JOIN setting_changes sc
   LEFT JOIN runs ON runs.package_id = p.id
@@ -1293,6 +1309,7 @@ defmodule Portal.Catalog do
   LEFT JOIN pinned pn ON pn.package_id = p.id
   LEFT JOIN pinned_files pf ON pf.package_id = p.id
   LEFT JOIN setting_bound sb ON sb.package_id = p.id
+  LEFT JOIN foreign_pkgs fpk ON fpk.package_id = p.id
   WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL OR hn.package_id IS NOT NULL
      OR pn.package_id IS NOT NULL
   """
@@ -1414,7 +1431,8 @@ defmodule Portal.Catalog do
     SELECT r.id, r.package_id, r.version, r.toolchain, r.builder_version, r.variant,
            r.config_variant, r.status, r.revoked_at, r.deps_lock,
            to_jsonb(r.compile_env) AS compile_env, r.compile_env_rule,
-           r.compile_env_run_id, r.run_id, r.file_manifest
+           r.compile_env_run_id, r.run_id, r.file_manifest,
+           to_jsonb(r.foreign_priv) AS foreign_priv, r.foreign_priv_run_id
     UNION ALL
     SELECT r.id, r.package_id, r.version, r.toolchain, r.builder_version, r.variant,
            r.config_variant, r.status, r.revoked_at, e->'deps_lock',
@@ -1422,7 +1440,9 @@ defmodule Portal.Catalog do
            CASE WHEN jsonb_typeof(e->'compile_env_rule') = 'number'
                  AND e->>'compile_env_rule' ~ '^[0-9]{1,9}$'
                 THEN (e->>'compile_env_rule')::integer END,
-           e->>'compile_env_run_id', e->>'run_id', e->'file_manifest'
+           e->>'compile_env_run_id', e->>'run_id', e->'file_manifest',
+           CASE WHEN jsonb_typeof(e->'foreign_priv') = 'array' THEN e->'foreign_priv' END,
+           e->>'foreign_priv_run_id'
     FROM unnest(r.earlier_builds) AS e
     WHERE e->'deps_lock' IS DISTINCT FROM r.deps_lock
       AND #{served_toolchain.("r")}
@@ -1487,16 +1507,30 @@ defmodule Portal.Catalog do
       "jsonb_build_array(jsonb_build_object('sha256', #{sha}))))"
   end
 
-  @served_toolchain_file_clause in_own_manifest.("t", "m.sha256")
+  # Whether the build aliased `table` lists `sha` among its counted foreign
+  # priv entries (foreign priv spec 4.1: the list of the row's own run,
+  # `Portal.Precompiled.ForeignPriv.counted/1`), while the
+  # `foreign_priv_enabled` setting is on: with it off no foreign build is
+  # listed (4.3), so none of their archives is served either.
+  in_foreign_priv = fn table, sha ->
+    "(EXISTS (SELECT 1 FROM settings st WHERE st.foreign_priv_enabled) " <>
+      "AND #{table}.foreign_priv_run_id = #{table}.run_id " <>
+      "AND coalesce(to_jsonb(#{table}.foreign_priv), '[]'::jsonb) @> " <>
+      "jsonb_build_array(jsonb_build_object('sha256', #{sha})))"
+  end
+
+  @served_toolchain_file_clause "(#{in_own_manifest.("t", "m.sha256")} OR #{in_foreign_priv.("t", "m.sha256")})"
 
   # Whether the host-native build `h` lists `sha` in its own file manifest.
   @served_host_native_file_clause in_own_manifest.("h", "m.sha256")
 
-  # Whether the pinned build `pb` lists `sha` in its own file manifest.
-  @served_pinned_file_clause in_own_manifest.("pb", "m.sha256")
+  # Whether the pinned build `pb` lists `sha` in its own file manifest or its
+  # counted foreign priv entries.
+  @served_pinned_file_clause "(#{in_own_manifest.("pb", "m.sha256")} OR #{in_foreign_priv.("pb", "m.sha256")})"
 
-  # Whether the deterministic sibling `d` lists `sha` in its own file manifest.
-  @served_deterministic_file_clause in_own_manifest.("d", "m.sha256")
+  # Whether the deterministic sibling `d` lists `sha` in its own file
+  # manifest or its counted foreign priv entries.
+  @served_deterministic_file_clause "(#{in_own_manifest.("d", "m.sha256")} OR #{in_foreign_priv.("d", "m.sha256")})"
 
   @packages_with_precompiled_files_sql_template """
   SELECT p.name
