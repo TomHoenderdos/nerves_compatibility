@@ -19,8 +19,15 @@ defmodule Portal.Catalog.ToolchainForeignPriv do
   earlier ingest put it there (as `Portal.Catalog.Ingestion` stages it),
   and must hash to its entry either way; one in neither refuses.
 
+  Before any of it, with kino in the build's lock, every beam of the build
+  that exports `__assets_info__/0` must have its entry, so a missing archive
+  or a writer pass with no list at all is never published on the
+  container's word; the beams are read without making atoms of them
+  (`Compatibility.KinoAssets.exports_assets_info/1`).
+
   `{:refused, why}` is stored as a fail with no files and logged as a
-  security event; `{:error, _}` (Hex unavailable) retries the job. The
+  security event; `{:error, _}` (Hex unavailable, a blob not staged yet)
+  retries the job. The
   writer's app in its `cdn_url` must be the job's package: a writer whose
   app is not its Hex name is refused, fail closed.
   """
@@ -45,14 +52,85 @@ defmodule Portal.Catalog.ToolchainForeignPriv do
   def verify(_result, %{"status" => "pass"} = build, opts) do
     entries = build["foreign_priv"]
 
-    case ForeignPriv.check_entries(entries, build["foreign_priv_rule"], beams(build)) do
-      :ok when entries in [nil, []] -> :ok
-      :ok -> checked(build, entries, opts)
-      {:error, why} -> refused(why, opts)
+    with :ok <-
+           shape(ForeignPriv.check_entries(entries, build["foreign_priv_rule"], beams(build))),
+         :ok <- complete(build, entries, opts) do
+      if entries in [nil, []], do: :ok, else: checked(build, entries, opts)
+    else
+      {:refused, why} -> refused(why, opts)
+      {:error, _reason} = error -> error
     end
   end
 
   def verify(_result, _build, _opts), do: :ok
+
+  defp shape(:ok), do: :ok
+  defp shape({:error, why}), do: {:refused, why}
+
+  # S4's second half on the host (foreign priv spec 3.3): with kino in its
+  # lock, every beam of the build that exports `__assets_info__/0` is a
+  # module with an entry, so the host never takes the container's word that
+  # the list is whole. A build without kino in its lock has no asset module
+  # that could load an archive (kino's own builds among them). Each beam is
+  # read by its own sha, one at a time, without making an atom of it
+  # (`Compatibility.KinoAssets.exports_assets_info/1`).
+  defp complete(%{"deps_lock" => %{} = lock} = build, entries, opts) do
+    if Map.has_key?(lock, ForeignPriv.target()) do
+      listed = MapSet.new(List.wrap(entries), & &1["module"])
+      Enum.reduce_while(ebin_beams(build), :ok, &listed_or_halt(&1, &2, listed, opts))
+    else
+      :ok
+    end
+  end
+
+  defp complete(_build, _entries, _opts), do: :ok
+
+  defp listed_or_halt(entry, :ok, listed, opts) do
+    case asset_module(entry, opts) do
+      {:ok, nil} ->
+        {:cont, :ok}
+
+      {:ok, module} ->
+        if MapSet.member?(listed, module),
+          do: {:cont, :ok},
+          else:
+            {:halt,
+             {:refused, "#{module} exports __assets_info__/0 but has no foreign priv entry"}}
+
+      other ->
+        {:halt, other}
+    end
+  end
+
+  defp ebin_beams(%{"file_manifest" => %{"ebin" => ebin}}) when is_list(ebin) do
+    ebin
+    |> Enum.filter(
+      &(is_map(&1) and is_binary(&1["path"]) and String.ends_with?(&1["path"], ".beam"))
+    )
+    |> Enum.sort_by(& &1["path"])
+  end
+
+  defp ebin_beams(_build), do: []
+
+  # `{:ok, module}` when the beam exports `__assets_info__/0`, `{:ok, nil}`
+  # when it does not; a beam that is not its sha, or cannot be read as one,
+  # refuses; one not staged yet is the retryable error staging gives.
+  defp asset_module(%{"path" => path} = entry, opts) do
+    case blob(entry["sha256"], entry["size"], @max_beam_bytes, opts) do
+      {:ok, bytes} ->
+        case KinoAssets.exports_assets_info(bytes) do
+          {:ok, module, true} -> {:ok, module}
+          {:ok, _module, false} -> {:ok, nil}
+          :error -> {:refused, "#{path} cannot be read as a beam"}
+        end
+
+      {:unstaged, sha} ->
+        {:error, {:artifacts_unstaged, [sha]}}
+
+      {:error, why} ->
+        {:refused, "#{path}: #{why}"}
+    end
+  end
 
   defp checked(build, entries, opts) do
     with {:ok, kino} <- kino_release(build),
@@ -64,6 +142,7 @@ defmodule Portal.Catalog.ToolchainForeignPriv do
       :ok
     else
       {:refused, why} -> refused(why, opts)
+      {:error, {:artifacts_unstaged, _shas}} = unstaged -> unstaged
       {:error, reason} -> {:error, {:foreign_priv_unchecked, reason}}
     end
   end
@@ -114,6 +193,7 @@ defmodule Portal.Catalog.ToolchainForeignPriv do
          :ok <- same_assets_path(proof, entry) do
       :ok
     else
+      {:unstaged, sha} -> {:error, {:artifacts_unstaged, [sha]}}
       {:error, why} -> {:refused, "foreign priv file #{entry["path"]}: #{why}"}
     end
   end
@@ -154,7 +234,8 @@ defmodule Portal.Catalog.ToolchainForeignPriv do
   defp beam_entry(_build, module), do: {:error, "#{module} has no beam in the build"}
 
   # A blob the run staged, or one the store already holds, read under the
-  # cap, by its own sha and size.
+  # cap, by its own sha and size; `{:unstaged, sha}` when neither holds it
+  # yet, which the ingest retries, as staging does.
   defp blob(sha, size, max, opts)
        when is_binary(sha) and is_integer(size) and size >= 0 and size <= max do
     with true <- Regex.match?(@sha, sha),
@@ -162,6 +243,7 @@ defmodule Portal.Catalog.ToolchainForeignPriv do
          true <- byte_size(bytes) == size and StaticPriv.sha256(bytes) == sha do
       {:ok, bytes}
     else
+      :enoent -> {:unstaged, sha}
       _ -> {:error, "not the blob its entry names"}
     end
   end

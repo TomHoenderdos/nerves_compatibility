@@ -360,4 +360,87 @@ defmodule Compatibility.KinoAssetsTest do
     assert {:error, _} = KinoAssets.verify(%{input() | beam: "nope"})
     assert {:error, _} = KinoAssets.verify(%{})
   end
+
+  describe "exports_assets_info/1" do
+    # A beam, IFF chunks by hand: `atoms` the atom table (OTP 28's compact
+    # lengths, as `count` negative says), `exports` `{atom index, arity}`.
+    defp iff(atoms, exports, compact? \\ true) do
+      table =
+        if compact? do
+          <<-length(atoms)::signed-32>> <>
+            for(a <- atoms, into: "", do: compact_len(byte_size(a)) <> a)
+        else
+          <<length(atoms)::signed-32>> <> for(a <- atoms, into: "", do: <<byte_size(a)>> <> a)
+        end
+
+      expt =
+        <<length(exports)::32>> <>
+          for({i, arity} <- exports, into: "", do: <<i::32, arity::32, 1::32>>)
+
+      chunks = chunk("AtU8", table) <> chunk("ExpT", expt) <> chunk("Code", "x")
+      <<"FOR1", byte_size(chunks) + 4::32, "BEAM">> <> chunks
+    end
+
+    defp chunk(id, data) do
+      pad = rem(4 - rem(byte_size(data), 4), 4)
+      id <> <<byte_size(data)::32>> <> data <> :binary.copy(<<0>>, pad)
+    end
+
+    defp compact_len(n) when n < 16, do: <<n::4, 0::1, 0::3>>
+    defp compact_len(n), do: <<div(n, 256)::3, 0::1, 1::1, 0::3, rem(n, 256)>>
+
+    test "the real asset modules export it, others do not" do
+      assert KinoAssets.exports_assets_info(beam(@module)) == {:ok, @module, true}
+      assert KinoAssets.exports_assets_info(beam(@chart)) == {:ok, @chart, true}
+
+      assert {:ok, "lists", false} =
+               KinoAssets.exports_assets_info(File.read!(:code.which(:lists)))
+    end
+
+    test "both atom table shapes, and long names" do
+      long = "Elixir." <> String.duplicate("M", 200)
+
+      for compact? <- [true, false] do
+        assert KinoAssets.exports_assets_info(iff([long, "__assets_info__"], [{2, 0}], compact?)) ==
+                 {:ok, long, true}
+
+        assert KinoAssets.exports_assets_info(
+                 iff(["Elixir.M", "__assets_info__"], [{2, 1}], compact?)
+               ) ==
+                 {:ok, "Elixir.M", false}
+      end
+    end
+
+    # The portal reads beams a package's compile wrote: never an atom of
+    # theirs, as `Compatibility.DeterministicBeams` reads them.
+    test "reads a beam without making an atom of any of its names" do
+      names = for i <- 1..50, do: "never_an_atom_#{System.unique_integer([:positive])}_#{i}"
+      bytes = iff(["Elixir.NeverAnAtom#{System.unique_integer([:positive])}" | names], [{51, 0}])
+      before = :erlang.system_info(:atom_count)
+      assert {:ok, _module, false} = KinoAssets.exports_assets_info(bytes)
+      assert :erlang.system_info(:atom_count) == before
+    end
+
+    test "anything else is :error, never a raise" do
+      good = beam(@module)
+
+      for bad <- [
+            "",
+            "not a beam",
+            :zlib.gzip(good),
+            binary_part(good, 0, 100),
+            iff(["Elixir.M"], [{9, 0}]),
+            iff(["Elixir.M", "__assets_info__"], [{0, 0}]),
+            <<"FOR1", 4::32, "BEAM">>
+          ] do
+        assert KinoAssets.exports_assets_info(bad) == :error,
+               inspect(binary_part(bad, 0, min(16, byte_size(bad))))
+      end
+
+      for _ <- 1..200 do
+        junk = <<"FOR1", 1000::32, "BEAM">> <> :crypto.strong_rand_bytes(996)
+        assert KinoAssets.exports_assets_info(junk) == :error
+      end
+    end
+  end
 end

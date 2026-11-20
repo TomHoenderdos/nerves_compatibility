@@ -9,7 +9,7 @@ defmodule Portal.Catalog.IngestionForeignPrivTest do
   import ExUnit.CaptureLog
   require Ash.Query
 
-  alias Portal.Catalog.{ArtifactMembership, ToolchainBuild}
+  alias Portal.Catalog.{ArtifactMembership, Ingestion, ToolchainBuild}
   alias Portal.Precompiled.ForeignPriv
   alias Portal.Test.ForeignPrivFixtures, as: F
 
@@ -97,10 +97,20 @@ defmodule Portal.Catalog.IngestionForeignPrivTest do
   test "a blob that is not its sha, or whose archive is not the package's, refuses" do
     [vl, chart] = F.entries()
 
+    # Stored under the sha its entry names, with other bytes.
+    files = F.files_dir!()
+    named = String.duplicate("e", 64)
+    File.write!(Path.join(files, named), File.read!(F.archive("otp28", "Kino_VegaLite")))
+    result = F.writer_result(%{"foreign_priv" => [%{vl | "sha256" => named}, chart]})
+
     assert_refused(
-      F.ingest!(%{"foreign_priv" => [%{vl | "sha256" => F.sha("not stored")}, chart]}),
-      "foreign priv file"
+      Ingestion.ingest_toolchain(result, F.ingest_opts(files)),
+      "foreign priv file priv/assets/Kino_VegaLite/"
     )
+
+    # Stored nowhere yet: the retry staging gives, never a refusal.
+    assert {:error, {:artifacts_unstaged, [_]}} =
+             F.ingest!(%{"foreign_priv" => [%{vl | "sha256" => F.sha("not stored")}, chart]})
 
     # The sibling OTP's archive of ChartCell under Kino_VegaLite's name and module.
     other = F.entries("otp28") |> Enum.at(1)
@@ -113,6 +123,68 @@ defmodule Portal.Catalog.IngestionForeignPrivTest do
     }
 
     assert_refused(F.ingest!(%{"foreign_priv" => [swapped, chart]}), "Kino_VegaLite")
+  end
+
+  # S4's second half on the host, never the container's word: with kino in
+  # its lock, every beam of the build that exports `__assets_info__/0` has
+  # its archive among the entries, so a list missing one, or a writer pass
+  # with no list at all, publishes none of the build's files.
+  test "every asset module of a build with kino in its lock has its archive" do
+    [vl, _chart] = F.entries()
+
+    # The first asset module, by path, without an entry is the one named.
+    for {over, module} <- [
+          {%{"foreign_priv" => [vl]}, "Elixir.KinoVegaLite.ChartCell"},
+          {%{"foreign_priv" => [], "foreign_priv_rule" => nil}, "Elixir.Kino.VegaLite"},
+          {%{"foreign_priv" => nil, "foreign_priv_rule" => nil}, "Elixir.Kino.VegaLite"}
+        ] do
+      log =
+        capture_log(fn ->
+          assert_refused(
+            F.ingest!(over),
+            "#{module} exports __assets_info__/0 but has no foreign priv entry"
+          )
+        end)
+
+      assert log =~
+               "security: toolchain build kino_vega_lite 0.1.13 foreign priv refused at ingest"
+    end
+  end
+
+  test "a build with kino in its lock and no asset module passes with no entries" do
+    plain = :code.which(:lists) |> File.read!()
+
+    manifest = %{
+      "ebin" => [
+        %{
+          "path" => "ebin/lists.beam",
+          "sha256" => F.sha(plain),
+          "size" => byte_size(plain),
+          "mode" => 33_188
+        }
+      ],
+      "priv" => []
+    }
+
+    result =
+      F.writer_result(%{
+        "file_manifest" => manifest,
+        "foreign_priv" => [],
+        "foreign_priv_rule" => nil
+      })
+
+    assert {:ok, row} = Ingestion.ingest_toolchain(result, F.ingest_opts(F.files_dir!([plain])))
+    assert row.status == :pass
+    assert row.foreign_priv == []
+  end
+
+  test "a beam blob not staged yet retries, it is no refusal" do
+    files = F.files_dir!()
+    File.rm!(Path.join(files, F.sha(F.beam("Elixir.KinoVegaLite.ChartCell"))))
+    _ = File.rm(Portal.ArtifactStore.blob_path(F.sha(F.beam("Elixir.KinoVegaLite.ChartCell"))))
+
+    assert {:error, {:artifacts_unstaged, [_]}} =
+             Ingestion.ingest_toolchain(F.writer_result(), F.ingest_opts(files))
   end
 
   test "Hex down for kino retries and writes nothing" do

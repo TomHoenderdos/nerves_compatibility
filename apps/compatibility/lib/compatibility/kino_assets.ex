@@ -83,6 +83,105 @@ defmodule Compatibility.KinoAssets do
 
   def verify(_input), do: {:error, @unreadable}
 
+  @doc """
+  The module a beam holds and whether it exports `__assets_info__/0`, the
+  function every `use Kino.JS` module defines: `{:ok, module, exports?}`, the
+  module's name as it is written in the beam (`"Elixir.Kino.VegaLite"`), or
+  `:error` for anything but an uncompressed beam whose atom table (`AtU8`,
+  either length encoding) and export table (`ExpT`) read whole.
+
+  The beam is a package's compile's output, so it is read as the portal reads
+  every beam (`Compatibility.DeterministicBeams`): by its own IFF chunks, the
+  names compared as bytes. No `:beam_lib`, which inflates a compressed beam
+  without a bound and makes atoms of the names it reads, which a node never
+  frees. Never raises.
+  """
+  @spec exports_assets_info(binary()) :: {:ok, String.t(), boolean()} | :error
+  def exports_assets_info(<<"FOR1", size::32, "BEAM", rest::binary>>)
+      when size >= 4 and size - 4 <= byte_size(rest) do
+    with {:ok, chunks} <- beam_chunks(binary_part(rest, 0, size - 4), %{}),
+         {:ok, atoms} <- atom_table(chunks["AtU8"]),
+         [module | _] <- atoms,
+         {:ok, exports} <- export_table(chunks["ExpT"], List.to_tuple(atoms)) do
+      {:ok, module, {"__assets_info__", 0} in exports}
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  def exports_assets_info(_beam), do: :error
+
+  # Each chunk once, filling the file exactly (each padded to 4 bytes but
+  # the last, which may end the file unpadded).
+  defp beam_chunks(<<>>, acc), do: {:ok, acc}
+
+  defp beam_chunks(<<id::binary-size(4), len::32, data::binary-size(len), rest::binary>>, acc) do
+    pad = rem(4 - rem(len, 4), 4)
+
+    cond do
+      Map.has_key?(acc, id) ->
+        :error
+
+      byte_size(rest) == 0 ->
+        {:ok, Map.put(acc, id, data)}
+
+      byte_size(rest) < pad ->
+        :error
+
+      true ->
+        rest |> binary_part(pad, byte_size(rest) - pad) |> beam_chunks(Map.put(acc, id, data))
+    end
+  end
+
+  defp beam_chunks(_bytes, _acc), do: :error
+
+  # A negative count is OTP 28's table, each length a compact-term `u`: one
+  # byte below 16, two below 2048, which covers every atom (at most 255
+  # characters, so 1020 bytes). A positive count, one length byte each.
+  defp atom_table(<<count::signed-32, rest::binary>>) when count < 0,
+    do: read_atoms(rest, -count, &compact_length/1, [])
+
+  defp atom_table(<<count::signed-32, rest::binary>>) when count > 0,
+    do: read_atoms(rest, count, fn <<len, rest::binary>> -> {:ok, len, rest} end, [])
+
+  defp atom_table(_data), do: :error
+
+  defp read_atoms(_rest, 0, _length, acc), do: {:ok, Enum.reverse(acc)}
+
+  defp read_atoms(bytes, n, length, acc) do
+    with {:ok, len, rest} <- length.(bytes),
+         <<name::binary-size(^len), rest::binary>> <- rest do
+      read_atoms(rest, n - 1, length, [name | acc])
+    else
+      _ -> :error
+    end
+  end
+
+  defp compact_length(<<len::4, 0::1, 0::3, rest::binary>>), do: {:ok, len, rest}
+
+  defp compact_length(<<hi::3, 0::1, 1::1, 0::3, lo::8, rest::binary>>),
+    do: {:ok, hi * 256 + lo, rest}
+
+  defp compact_length(_bytes), do: :error
+
+  # `{name, arity}` per export; an atom index outside the table is no beam.
+  defp export_table(<<count::32, rest::binary>>, atoms) when byte_size(rest) == count * 12 do
+    exports =
+      for <<index::32, arity::32, _label::32 <- rest>> do
+        if index >= 1 and index <= tuple_size(atoms),
+          do: {elem(atoms, index - 1), arity},
+          else: throw(:bad_index)
+      end
+
+    {:ok, exports}
+  catch
+    :bad_index -> :error
+  end
+
+  defp export_table(_data, _atoms), do: :error
+
   @doc "Kino.JS's archive hash over `members` (`assets_hash/1` in kino's js.ex)."
   @spec hash([member()]) :: String.t()
   def hash(members) do
