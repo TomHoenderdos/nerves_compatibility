@@ -109,6 +109,19 @@ defmodule Portal.Precompiled.LanesTest do
              catch_exit(Lanes.map([], [:a], fun, 2))
   end
 
+  describe "split/3" do
+    test "heavy from the size up and of unknown size, each list largest first" do
+      sizes = %{a: 10, b: 500, c: 100, d: 2_000, e: nil, f: 99}
+
+      assert Lanes.split([:a, :b, :c, :d, :e, :f, :g], &Map.get(sizes, &1), 100) ==
+               {[:d, :b, :c, :e, :g], [:f, :a]}
+    end
+
+    test "nothing heavy when every size is known and small" do
+      assert Lanes.split([:a, :b], fn _ -> 1 end, 100) == {[], [:a, :b]}
+    end
+  end
+
   defp collect_ran(acc \\ []) do
     receive do
       {:ran, item} -> collect_ran([item | acc])

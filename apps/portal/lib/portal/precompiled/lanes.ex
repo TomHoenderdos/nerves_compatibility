@@ -63,4 +63,23 @@ defmodule Portal.Precompiled.Lanes do
   end
 
   defp start(fun, item), do: Task.async(fn -> fun.(item) end).ref
+
+  @doc """
+  `items` as the `{heavy, light}` lists `map/4` takes: an item is heavy from
+  `size_of` `heavy_at` up, or when `size_of` gives `nil` (a size nobody knows
+  could be any, so it never runs beside another heavy one). The items of
+  known size come largest first, so the longest renders do not start last;
+  the unknown ones follow the heavy ones in their order.
+  """
+  @spec split([item], (item -> non_neg_integer() | nil), pos_integer()) :: {[item], [item]}
+        when item: term()
+  def split(items, size_of, heavy_at) when is_function(size_of, 1) do
+    {unknown, known} =
+      items |> Enum.map(&{&1, size_of.(&1)}) |> Enum.split_with(&is_nil(elem(&1, 1)))
+
+    {heavy, light} =
+      known |> Enum.sort_by(&elem(&1, 1), :desc) |> Enum.split_with(&(elem(&1, 1) >= heavy_at))
+
+    {Enum.map(heavy ++ unknown, &elem(&1, 0)), Enum.map(light, &elem(&1, 0))}
+  end
 end
