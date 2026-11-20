@@ -2,7 +2,7 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
   @moduledoc "Precompiled manifest, format 2."
   require OpenApiSpex
   alias OpenApiSpex.Schema
-  alias PortalWeb.ApiSchemas.ManifestBuild
+  alias PortalWeb.ApiSchemas.{ForeignLists, ManifestBuild}
 
   OpenApiSpex.schema(
     %{
@@ -47,6 +47,7 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
                     "`elf.needs` version. Absent when empty or while the portal's " <>
                     "`host_native_enabled` setting is off."
               },
+              foreign_priv: ForeignLists,
               deterministic: %Schema{
                 type: :object,
                 description:
@@ -61,7 +62,8 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
                 properties: %{
                   builds: %Schema{type: :array, items: ManifestBuild},
                   builds_with_inputs: %Schema{type: :array, items: ManifestBuild},
-                  builds_closure: %Schema{type: :array, items: ManifestBuild}
+                  builds_closure: %Schema{type: :array, items: ManifestBuild},
+                  foreign_priv: ForeignLists
                 },
                 required: [:builds],
                 additionalProperties: false

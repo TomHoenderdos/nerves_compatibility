@@ -413,10 +413,9 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
       ingest_with_artifact(keyed_run())
       set_facts!(@native)
 
-      PortalWeb.ApiSpecAssertions.assert_api_schema(
-        Catalog.precompiled_manifest_v2("jason"),
-        "ManifestV2"
-      )
+      manifest = Catalog.precompiled_manifest_v2("jason")
+      PortalWeb.ApiSpecAssertions.assert_api_schema(manifest, "ManifestV2")
+      Portal.Test.ForeignPrivFixtures.assert_contract!(manifest)
     end
   end
 

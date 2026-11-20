@@ -7,7 +7,11 @@ defmodule Portal.Test.ForeignPrivFixtures do
   fakes answering for both.
   """
 
+  import ExUnit.Assertions
+
   alias Portal.Catalog.Ingestion
+
+  @regular ~w(builds builds_with_inputs builds_closure builds_host_native)
 
   @dir Path.expand("../../../compatibility/test/fixtures/kino_assets", __DIR__)
   @dirs [
@@ -170,4 +174,69 @@ defmodule Portal.Test.ForeignPrivFixtures do
   @doc "Ingests the writer's result with `over` and `hex`; the ingest's answer."
   def ingest!(over \\ %{}, hex \\ default_hex()),
     do: Ingestion.ingest_toolchain(writer_result(over), ingest_opts(files_dir!(), hex))
+
+  @doc """
+  Spec 4.5's contract, over any rendered format-2 manifest: no regular list,
+  at the top or in `deterministic`, carries a foreign entry, a foreign rule
+  or a 0b target. Clients before 0.8.0 read those lists only.
+  """
+  def assert_contract!(nil), do: :ok
+
+  def assert_contract!(%{"versions" => versions}) do
+    for {_v, version} <- versions,
+        lists <- [version, version["deterministic"] || %{}],
+        key <- @regular,
+        build <- List.wrap(lists[key]) do
+      refute Map.has_key?(build, "foreign_priv"), inspect({key, build["target"]})
+
+      refute Map.has_key?(build["build"] || %{}, "foreign_priv_target"),
+             inspect({key, build["target"]})
+
+      refute Map.has_key?(build["build"] || %{}, "foreign_priv_rule"),
+             inspect({key, build["target"]})
+    end
+
+    :ok
+  end
+
+  @doc """
+  The writer's deterministic sibling as `result.json` carries it: its beams
+  the build's with a deterministic compile info (an Elixir module's other
+  chunks are the build's, `Compatibility.DeterministicBeams`), its foreign
+  entries `entries`. Returns `{sibling, beams}`, the sibling beams' bytes to
+  stage with `files_dir!/1`.
+  """
+  def sibling(entries \\ entries("otp29")) do
+    build = writer_result()["toolchain_build"]
+
+    beams =
+      for %{"path" => "ebin/" <> file} <- build["file_manifest"]["ebin"],
+          do: {file, deterministic_beam(beam(Path.rootname(file)))}
+
+    ebin =
+      for {file, bytes} <- beams,
+          do: %{
+            "path" => "ebin/" <> file,
+            "sha256" => sha(bytes),
+            "size" => byte_size(bytes),
+            "mode" => 33_188
+          }
+
+    sibling =
+      Map.merge(build, %{
+        "erl_compiler_options" => Compatibility.DeterministicBeams.options(),
+        "file_manifest" => %{"ebin" => ebin, "priv" => []},
+        "foreign_priv" => entries
+      })
+
+    {sibling, Enum.map(beams, &elem(&1, 1))}
+  end
+
+  defp deterministic_beam(beam) do
+    {:ok, _module, chunks} = :beam_lib.all_chunks(beam)
+    info = :erlang.term_to_binary(version: ~c"9.0")
+    chunks = List.keyreplace(chunks, ~c"CInf", 0, {~c"CInf", info})
+    {:ok, bytes} = :beam_lib.build_module(chunks)
+    bytes
+  end
 end

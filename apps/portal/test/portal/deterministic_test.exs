@@ -221,7 +221,7 @@ defmodule Portal.DeterministicTest do
     # proof and holding the build's members; its archives are its own (its
     # compile stamped other tar times), stored with their blobs.
     test "a foreign build's sibling with the same members is stored with its own archive blobs" do
-      {sibling, beams} = foreign_sibling(ForeignPrivFixtures.entries("otp29"))
+      {sibling, beams} = ForeignPrivFixtures.sibling(ForeignPrivFixtures.entries("otp29"))
       result = Map.put(ForeignPrivFixtures.writer_result(), "deterministic_build", sibling)
       opts = ForeignPrivFixtures.ingest_opts(ForeignPrivFixtures.files_dir!(beams))
       assert {:ok, row} = Ingestion.ingest_toolchain(result, opts)
@@ -256,7 +256,7 @@ defmodule Portal.DeterministicTest do
           "size" => byte_size(changed)
       }
 
-      {sibling, beams} = foreign_sibling([changed_vl, chart])
+      {sibling, beams} = ForeignPrivFixtures.sibling([changed_vl, chart])
       result = Map.put(ForeignPrivFixtures.writer_result(), "deterministic_build", sibling)
       opts = ForeignPrivFixtures.ingest_opts(ForeignPrivFixtures.files_dir!([changed | beams]))
 
@@ -276,7 +276,9 @@ defmodule Portal.DeterministicTest do
     end
 
     test "a foreign build's sibling with other foreign paths is left out" do
-      {sibling, beams} = foreign_sibling(ForeignPrivFixtures.entries("otp29") |> Enum.take(1))
+      {sibling, beams} =
+        ForeignPrivFixtures.sibling(ForeignPrivFixtures.entries("otp29") |> Enum.take(1))
+
       result = Map.put(ForeignPrivFixtures.writer_result(), "deterministic_build", sibling)
       opts = ForeignPrivFixtures.ingest_opts(ForeignPrivFixtures.files_dir!(beams))
 
@@ -288,44 +290,6 @@ defmodule Portal.DeterministicTest do
 
       assert log =~ "left out: its foreign_priv differs"
     end
-  end
-
-  # The fixture writer's sibling: its beams the build's with a deterministic
-  # compile info (an Elixir module's other chunks are the build's), its
-  # foreign entries `entries`; and the sibling beams' bytes, to stage.
-  defp foreign_sibling(entries) do
-    build = ForeignPrivFixtures.writer_result()["toolchain_build"]
-
-    beams =
-      for %{"path" => "ebin/" <> file} <- build["file_manifest"]["ebin"] do
-        {file, deterministic_beam(ForeignPrivFixtures.beam(Path.rootname(file)))}
-      end
-
-    ebin =
-      for {file, bytes} <- beams,
-          do: %{
-            "path" => "ebin/" <> file,
-            "sha256" => ForeignPrivFixtures.sha(bytes),
-            "size" => byte_size(bytes),
-            "mode" => 33_188
-          }
-
-    sibling =
-      Map.merge(build, %{
-        "erl_compiler_options" => Compatibility.DeterministicBeams.options(),
-        "file_manifest" => %{"ebin" => ebin, "priv" => []},
-        "foreign_priv" => entries
-      })
-
-    {sibling, Enum.map(beams, &elem(&1, 1))}
-  end
-
-  defp deterministic_beam(beam) do
-    {:ok, _module, chunks} = :beam_lib.all_chunks(beam)
-    info = :erlang.term_to_binary(version: ~c"9.0")
-    chunks = List.keyreplace(chunks, ~c"CInf", 0, {~c"CInf", info})
-    {:ok, bytes} = :beam_lib.build_module(chunks)
-    bytes
   end
 
   defp archive_bytes(%{"path" => "priv/assets/" <> rel}) do

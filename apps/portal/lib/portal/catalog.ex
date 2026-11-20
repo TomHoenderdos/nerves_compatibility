@@ -53,7 +53,7 @@ defmodule Portal.Catalog do
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
   alias Portal.Deterministic
   alias Portal.HostNative
-  alias Portal.Precompiled.Withheld
+  alias Portal.Precompiled.{ForeignPriv, Withheld}
   alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
@@ -3540,6 +3540,8 @@ defmodule Portal.Catalog do
         present = MapSet.filter(stored, &ArtifactStore.present?/1)
 
         %{
+          package_name: package.name,
+          foreign_enabled: ForeignPriv.enabled?(),
           runs: runs,
           results: results,
           shas_by_system_result_id: shas_by_system_result_id,
@@ -3638,10 +3640,15 @@ defmodule Portal.Catalog do
   # each key can be picked and `updated_at` taken over what is published.
   defp manifest_v2(sources) do
     builds =
-      listed(run_builds(sources) ++ toolchain_builds_v2(sources) ++ pinned_builds_v2(sources))
+      (Enum.map(run_builds(sources), &put_foreign_target(&1, sources)) ++
+         toolchain_builds_v2(sources) ++ pinned_builds_v2(sources))
+      |> listed()
+      |> drop_foreign(sources.foreign_enabled)
 
     host_native = host_native_v2(sources)
-    deterministic = listed(deterministic_v2(sources, builds))
+
+    deterministic =
+      sources |> deterministic_v2(builds) |> listed() |> drop_foreign(sources.foreign_enabled)
 
     if builds == [] and host_native == [] and deterministic == [] do
       nil
@@ -3665,12 +3672,21 @@ defmodule Portal.Catalog do
   end
 
   # The builds a client can match, each tagged with the list it goes under
-  # (`version_builds/1`), the newest per key within each list.
+  # (`version_builds/1`), the newest per key within each list. A foreign
+  # build (`put_foreign/4`) is tagged `{:foreign, list}`: it goes under the
+  # version's `foreign_priv` object only, which no client before 0.8.0 reads
+  # (foreign priv spec 4.3 and 4.5).
   defp listed(builds) do
-    {closure, builds} =
+    {foreign, regular} =
       builds
       |> Enum.filter(&matchable?/1)
-      |> Enum.split_with(&closure_build?/1)
+      |> Enum.split_with(&foreign_build?/1)
+
+    tagged(regular) ++ Enum.map(tagged(foreign), fn {tag, build} -> {{:foreign, tag}, build} end)
+  end
+
+  defp tagged(builds) do
+    {closure, builds} = Enum.split_with(builds, &closure_build?/1)
 
     builds
     |> Enum.split_with(&needs_check?/1)
@@ -3680,6 +3696,15 @@ defmodule Portal.Catalog do
     end)
     |> Kernel.++(Enum.map(newest_per_key(closure), &{:closure, &1}))
   end
+
+  defp foreign_build?({_version, _at, entry}), do: Map.get(entry, :foreign) == true
+
+  # Foreign priv spec 4.3: with the setting off nothing foreign is listed,
+  # and a version with only foreign builds is not listed at all. kino's own
+  # builds are foreign whatever the setting (plan ruling 1, phase 0b), so
+  # with it off no client is served kino.
+  defp drop_foreign(list, true), do: list
+  defp drop_foreign(list, _off), do: Enum.reject(list, &match?({{:foreign, _}, _}, &1))
 
   # Deterministic siblings (`Portal.Deterministic`) go under the version's
   # `deterministic` key only, as an object of the same lists, each split as
@@ -3725,9 +3750,13 @@ defmodule Portal.Catalog do
         build != nil,
         stored = Map.get(sources.shas_by_deterministic_id, d.id, MapSet.new()),
         files = toolchain_files(d.file_manifest, stored, sources.present_shas),
-        files != nil do
+        files != nil,
+        foreign = foreign_files(d, stored, sources.present_shas),
+        foreign != :absent do
       {version, at, entry} = sibling_build_v2(build, files)
+
       {version, at, put_in(entry, ["build", "erl_compiler_options"], d.erl_compiler_options)}
+      |> put_foreign(d, foreign, sources)
     end
   end
 
@@ -3781,7 +3810,9 @@ defmodule Portal.Catalog do
         stored = Map.get(sources.shas_by_pinned_id, pb.id, MapSet.new()),
         files = toolchain_files(pb.file_manifest, stored, sources.present_shas),
         files != nil,
-        do: pinned_build_v2(pb, files)
+        foreign = foreign_files(pb, stored, sources.present_shas),
+        foreign != :absent,
+        do: pb |> pinned_build_v2(files) |> put_foreign(pb, foreign, sources)
   end
 
   # A firmware one (phase 2) is rendered as its target's build at its
@@ -3839,13 +3870,79 @@ defmodule Portal.Catalog do
 
   defp version_builds(list) do
     pick = fn tag ->
-      for({^tag, {_version, _at, build}} <- list, do: Map.delete(build, :closure_only))
+      for({^tag, {_version, _at, build}} <- list, do: Map.drop(build, [:closure_only, :foreign]))
       |> Enum.sort_by(&build_order/1)
     end
 
     %{"builds" => pick.(:plain)}
     |> put_list("builds_with_inputs", pick.(:checked))
     |> put_list("builds_closure", pick.(:closure))
+    |> put_foreign_lists(pick)
+  end
+
+  # A version's foreign builds under its `foreign_priv` object, in the same
+  # lists, which keeps `builds` empty or not (foreign priv spec 4.3); a
+  # version with no foreign build renders the bytes it rendered before.
+  defp put_foreign_lists(version, pick) do
+    case {pick.({:foreign, :plain}), pick.({:foreign, :checked}), pick.({:foreign, :closure})} do
+      {[], [], []} ->
+        version
+
+      {plain, checked, closure} ->
+        lists =
+          %{"builds" => plain}
+          |> put_list("builds_with_inputs", checked)
+          |> put_list("builds_closure", closure)
+
+        Map.put(version, "foreign_priv", lists)
+    end
+  end
+
+  # A build's counted foreign entries as a manifest lists them, when every
+  # one's blob is stored for the build and present on this host (spec 4.1);
+  # `:absent` leaves the build out whole, as a missing ebin file does.
+  defp foreign_files(row, stored, present) do
+    entries = ForeignPriv.counted(row)
+
+    if Enum.all?(
+         entries,
+         &(MapSet.member?(stored, &1["sha256"]) and
+             MapSet.member?(present, &1["sha256"]))
+       ),
+       do: Enum.map(entries, &Compatibility.ForeignPriv.manifest_entry/1),
+       else: :absent
+  end
+
+  # Tags a writer's build (its counted entries and rule) for the
+  # `foreign_priv` object, and every build of kino itself (phase 0b,
+  # `put_foreign_target/2`); anything else as it was.
+  defp put_foreign({version, at, entry}, row, [_ | _] = foreign, _sources) do
+    entry =
+      entry
+      |> Map.put("foreign_priv", foreign)
+      |> put_in(["build", "foreign_priv_rule"], row.foreign_priv_rule)
+      |> Map.put(:foreign, true)
+
+    {version, at, entry}
+  end
+
+  defp put_foreign(build, _row, [], sources), do: put_foreign_target(build, sources)
+
+  # Phase 0b (plan ruling 1): a build of kino itself, the app foreign builds
+  # write into, is listed only under `foreign_priv`, where only clients from
+  # 0.8.0 on read: 0.7.x replaces an installed kino whole and loses every
+  # writer's archives (foreign priv spec 1.5, D2).
+  defp put_foreign_target({version, at, entry}, sources) do
+    if ForeignPriv.target?(sources.package_name) do
+      entry =
+        entry
+        |> put_in(["build", "foreign_priv_target"], Compatibility.ForeignPriv.target())
+        |> Map.put(:foreign, true)
+
+      {version, at, entry}
+    else
+      {version, at, entry}
+    end
   end
 
   # Host-native builds (`Portal.HostNative`, board #85) go under
@@ -4034,7 +4131,9 @@ defmodule Portal.Catalog do
         stored = Map.get(sources.shas_by_toolchain_build_id, tb.id, MapSet.new()),
         files = toolchain_files(tb.file_manifest, stored, sources.present_shas),
         files != nil,
-        do: toolchain_build_v2(tb, files)
+        foreign = foreign_files(tb, stored, sources.present_shas),
+        foreign != :absent,
+        do: tb |> toolchain_build_v2(files) |> put_foreign(tb, foreign, sources)
   end
 
   defp toolchain_build_v2(tb, files) do
@@ -4203,6 +4302,9 @@ defmodule Portal.Catalog do
       :compile_env_rule,
       :compile_env_run_id,
       :file_manifest,
+      :foreign_priv,
+      :foreign_priv_rule,
+      :foreign_priv_run_id,
       :finished_at,
       :earlier_builds
     ])

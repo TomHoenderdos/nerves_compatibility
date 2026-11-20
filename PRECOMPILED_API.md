@@ -785,6 +785,57 @@ What it lists:
   ingest (`Portal.Deterministic.Ingest.firmware_candidate/3`).
 - `build.erl_compiler_options` — only on a build under `versions[v].deterministic`:
   `["deterministic"]`, the `ERL_COMPILER_OPTIONS` it was compiled with.
+- `versions[v].foreign_priv` — foreign priv builds: toolchain and pinned toolchain builds of a
+  package whose compile wrote Kino.JS asset archives into kino's build `priv` (each module's
+  `__before_compile__/1` packs its assets into `<kino priv>/assets/<Module_Name>/<hash>.tar.gz`),
+  let through by the reviewed rule `kino_js_v1` (kino 0.19.1's `lib/kino/js.ex`), and kino's own
+  builds. Read only by clients 0.8.0 and later, after the version's other lists missed; no client
+  up to 0.7.3 reads this key at the version level or inside `deterministic`, so to them a writer
+  whose only builds are here shows `MISS not built`. It is an object of the same lists as the
+  version itself, `builds` (always present), `builds_with_inputs` and `builds_closure`, split,
+  picked (newest per key) and matched by the same rules, and it is never in format 1. A writer's
+  entry is its build's usual entry plus `foreign_priv`, the archives to place, each
+  `{"app": "kino", "path": "priv/assets/<d>/<h>.tar.gz", "sha256", "size", "mode": 33188}` with the
+  path relative to kino's build dir and the file fetched from `/api/precompiled/files/{sha256}`, and
+  `build.foreign_priv_rule: "kino_js_v1"`. A build of kino itself carries
+  `build.foreign_priv_target: "kino"` and no `foreign_priv`, and is listed only here: a client
+  before 0.8.0 replaces an installed kino whole and loses every writer's archives in it.
+  `versions[v].deterministic.foreign_priv` holds the siblings of foreign builds the same way, each
+  with its own archives (its compile stamped other tar times; the portal checked that it holds the
+  same members). Listed only while the portal's `foreign_priv_enabled` setting is on, and only when
+  every file the entry lists, foreign ones included, is held; absent otherwise. kino's own builds
+  are listed nowhere while it is off, and a version with no foreign build renders the bytes it did
+  before. The worker accepts exactly the reviewed Kino.JS calls into kino's `priv/assets/<d>` for
+  `d` one of the writer's own modules, proves each archive against the writer's beam (its
+  `__assets_info__/0` hash and `assets_path`) and its Hex tarball's files
+  (`Compatibility.KinoAssets`), and refuses any read of kino's archives during the compile; the
+  portal proves each again at ingest against the tarballs it fetched itself
+  (`Portal.Catalog.ToolchainForeignPriv`). Example:
+
+  ```json
+  "0.1.13": {
+    "builds": [],
+    "foreign_priv": {
+      "builds": [],
+      "builds_with_inputs": [
+        {
+          "target": "pure_elixir",
+          "ebin": [{"path": "ebin/Elixir.Kino.VegaLite.beam", "sha256": "...", "size": 1234, "mode": 33188}],
+          "priv": [],
+          "foreign_priv": [
+            {"app": "kino", "path": "priv/assets/Kino_VegaLite/uxwh53kfq2wszgf23hqwgkuiza.tar.gz",
+             "sha256": "...", "size": 51234, "mode": 33188}
+          ],
+          "build": {"elixir": "1.20.3", "otp": "29", "deps": {"kino": {"version": "0.19.1", "checksum": "..."}},
+                    "compile_inputs": [{"kind": "os_type", "family": "unix"}], "foreign_priv_rule": "kino_js_v1",
+                    "...": "..."}
+        }
+      ]
+    }
+  }
+  ```
+- `build.foreign_priv_rule`, `build.foreign_priv_target` — only on a build under a
+  `foreign_priv` object (above).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
   build with and one without the package's optional dependencies differ in
