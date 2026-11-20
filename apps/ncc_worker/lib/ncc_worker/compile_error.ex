@@ -120,12 +120,14 @@ defmodule NccWorker.CompileError do
   defp rebar_message(below) do
     below
     |> Enum.take(@window)
-    |> Enum.find_value(fn line ->
-      case Regex.run(~r/╰── (.+)\z/u, line) do
-        [_, message] -> unless warning?(message), do: message
-        nil -> nil
-      end
-    end)
+    |> Enum.find_value(&rebar_error/1)
+  end
+
+  defp rebar_error(line) do
+    case Regex.run(~r/╰── (.+)\z/u, line) do
+      [_, message] -> if warning?(message), do: nil, else: message
+      nil -> nil
+    end
   end
 
   @summaries ["Can't continue due to errors on dependencies", "Could not compile dependency "]
