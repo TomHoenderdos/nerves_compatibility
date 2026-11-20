@@ -212,7 +212,7 @@ defmodule NccWorker.Tracer.FixturesForeignPrivTest do
           uniq: true,
           do: c
 
-    assert Enum.sort(calls) -- ["stat", "stream"] == ["archive", "mkdir_p", "rm_rf"],
+    assert Enum.sort(calls) -- ["stat"] == ["archive", "mkdir_p", "rm_rf", "stream"],
            log(ctx, "fx_writer")
 
     assert refused?(

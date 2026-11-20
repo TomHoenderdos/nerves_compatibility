@@ -1,6 +1,7 @@
 defmodule NccWorker.Portability.ForeignPrivSettleTest do
   use ExUnit.Case, async: true
 
+  alias Compatibility.KinoAssets
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.KinoFixtures, as: K
   alias NccWorker.Portability
@@ -364,6 +365,187 @@ defmodule NccWorker.Portability.ForeignPrivSettleTest do
                [],
                Keyword.merge(opts, hex_home: plain.home, releases: plain.releases)
              )
+  end
+
+  # S1 counts the archives of a directory the window made: none is a
+  # refusal too, though no reviewed js.ex can make one.
+  test "S1: a directory the window made but wrote no archive into", %{tmp_dir: dir} do
+    f = K.project(dir)
+    File.mkdir_p!(Path.join(f.assets, @vl))
+    b = place(f, @chart)
+
+    decided = [
+      {"kino_vega_lite",
+       {:observe, "foreign_priv", %{item("rm_rf", @vl, "") | "path" => "priv/assets/#{@vl}"}}},
+      {"kino_vega_lite",
+       {:observe, "foreign_priv", %{item("mkdir_p", @vl, "") | "path" => "priv/assets/#{@vl}"}}},
+      archive("kino_vega_lite", @chart, b)
+    ]
+
+    {out, %{entries: entries, exclude: []}} = ForeignPriv.settle(decided, open(f))
+    assert entries == %{}
+
+    assert refusals(out) == [
+             {"kino_vega_lite",
+              Reasons.foreign_priv_refused() <> "kino priv/assets/#{@vl}: no archive written"}
+           ]
+  end
+
+  test "S4: a closure beam that cannot be read refuses, never raises", %{tmp_dir: dir} do
+    f = K.project(dir)
+    a = place(f, @vl)
+    b = place(f, @chart)
+    # A directory where a beam should be: unreadable whoever runs the test.
+    File.mkdir_p!(Path.join([f.writer_build, "ebin", "Elixir.KinoVegaLite.Broken.beam"]))
+
+    {out, %{entries: entries}} =
+      ForeignPriv.settle(
+        [archive("kino_vega_lite", @vl, a), archive("kino_vega_lite", @chart, b)],
+        open(f)
+      )
+
+    assert entries == %{}
+
+    assert refusals(out) == [
+             {"kino_vega_lite",
+              Reasons.foreign_priv_refused() <> "Elixir.KinoVegaLite.Broken's beam cannot be read"}
+           ]
+  end
+
+  test "S4: a module whose beam exports no __assets_info__/0", %{tmp_dir: dir} do
+    lists = File.read!(:code.which(:lists))
+    f = K.project(dir, writer_beams: %{"Elixir.Kino.VegaLite" => lists})
+    a = place(f, @vl)
+    b = place(f, @chart)
+
+    {out, _} =
+      ForeignPriv.settle(
+        [archive("kino_vega_lite", @vl, a), archive("kino_vega_lite", @chart, b)],
+        open(f)
+      )
+
+    assert refusals(out) == [
+             {"kino_vega_lite",
+              Reasons.foreign_priv_refused() <>
+                "kino priv/assets/#{@vl}: its module's beam exports no __assets_info__/0"}
+           ]
+  end
+
+  test "S6: an archive over 10 MiB refuses before it is read", %{tmp_dir: dir} do
+    f = K.project(dir)
+    name = Path.basename(K.archive("otp28", @vl))
+    File.mkdir_p!(Path.join(f.assets, @vl))
+    File.write!(Path.join([f.assets, @vl, name]), :binary.copy(<<0>>, 10 * 1024 * 1024 + 1))
+    b = place(f, @chart)
+
+    {out, _} =
+      ForeignPriv.settle(
+        [archive("kino_vega_lite", @vl, name), archive("kino_vega_lite", @chart, b)],
+        open(f)
+      )
+
+    assert refusals(out) == [
+             {"kino_vega_lite",
+              Reasons.foreign_priv_refused() <>
+                "kino priv/assets/#{@vl}: its archive is over 10 MiB"}
+           ]
+  end
+
+  # Two modules packing one 5.5 MB asset: each archive passes the content
+  # proof on its own, together they are over 10 MiB.
+  test "S6: archives over 10 MiB in all refuse", %{tmp_dir: dir} do
+    bytes = :crypto.strong_rand_bytes(5_500_000)
+    cdn = "https://repo.hex.pm/preview/kino_vega_lite/0.1.13/lib/assets/big"
+    hash = KinoAssets.hash([{"main.js", bytes}])
+    tarball = K.hex_tarball("kino_vega_lite", "0.1.13", %{"lib/assets/big/main.js" => bytes})
+
+    beams =
+      Map.new(["Elixir.Kino.VegaLite", "Elixir.KinoVegaLite.ChartCell"], fn m ->
+        {m, assets_beam(m, hash, cdn)}
+      end)
+
+    f = K.project(dir, writer_beams: beams, writer_tarball: tarball)
+
+    decided =
+      for d <- [@vl, @chart] do
+        path = Path.join([f.assets, d, hash <> ".tar.gz"])
+        File.mkdir_p!(Path.dirname(path))
+        :ok = :erl_tar.create(String.to_charlist(path), [{~c"main.js", bytes}], [:compressed])
+        archive("kino_vega_lite", d, hash <> ".tar.gz")
+      end
+
+    {out, %{entries: entries}} = ForeignPriv.settle(decided, open(f))
+    assert entries == %{}
+
+    assert refusals(out) == [
+             {"kino_vega_lite",
+              Reasons.foreign_priv_refused() <> "more than 10 MiB of foreign priv files"}
+           ]
+  end
+
+  # S4 runs over every closure app but kino, not only the package (ruling
+  # 11): a dependency writer whose archives the trace never saw written
+  # taints it. One whose archives settle passes the package, and they are
+  # never the package's entries (spec 3.6).
+  test "judge/5: a dependency writer settles or taints, and is never listed", %{tmp_dir: dir} do
+    f = K.project(Path.join(dir, "a"), package: "kv_user")
+
+    opts = [
+      hex_home: f.home,
+      releases: f.releases,
+      built_check: false,
+      nif_waiver: true,
+      foreign_priv: true
+    ]
+
+    v = Portability.judge(f.proj, "kv_user", f.report, [], opts)
+    assert v.status == :skip
+
+    assert v.observations["taint"] == %{
+             "kino_vega_lite" =>
+               Reasons.foreign_priv_refused() <> "Elixir.Kino.VegaLite has assets but no archive"
+           },
+           inspect(v.observations, pretty: true, limit: 60)
+
+    g = K.project(Path.join(dir, "b"), package: "kv_user")
+    {:ok, kino_digest, _} = :ncc_tracer_digest.dir(g.kino_build)
+    names = for d <- [@vl, @chart], into: %{}, do: {d, place(g, d)}
+
+    built =
+      for app <- ~w(kv_user kino_vega_lite), into: %{"kino" => %{digest: kino_digest}} do
+        {:ok, digest, _} = :ncc_tracer_digest.dir(Path.join(g.proj, "_build/host/lib/" <> app))
+        {app, %{digest: digest}}
+      end
+
+    events =
+      names
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {{d, name}, i} -> writer_events(g.assets, d, name, 150 + 10 * i) end)
+
+    report = %{g.report | events: events, built: built}
+    opts = Keyword.merge(opts, hex_home: g.home, releases: g.releases, built_check: true)
+    w = Portability.judge(g.proj, "kv_user", report, [], opts)
+
+    assert %{status: :pass, foreign_priv: [], foreign_priv_rule: nil} = w,
+           inspect(w.observations, pretty: true, limit: 60)
+
+    assert Enum.all?(w.observations["foreign_priv"], &(&1["owner"] == "kino_vega_lite"))
+  end
+
+  # A beam of `module` whose `__assets_info__/0` holds `hash` and
+  # `cdn_url`, with the debug info Mix leaves out of test code.
+  defp assets_beam(module, hash, cdn_url) do
+    source = """
+    defmodule #{String.replace_prefix(module, "Elixir.", "")} do
+      @compile :debug_info
+      def __assets_info__(), do: %{js_path: "main.js", hash: #{inspect(hash)}, cdn_url: #{inspect(cdn_url)}}
+    end
+    """
+
+    [{mod, bytes}] = Code.compile_string(source)
+    :code.purge(mod)
+    :code.delete(mod)
+    bytes
   end
 
   defp writer_events(assets, d, name, ts) do

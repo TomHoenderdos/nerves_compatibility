@@ -3224,7 +3224,10 @@ defmodule NccWorker.Portability.JudgeTest do
 
     r = report(proj, %{events: [e]})
 
-    assert %{status: :skip, reason: "compile-time write outside ebin: file:open/2 " <> _} =
-             judge(proj, r, nif_waiver: true, target: "rpi4", foreign_priv: true)
+    for flag <- [[foreign_priv: true], []] do
+      assert %{status: :skip, reason: "compile-time write outside ebin: file:open/2 " <> _} =
+               judge(proj, r, [nif_waiver: true, target: "rpi4"] ++ flag),
+             inspect(flag)
+    end
   end
 end

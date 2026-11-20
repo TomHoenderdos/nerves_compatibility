@@ -86,5 +86,16 @@ defmodule NccWorker.Portability.ForeignPrivTest do
       Portability.judge(f.proj, "kino_vega_lite", f.report, [], [foreign_priv: true] ++ base)
 
     assert with_flag.observations["trace_stats"]["foreign_priv"] == "on"
+
+    # Without the flag the observations are main's: the only key the flag
+    # adds is the accepted calls' list.
+    refute Map.has_key?(without.observations, "foreign_priv")
+    assert Map.keys(with_flag.observations) -- Map.keys(without.observations) == ["foreign_priv"]
+    assert Map.keys(without.observations) -- Map.keys(with_flag.observations) == []
+
+    for opts <- [[target: "rpi4"], [target: "host", host_native: true]] do
+      v = Portability.judge(f.proj, "kino_vega_lite", f.report, [], opts ++ base)
+      refute Map.has_key?(v.observations, "foreign_priv"), inspect(opts)
+    end
   end
 end

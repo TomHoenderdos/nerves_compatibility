@@ -239,6 +239,69 @@ defmodule NccWorker.Portability.ForeignPrivEventsTest do
 
   # Spec 3.2 row F5: the real-VM fixture on Elixir 1.19 and 1.20 shows no
   # frameless stat after an accepted call, so none is in the rule.
+  # Each guard of F1 and F2 on its own: the right frame from a caller that
+  # is not the toolchain's, the wrong caller, or mkdir_p's line off by one.
+  test "refused: rm_rf and mkdir_p calls whose caller or line is not the reviewed one",
+       %{on: on, a: a} do
+    vl = Path.join(a, "Kino_VegaLite")
+    package = %{"caller_kind" => "package"}
+    wrong_caller = %{"module" => "Elixir.KinoVegaLite.Own", "function" => "mk", "arity" => 1}
+
+    assert {:refuse, "compile-time read of kino's asset archives: " <> _} =
+             Events.decide(Map.merge(f1(vl), package), on, "kino_vega_lite")
+
+    for path <- [vl, a] do
+      for e <- [
+            Map.merge(mkdir(path), package),
+            Map.put(mkdir(path), "caller", wrong_caller),
+            %{mkdir(path) | "user" => %{@mkdir_p | "line" => 368}}
+          ] do
+        assert {:refuse, "compile-time write outside ebin: file:make_dir/1 " <> _} =
+                 Events.decide(e, on, "kino_vega_lite"),
+               inspect({path, e["caller"], e["user"]["line"]})
+      end
+
+      for e <- [
+            Map.merge(dir?(path), package),
+            Map.put(dir?(path), "caller", wrong_caller),
+            %{dir?(path) | "user" => %{@mkdir_p | "line" => 370}}
+          ] do
+        assert {:refuse, "compile-time read of kino's asset archives: " <> _} =
+                 Events.decide(e, on, "kino_vega_lite"),
+               inspect({path, e["caller"], e["user"]["line"]})
+      end
+    end
+  end
+
+  # Ruling 5: the walk above A is accepted only for a window with a
+  # directory of its own there.
+  test "refused: mkdir_p above A for a window with no Kino.JS module", %{tmp_dir: dir, a: a} do
+    plain = K.project(Path.join(dir, "plain"), writer_modules: [])
+    scope = MapSet.new(Context.closure_of(plain.ctx, plain.ctx.package))
+    on = %{plain.ctx | foreign_priv: ForeignPriv.gate(plain.ctx, scope, foreign_priv: true)}
+    assert on.foreign_priv.dirs["kino_vega_lite"] == MapSet.new()
+
+    assert {:refuse, "compile-time write outside ebin: file:make_dir/1 " <> _} =
+             Events.decide(mkdir(plain.assets), on, "kino_vega_lite")
+
+    assert {:refuse, "compile-time read of kino's asset archives: " <> _} =
+             Events.decide(dir?(plain.assets), on, "kino_vega_lite")
+
+    _ = a
+  end
+
+  test "refused: an archive stream with a user frame, an in-memory open", %{on: on, a: a} do
+    file = archive_path(a, "Kino_VegaLite")
+
+    assert {:refuse, "compile-time write outside ebin: prim_file:open/2 " <> _} =
+             Events.decide(%{f4(file) | "user" => @archive}, on, "kino_vega_lite")
+
+    ram = %{f3(file) | "arg" => %{"path" => file, "ram" => true}}
+
+    assert {:refuse, "compile-time write outside ebin: file:open/2 (an in-memory file)"} =
+             Events.decide(ram, on, "kino_vega_lite")
+  end
+
   test "a frameless stat of A/<d> refuses as a read", %{on: on, a: a} do
     vl = Path.join(a, "Kino_VegaLite")
 

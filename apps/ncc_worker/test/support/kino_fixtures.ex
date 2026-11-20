@@ -65,8 +65,12 @@ defmodule NccWorker.KinoFixtures do
   real kino_vega_lite 0.1.13 built under `_build/host/lib`, and a report of
   their two windows (kino 0-100, kino_vega_lite 101-200). Options:
   `:js` (kino's js.ex bytes), `:kino_version`, `:kino_modules`,
-  `:writer_modules`, `:kino_manager`, `:native` (apps built natively),
-  `:link_kino_priv` (kino's build priv a link into deps/kino/priv), `:events`.
+  `:writer_modules`, `:writer_beams` (`%{module => beam}` in place of the
+  real beams), `:writer_tarball` (kino_vega_lite's tarball), `:kino_manager`,
+  `:native` (apps built natively), `:link_kino_priv` (kino's build priv a
+  link into deps/kino/priv), `:events`, and `:package`, an app that depends
+  on kino_vega_lite (one Erlang module, window 201-300) judged in its place,
+  so kino_vega_lite is a closure dependency.
   """
   def project(root, opts \\ []) do
     proj = Path.join(root, "proj")
@@ -78,9 +82,12 @@ defmodule NccWorker.KinoFixtures do
     kino_tar =
       hex_tarball("kino", kino_version, %{"lib/kino/js.ex" => Keyword.get(opts, :js, js_ex())})
 
+    writer_tar = Keyword.get(opts, :writer_tarball, writer_tarball())
+    top = Keyword.get(opts, :package)
+
     releases = %{
       "kino" => release(home, "kino", kino_version, kino_tar),
-      "kino_vega_lite" => release(home, "kino_vega_lite", "0.1.13", writer_tarball())
+      "kino_vega_lite" => release(home, "kino_vega_lite", "0.1.13", writer_tar)
     }
 
     for app <- ~w(kino kino_vega_lite), do: File.mkdir_p!(Path.join([proj, "deps", app, "lib"]))
@@ -97,10 +104,14 @@ defmodule NccWorker.KinoFixtures do
       Keyword.get(opts, :writer_modules, ~w(Elixir.Kino.VegaLite Elixir.KinoVegaLite.ChartCell))
 
     put_app(writer_build, "kino_vega_lite", writer_modules)
+    beams = Keyword.get(opts, :writer_beams, %{})
 
-    for m <- ~w(Elixir.Kino.VegaLite Elixir.KinoVegaLite.ChartCell),
-        m in writer_modules,
-        do: File.write!(Path.join([writer_build, "ebin", m <> ".beam"]), beam(m))
+    for m <- writer_modules,
+        bytes = Map.get_lazy(beams, m, fn -> real_beam(m) end),
+        bytes != nil,
+        do: File.write!(Path.join([writer_build, "ebin", m <> ".beam"]), bytes)
+
+    if top, do: put_top(proj, top)
 
     if Keyword.get(opts, :link_kino_priv, false) do
       File.mkdir_p!(Path.join(proj, "deps/kino/priv"))
@@ -111,17 +122,27 @@ defmodule NccWorker.KinoFixtures do
 
     manager = Keyword.get(opts, :kino_manager, "mix")
 
+    package = top || "kino_vega_lite"
+    top_dep = if top, do: [dep(proj, top, ["kino_vega_lite"], "mix")], else: []
+    top_window = if top, do: [window(top, 201, 300)], else: []
+
+    top_sentinel =
+      if top, do: [%{app: top, ts: 202, integrity_ok: true, pid: "<0.95.0>"}], else: []
+
     report = %Report{
       start: Map.merge(%{"otp_root" => Path.join(root, "otp")}, @libs),
       closure: %{
-        "packages" => ["kino_vega_lite"],
-        "deps" => [dep(proj, "kino", [], manager), dep(proj, "kino_vega_lite", ["kino"], "mix")]
+        "packages" => [package],
+        "deps" =>
+          [dep(proj, "kino", [], manager), dep(proj, "kino_vega_lite", ["kino"], "mix")] ++
+            top_dep
       },
-      windows: [window("kino", 0, 100), window("kino_vega_lite", 101, 200)],
-      sentinels: [
-        %{app: "kino", ts: 1, integrity_ok: true, pid: "<0.95.0>"},
-        %{app: "kino_vega_lite", ts: 102, integrity_ok: true, pid: "<0.95.0>"}
-      ],
+      windows: [window("kino", 0, 100), window("kino_vega_lite", 101, 200)] ++ top_window,
+      sentinels:
+        [
+          %{app: "kino", ts: 1, integrity_ok: true, pid: "<0.95.0>"},
+          %{app: "kino_vega_lite", ts: 102, integrity_ok: true, pid: "<0.95.0>"}
+        ] ++ top_sentinel,
       stats: %{"kind" => "stats", "calls" => 10, "unjudged" => 0},
       ending:
         Map.merge(
@@ -139,7 +160,7 @@ defmodule NccWorker.KinoFixtures do
     }
 
     ctx =
-      Context.build(proj, "kino_vega_lite", report, Keyword.get(opts, :native, []),
+      Context.build(proj, package, report, Keyword.get(opts, :native, []),
         hex_home: home,
         releases: releases
       )
@@ -156,6 +177,22 @@ defmodule NccWorker.KinoFixtures do
       assets: Path.join(real_kino, "priv/assets"),
       writer_build: Context.realpath(writer_build)
     }
+  end
+
+  defp real_beam(m) when m in ["Elixir.Kino.VegaLite", "Elixir.KinoVegaLite.ChartCell"],
+    do: beam(m)
+
+  defp real_beam(_m), do: nil
+
+  # The package judged in kino_vega_lite's place: one Erlang module, so it
+  # packs no assets of its own.
+  defp put_top(proj, app) do
+    build = Path.join(proj, "_build/host/lib/" <> app)
+    File.mkdir_p!(Path.join([proj, "deps", app, "lib"]))
+    put_app(build, app, [app])
+    mod = String.to_atom(app)
+    {:ok, ^mod, bytes} = :compile.forms([{:attribute, 1, :module, mod}], [:binary])
+    File.write!(Path.join([build, "ebin", app <> ".beam"]), bytes)
   end
 
   defp put_app(build, app, modules) do

@@ -2647,7 +2647,8 @@ defmodule NccWorker.Portability do
       for {owner, {:refuse, reason}} <- facts.decided,
           do: %{"owner" => owner_name(owner), "reason" => reason}
 
-    @caps
+    facts.foreign
+    |> caps()
     |> Map.new(fn {kind, cap} -> {kind, collect(observed ++ r2_observed(facts), kind, cap)} end)
     |> Map.merge(%{
       "trace_stats" => stats(facts),
@@ -2680,6 +2681,11 @@ defmodule NccWorker.Portability do
         {:observe, kind, path} <- list,
         do: {kind, %{"owner" => owner_name(app), "path" => path}}
   end
+
+  # Without the job's flag the observations are exactly as before it (plan
+  # ruling 3): no `foreign_priv` list, not even an empty one.
+  defp caps(%{flag: true}), do: @caps
+  defp caps(_foreign), do: Map.delete(@caps, "foreign_priv")
 
   defp kino_own_call?({"foreign_priv", %{"owner" => owner}}, %{target: owner}), do: true
   defp kino_own_call?(_observed, _gate), do: false

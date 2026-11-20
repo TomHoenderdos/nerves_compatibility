@@ -442,9 +442,19 @@ defmodule NccWorker.Portability.ForeignPriv do
     dirs = for(%{"call" => "archive", "dir" => d} <- items, do: d) |> Enum.uniq() |> Enum.sort()
 
     with :ok <- count_ok(dirs),
+         :ok <- every_dir_archived(items, dirs),
          :ok <- every_asset_module(window, dirs, ctx),
          {:ok, entries} <- each_dir(dirs, &settle_dir(window, &1, items, accepted, gate, ctx)) do
       size_ok(entries)
+    end
+  end
+
+  # S1 for a directory the window's accepted calls named (its `rm_rf` or
+  # `mkdir_p`) but wrote no archive into.
+  defp every_dir_archived(items, dirs) do
+    case Enum.find(items, &(is_binary(&1["dir"]) and &1["dir"] not in dirs)) do
+      nil -> :ok
+      %{"dir" => d} -> {:refuse, "kino priv/assets/#{d}: no archive written"}
     end
   end
 
@@ -555,22 +565,26 @@ defmodule NccWorker.Portability.ForeignPriv do
   defp every_asset_module(window, dirs, ctx) do
     ebin = Context.ebin(ctx, window)
 
-    missing =
-      if is_binary(ebin) do
-        ebin
-        |> Path.join("*.beam")
-        |> Path.wildcard()
-        |> Enum.sort()
-        |> Enum.find(fn path ->
-          {:ok, beam} = read_beam(path)
-          module = Path.basename(path, ".beam")
-          exports_assets?(beam) and Rules.dir_name(module) not in dirs
-        end)
-      end
+    paths = if is_binary(ebin), do: ebin |> Path.join("*.beam") |> Path.wildcard(), else: []
 
-    case missing do
-      nil -> :ok
-      path -> {:refuse, "#{Path.basename(path, ".beam")} has assets but no archive"}
+    paths
+    |> Enum.sort()
+    |> Enum.find_value(:ok, &asset_module_problem(&1, dirs))
+  end
+
+  # nil when the beam at `path` packs no assets or its directory has an
+  # archive; else the refusal. A beam that cannot be read is no proof
+  # either way.
+  defp asset_module_problem(path, dirs) do
+    module = Path.basename(path, ".beam")
+
+    case read_beam(path) do
+      {:ok, beam} ->
+        if exports_assets?(beam) and Rules.dir_name(module) not in dirs,
+          do: {:refuse, "#{module} has assets but no archive"}
+
+      {:refuse, _why} ->
+        {:refuse, "#{module}'s beam cannot be read"}
     end
   end
 
