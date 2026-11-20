@@ -703,6 +703,101 @@ defmodule NccWorker.ProjectTest do
     end
   end
 
+  # A Hex package whose OTP application has another name (hpack_erl's is
+  # hpack): Mix fetches it under the name the project gave it, and compiling
+  # it stops at "could not find an app file at .../hpack_erl.app".
+  describe "hex_app/2 and declare_as_app/5" do
+    setup do
+      tmp = Path.join(System.tmp_dir!(), "project_app_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(tmp, "deps/hpack_erl/src"))
+
+      File.write!(Path.join(tmp, "mix.exs"), """
+      defmodule NccTest.MixProject do
+        defp deps do
+          [
+            {:hpack_erl, "== 0.3.0"}
+          ]
+        end
+      end
+      """)
+
+      File.write!(Path.join(tmp, "mix.lock"), """
+      %{
+        "hpack_erl": {:hex, :hpack_erl, "0.3.0", "i", [:rebar3], [], "hexpm", "o"},
+        "other": {:hex, :other, "1.0.0", "i2", [:mix], [], "hexpm", "o2"},
+      }
+      """)
+
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, project_dir: tmp}
+    end
+
+    defp metadata(dir, name, text),
+      do: File.write!(Path.join([dir, "deps", name, "hex_metadata.config"]), text)
+
+    test "names the application Hex wrote for the package when it is another", %{
+      project_dir: dir
+    } do
+      metadata(dir, "hpack_erl", ~s({<<"name">>,<<"hpack_erl">>}.\n{<<"app">>,<<"hpack">>}.\n))
+      assert Project.hex_app(dir, "hpack_erl") == "hpack"
+    end
+
+    test "nil when it is the package's own name, unreadable, or not an application name", %{
+      project_dir: dir
+    } do
+      assert Project.hex_app(dir, "hpack_erl") == nil
+
+      for text <- [
+            ~s({<<"app">>,<<"hpack_erl">>}.\n),
+            ~s({<<"name">>,<<"hpack_erl">>}.\n),
+            "not a term",
+            ~s({<<"app">>,<<"Hpack">>}.\n),
+            ~s({<<"app">>,<<"hpack, path: \\"/etc\\"">>}.\n),
+            ~s({<<"app">>,<<"">>}.\n),
+            ~s({<<"app">>,hpack}.\n)
+          ] do
+        metadata(dir, "hpack_erl", text)
+        assert Project.hex_app(dir, "hpack_erl") == nil, text
+      end
+
+      assert Project.hex_app(dir, "../hpack_erl") == nil
+    end
+
+    test "declares the package by its application, its old lock entry and sources gone", %{
+      project_dir: dir
+    } do
+      parent = self()
+
+      deps_get = fn project_dir, env ->
+        send(parent, {:deps_get, project_dir, env})
+        :ok
+      end
+
+      package = %{name: "hpack_erl", version: "0.3.0", source: "hex"}
+
+      assert {:ok, :added} =
+               Project.declare_as_app(dir, package, "hpack", [{"MIX_ENV", "prod"}], deps_get)
+
+      mix_exs = File.read!(Path.join(dir, "mix.exs"))
+      assert mix_exs =~ ~s|{:hpack, "== 0.3.0", hex: :hpack_erl}|
+      refute mix_exs =~ "{:hpack_erl,"
+      assert {:ok, _} = Code.string_to_quoted(mix_exs)
+
+      lock = File.read!(Path.join(dir, "mix.lock"))
+      refute lock =~ "hpack_erl"
+      assert lock =~ ~s|"other":|
+      refute File.exists?(Path.join(dir, "deps/hpack_erl"))
+      assert_received {:deps_get, ^dir, [{"MIX_ENV", "prod"}]}
+    end
+
+    test "a deps.get that fails is the caller's error", %{project_dir: dir} do
+      package = %{name: "hpack_erl", version: "0.3.0"}
+
+      assert {:error, {:deps_get_failed, "offline"}} =
+               Project.declare_as_app(dir, package, "hpack", [], &failing_deps_get/2)
+    end
+  end
+
   defp inject_dep_only(project_dir, package) do
     _ = Project.add_package(project_dir, package, [], &failing_deps_get/2)
     :ok

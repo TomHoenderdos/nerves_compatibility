@@ -2089,8 +2089,30 @@ defmodule NccWorker.Worker do
   defp toolchain_run(input, paths, toolchain) do
     with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
          {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
+         {:ok, input} <- as_app(project_dir, input, paths),
          :ok <- LockPolicy.validate(project_dir) do
       toolchain_project(project_dir, input, paths, toolchain, [])
+    end
+  end
+
+  # A Hex package whose application has another name (hpack_erl's is hpack,
+  # `Project.hex_app/2`) is declared as a user declares it,
+  # `{:hpack, "== v", hex: :hpack_erl}`, before anything compiles: under its
+  # Hex name Mix builds it and then stops at "could not find an app file".
+  # The input's package then carries the application as `app`, which the
+  # run builds and judges; the result still names the Hex package.
+  defp as_app(project_dir, %{package: %{name: name} = package} = input, paths) do
+    case Project.hex_app(project_dir, name) do
+      nil ->
+        {:ok, input}
+
+      app ->
+        log_host(paths, "Hex package #{name} is the application #{app}, declared as such")
+
+        with {:ok, _} <-
+               Project.declare_as_app(project_dir, package, app, host_env(project_dir)) do
+          {:ok, %{input | package: Map.put(package, :app, app)}}
+        end
     end
   end
 
@@ -2101,13 +2123,19 @@ defmodule NccWorker.Worker do
   @spec toolchain_project(String.t(), map(), map(), map(), keyword()) ::
           {:ok, result()} | {:error, term()}
   def toolchain_project(project_dir, input, paths, toolchain, opts) do
-    package_name = input.package.name
+    package_name = package_app(input.package)
     config_variant = input[:config_variant] || Compatibility.ConfigVariants.default()
 
     with :ok <- overlay(project_dir, config_variant) do
       toolchain_project(project_dir, input, paths, toolchain, opts, package_name, config_variant)
     end
   end
+
+  # The application the run builds and judges: the package's own name, or
+  # the one `as_app/3` declared it as. Everything under the project
+  # (`deps/`, `_build`, the lock's key) is the application's.
+  defp package_app(%{app: app}) when is_binary(app), do: app
+  defp package_app(%{name: name}), do: name
 
   # A variant whose overlay cannot be written is a worker failure (exit 10):
   # building it without the overlay would record it as the wrong variant.
@@ -2160,7 +2188,7 @@ defmodule NccWorker.Worker do
         %{
           run_id: input.run_id,
           package: %{
-            name: package_name,
+            name: input.package.name,
             version: get_package_version(project_dir, input.package),
             dependencies: [],
             footprint: empty_footprint()
@@ -2193,7 +2221,7 @@ defmodule NccWorker.Worker do
     if Deterministic.requested?(input) do
       Deterministic.build(
         project_dir,
-        input.package.name,
+        package_app(input.package),
         paths,
         toolchain,
         build,

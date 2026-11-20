@@ -1097,6 +1097,40 @@ defmodule NccWorker.ToolchainModeTest do
     end
   end
 
+  # A package declared by its application (`Project.declare_as_app/5`,
+  # hpack_erl as `{:hpack, hex: :hpack_erl}`): everything in the project is
+  # the application's, and only the result's package is the Hex name.
+  test "a package whose application has another name is built and judged as that application",
+       %{tmp_dir: dir} do
+    parent = self()
+    {proj, input, paths} = toolchain_run(dir)
+
+    File.write!(
+      Path.join(proj, "mix.lock"),
+      String.replace(@lock, ~s|{:hex, :sample, "1.0.0"|, ~s|{:hex, :sample_erl, "1.0.0"|)
+    )
+
+    input = %{input | package: %{name: "sample_erl", version: "1.0.0", app: "sample"}}
+
+    host_trace = fn _project_dir, package, _paths, _opts ->
+      send(parent, {:compiled, package})
+      passing_host_trace()
+    end
+
+    assert {:ok, result} =
+             Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+    assert_received {:compiled, "sample"}
+    assert result.package.name == "sample_erl"
+    assert result.toolchain_build.status == "pass"
+    assert result.toolchain_build.package_checksum == "o-sample"
+
+    assert Enum.any?(
+             result.toolchain_build.file_manifest["ebin"],
+             &(&1["path"] == "ebin/sample.app")
+           )
+  end
+
   describe "a Gleam package" do
     # What `mix deps.get` leaves for a Gleam release: its `gleam.toml`, the
     # Erlang it generated, no file Mix picks a build tool by, and a lock

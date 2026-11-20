@@ -188,6 +188,69 @@ defmodule NccWorker.Project do
   end
 
   @doc """
+  The OTP application of the Hex package Mix fetched into `deps/<name>`,
+  when it is not `name`: the `app` of its `hex_metadata.config`, which Hex
+  writes from the release's checksum-verified tarball at `deps.get`, read
+  right after it, before anything compiles. hpack_erl's is `hpack`, and a
+  project has to declare it as `{:hpack, ..., hex: :hpack_erl}`: under its
+  Hex name, Mix builds `hpack.app` and then stops at "could not find an app
+  file at .../hpack_erl.app". `nil` when the application is `name`, when the
+  file cannot be read or names none, and when the name it gives is not one
+  Mix writes into `mix.exs` as an atom (lowercase letters, digits and `_`,
+  a letter first).
+  """
+  @spec hex_app(String.t(), String.t()) :: String.t() | nil
+  # Reads one file Hex wrote into the generated project's own deps/.
+  # sobelow_skip ["Traversal.FileModule"]
+  def hex_app(project_dir, name) do
+    with true <- app_name?(name),
+         {:ok, text} <- File.read(Path.join([project_dir, "deps", name, "hex_metadata.config"])),
+         {:ok, terms} <- NccWorker.Portability.HexFiles.parse(text),
+         {"app", app} when is_binary(app) and app != name <- List.keyfind(terms, "app", 0),
+         true <- app_name?(app) do
+      app
+    else
+      _ -> nil
+    end
+  end
+
+  defp app_name?(name), do: Regex.match?(~r/\A[a-z][a-z0-9_]{0,254}\z/, name)
+
+  @doc """
+  Declares the package `add_package/4` added as the application `app`
+  (`hex_app/2`): its `{:name, ...}` entry is replaced by `{:app, "==
+  version", hex: :name}`, its lock entry and `deps/<name>` are removed, so
+  nothing of it stays under the old name, and `mix deps.get` runs again.
+  """
+  @spec declare_as_app(
+          String.t(),
+          map(),
+          String.t(),
+          keyword() | list(),
+          (String.t(), list() -> :ok | {:error, term()})
+        ) :: {:ok, :added} | {:error, term()}
+  # Edits only the generated worker project's mix.exs, mix.lock and deps/.
+  # sobelow_skip ["Traversal.FileModule"]
+  def declare_as_app(project_dir, %{name: name} = package, app, env, deps_get \\ &run_deps_get/2) do
+    mix_exs_path = Path.join(project_dir, "mix.exs")
+    dep = %{name: app, requirement: "== " <> package.version, hex: name}
+
+    with true <- app_name?(app) or {:error, {:invalid_app, app}},
+         :ok <- remove_deps(project_dir, [name]) |> removed(name),
+         {:ok, _} <- File.rm_rf(Path.join([project_dir, "deps", name])),
+         {:ok, content} <- File.read(mix_exs_path),
+         {:ok, content} <- prepend_dep(content, dep),
+         :ok <- File.write(mix_exs_path, content),
+         :ok <- deps_get.(project_dir, env) do
+      {:ok, :added}
+    end
+  end
+
+  defp removed(:ok, _name), do: :ok
+  defp removed(:error, name), do: {:error, {:dep_not_declared, name}}
+  defp removed({:error, _reason} = error, _name), do: error
+
+  @doc """
   `add_package/4` for a pinned build (`NccWorker.Pins`): the package at
   `== version` and every pin of `deps` (`inject_pins/2`) are written into
   `mix.exs` before the one `deps.get`, so Mix resolves the set it was given
