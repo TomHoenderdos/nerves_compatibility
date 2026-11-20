@@ -106,6 +106,11 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
     assert reason == @refusal <> "mnesia via Code.ensure_loaded?/1"
 
+    # Judged as a firmware target's trace, whose build only `mix firmware`
+    # (a Mix project, pruned as here) installs, the probe is no concern.
+    firmware = TracerFixtures.judge(proj, "fx_probe", traced, [], target: "rpi4")
+    assert %{status: :pass} = firmware, inspect(Map.take(firmware, [:reason, :observations]))
+
     # The event shapes the judge reads (pinned on this toolchain): the
     # package's probe, and the code server's own module_loaded/1 inside it.
     mnesia = probes(traced) |> Enum.filter(&(&1["arg"]["module"] == "mnesia"))

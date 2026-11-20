@@ -140,7 +140,10 @@ defmodule NccWorker.Portability.Events do
     * A probe of a module the tracer loaded (whether it is loaded, or can
       be), a call into one, and listing the loaded modules are judged by
       `NccWorker.Portability.Probes`; a nested compile only marks its
-      window for it.
+      window for it. So is a probe of a module of an installed OTP or
+      Elixir application off every compile's code path (`otp_app`), which
+      refuses off the prober's path: Mix prunes a dependency's path to its
+      closure's applications, Mix.install does not.
     * Mix state (`mix_state`, precompiled judge refinements item 2): the
       target read (`Mix.target/0,1`, `Mix.State.get`/`fetch` of `:target`,
       `:ets.lookup`/`lookup_element` of `Mix.State`'s `:target`, by the

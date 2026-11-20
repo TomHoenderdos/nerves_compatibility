@@ -242,9 +242,9 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # each module's assets into kino's build priv. With the job's flag they
   # pass, and the archives they wrote are listed. kino must resolve to
   # 0.19.1, the reviewed release (rule 6 of the lead's rulings): a newer
-  # kino needs its own review first.
+  # kino needs its own review first. kino_vega_lite 0.1.13 was the other
+  # one; its closure's vega_lite now taints it (below).
   @foreign_priv [
-    {"kino_vega_lite", "0.1.13", ["KinoVegaLite_ChartCell", "Kino_VegaLite"]},
     {"kino_maplibre", "0.1.13", ["KinoMapLibre_MapCell", "Kino_MapLibre"]}
   ]
 
@@ -267,6 +267,23 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
              |> Enum.map(&(&1["path"] |> Path.split() |> Enum.at(2)))
              |> Enum.sort() == dirs
     end
+  end
+
+  # vega_lite's wx probe (below) refuses in its window, which taints every
+  # package with vega_lite in its closure (R3), as any refusal there does:
+  # kino_vega_lite's own beams are the same under Mix.install (the
+  # 2026-11-20 false-hit check), but the trace cannot show that a
+  # dependent's compile never ran or expanded the code the probe chose.
+  @tag package: "kino_vega_lite", version: "0.1.13", variant: "include"
+  test "foreign priv: kino_vega_lite 0.1.13 is tainted by vega_lite's wx probe", ctx do
+    {golden, stats} = build(ctx, "kino_vega_lite", "0.1.13", "include", %{foreign_priv: true})
+    report(ctx, golden, stats)
+
+    assert golden["status"] == "skipped", inspect(Map.take(golden, ["status", "reason"]))
+
+    assert golden["reason"] ==
+             "closure dependency observed the host: vega_lite (compile-time probe of an OTP " <>
+               "application outside the closure: wx via Code.ensure_loaded?/1)"
   end
 
   # A compile-time probe of an installed OTP application off the package's

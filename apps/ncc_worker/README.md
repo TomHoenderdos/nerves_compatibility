@@ -608,6 +608,20 @@ inflate cap, a tree over 64 MiB, and anything left once the check's 60 s budget 
 today's verdict. `compile_observations.tree_check` says, per closure dependency, `ok`, `differs: ...` or
 `unverified: ...`; `trace_stats.trees_ms` is the check's time.
 
+A compile-time probe of a module of an installed OTP or Elixir application off every compile's code path (any
+application but kernel, stdlib, compiler, erts, elixir, mix, iex, ex_unit and logger) refuses as `compile-time probe
+of an OTP application outside the closure: <app> via <function>` unless that application is on the prober's path (the
+closure's `.app` lists, as for a module the trace loaded). Mix compiles a dependency on a code path pruned to its
+closure's applications (`Mix.Tasks.Compile.All`, `prune_code_paths`), Mix.install does not (`prune_code_paths: false`,
+which every dependency inherits), so the two compile different code: vega_lite 0.1.11's `VegaLite.WxViewer` is a stub
+that raises in a Mix project and a `:wx_object` viewer under Mix.install. The tracer watches every module on disk under
+the OTP and Elixir installs that it did not load and that was not loaded before it started, and names the application
+on the event (`otp_app`); every probe function counts, the loaded-now ones included. From a dependency's `mix.exs`
+it refuses whatever the dependency lists (` in mix.exs`): `compile.all` asks its `application/0` on the code path the
+previous dependency's compile left (easel 0.3.4's `Code.ensure_compiled(:wx)`). In a firmware target's trace only
+that `mix.exs` case refuses: `mix firmware` prunes as the builder did. The refusal withdraws (R1), taints every
+dependent (R3), and bumps no judge revision: it only refuses more.
+
 Revision 21, with item 1 on: a target read in a doc file of the package under
 test (`*.md`, `*.markdown`, `*.txt`, `LICENSE*`; fledex's README naming `MIX_TARGET`) no longer makes the package
 natively built in the trace (`NccWorker.NativeBuild.split/4`), as it does not in the static rules. Elixir 1.20's

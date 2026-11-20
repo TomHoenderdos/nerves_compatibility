@@ -117,8 +117,11 @@ defmodule NccWorker.Portability.Probes do
   when `compile.all` asks its `application/0`, so easel 0.3.4's
   `Code.ensure_compiled(:wx)` there depends on the compile order), so a
   probe from one refuses whatever its application lists (` in mix.exs`).
-  A probe the code server makes inside another, and the type checker's
-  outside a window with a nested compile, are dropped as above.
+  Only that one in a firmware target's trace (`Context` `firmware`): its
+  build is installed only by `mix firmware`, a Mix project, which prunes
+  as the builder did. A probe the code server makes inside another, and
+  the type checker's outside a window with a nested compile, are dropped
+  as above.
 
   An event this module cannot read could not be judged.
   """
@@ -285,6 +288,9 @@ defmodule NccWorker.Portability.Probes do
 
       is_binary(Context.mix_exs(ctx, event, owner)) ->
         {:refuse, otp_probe(app, event) <> " in mix.exs"}
+
+      ctx.firmware ->
+        :ignore
 
       Context.dep?(ctx, owner) and app in path_of(ctx, owner) ->
         :ignore
