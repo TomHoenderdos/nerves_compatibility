@@ -258,6 +258,20 @@ defmodule Portal.Precompiled.BatchesTest do
       assert_stored_bytes_are_fresh_renders(batch)
     end
 
+    # As `NCC_PRECOMPILED_BATCH_LANES` sets it; anything else is the default.
+    test "lanes may be a string, and one lane renders one package at a time" do
+      Application.put_env(:portal, Batches, lanes: "1")
+      {:ok, _} = Batches.build_and_sign()
+      forget_memo()
+      {one, {:ok, _}} = render_spans(fn -> Batches.build_and_sign() end)
+      assert most_at_once(one) == 1
+
+      forget_memo()
+      Application.put_env(:portal, Batches, lanes: "none")
+      {default, {:ok, _}} = render_spans(fn -> Batches.build_and_sign() end)
+      assert most_at_once(default) > 1
+    end
+
     # The first batch knows no package's size, so it may not run two
     # renders at once, nor may a batch whose packages were named heavy.
     test "packages of unknown or heavy size render one at a time" do

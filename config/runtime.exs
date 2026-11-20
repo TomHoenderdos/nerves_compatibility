@@ -172,6 +172,13 @@ if portal_available? do
 
   config :portal, :precompiled_signing, key_path: System.get_env("PRECOMPILED_SIGNING_KEY")
 
+  # How many packages a precompiled batch renders at once (default 4; see
+  # Portal.Precompiled.Batches). Lanes share this node's pool and schedulers:
+  # more of them open no connection to Postgres, but take more of its CPU.
+  if lanes = System.get_env("NCC_PRECOMPILED_BATCH_LANES") do
+    config :portal, Portal.Precompiled.Batches, lanes: lanes
+  end
+
   # CDN/mirror origins signed into each batch as `content`; see
   # docs/PRECOMPILED_CDN.md. Parsed and validated by Portal.Precompiled.Content.
   config :portal, :precompiled_content_origins, System.get_env("NCC_PRECOMPILED_CONTENT_ORIGINS")
