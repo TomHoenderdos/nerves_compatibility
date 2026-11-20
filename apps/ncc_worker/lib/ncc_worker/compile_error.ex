@@ -12,7 +12,8 @@ defmodule NccWorker.CompileError do
 
     1. a compiler's own error: an Elixir diagnostic (`error: ...`, with the
        file and line of the `└─` under it), an Erlang or C compiler's
-       `file:line: message` that is not a warning or a note, or rebar3's
+       `file:line: message` that is not a warning, a note or a stacktrace
+       entry, or rebar3's
        `Compiling <file> failed` with the first message under it that is not
        a warning;
     2. an exception (`** (Error) message`), other than Mix's summary of a
@@ -23,11 +24,16 @@ defmodule NccWorker.CompileError do
 
   The first line of the first kind found is the error. The project dir is
   cut from every path, terminal colours are dropped, and the line is cut to
-  #{1000} bytes of whole code points. `nil` when nothing matches. Cleaning
+  #{1000} bytes of whole code points; bytes that are not UTF-8 are U+FFFD
+  first. `nil` when nothing matches. Cleaning
   for display (paths, one line, the 200-byte bound) is the portal's.
   """
 
   @marker "==> the traced host compile is not the build"
+  # An Erlang, leex, yecc or C-family compiler's `file:line[:col]: message`.
+  # Not an Elixir file: Elixir reports an error as `error:`, and an Elixir
+  # file's `file:line: ...` is a warning's or a stacktrace's location.
+  @source_error ~r/\A(\S+\.(?:erl|hrl|xrl|yrl|c|h|cc|cpp|cxx|hpp|hh|m|mm)):(\d+)(?::\d+)?: (.+)\z/u
   @max_bytes 1000
   # How far below an error its location or message is looked for.
   @window 20
@@ -38,6 +44,7 @@ defmodule NccWorker.CompileError do
     lines =
       log
       |> untraced()
+      |> String.replace_invalid()
       |> String.replace(~r/\e\[[0-9;]*[A-Za-z]/, "")
       |> String.replace(String.trim_trailing(project_dir, "/") <> "/", "")
       |> String.split(~r/\r?\n/)
@@ -75,9 +82,9 @@ defmodule NccWorker.CompileError do
       String.starts_with?(trimmed, "error: ") ->
         trimmed <> location(below)
 
-      match = Regex.run(~r/\A(\S+\.\w+):(\d+)(?::\d+)?: (.+)\z/u, trimmed) ->
+      match = Regex.run(@source_error, trimmed) ->
         [_, file, number, message] = match
-        unless warning?(message), do: "#{file}:#{number}: #{message}"
+        unless warning?(message) or mfa?(message), do: "#{file}:#{number}: #{message}"
 
       match = Regex.run(~r/\ACompiling (\S+) failed\z/u, trimmed) ->
         case rebar_message(below) do
@@ -89,6 +96,9 @@ defmodule NccWorker.CompileError do
         nil
     end
   end
+
+  # A stacktrace entry's function (`Mod.fun/1`, `:mod.fun/2`, `mod:fun/2`).
+  defp mfa?(message), do: Regex.match?(~r/\A:?[\w.]+[.:][\w!?]+\/\d+\z/u, message)
 
   defp warning?(message),
     do: Regex.match?(~r/\A(?:Warning|warning|note|In file included)\b/u, message)

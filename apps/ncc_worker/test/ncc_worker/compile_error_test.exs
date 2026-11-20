@@ -83,6 +83,34 @@ defmodule NccWorker.CompileErrorTest do
              "deps/fast_tls/c_src/fast_tls.c:21: fatal error: openssl/err.h: No such file or directory"
   end
 
+  test "a warning's or a stacktrace's location is not an error" do
+    log = """
+    ==> telemetry_metrics_prometheus_core
+    Compiling 9 files (.ex)
+    warning: first..last inside match is deprecated, you must always match on the step
+      lib/core/registry.ex:87: TelemetryMetricsPrometheus.Core.Registry.validate_distribution_buckets!/1
+
+    ==> prom_ex
+        error: module Plug.Conn is not loaded and could not be found
+        │
+        └─ lib/prom_ex/plug.ex:44:3: PromEx.Plug (module)
+    """
+
+    assert CompileError.first(log, @proj) ==
+             "error: module Plug.Conn is not loaded and could not be found (lib/prom_ex/plug.ex:44)"
+
+    log = """
+    == Compilation error in file lib/git_hooks.ex ==
+    ** (RuntimeError) git_hooks: /work/proj/deps/git_hooks is not inside a git working tree.
+        lib/git/git_path.ex:55: GitHooks.Git.GitPath.git_toplevel/0
+        (stdlib 6.2) erl_eval.erl:919: :erl_eval.do_apply/7
+        src/rebar_core.erl:12: rebar_core:process/2
+    """
+
+    assert CompileError.first(log, @proj) ==
+             "** (RuntimeError) git_hooks: deps/git_hooks is not inside a git working tree."
+  end
+
   test "rebar3's failed file, with the first error under it, not a warning above it" do
     log = """
     ===> Compiling gen_smtp
@@ -172,6 +200,11 @@ defmodule NccWorker.CompileErrorTest do
     assert CompileError.first("==> sample\nCompiling 1 file (.ex)\n", @proj) == nil
     assert CompileError.first("", @proj) == nil
     assert CompileError.first(nil, @proj) == nil
+  end
+
+  test "bytes that are not UTF-8 never raise" do
+    log = <<0x94, 0x80, "\nsrc/x.erl:3: syntax error before: ", 0xFF, "\n">>
+    assert CompileError.first(log, @proj) == "src/x.erl:3: syntax error before: \uFFFD"
   end
 
   test "an overlong line is cut to whole code points" do
