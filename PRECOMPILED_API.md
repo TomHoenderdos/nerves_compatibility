@@ -798,14 +798,16 @@ What it lists:
   `{"app": "kino", "path": "priv/assets/<d>/<h>.tar.gz", "sha256", "size", "mode": 33188}` with the
   path relative to kino's build dir and the file fetched from `/api/precompiled/files/{sha256}`, and
   `build.foreign_priv_rule: "kino_js_v1"`. A build of kino itself carries
-  `build.foreign_priv_target: "kino"` and no `foreign_priv`, and is listed only here: a client
-  before 0.8.0 replaces an installed kino whole and loses every writer's archives in it.
+  `build.foreign_priv_target: "kino"` and no `foreign_priv`, and is listed only here, its toolchain
+  builds and its run results alike: kino has no format-1 manifest at all (`manifests` in a batch
+  never names it), and none of its builds is in a version's other lists. A client before 0.8.0
+  replaces an installed kino whole and loses every writer's archives in it.
   `versions[v].deterministic.foreign_priv` holds the siblings of foreign builds the same way, each
   with its own archives (its compile stamped other tar times; the portal checked that it holds the
   same members). Listed only while the portal's `foreign_priv_enabled` setting is on, and only when
-  every file the entry lists, foreign ones included, is held; absent otherwise. kino's own builds
-  are listed nowhere while it is off, and a version with no foreign build renders the bytes it did
-  before. The worker accepts exactly the reviewed Kino.JS calls into kino's `priv/assets/<d>` for
+  every file the entry lists, foreign ones included, is held; absent otherwise. While it is off,
+  kino's own builds are listed nowhere, in neither format, so kino has no manifest; a version with
+  no foreign build renders the bytes it did before. The worker accepts exactly the reviewed Kino.JS calls into kino's `priv/assets/<d>` for
   `d` one of the writer's own modules, proves each archive against the writer's beam (its
   `__assets_info__/0` hash and `assets_path`) and its Hex tarball's files
   (`Compatibility.KinoAssets`), and refuses any read of kino's archives during the compile; the

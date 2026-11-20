@@ -69,6 +69,7 @@ defmodule Portal.Precompiled.Batches do
     Batch,
     Content,
     Envelope,
+    ForeignPriv,
     Keys,
     Lanes,
     ManifestRefs,
@@ -289,8 +290,13 @@ defmodule Portal.Precompiled.Batches do
   defp put_package(%{name: name, v1: v1, v2: v2}, acc),
     do: put_shas(acc, name, ok_sha(v1), ok_sha(v2))
 
+  # kino (`Portal.Precompiled.ForeignPriv.target?/1`) has no manifest at all
+  # while the `foreign_priv_enabled` setting is off (phase 0b), which is
+  # expected, not news.
   defp drop_none(acc, name) do
-    Logger.warning("Dropping #{name} from precompiled batch: :none")
+    unless ForeignPriv.target?(name),
+      do: Logger.warning("Dropping #{name} from precompiled batch: :none")
+
     acc
   end
 

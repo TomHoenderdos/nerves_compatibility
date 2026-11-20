@@ -3653,7 +3653,15 @@ defmodule Portal.Catalog do
     |> Enum.reject(&(&1.carried_from_run_id in hidden))
   end
 
-  defp manifest_v1(sources) do
+  # Phase 0b (plan ruling 1) covers format 1 too, whatever the setting: every
+  # client up to 0.7.3 reads a package's format-1 document when the batch
+  # names no format-2 one, so kino's own run results are listed only under
+  # format 2's `foreign_priv` object (`put_foreign_target/2`).
+  defp manifest_v1(%{package_name: name} = sources) do
+    if ForeignPriv.target?(name), do: nil, else: manifest_v1_versions(sources)
+  end
+
+  defp manifest_v1_versions(sources) do
     versions =
       precompiled_versions(
         sources.runs,

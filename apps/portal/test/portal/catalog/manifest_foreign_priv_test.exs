@@ -8,7 +8,7 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
 
   import Portal.Test.ForeignPrivFixtures, only: [assert_contract!: 1]
 
-  import Portal.PrecompiledFixtures, only: [ingest_toolchain_build: 3]
+  import Portal.PrecompiledFixtures, only: [ingest_toolchain_build: 3, ingest_with_artifact: 1]
 
   defp on!, do: {:ok, _} = Portal.Settings.save(%{foreign_priv_enabled: true})
   defp off!, do: {:ok, _} = Portal.Settings.save(%{foreign_priv_enabled: false})
@@ -158,14 +158,55 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
     for %{"sha256" => sha} <- writer.foreign_priv, do: assert(Catalog.published_sha256?(sha))
   end
 
-  test "format 1 never carries a foreign build or kino's own" do
-    on!()
+  # A full run of kino whose one published file is on a `pure_elixir`
+  # result that records its config reads (rule 1) and has no compile input
+  # to check: a result `Withheld` serves and format 1 would list.
+  defp kino_pure_run do
+    result =
+      [__DIR__, "..", "..", "support", "fixtures", "result.json"]
+      |> Path.join()
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.put("deps_lock", %{"table" => %{"version" => "0.1.2", "checksum" => "abc"}})
+      |> Map.put("package_checksum", "outer")
+      |> Map.put("run_id", "kino-run-#{System.unique_integer([:positive])}")
+      |> put_in(["package", "name"], "kino")
+      |> put_in(["package", "version"], "0.19.1")
 
-    # Format 1 lists run results only: neither package has a run here, so
-    # neither has a format-1 manifest.
-    for name <- ["kino_vega_lite", "kino"] do
-      assert Catalog.precompiled_manifest(name) == nil, name
+    pure =
+      result["systems"]["nerves_system_rpi4"]
+      |> Map.put("compile_env_rule", 1)
+      |> Map.put("compile_env", [])
+      |> Map.delete("compile_inputs")
+
+    Map.update!(result, "systems", fn systems ->
+      systems |> Map.delete("nerves_system_rpi4") |> Map.put("pure_elixir", pure)
+    end)
+  end
+
+  # Phase 0b (plan ruling 1) for format 1: every client up to 0.7.3 reads a
+  # package's format-1 document when the batch names no format-2 one, and
+  # turns its entries into builds. kino's own run results are never in it,
+  # setting or not; with the setting on they are under format 2's
+  # `foreign_priv` object, where only 0.8.0 reads.
+  @tag :tmp_dir
+  test "format 1 never carries kino's own builds, setting or not", %{tmp_dir: dir} do
+    ingest_with_artifact(kino_pure_run())
+    BatchHooks.signing_key!(dir)
+
+    for on? <- [false, true] do
+      {:ok, _} = Portal.Settings.save(%{foreign_priv_enabled: on?})
+      assert Catalog.precompiled_manifest("kino") == nil, inspect(on?)
+      assert Catalog.precompiled_manifests("kino").v1 == nil, inspect(on?)
+
+      {:ok, batch} = Batches.build_and_sign()
+      refute Map.has_key?(Batches.manifests(batch), "kino"), inspect(on?)
+      assert_contract!(manifest("kino"))
     end
+
+    # With it on, the run result is listed, under `foreign_priv` only.
+    builds = get_in(manifest("kino"), ["versions", "0.19.1", "foreign_priv", "builds"])
+    assert Enum.any?(builds, &(&1["target"] == "pure_elixir")), inspect(builds)
   end
 
   describe "files route and fingerprints" do
