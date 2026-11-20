@@ -234,7 +234,16 @@ defmodule NccWorker.Worker do
           # without a tarball entry (`Compatibility.StaticPriv.check/3`), and
           # the portal checks them against this list at ingest. nil on every
           # other status.
-          built_priv: [String.t()] | nil
+          built_priv: [String.t()] | nil,
+          # The archives the package's own compile wrote into kino's build
+          # priv (foreign priv spec 3.6, `NccWorker.Portability.ForeignPriv`):
+          # entries `%{"app" => "kino", "path" => "priv/assets/<d>/<h>.tar.gz",
+          # "sha256", "size", "mode", "module", "assets_path"}`, the path
+          # relative to kino's build dir; `[]` for none. nil unless the
+          # verdict passed and the job sent `judge.foreign_priv`.
+          foreign_priv: [map()] | nil,
+          # "kino_js_v1" when `foreign_priv` is not empty, else nil.
+          foreign_priv_rule: String.t() | nil
         }
 
   # What `toolchain_build/5` itself returns: every `t:toolchain_build/0`
@@ -270,7 +279,9 @@ defmodule NccWorker.Worker do
               ]
             }
             | nil,
-          built_priv: [String.t()] | nil
+          built_priv: [String.t()] | nil,
+          foreign_priv: [map()] | nil,
+          foreign_priv_rule: String.t() | nil
         }
 
   @type result :: %{
@@ -2184,7 +2195,8 @@ defmodule NccWorker.Worker do
           ),
         run_started_at: input[:started_at],
         log_tail_bytes: log_tail_bytes,
-        makefile_rule2: rule2
+        makefile_rule2: rule2,
+        foreign_priv: foreign_priv?(input)
       ] ++ opts
 
     with {:ok, compiled} <-
@@ -2245,7 +2257,8 @@ defmodule NccWorker.Worker do
         Map.get(compiled, :judged_with, []),
         [
           run_started_at: input[:started_at],
-          makefile_rule2: Keyword.get(opts, :makefile_rule2) == true
+          makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
+          foreign_priv: Keyword.get(opts, :foreign_priv) == true
         ] ++ trace_opt(opts)
       )
     else
@@ -2423,7 +2436,9 @@ defmodule NccWorker.Worker do
       rule1_reason: nil,
       judge_revision: Portability.judge_revision(opts),
       manager: nil,
-      compile_observations: nil
+      compile_observations: nil,
+      foreign_priv: nil,
+      foreign_priv_rule: nil
     }
   end
 
@@ -2431,6 +2446,11 @@ defmodule NccWorker.Worker do
   # off unless the portal sends exactly `true` (`Portal.Builder.judge_input/1`).
   defp makefile_rule2?(%{judge: %{makefile_rule2: true}}), do: true
   defp makefile_rule2?(_input), do: false
+
+  # NCC_INPUT.judge.foreign_priv (foreign priv spec 3.1, gate 1): off unless
+  # the portal sends exactly `true` (`Portal.Builder.judge_input/1`).
+  defp foreign_priv?(%{judge: %{foreign_priv: true}}), do: true
+  defp foreign_priv?(_input), do: false
 
   @doc false
   # The toolchain run's one compile (`NccWorker.HostTrace`). With "exclude"
@@ -2918,7 +2938,9 @@ defmodule NccWorker.Worker do
       rule1_reason: nil,
       judge_revision: nil,
       manager: nil,
-      compile_observations: nil
+      compile_observations: nil,
+      foreign_priv: nil,
+      foreign_priv_rule: nil
     }
 
     case host_result do
@@ -3031,7 +3053,9 @@ defmodule NccWorker.Worker do
           | status: "pass",
             file_manifest: manifest,
             built_priv: shipped_built_priv(manifest, built_priv),
-            compile_inputs: portability[:compile_inputs]
+            compile_inputs: portability[:compile_inputs],
+            foreign_priv: Map.get(portability, :foreign_priv),
+            foreign_priv_rule: Map.get(portability, :foreign_priv_rule)
         }
 
       {:skip, reason} ->
@@ -3120,7 +3144,7 @@ defmodule NccWorker.Worker do
     verdict
     |> Map.merge(%{status: :skip, reason: PortabilityReasons.could_not_judge()})
     |> Map.put(:observations, Map.put(observations, "problems", problems))
-    |> Map.drop([:compile_env, :compile_inputs])
+    |> Map.drop([:compile_env, :compile_inputs, :foreign_priv, :foreign_priv_rule])
   end
 
   # The host compile's own wall time (its `deps.get` included) next to the

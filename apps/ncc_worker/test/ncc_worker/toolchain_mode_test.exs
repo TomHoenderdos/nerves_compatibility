@@ -1644,4 +1644,105 @@ defmodule NccWorker.ToolchainModeTest do
       assert decoded["toolchain_build"]["built_priv"] == ["priv/" <> @archive]
     end
   end
+
+  test "NCC_INPUT.judge.foreign_priv reaches the compile only when true, with no revision bump",
+       %{tmp_dir: dir} do
+    for {judge, want} <- [
+          {%{foreign_priv: true}, true},
+          {%{foreign_priv: "yes"}, false},
+          {nil, false}
+        ] do
+      parent = self()
+      sub = Path.join(dir, "case#{System.unique_integer([:positive])}")
+      {proj, input, paths} = toolchain_run(sub)
+
+      host_trace = fn _project_dir, _package, _paths, opts ->
+        send(parent, {:flag, Keyword.get(opts, :foreign_priv)})
+        passing_host_trace()
+      end
+
+      input = if judge, do: Map.put(input, :judge, judge), else: input
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+      assert_received {:flag, ^want}
+      assert result.toolchain_build.judge_revision == 29
+    end
+  end
+
+  @foreign_rel "priv/assets/Sample/uxwh53kfq2wszgf23hqwgkuiza.tar.gz"
+
+  defp foreign_entry(rel, bytes),
+    do: %{
+      "app" => "kino",
+      "path" => rel,
+      "sha256" => :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower),
+      "size" => byte_size(bytes),
+      "mode" => 33_188,
+      "module" => "Elixir.Sample",
+      "assets_path" => "lib/assets"
+    }
+
+  test "a pass carries the verdict's foreign_priv and rule; anything else nil", %{
+    tmp_dir: work_dir
+  } do
+    {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+    entry = foreign_entry(@foreign_rel, "abc")
+    verdict = Map.merge(@traced_pass, %{foreign_priv: [entry], foreign_priv_rule: "kino_js_v1"})
+
+    assert %{status: "pass", foreign_priv: [^entry], foreign_priv_rule: "kino_js_v1"} =
+             Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+
+    assert %{status: "pass", foreign_priv: nil, foreign_priv_rule: nil} =
+             Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+    assert %{foreign_priv: nil, foreign_priv_rule: nil} =
+             Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused)
+  end
+
+  test "the archiver copies a foreign file only when it hashes to its entry", %{tmp_dir: work_dir} do
+    {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+    other = "priv/assets/Other/aaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz"
+
+    for {rel, bytes} <- [{@foreign_rel, "good"}, {other, "changed since"}] do
+      path = Path.join([project, "_build/host/lib/kino", rel])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, bytes)
+    end
+
+    entries = [foreign_entry(@foreign_rel, "good"), foreign_entry(other, "what the judge saw")]
+    verdict = Map.merge(@traced_pass, %{foreign_priv: entries, foreign_priv_rule: "kino_js_v1"})
+    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+    archive = Path.join(work_dir, "files")
+
+    assert {:ok, %{files_archived: 6}} =
+             FileArchiver.archive_manifest_files(archive, result(build), work_dir)
+
+    assert File.read!(Path.join(archive, foreign_entry(@foreign_rel, "good")["sha256"])) == "good"
+    refute File.exists?(Path.join(archive, foreign_entry(other, "what the judge saw")["sha256"]))
+  end
+
+  test "the archiver copies the sibling's foreign files from its own build path", %{
+    tmp_dir: work_dir
+  } do
+    {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+    path = Path.join([NccWorker.Deterministic.build_path(project), "lib/kino", @foreign_rel])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "sibling")
+    build = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+    result =
+      Map.put(result(build), :deterministic_build, %{
+        foreign_priv: [foreign_entry(@foreign_rel, "sibling")]
+      })
+
+    archive = Path.join(work_dir, "files")
+
+    assert {:ok, %{files_archived: 6}} =
+             FileArchiver.archive_manifest_files(archive, result, work_dir)
+
+    assert File.read!(Path.join(archive, foreign_entry(@foreign_rel, "sibling")["sha256"])) ==
+             "sibling"
+  end
 end

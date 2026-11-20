@@ -115,7 +115,9 @@ defmodule NccWorker.Deterministic do
       elixir: toolchain.elixir,
       otp: toolchain.erlang,
       judge_revision: Portability.judge_revision(opts),
-      file_manifest: nil
+      file_manifest: nil,
+      foreign_priv: nil,
+      foreign_priv_rule: nil
     }
   end
 
@@ -147,6 +149,7 @@ defmodule NccWorker.Deterministic do
          :ok <- unchanged(ctx.project_dir, ctx.package_name, normal) do
       build_opts = [
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
+        foreign_priv: Keyword.get(opts, :foreign_priv) == true,
         build_path: ctx.build_path,
         hex_home: hex_home(opts)
       ]
@@ -179,6 +182,7 @@ defmodule NccWorker.Deterministic do
         releases: Keyword.get(judged_with, :releases),
         trees: Keyword.get(judged_with, :trees),
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
+        foreign_priv: Keyword.get(opts, :foreign_priv) == true,
         hex_home: hex_home(opts),
         run_started_at: Keyword.get(opts, :run_started_at),
         trace_dir: Path.join(paths.work_dir, "trace-" <> @build_dir),
@@ -215,26 +219,74 @@ defmodule NccWorker.Deterministic do
     sibling_dir = Path.join([build_path, "lib", package_name])
 
     case same_build(normal, sibling, normal_dir, sibling_dir) do
-      :ok -> sibling
-      {:error, why} -> %{sibling | status: "skipped", reason: "differs from the build: " <> why}
+      :ok ->
+        sibling
+
+      # Foreign priv spec 3.6: no foreign files on any status but pass.
+      {:error, why} ->
+        Map.merge(sibling, %{
+          status: "skipped",
+          reason: "differs from the build: " <> why,
+          foreign_priv: nil,
+          foreign_priv_rule: nil
+        })
     end
   end
 
   defp settle(sibling, _normal, _project_dir, _package_name, _build_path), do: sibling
 
   @same ~w(deps_lock package_checksum declared manager compile_env compile_env_rule
-           compile_inputs built_priv)a
+           compile_inputs built_priv foreign_priv_rule)a
 
   @doc false
   # Public for tests.
   @spec same_build(map(), map(), String.t(), String.t()) :: :ok | {:error, String.t()}
   def same_build(normal, sibling, normal_dir, sibling_dir) do
     with :ok <- same_fields(normal, sibling),
-         :ok <- same_priv(normal, sibling) do
+         :ok <- same_priv(normal, sibling),
+         :ok <- same_foreign(normal, sibling, normal_dir, sibling_dir) do
       DeterministicBeams.compare_ebin(
         ebin(normal.file_manifest, normal_dir),
         ebin(sibling.file_manifest, sibling_dir)
       )
+    end
+  end
+
+  # Foreign priv archives (spec 3.8): the same paths, and each pair the same
+  # members, read from kino's dir beside each build's own (`<lib>/kino`);
+  # the two compiles stamp different tar times, so the bytes may differ.
+  defp same_foreign(normal, sibling, normal_dir, sibling_dir) do
+    paths = fn build ->
+      build |> Map.get(:foreign_priv) |> List.wrap() |> Enum.map(& &1["path"]) |> Enum.sort()
+    end
+
+    cond do
+      paths.(normal) != paths.(sibling) ->
+        {:error, "its foreign_priv differs"}
+
+      Enum.all?(paths.(normal), &same_members?(&1, normal_dir, sibling_dir)) ->
+        :ok
+
+      true ->
+        {:error, "its foreign_priv archives differ"}
+    end
+  end
+
+  defp same_members?(rel, normal_dir, sibling_dir) do
+    a = archive_members(rel, normal_dir)
+    a != :unreadable and a == archive_members(rel, sibling_dir)
+  end
+
+  # `rel` checked to be an archive path before it is joined: a path below
+  # kino's build dir beside `app_dir`, one of the run's own build dirs.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp archive_members(rel, app_dir) do
+    with {:ok, _dir, _hash} <- Compatibility.ForeignPriv.parse_path(rel),
+         {:ok, bytes} <- File.read(Path.join([Path.dirname(app_dir), "kino", rel])),
+         {:ok, members} <- Compatibility.KinoAssets.members(bytes) do
+      members
+    else
+      _ -> :unreadable
     end
   end
 

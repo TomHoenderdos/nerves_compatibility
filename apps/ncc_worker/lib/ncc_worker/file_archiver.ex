@@ -49,6 +49,7 @@ defmodule NccWorker.FileArchiver do
       end)
       |> Kernel.++(collect_toolchain_manifest(result, project_dir, package_name))
       |> Kernel.++(collect_deterministic(result, project_dir, package_name))
+      |> Kernel.++(collect_foreign(result, project_dir))
       |> Kernel.++(collect_host_native(result, project_dir, package_name))
 
     # Archive each file
@@ -244,6 +245,32 @@ defmodule NccWorker.FileArchiver do
   end
 
   defp collect_deterministic(_result, _project_dir, _package_name), do: []
+
+  # Foreign priv files (spec 3.6): each entry a toolchain build (or its
+  # deterministic sibling) wrote into kino's build priv, only at an archive
+  # path and only while the file still hashes to its entry.
+  defp collect_foreign(%{scope: "toolchain"} = result, project_dir) do
+    foreign_sources(
+      get_in(result, [:toolchain_build, :foreign_priv]),
+      Path.join([project_dir, "_build", "host"])
+    ) ++
+      foreign_sources(
+        get_in(result, [:deterministic_build, :foreign_priv]),
+        NccWorker.Deterministic.build_path(project_dir)
+      )
+  end
+
+  defp collect_foreign(_result, _project_dir), do: []
+
+  defp foreign_sources(entries, build_path) when is_list(entries) do
+    for %{"app" => "kino", "path" => path, "sha256" => sha} = entry <- entries,
+        match?({:ok, _, _}, Compatibility.ForeignPriv.parse_path(path)),
+        source = Path.join([build_path, "lib", "kino", path]),
+        file_sha256(source) == sha,
+        do: {source, entry}
+  end
+
+  defp foreign_sources(_entries, _build_path), do: []
 
   # A host-native run's files: the package's host build, listed in
   # `host_native_build.file_manifest` when the build passed, and the

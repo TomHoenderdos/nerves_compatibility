@@ -125,6 +125,7 @@ defmodule NccWorker.HostTrace do
             :reap,
             :sweep,
             :makefile_rule2,
+            :foreign_priv,
             :trees,
             :target,
             :host_native

@@ -111,4 +111,11 @@ defmodule NccWorker.CLITest do
     assert {:ok, %{judge: %{makefile_rule2: true}}} =
              CLI.parse_input(~s({"mode": "toolchain", "judge": {"makefile_rule2": true}}))
   end
+
+  test "parse_input/1 reads judge.foreign_priv" do
+    json =
+      ~s({"run_id":"r","mode":"toolchain","judge":{"foreign_priv":true,"makefile_rule2":true}})
+
+    assert {:ok, %{judge: %{foreign_priv: true, makefile_rule2: true}}} = CLI.parse_input(json)
+  end
 end

@@ -527,6 +527,12 @@ before it. Code with an on_load function runs it before it is made current, and 
 so the toolchain's code is not loaded again: other code under a toolchain module's name that a finish returns as
 `{on_load, Modules}` fails the check the same way, and so does a process that dies inside `erlang:finish_loading/1`.
 
+`"judge": {"foreign_priv": true}` in `NCC_INPUT` opens the foreign priv gate (Kino.JS writers, below) for the
+toolchain compile, a pinned toolchain compile and the deterministic sibling; any other value leaves it shut. It bumps
+no judge revision: `compile_observations.trace_stats.foreign_priv` records `"on"` when the gate opened and `"off"`
+when the flag came but the gate stayed shut, and is absent without the flag, so a verdict judged without it is
+today's byte for byte.
+
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
 `contents.tar.gz` members, byte for byte, apart from the root files Hex writes (`.hex`, `hex_metadata.config`) and a
@@ -630,8 +636,8 @@ with the wall clock, so two users' own compiles differ the same way, and the fir
 `priv_tar_times` names such files. Any other difference refuses as `compile-time priv write not reproducible:
 priv/<path> differs between two builds` (or `a second build refused (...)`). On a pass the verdict's `built_priv`
 names the files, which the static priv rules then take without a tarball entry (below). kino 0.19.1 passes so, with
-its ten asset archives under `priv/assets`; a dependent that packs its own assets into kino's `priv` (kino_db,
-kino_vega_lite) still refuses.
+its ten asset archives under `priv/assets`; a dependent that packs its own assets into kino's `priv` (kino_vega_lite)
+refuses unless the job sent `judge.foreign_priv` (below).
 
 One read is let through too (judge revision 23): a closure dependency's own compile (its window, never its
 `mix.exs`, never another dependency's) reading the bytes of a file in its own source `priv` (`file:read_file`, an
@@ -684,6 +690,53 @@ such a copy in the same window. Anything else is the write it always was, in tha
 one taints it: a copy that changes a file or adds one, into another package's tree, or with no verified tarball. The
 allowed copies are listed as `own_tree_copies`. Nothing is published for them: the files are the tarball's, which
 every user's `deps/<d>` holds already.
+
+Foreign priv (Kino.JS writers, `NccWorker.Portability.ForeignPriv`): a package whose compile writes Kino.JS asset
+archives into kino's build `priv` passes, with those archives, only while the gate is open. All four must hold, else
+every rule is as before: (1) the job sent `judge.foreign_priv: true` and the judge is not in target mode (a firmware
+target's trace or a host-native build never opens it); (2) the package is not kino, and kino is in its closure, built
+by `mix` and not natively; (3) kino's build `priv` is a directory of its own (`Context.target_priv/2`: not a link, as
+Mix makes for a kino that ships `priv/`, and under no source dir); (4) `lib/kino/js.ex` in kino's verified Hex
+tarball hashes to an entry of `Compatibility.ForeignPriv`'s reviewed table, and `Elixir.Kino.JS` is listed by kino's
+built `.app` and by no other closure app's. The table has one rule, `kino_js_v1`: kino 0.19.1, its js.ex sha256
+`e65c8f61...289c6`, and the three call sites the judge accepts. With `A` kino's build `priv/assets` and `Dirs(W)` the
+directories `D(M)` (module `M` without `Elixir.`, each `.` a `_`) of the Elixir modules in window `W`'s built `.app`,
+these calls are observed as `foreign_priv` instead of refused, each carrying the refusal it would otherwise be:
+
+| Call | First user frame | Path |
+|---|---|---|
+| `file:read_link_info/1,2` (`File.rm_rf!/1`), toolchain caller | `Kino.JS.MACRO-__before_compile__/2`, js.ex:368 | `A/<d>` |
+| `file:make_dir/1` from `File.do_mkdir_p/1`, or `file:read_file_info/2` from `elixir_utils:read_file_type/2` | the same, js.ex:369 | `A/<d>`, or `A` or a directory above it |
+| `file:open/2` with a write mode | `Kino.JS.package_assets!/2`, js.ex:435 | `A/<d>/<h>.tar.gz`, `h` 26 of `[a-z2-7]` |
+| `prim_file:open/2` (the compressed io server) | none | an archive path opened above in the same window |
+
+`d` must be in `Dirs(W)` and, unless `W` is kino, not in `Dirs(kino)`; a call from a `mix.exs` frame never counts.
+Every other write under `A` (a delete, a rename, a copy, a mode or time change, a wrong frame or `d`) refuses as the
+write outside ebin it always was, and every other read, listing or stat under `A`, in any window or outside every
+window, refuses as `compile-time read of kino's asset archives: ` (R1, so it withdraws): those archives carry the
+builder's tar times, so nothing read from them may reach a beam. kino's own Kino.JS writes in its own window are
+accepted the same way, so they no longer taint it; they are inert (never published, written before kino's window
+closed, so its digest covers them). On Elixir 1.19 and 1.20 no frameless stat follows an accepted call.
+
+Once every event is decided, each window but kino's settles all or nothing (`ForeignPriv.settle/2`; a failure is that
+window's refusal, `foreign priv write refused: `, so a dependency's taints it): every `prim_file:open/2` follows its
+`file:open/2`, at most one each; at most 64 archives, 10 MiB in all; every beam of every closure app but kino that
+exports `__assets_info__/0` has its archive (S4); and per directory, one archive for it in this window and no accepted
+call naming it in another (S1), `A/<d>` a directory of its own holding exactly that archive, a regular file without an
+execute bit (S2), `d` not kino's own (S3), exactly one module of the window's `.app` with that directory, whose beam
+exports `__assets_info__/0` (S4), and the content proof (S5, `Compatibility.KinoAssets.verify/1`, shared with the
+portal): the module's `__assets_info__/0`, read from its debug info as a term, holds the archive's hash and the
+`https://repo.hex.pm/preview/<app>/<vsn>/<assets_path>` URL Kino.JS writes for a Hex dependency; the archive is one
+gzip member with no flags and a strict ustar archive (mode 0100644, owner 0, no link, owner names, prefix, pax or GNU
+headers); its members, in order, are the regular files under `assets_path` in the writer's verified tarball (no
+dotfiles, as `Path.wildcard/1`), byte for byte; and the hash is Kino's over them. Only the members' times and the gzip
+header's `MTIME`, `XFL` and OS byte are left free, and nothing reads them. Inline assets (`cdn_url: nil`, which a path
+dependency also gets) refuse, and so does any URL but that one (a git dependency's). The settled directories are left out of kino's built check
+(`ncc_tracer_digest:dir/2`'s `exclude`): a digest equal to the one taken when kino's window closed, with exactly those
+directories left out, shows nothing else changed and no file was under them then. A failed settle leaves "built
+outside the trace: kino". Out, so refused as before: firmware targets (withheld by the portal, `"kino"` in
+`Portal.Precompiled.Withheld`), full-run `pure_elixir` results, host-native builds, inline assets, a non-Hex SCM, any
+kino release not in the table, and a linked kino `priv`.
 
 A host-read reason names the `system_info` key or environment variable, the path, and with `via` the function that
 made the call when it is not the package's own (`compile-time host read: erlang:system_info/1 (system_architecture)
@@ -829,14 +882,17 @@ judged on, then by the static rules on its own `ebin` and `priv`. It is tried on
 whose compile neither read nor set `ERL_COMPILER_OPTIONS` (nor read the whole environment); otherwise it is
 `"skipped"` with `"the build without the option did not pass"` or `"the build's compile reads or sets
 ERL_COMPILER_OPTIONS"`. It passes only when it is the build but for what the option changes: the same `deps_lock`,
-`package_checksum`, `declared`, `manager`, `compile_env`, `compile_env_rule`, `compile_inputs` and `built_priv`, the
-same `priv` files (bytes too, but for `built_priv`), and an `ebin` `Compatibility.DeterministicBeams.compare_ebin/2`
+`package_checksum`, `declared`, `manager`, `compile_env`, `compile_env_rule`, `compile_inputs`, `built_priv` and
+`foreign_priv_rule`, the same `priv` files (bytes too, but for `built_priv`), the same `foreign_priv` paths with each
+pair of archives holding the same members (`Compatibility.KinoAssets.members/1`: two compiles stamp different tar
+times, so the sibling's archives are its own, archived from `_build/deterministic/lib/kino`), and an `ebin` `Compatibility.DeterministicBeams.compare_ebin/2`
 takes (every beam compiled with the option; an Elixir module's code and md5 the build's, only `CInf`, `Dbgi`, `Docs`
 and `ExCk` differing; an Erlang module's only `CInf`, `Dbgi`, `Docs`, `Line`, `LitT`, `Attr` and its funs'
 `old_uniq` in `FunT`, which the compiler takes from the md5). Else it is
 `"skipped"`, its reason the judge's or `"differs from the build: ..."`. Its fields are a toolchain build's plus
 `erl_compiler_options: ["deterministic"]`; a sibling that was not tried carries only `status`, `reason`,
-`erl_compiler_options`, `elixir`, `otp`, `judge_revision` and a nil `file_manifest`. Its files are archived from
+`erl_compiler_options`, `elixir`, `otp`, `judge_revision`, a nil `file_manifest` and nil `foreign_priv` and
+`foreign_priv_rule`; a skipped sibling lists no foreign priv files. Its files are archived from
 `_build/deterministic/lib/<package>`, each only while it still hashes to its entry. A sibling trace that left
 processes running that could not be killed, or a build whose files no longer hash to its manifest after the sibling,
 fails the run (exit `10`). Nothing about the build itself changes either way.
@@ -886,7 +942,9 @@ before, and the tarball is still needed: only the tarball can say a file is not 
   "manager": "rebar3",
   "compile_observations": {"trace_stats": {"windows": 14, "wall_ms": 9100, "host_compile_sec": 31.2}, "config_reads": [], "refusals": [], "taint": {}, "problems": []},
   "file_manifest": {"ebin": [{"path": "ebin/x.beam", "sha256": "...", "size": 1234, "mode": 33188}], "priv": []},
-  "built_priv": []
+  "built_priv": [],
+  "foreign_priv": [{"app": "kino", "path": "priv/assets/Kino_VegaLite/uxwh53kfq2wszgf23hqwgkuiza.tar.gz", "sha256": "...", "size": 51234, "mode": 33188, "module": "Elixir.Kino.VegaLite", "assets_path": "lib/assets/vega_lite/build"}],
+  "foreign_priv_rule": "kino_js_v1"
 }
 ```
 
@@ -895,7 +953,13 @@ before, and the tarball is still needed: only the tarball can say a file is not 
 `file_manifest` only for `pass`, and those files are archived by SHA256 from `_build/host/lib/<package>`.
 `built_priv` is, for `pass`, the `file_manifest` paths (`"priv/<path>"`, sorted) of the priv files the trace's pass
 listed as written by the package's own compile and that the manifest ships, `[]` for none, and `null` for every other
-status; the portal judges exactly those files against this list instead of the tarball at ingest. A failed
+status; the portal judges exactly those files against this list instead of the tarball at ingest. `foreign_priv`
+is, for a `pass` with `judge.foreign_priv`, the archives the package's own compile wrote into kino's build `priv`
+(Kino.JS writers, above), each path relative to kino's build dir and archived by SHA256 from
+`_build/host/lib/kino/<path>` while it still hashes to its entry, `[]` for none, and `null` otherwise;
+`foreign_priv_rule` is `"kino_js_v1"` when it is not empty, else `null`. The mode is always `33188`: the client
+writes the file 0644, and nothing reads the mode. Archives of kino itself and of dependency writers are never
+listed. A failed
 host compile is `status: "error"`: `result.json` is still written and the exit code is `0`, so the portal ingests the
 verdict (as a `fail` row). A compile failure is deterministic for that package, version and toolchain, so it is
 recorded, not retried. A `deps.get` failure here always exits `10` without a result and is retried — toolchain
@@ -928,7 +992,9 @@ so neither the static rules (`static_rules/4`) nor `portable?/4` judge it: the r
 `"not_finished"` or `"not_run"`), `report_over_budget` (the trace files exceeded the report reader's shared 64 MiB /
 500 000-line budget), `transient`, the phase times `trees_ms`, `compile_ms`, `report_ms` and `judge_ms`, `tracer_error` (why
 the traced compile did not finish, `null` when it did), `trace_mode` (`"host"` for a toolchain run's report),
-`host_build` (`"traced"`, `"untraced"` or `"none"`: which build the host status is) and `host_compile_sec`, the
+`host_build` (`"traced"`, `"untraced"` or `"none"`: which build the host status is), `foreign_priv` (`"on"` or
+`"off"`, only when the job sent `judge.foreign_priv`; `compile_observations.foreign_priv` lists up to 50 accepted
+Kino.JS calls, the writers' before kino's own) and `host_compile_sec`, the
 host compile's own time, its `deps.get` and any untraced fallback included, and the collector's own counts
 (`calls`, `user_events`, `path_os_reads`: the OS-family reads path functions make, which the judge ignores and the
 tracer counts without writing). OTP's own code loading in a rebar3 VM (`erl_prim_loader` resolving a beam's

@@ -238,6 +238,32 @@ defmodule NccWorker.DeterministicTest do
              result.deterministic_build
   end
 
+  # Foreign priv spec 3.6: `foreign_priv` is nil on any status but pass, a
+  # sibling skipped after it was judged included.
+  test "a skipped sibling lists no foreign priv files", %{tmp_dir: dir} do
+    entry = %{"app" => "kino", "path" => "priv/assets/S/uxwh53kfq2wszgf23hqwgkuiza.tar.gz"}
+    foreign = Map.merge(@pass, %{foreign_priv: [entry], foreign_priv_rule: "kino_js_v1"})
+    {proj, input, paths} = toolchain_run(Path.join(dir, "a"))
+    opts = [host_trace: host_trace(self()), deterministic_trace: sibling_trace(self(), foreign)]
+
+    assert {:ok, result} = run(proj, input, paths, opts)
+
+    assert %{
+             status: "skipped",
+             reason: "differs from the build: its foreign_priv_rule differs",
+             foreign_priv: nil,
+             foreign_priv_rule: nil
+           } = result.deterministic_build
+
+    {proj, input, paths} = toolchain_run(Path.join(dir, "b"))
+    refused = %{@pass | status: :skip, reason: "compile-time host read: os:type/0"}
+    never = fn _, _, _ -> flunk("compiled a sibling") end
+    opts = [host_trace: host_trace(self(), refused), deterministic_trace: never]
+
+    assert {:ok, result} = run(proj, input, paths, opts)
+    assert %{foreign_priv: nil, foreign_priv_rule: nil} = result.deterministic_build
+  end
+
   test "a sibling the option never reached, or whose inputs differ, is skipped",
        %{tmp_dir: dir} do
     {proj, input, paths} = toolchain_run(Path.join(dir, "a"))
@@ -320,5 +346,99 @@ defmodule NccWorker.DeterministicTest do
 
   test "NCC_INPUT's deterministic key is read" do
     assert {:ok, %{deterministic: true}} = CLI.parse_input(~s({"deterministic": true}))
+  end
+
+  describe "same_build/4 with foreign priv archives (plan Ruling 7)" do
+    @fixtures Path.expand("../../../compatibility/test/fixtures/kino_assets", __DIR__)
+
+    defp put_archive(build_lib, otp) do
+      src = hd(Path.wildcard(Path.join([@fixtures, otp, "Kino_VegaLite", "*.tar.gz"])))
+      rel = "priv/assets/Kino_VegaLite/" <> Path.basename(src)
+      dest = Path.join([build_lib, "kino", rel])
+      File.mkdir_p!(Path.dirname(dest))
+      File.cp!(src, dest)
+      {rel, File.read!(src)}
+    end
+
+    @app_file "{application,pkg,[]}.\n"
+
+    # The same `.app`, the build's whole ebin, beside each build's kino dir:
+    # `compare_ebin/2` takes no build without ebin files.
+    defp put_app(build_lib) do
+      path = Path.join([build_lib, "pkg", "ebin", "pkg.app"])
+      File.mkdir_p!(Path.dirname(path))
+      File.write!(path, @app_file)
+    end
+
+    # The same rule and ebin on both sides, so `same_fields/2` and
+    # `compare_ebin/2` pass and the foreign check is the one that decides.
+    defp foreign_build(entries),
+      do: %{
+        file_manifest: %{
+          "ebin" => [
+            %{
+              "path" => "ebin/pkg.app",
+              "sha256" => :sha256 |> :crypto.hash(@app_file) |> Base.encode16(case: :lower)
+            }
+          ],
+          "priv" => []
+        },
+        built_priv: [],
+        foreign_priv: entries,
+        foreign_priv_rule: "kino_js_v1"
+      }
+
+    defp entry({rel, bytes}),
+      do: %{
+        "app" => "kino",
+        "path" => rel,
+        "sha256" => :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower),
+        "size" => byte_size(bytes),
+        "mode" => 33_188
+      }
+
+    test "archives whose times alone differ keep the sibling; other members skip it", %{
+      tmp_dir: dir
+    } do
+      a = Path.join(dir, "a/lib")
+      b = Path.join(dir, "b/lib")
+      put_app(a)
+      put_app(b)
+
+      assert :ok =
+               Deterministic.same_build(
+                 foreign_build([]),
+                 foreign_build([]),
+                 Path.join(a, "pkg"),
+                 Path.join(b, "pkg")
+               )
+
+      normal = foreign_build([entry(put_archive(a, "otp28"))])
+      sibling = foreign_build([entry(put_archive(b, "otp29"))])
+      refute normal.foreign_priv == sibling.foreign_priv
+
+      assert :ok =
+               Deterministic.same_build(normal, sibling, Path.join(a, "pkg"), Path.join(b, "pkg"))
+
+      [%{"path" => rel}] = sibling.foreign_priv
+      target = Path.join([b, "kino", rel])
+
+      {:ok, [{name, bytes}]} =
+        :erl_tar.extract(String.to_charlist(target), [:memory, :compressed])
+
+      File.rm!(target)
+      :ok = :erl_tar.create(String.to_charlist(target), [{name, bytes <> " "}], [:compressed])
+
+      assert {:error, "its foreign_priv archives differ"} =
+               Deterministic.same_build(normal, sibling, Path.join(a, "pkg"), Path.join(b, "pkg"))
+
+      assert {:error, "its foreign_priv differs"} =
+               Deterministic.same_build(
+                 normal,
+                 foreign_build([]),
+                 Path.join(a, "pkg"),
+                 Path.join(b, "pkg")
+               )
+    end
   end
 end
