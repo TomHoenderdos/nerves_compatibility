@@ -286,7 +286,9 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       {golden, stats} = build(ctx, package, version, "include")
       report(ctx, golden, stats)
 
-      assert is_list(:code.lib_dir(String.to_atom(app))),
+      # Not `:code.lib_dir/1`: this test's own path is pruned too.
+      assert Path.wildcard(Path.join([:code.lib_dir(), app <> "-*", "ebin", app <> ".beam"])) !=
+               [],
              "#{app} is not installed in this OTP: the probe answers the same pruned or not"
 
       assert golden["status"] == "skipped", inspect(Map.take(golden, ["status", "reason"]))
