@@ -258,6 +258,27 @@ defmodule Portal.Precompiled.BatchesTest do
       assert_stored_bytes_are_fresh_renders(batch)
     end
 
+    # A process gets a copy of everything its function closes over, made by
+    # the process that starts it, one after another. A lane handed the whole
+    # fingerprint map (14k entries, ~2 MB on production) costs ~0.7 ms per
+    # package that way: ~10 s of copying per batch before any work. So each
+    # fingerprint travels with its own package, once per phase.
+    test "a lane is handed its own packages' fingerprints, never the map", %{names: names} do
+      Application.put_env(:portal, Batches, lanes: 4)
+      {:ok, _} = Batches.build_and_sign()
+      fingerprints = Portal.Catalog.precompiled_fingerprints()
+      assert Enum.all?(names, &Map.has_key?(fingerprints, &1))
+
+      # The memo check alone, then the memo check and a render of everything.
+      for forget? <- [false, true] do
+        if forget?, do: forget_memo()
+        {copies, {:ok, _}} = spawned_copies(MapSet.new(Map.values(fingerprints)), &build/0)
+
+        assert copies <= 2 * map_size(fingerprints),
+               "lanes were handed #{copies} copies of #{map_size(fingerprints)} fingerprints"
+      end
+    end
+
     # As `NCC_PRECOMPILED_BATCH_LANES` sets it; anything else is the default.
     test "lanes may be a string, and one lane renders one package at a time" do
       Application.put_env(:portal, Batches, lanes: "1")
@@ -294,6 +315,72 @@ defmodule Portal.Precompiled.BatchesTest do
       assert most_at_once(within) > 1
     end
   end
+
+  defp build, do: Batches.build_and_sign()
+
+  # How many copies of `values` the processes that `fun` starts, and the
+  # processes they start, were handed: in their start arguments, closures
+  # included, and in every message they received. What `fun`'s own process
+  # receives (the lanes' results) is not counted.
+  defp spawned_copies(values, fun) do
+    me = self()
+
+    task =
+      Task.async(fn ->
+        receive do
+          :go -> fun.()
+        end
+      end)
+
+    1 = :erlang.trace(task.pid, true, [:procs, :receive, :set_on_spawn, {:tracer, me}])
+    send(task.pid, :go)
+    result = Task.await(task, :infinity)
+    copies = drain_copies(task.pid, values, 0)
+    {copies, result}
+  end
+
+  defp drain_copies(root, values, n) do
+    receive do
+      {:trace, _parent, :spawn, _child, {_m, _f, args}} ->
+        drain_copies(root, values, n + count_in(args, values))
+
+      {:trace, pid, :receive, message} when pid != root ->
+        drain_copies(root, values, n + count_in(message, values))
+
+      {:trace, _pid, _event, _info} ->
+        drain_copies(root, values, n)
+
+      {:trace, _pid, _event, _info, _extra} ->
+        drain_copies(root, values, n)
+    after
+      100 -> n
+    end
+  end
+
+  defp count_in(term, values) when is_binary(term),
+    do: if(MapSet.member?(values, term), do: 1, else: 0)
+
+  defp count_in(term, values) when is_list(term), do: count_list(term, values, 0)
+
+  defp count_in(term, values) when is_tuple(term),
+    do: term |> Tuple.to_list() |> count_in(values)
+
+  defp count_in(term, values) when is_map(term),
+    do: term |> Map.to_list() |> count_in(values)
+
+  defp count_in(term, values) when is_function(term) do
+    {:env, env} = :erlang.fun_info(term, :env)
+    count_in(env, values)
+  end
+
+  defp count_in(_term, _values), do: 0
+
+  # A list may be improper.
+  defp count_list([head | tail], values, n),
+    do: count_list(tail, values, n + count_in(head, values))
+
+  defp count_list([], _values, n), do: n
+  defp count_list(tail, values, n), do: n + count_in(tail, values)
 
   # What a node that never ran a batch has: an empty memo.
   defp forget_memo, do: true = :ets.delete_all_objects(Portal.Precompiled.Batches.Memo)

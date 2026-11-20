@@ -122,8 +122,10 @@ defmodule Portal.Precompiled.Batches do
     fingerprints = Catalog.precompiled_fingerprints()
     names = Task.await(names_task, :infinity)
 
-    {reused, stale} = split_remembered(names, fingerprints, lanes)
-    rendered = render_packages(stale, fingerprints, lanes)
+    {reused, stale} =
+      names |> Enum.map(&{&1, Map.get(fingerprints, &1)}) |> split_remembered(lanes)
+
+    rendered = render_packages(stale, lanes)
 
     {manifests, manifests_v2} = Enum.reduce(reused ++ rendered, {%{}, %{}}, &put_package/2)
 
@@ -193,22 +195,30 @@ defmodule Portal.Precompiled.Batches do
     result
   end
 
-  # Each package as `{name, v1_sha, v2_sha}` when the memo vouches for its
-  # manifests, else by name, to be rendered. Reads each remembered manifest
-  # back, so the checks share the lanes too.
-  defp split_remembered(names, fingerprints, lanes) do
-    names
-    |> Task.async_stream(&{&1, remembered(&1, Map.get(fingerprints, &1))},
-      max_concurrency: lanes,
-      ordered: false,
-      timeout: :infinity
-    )
-    |> Enum.reduce({[], []}, fn
-      {:ok, {name, {:ok, v1_sha, v2_sha}}}, {reused, stale} ->
-        {[{name, v1_sha, v2_sha} | reused], stale}
+  # Each `{name, fingerprint}` as `{name, v1_sha, v2_sha}` when the memo
+  # vouches for its manifests, else as it is, to be rendered. Each remembered
+  # manifest is read back and hashed, so the checks run in `lanes` processes,
+  # each handed one share of the packages: a process gets a copy of what its
+  # function closes over, made one after another by the process that starts
+  # it, so no function here closes over the fingerprint map (~2 MB on
+  # production), and no process is started per package.
+  defp split_remembered([], _lanes), do: {[], []}
 
-      {:ok, {name, :render}}, {reused, stale} ->
-        {reused, [name | stale]}
+  defp split_remembered(items, lanes) do
+    items
+    |> Enum.chunk_every(ceil(length(items) / lanes))
+    |> Task.async_stream(&check_remembered/1, ordered: false, timeout: :infinity)
+    |> Enum.reduce({[], []}, fn {:ok, {reused, stale}}, {all_reused, all_stale} ->
+      {reused ++ all_reused, stale ++ all_stale}
+    end)
+  end
+
+  defp check_remembered(items) do
+    Enum.reduce(items, {[], []}, fn {name, fingerprint} = item, {reused, stale} ->
+      case remembered(name, fingerprint) do
+        {:ok, v1_sha, v2_sha} -> {[{name, v1_sha, v2_sha} | reused], stale}
+        :render -> {reused, [item | stale]}
+      end
     end)
   end
 
@@ -228,14 +238,16 @@ defmodule Portal.Precompiled.Batches do
   # size the newest batch named its manifests at: a render's memory grows
   # with its manifest, so the heavy ones running at once are bounded by the
   # sum of those sizes.
-  defp render_packages([], _fingerprints, _lanes), do: []
+  # Each item is `{name, fingerprint}`, so a lane is handed its own package's
+  # fingerprint only (see `split_remembered/2`).
+  defp render_packages([], _lanes), do: []
 
-  defp render_packages(names, fingerprints, lanes) do
-    sizes = last_sizes(names)
-    {heavy, light} = Lanes.split(names, &Map.get(sizes, &1), heavy_bytes())
+  defp render_packages(items, lanes) do
+    sizes = items |> Enum.map(&elem(&1, 0)) |> last_sizes()
+    {heavy, light} = Lanes.split(items, &Map.get(sizes, elem(&1, 0)), heavy_bytes())
 
     heavy
-    |> Lanes.map(light, &render_package(&1, Map.get(fingerprints, &1)), lanes, heavy_budget())
+    |> Lanes.map(light, &render_package/1, lanes, heavy_budget())
     |> Enum.map(&elem(&1, 1))
   end
 
@@ -244,7 +256,7 @@ defmodule Portal.Precompiled.Batches do
   # toolchain build format 2 only), so only a package with neither, or a
   # manifest that fails to store, is worth a warning. A failed store is not
   # remembered, so the next batch renders and stores the package again.
-  defp render_package(name, fingerprint) do
+  defp render_package({name, fingerprint}) do
     %{v1: v1, v2: v2, absent: absent} = Manifests.render_both(name)
 
     %{
