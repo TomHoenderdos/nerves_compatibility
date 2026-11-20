@@ -28,6 +28,8 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   import PortalWeb.AdminComponents
   import PortalWeb.Admin.LiveAuth
 
+  require Logger
+
   alias Portal.BulkRebuild
   alias Portal.Catalog.Coverage
   alias Portal.Workers.CoverageRefresh
@@ -77,19 +79,31 @@ defmodule PortalWeb.Admin.MaintenanceLive do
         key_loaded?: match?({:ok, _}, Portal.Precompiled.Keys.load()),
         batch: Portal.Precompiled.Batches.latest()
       },
-      toolchains: toolchain_rows(),
+      toolchains: toolchain_settings(),
       # The stored report: computing it asks Hex about every ranked
       # package, which a page load must not (`Portal.Workers.CoverageRefresh`).
       coverage: Coverage.latest(),
       build_cache_l2: Portal.BuildCache.L2.status()
     )
+    |> load_toolchain_counts()
   end
 
-  # In configured order, which a map of counts would lose.
-  defp toolchain_rows do
-    counts = Portal.Catalog.toolchain_counts()
-    worlds = Portal.Catalog.toolchain_world_counts()
+  # The per-toolchain counts are slow on a large catalog: the backlog count
+  # runs the sweep's candidate query once per toolchain (tens of seconds in
+  # production). The page renders without them and fills them in once the
+  # LiveView is connected, so neither the HTTP render nor the socket mount
+  # waits for them.
+  defp load_toolchain_counts(socket) do
+    if connected?(socket) do
+      start_async(socket, :toolchain_counts, &toolchain_count_rows/0)
+    else
+      socket
+    end
+  end
 
+  # The cheap part of the Toolchains card: the settings and the configured
+  # worlds. `rows` stays `nil` until `toolchain_count_rows/0` answers.
+  defp toolchain_settings do
     %{
       builder_version: Portal.Toolchains.builder_version(),
       worlds_enabled: Portal.Settings.get().world_variants_enabled,
@@ -98,13 +112,30 @@ defmodule PortalWeb.Admin.MaintenanceLive do
       deterministic_enabled: Portal.Settings.get().deterministic_builds_enabled,
       worlds: Portal.Toolchains.worlds(),
       world_top_packages: Portal.Toolchains.world_top_packages(),
-      rows:
-        for %{toolchain: toolchain} <- Portal.Toolchains.images() do
-          counts
-          |> Map.fetch!(toolchain)
-          |> Map.merge(%{toolchain: toolchain, world: Map.fetch!(worlds, toolchain)})
-        end
+      rows: nil
     }
+  end
+
+  # In configured order, which a map of counts would lose.
+  defp toolchain_count_rows do
+    counts = Portal.Catalog.toolchain_counts()
+    worlds = Portal.Catalog.toolchain_world_counts()
+
+    for %{toolchain: toolchain} <- Portal.Toolchains.images() do
+      counts
+      |> Map.fetch!(toolchain)
+      |> Map.merge(%{toolchain: toolchain, world: Map.fetch!(worlds, toolchain)})
+    end
+  end
+
+  @impl true
+  def handle_async(:toolchain_counts, {:ok, rows}, socket) do
+    {:noreply, update(socket, :toolchains, &Map.put(&1, :rows, rows))}
+  end
+
+  def handle_async(:toolchain_counts, {:exit, reason}, socket) do
+    Logger.warning("admin maintenance: toolchain counts failed: #{inspect(reason, limit: 5)}")
+    {:noreply, update(socket, :toolchains, &Map.put(&1, :rows, :error))}
   end
 
   @impl true
@@ -308,6 +339,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
     |> update(:counts_version, &(&1 + 1))
     |> Cinder.refresh_tables(@tables)
   end
+
+  defp toolchain_rows_list(%{rows: rows}) when is_list(rows), do: rows
+  defp toolchain_rows_list(_toolchains), do: []
 
   defp world_dom_key(key), do: key |> Atom.to_string() |> String.replace("_", "-")
 
@@ -728,7 +762,13 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                 </tr>
               </thead>
               <tbody>
-                <tr :for={row <- @toolchains.rows}>
+                <tr :if={@toolchains.rows == nil} id="toolchain-counts-loading">
+                  <td colspan="6" class="text-base-content/60">Loading counts…</td>
+                </tr>
+                <tr :if={@toolchains.rows == :error} id="toolchain-counts-error">
+                  <td colspan="6" class="text-error">The counts could not be loaded.</td>
+                </tr>
+                <tr :for={row <- toolchain_rows_list(@toolchains)}>
                   <td class="font-mono">{row.toolchain}</td>
                   <td
                     :for={key <- [:pass, :skipped, :fail, :error, :backlog]}
@@ -889,7 +929,10 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                 </tr>
               </thead>
               <tbody>
-                <tr :for={row <- @toolchains.rows}>
+                <tr :if={@toolchains.rows == nil} id="toolchain-world-counts-loading">
+                  <td colspan="7" class="text-base-content/60">Loading counts…</td>
+                </tr>
+                <tr :for={row <- toolchain_rows_list(@toolchains)}>
                   <td class="font-mono">{row.toolchain}</td>
                   <td
                     :for={key <- [:pass, :skipped, :same_closure, :fail, :error, :candidates]}

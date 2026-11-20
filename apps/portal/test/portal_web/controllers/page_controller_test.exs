@@ -1,5 +1,6 @@
 defmodule PortalWeb.PageControllerTest do
   use PortalWeb.ConnCase
+  require Phoenix.LiveViewTest
   use Oban.Testing, repo: Portal.Repo
 
   # `add_test_passkey/1`: an admin without one is bounced to
@@ -482,13 +483,22 @@ defmodule PortalWeb.PageControllerTest do
 
     {conn, _admin} = signed_in_admin(conn, "admin_toolchains")
 
-    html = conn |> get(~p"/admin/maintenance") |> html_response(200)
-    assert html =~ "Toolchains"
+    # The counts are slow on a large catalog (the backlog count runs the
+    # sweep's candidate query per toolchain), so the page renders without
+    # them and fills them in once the LiveView is connected.
+    static = conn |> get(~p"/admin/maintenance") |> html_response(200)
+    assert static =~ "Toolchains"
+    assert static =~ "Run sweep now"
+    assert static =~ ~s(id="toolchain-counts-loading")
+    refute static =~ ~s(id="toolchain-1.19-28-backlog")
+
+    {:ok, view, _html} = Phoenix.LiveViewTest.live(conn, ~p"/admin/maintenance")
+    html = Phoenix.LiveViewTest.render_async(view)
     assert html =~ "1.19/28"
     assert html =~ "1.20/29"
     assert html =~ ~r/id="toolchain-1\.19-28-backlog"[^>]*>\s*1\s*</
     assert html =~ ~r/id="toolchain-1\.19-28-pass"[^>]*>\s*0\s*</
-    assert html =~ "Run sweep now"
+    refute html =~ ~s(id="toolchain-counts-loading")
   end
 
   test "toolchain-sweep enqueues a sweep and redirects", %{conn: conn} do
