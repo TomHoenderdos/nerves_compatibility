@@ -393,6 +393,144 @@ defmodule NccWorker.Portability.ProbesTest do
     end
   end
 
+  # Mix compiles a dependency on a code path pruned to the applications its
+  # closure lists; Mix.install does not prune (`prune_code_paths: false`).
+  # The tracer names the installed OTP or Elixir application of a module it
+  # did not load (`otp_app`): a probe of one off the owner's path answers
+  # differently there (vega_lite 0.1.11's `Code.ensure_loaded?(:wx)`).
+  describe "a probe of an installed application's module the trace did not load" do
+    defp otp(module, app, opts \\ []),
+      do:
+        probe(
+          module,
+          Keyword.update(opts, :arg, %{"otp_app" => app}, &Map.put(&1, "otp_app", app))
+        )
+
+    test "is refused off the owner's path, by every probe function", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
+
+      assert Probes.decide(otp("wx", "wx"), c, "pkg") ==
+               {:refuse,
+                "compile-time probe of an OTP application outside the closure: " <>
+                  "wx via Code.ensure_loaded?/1"}
+
+      for mfa <- ~w(code:which/1 code:get_object_code/1 code:is_loaded/1 code:module_status/1
+                    erlang:module_loaded/1 erlang:function_exported/3) do
+        event = otp("wxWebView", "wx", mfa: mfa, caller: frame("Elixir.FxProbe", "f", 0))
+
+        assert Probes.decide(event, c, "pkg") ==
+                 {:refuse,
+                  "compile-time probe of an OTP application outside the closure: wx via #{mfa}"}
+      end
+    end
+
+    test "names the Elixir function the package called", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+
+      for {caller, via} <- [
+            {frame("Elixir.Code", "ensure_compiled", 2), "Code.ensure_compiled/2"},
+            {frame("Elixir.Kernel", "macro_exported?", 3), "Kernel.macro_exported?/3"},
+            {frame("elixir_compiler_1", "__MODULE__", 1), "code:ensure_loaded/1"},
+            {nil, "code:ensure_loaded/1"}
+          ] do
+        assert {:refuse, why} = Probes.decide(otp("mnesia", "mnesia", caller: caller), c, "pkg")
+        assert String.ends_with?(why, ": mnesia via " <> via), why
+      end
+    end
+
+    test "is no concern on the owner's path", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "mnesia"], "child" => ["wx"]})
+      assert Probes.decide(otp("mnesia", "mnesia"), c, "pkg") == :ignore
+      assert Probes.decide(otp("mnesia_lib", "mnesia", mfa: "code:which/1"), c, "pkg") == :ignore
+
+      # Through a closure dependency's own list, and through an installed
+      # application's (ssl lists public_key).
+      assert {:refuse, _} = Probes.decide(otp("wx", "wx"), c, "pkg")
+      c = put_in(c.deps["pkg"].children, ["child"])
+      assert Probes.decide(otp("wx", "wx"), c, "pkg") == :ignore
+
+      c = ctx(dir, %{"pkg" => ["ssl"]})
+      assert Probes.decide(otp("public_key", "public_key"), c, "pkg") == :ignore
+    end
+
+    test "of an application on every compile's path is no concern", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+
+      for app <- ~w(kernel stdlib compiler erts elixir mix iex ex_unit),
+          do: assert(Probes.decide(otp("m", app), c, :outside) == :ignore, app)
+    end
+
+    test "is refused outside every window, or for no closure dependency", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["mnesia"]})
+      assert {:refuse, _} = Probes.decide(otp("mnesia", "mnesia"), c, :outside)
+      assert {:refuse, _} = Probes.decide(otp("mnesia", "mnesia"), c, "not_a_dep")
+    end
+
+    # A dependency's mix.exs runs on whatever code path Mix left: the full
+    # one while Mix loads the dependencies, the previous dependency's pruned
+    # one when compile.all asks its application/0 (easel 0.3.4's
+    # `optional_apps/0`), and the full one under Mix.install.
+    test "is refused from a closure dependency's mix.exs, listed or not", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "wx"]})
+      File.mkdir_p!(Path.join(dir, "deps/pkg"))
+      dest = Context.realpath(Path.join(dir, "deps/pkg"))
+      File.write!(Path.join(dest, "mix.exs"), "")
+      c = put_in(c.deps["pkg"].dest, dest)
+
+      in_mix_exs =
+        "wx"
+        |> otp("wx", caller: frame("Elixir.Code", "ensure_compiled", 2))
+        |> Map.put("user", %{"file" => Path.join(dest, "mix.exs"), "line" => 30})
+
+      assert Probes.decide(in_mix_exs, c, "pkg") ==
+               {:refuse,
+                "compile-time probe of an OTP application outside the closure: " <>
+                  "wx via Code.ensure_compiled/2 in mix.exs"}
+
+      in_lib = put_in(in_mix_exs["user"]["file"], Path.join(dest, "lib/pkg.ex"))
+      assert Probes.decide(in_lib, c, "pkg") == :ignore
+    end
+
+    test "inside a traced probe, it is that probe's", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+      nested = otp("wx", "wx", mfa: "erlang:module_loaded/1", caller: frame("code", "which", 1))
+      assert Probes.decide(nested, c, "pkg") == :ignore
+    end
+
+    test "by the type checker, counts only in a window with a nested compile", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+      event = otp("wx", "wx", arg: %{"checker" => true})
+      assert Probes.decide(event, c, "pkg") == :ignore
+
+      c = %{c | nested: %{"pkg" => "Elixir.Code:with_diagnostics/2"}}
+
+      assert Probes.decide(event, c, "pkg") ==
+               {:refuse,
+                "compile-time probe of an OTP application outside the closure: wx via " <>
+                  "Code.ensure_loaded?/1, in a window with a nested compile " <>
+                  "(Elixir.Code:with_diagnostics/2)"}
+    end
+
+    # The trace's own load makes its answer wrong whatever the path: that
+    # stays could-not-judge.
+    test "a module the trace loaded is judged as such", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+
+      assert {:unjudged, "compile-time probe of a module the trace loaded: dbg (runtime_tools)"} =
+               Probes.decide(otp("dbg", "runtime_tools"), c, "pkg")
+    end
+
+    test "the refusal is a trace refusal that withdraws" do
+      assert Compatibility.Portability.refusal?(
+               "compile-time probe of an OTP application outside the closure: wx via x"
+             )
+
+      assert Compatibility.Portability.withdraws?(
+               "compile-time probe of an OTP application outside the closure: wx via x"
+             )
+    end
+  end
+
   test "a malformed probe is not judged", %{tmp_dir: dir} do
     c = ctx(dir, %{"pkg" => []})
     assert {:unjudged, _} = Probes.decide(%{"channel" => "probe", "arg" => %{}}, c, "pkg")

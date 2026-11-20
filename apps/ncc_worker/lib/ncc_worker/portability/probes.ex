@@ -97,9 +97,33 @@ defmodule NccWorker.Portability.Probes do
       `loaded_modules`): the list holds every module the tracer loaded.
       Never judged.
 
+  A probe of a module the tracer did not load, of an installed OTP or
+  Elixir application off the paths every compile has (the tracer names it
+  `otp_app`, `:ncc_tracer.installed_modules/2`), is no question of the
+  trace: untraced, the answer is the same. It is one of the code path. Mix
+  compiles a dependency on a path pruned to the applications its closure
+  lists (`Mix.Tasks.Compile.All`, `prune_code_paths`), Mix.install does
+  not (`prune_code_paths: false`, which every dependency inherits), so a
+  probe of an application off the owner's path answers `false` here and
+  `true` there, and the two compile different code: vega_lite 0.1.11's
+  `VegaLite.WxViewer` is a stub that raises in a Mix project and a
+  `:wx_object` viewer under Mix.install. Every probe function above, the
+  loaded-now ones included (under Mix.install another compile may have
+  loaded the module), refuses:
+  `compile-time probe of an OTP application outside the closure: <app> via
+  <function>`. On the owner's path (as above) it is no concern. A
+  dependency's `mix.exs` runs on whatever path Mix left (the whole install
+  while Mix loads the dependencies, the previous dependency's pruned path
+  when `compile.all` asks its `application/0`, so easel 0.3.4's
+  `Code.ensure_compiled(:wx)` there depends on the compile order), so a
+  probe from one refuses whatever its application lists (` in mix.exs`).
+  A probe the code server makes inside another, and the type checker's
+  outside a window with a nested compile, are dropped as above.
+
   An event this module cannot read could not be judged.
   """
 
+  alias Compatibility.Portability, as: Reasons
   alias NccWorker.AppFile
   alias NccWorker.Portability.Context
 
@@ -108,14 +132,24 @@ defmodule NccWorker.Portability.Probes do
   @path_probes ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1)
   @probe_functions ~w(ensure_loaded is_loaded which module_status get_object_code)
   @always ~w(kernel stdlib elixir compiler logger)
+  # On the path of every compile Mix makes of an Elixir project's
+  # dependency, whatever it lists: Mix.AppLoader's extra applications
+  # (`:ex_unit`, `:iex`, `:mix`, `:elixir`), what they list, and erts. The
+  # tracer names no module of theirs (`otp_app`).
+  @every_path ~w(kernel stdlib compiler erts elixir mix iex ex_unit)
+  # Elixir's modules whose functions probe for the package.
+  @elixir_wrappers ~w(Code Kernel)
   # The stacks the tracer judged (`NccWorker.Portability.Events`).
   @extents ~w(frame dispatcher truncated lineage)
 
   @doc """
-  `:ignore`, or `{:unjudged, why}` for a probe whose answer may differ
-  under the trace, for `owner` (`Context.owner/2`, or a child VM's app).
+  `:ignore`, `{:unjudged, why}` for a probe whose answer may differ
+  under the trace, or `{:refuse, why}` for one whose answer differs
+  between Mix's pruned code path and Mix.install's, for `owner`
+  (`Context.owner/2`, or a child VM's app).
   """
-  @spec decide(map(), Context.t(), term()) :: :ignore | {:unjudged, String.t()}
+  @spec decide(map(), Context.t(), term()) ::
+          :ignore | {:unjudged, String.t()} | {:refuse, String.t()}
   def decide(%{"channel" => "loaded_modules", "mfa" => mfa}, _ctx, _owner) when is_binary(mfa),
     do: {:unjudged, "compile-time list of the loaded modules: " <> mfa}
 
@@ -150,7 +184,7 @@ defmodule NccWorker.Portability.Probes do
       )
       when is_binary(module) do
     case app(arg, module, ctx) do
-      nil -> :ignore
+      nil -> outside(event, arg, ctx, owner)
       app -> decide(event, module, app, ctx, owner)
     end
   end
@@ -235,10 +269,41 @@ defmodule NccWorker.Portability.Probes do
 
   defp in_nested(event, ctx, owner, nested) do
     case decide(put_in(event, ["arg", "checker"], false), ctx, owner) do
-      {:unjudged, why} -> {:unjudged, "#{why}, in a window with a nested compile (#{nested})"}
+      {kind, why} -> {kind, "#{why}, in a window with a nested compile (#{nested})"}
       :ignore -> :ignore
     end
   end
+
+  # A module of an installed OTP or Elixir application the tracer did not
+  # load (`otp_app`, moduledoc): the trace answers as Mix's pruned path
+  # does, Mix.install as the whole install does.
+  defp outside(event, %{"otp_app" => app}, ctx, owner) when is_binary(app) do
+    cond do
+      nested?(event) or app in @every_path ->
+        :ignore
+
+      is_binary(Context.mix_exs(ctx, event, owner)) ->
+        {:refuse, otp_probe(app, event) <> " in mix.exs"}
+
+      Context.dep?(ctx, owner) and app in path_of(ctx, owner) ->
+        :ignore
+
+      true ->
+        {:refuse, otp_probe(app, event)}
+    end
+  end
+
+  defp outside(_event, _arg, _ctx, _owner), do: :ignore
+
+  defp otp_probe(app, event), do: Reasons.otp_probe() <> "#{app} via #{via(event)}"
+
+  # The Elixir function the package called (`Code.ensure_loaded?/1`), when
+  # the probe's caller is one; else the probe itself.
+  defp via(%{"caller" => %{"module" => "Elixir." <> m, "function" => f, "arity" => a}})
+       when m in @elixir_wrappers and is_binary(f) and is_integer(a),
+       do: "#{m}.#{f}/#{a}"
+
+  defp via(event), do: event["mfa"]
 
   # The checker calls function_exported/3 only on a module it loaded
   # (pinned by CheckerLookupsTest); untraced, a module on the owner's path
