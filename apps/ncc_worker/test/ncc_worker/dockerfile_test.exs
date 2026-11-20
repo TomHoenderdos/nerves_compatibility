@@ -87,4 +87,22 @@ defmodule NccWorker.DockerfileTest do
   test "the toolchain image installs cmake, as the main image's base has it" do
     assert File.read!(@toolchain_dockerfile) =~ ~r/apt-get install[^\n]*\n?[^\n]*\bcmake\b/
   end
+
+  # The same for the headers a package's own host build looks for: the main
+  # image's base ships them, and without them on the slim toolchain base
+  # fast_tls (openssl), vintage_net and nerves_runtime (libmnl), and ex_dtls
+  # (pkg-config, openssl) failed to compile on 1.19/28 only.
+  test "the toolchain image installs the build headers the main image has" do
+    [install] = Regex.run(~r/apt-get install[^&]*/, File.read!(@toolchain_dockerfile))
+    main = File.read!(Path.expand("../../Dockerfile", __DIR__))
+
+    for package <-
+          ~w(pkg-config libssl-dev libmnl-dev zlib1g-dev libncurses-dev) ++
+            ~w(libnl-3-dev libnl-genl-3-dev libsrtp2-dev) do
+      assert install =~ ~r/(\s|^)#{Regex.escape(package)}(\s|$)/, package
+    end
+
+    # The three the main image installs itself rather than inherit.
+    for package <- ~w(libnl-3-dev libnl-genl-3-dev libsrtp2-dev), do: assert(main =~ package)
+  end
 end

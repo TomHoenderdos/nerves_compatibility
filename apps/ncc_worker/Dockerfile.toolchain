@@ -16,9 +16,17 @@ FROM ${BASE}
 # pinned to the version this base's bookworm archive ships (verified against
 # the pinned BASE above with `apt-cache policy cmake`), so a toolchain build
 # does not silently pick up a different cmake on a reused image.
+#
+# The headers and pkg-config are the ones the main image has (its base's,
+# and the libnl and libsrtp2 its Dockerfile adds): without them a package
+# that builds against openssl (fast_tls, rocksdb, ex_dtls through bundlex's
+# pkg-config) or libmnl (vintage_net, nerves_runtime) failed to compile on
+# this toolchain only, where a user with the usual -dev packages compiles it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      git make gcc g++ cmake=3.25.1-1 grep procps ca-certificates curl && \
+      git make gcc g++ cmake=3.25.1-1 grep procps ca-certificates curl \
+      pkg-config libssl-dev libmnl-dev zlib1g-dev libncurses-dev \
+      libnl-3-dev libnl-genl-3-dev libsrtp2-dev && \
     rm -rf /var/lib/apt/lists/*
 
 # No user: Portal.Builder runs the container as an arbitrary `--user uid:gid`
