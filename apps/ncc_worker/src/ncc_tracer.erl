@@ -405,8 +405,10 @@ reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 %% toolchain's put back before the collector looks, drops it. The path
 %% internals (ncc_tracer_channels:path_os_frames/0: such a read is only
 %% counted), the family-only os:type/0 callers (os_family_callers/0,
-%% caller_kind), the wrappers strip/3 skips (ncc_tracer_stack:wrappers/0),
-%% the code-loading shapes' modules (code_load/5), the epp server whose
+%% caller_kind), the type checker's pool-size frame
+%% (checker_pool_frames/0, first_kind and caller_kind), the wrappers strip/3
+%% skips (ncc_tracer_stack:wrappers/0), the code-loading shapes' modules
+%% (code_load/5), the epp server whose
 %% predefined-macro reads the judge ignores, and erlang (the judge's
 %% big_binary_to_int/2 caller). Sticky modules are no exception:
 %% erlang:load_module/2 does not ask the code server. A canary is held only
@@ -415,7 +417,8 @@ reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 canary_patterns() ->
     Named = [binary_to_atom(M)
              || {M, _F, _A} <- ncc_tracer_channels:path_os_frames()
-                    ++ ncc_tracer_channels:os_family_callers()],
+                    ++ ncc_tracer_channels:os_family_callers()
+                    ++ ncc_tracer_channels:checker_pool_frames()],
     Shapes = [M || Shape <- ncc_tracer_stack:code_loading_shapes(
                                erlang:system_info(otp_release)),
                    {M, _F, _A} <- Shape],

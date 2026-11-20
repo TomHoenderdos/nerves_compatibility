@@ -23,7 +23,13 @@ defmodule NccWorker.Portability.Events do
       `pathtype/1`, `normalize/2` and `real_path/4`; never a function that runs a fun it
       was given, so a package callback tail-calling the read is refused).
       `machine`, `smp_support`, `threads` and `heap_type` are allowed
-      (constant within an OTP major); `endian` is observed as
+      (constant within an OTP major); `schedulers_online` is ignored only
+      when Elixir's type checker reads it to size its pool
+      (`:ncc_tracer_channels.checker_pool_frames/0`): the value caps how many
+      verification processes run at once and reaches no beam. A
+      dependency's `mix.exs` with code outside a plain `defmodule` (inflex's
+      `Hex.start()`) starts such a checker in its window. The same read
+      from any other frame refuses; `endian` is observed as
       `endian_reads`, a compile input `CompileInputs` records with the
       builder's byte order for the client to compare, wherever it is read
       (judge revision 13); `os:type/0` and `system_info(os_type)` outside
@@ -209,6 +215,11 @@ defmodule NccWorker.Portability.Events do
   # the OTP major. Exact atom keys only: `term_bin` renders a tuple key
   # (`{allocator, ...}`) as something never in this list.
   @same_within_major ~w(machine smp_support threads heap_type)
+  # Elixir's type checker sizing its pool of verification processes: the
+  # frame (shared with the tracer, which sets a canary on its module) and
+  # the bottom frame of the process `:proc_lib.start_link/3` starts for it.
+  @checker_pool_frames :ncc_tracer_channels.checker_pool_frames()
+  @proc_lib_init %{"module" => "proc_lib", "function" => "init_p_do_apply", "arity" => 3}
   # The toolchain functions whose own `:os.type/0` read keeps only the
   # family (`{major, _} = :os.type()`) and that run no package code: their
   # read is an `os_type` input without the name. Shared with the tracer,
@@ -414,6 +425,36 @@ defmodule NccWorker.Portability.Events do
   defp os_identity(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => key}})
        when key in @same_within_major,
        do: :ignore
+
+  # `Module.ParallelChecker.init/1` defaults `:max_concurrency` to
+  # `max(:erlang.system_info(:schedulers_online), 2)` when `get/0` starts a
+  # checker for a module defined outside a parallel compile: a dependency's
+  # `mix.exs` with code outside a plain `defmodule`, which Mix evaluates in
+  # its window, or a nested compile in a package process. The value only
+  # caps how many cache and check processes run at once (Elixir 1.19 and
+  # 1.20, pinned by `NccWorker.Tracer.CheckerPoolTest`). The read is ignored
+  # only from that frame, the toolchain's code calling it directly, in a
+  # process proc_lib started, on a whole stack with no package frame. The
+  # same read from anywhere else refuses (codepagex's `Task.async_stream/3`,
+  # a module body's `System.schedulers_online/0`).
+  defp os_identity(
+         %{
+           "mfa" => "erlang:system_info/1",
+           "arg" => %{"key" => "schedulers_online"},
+           "extent" => "lineage",
+           "user" => nil,
+           "first_kind" => "toolchain",
+           "caller_kind" => "toolchain",
+           "first" => %{"module" => m, "function" => f, "arity" => a},
+           "caller" => %{"module" => m, "function" => f, "arity" => a},
+           "bottom" => %{"module" => _, "function" => _, "arity" => _} = bottom
+         } = e
+       ) do
+    if {m, f, a} in @checker_pool_frames and
+         Map.take(bottom, ~w(module function arity)) == @proc_lib_init,
+       do: :ignore,
+       else: {:refuse, host_read(e)}
+  end
 
   defp os_identity(%{"mfa" => "erlang:system_info/1"} = e), do: {:refuse, host_read(e)}
   defp os_identity(%{"mfa" => "os:type/0"} = e), do: path_handling(e, &os_type_read/1)

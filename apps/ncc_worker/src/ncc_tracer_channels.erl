@@ -4,7 +4,7 @@
 %% writes when the call happens in user extent. Pure: no process, no I/O.
 -export([patterns/0, probe_mfas/0, patterned/3, classify/3, chars/1, term_bin/1,
          checker_module/1, mix_patterns/0, mix_entry/1, mix_state/3, mix_state_heads/1,
-         path_os_frames/0, path_os_frame/3, os_family_callers/0,
+         path_os_frames/0, path_os_frame/3, os_family_callers/0, checker_pool_frames/0,
          path_os_read/3, returned_mfas/0, returned_mfa/3, returned_value/4,
          returned_term/4, recorded/1, value_etf/1, value_b64/1]).
 
@@ -272,6 +272,19 @@ path_os_frame(Module, Function, Arity) ->
 %% path internals' modules the same way).
 os_family_callers() ->
     [{<<"Elixir.File">>, <<"rm_rf">>, 1}].
+
+%% The frame of Elixir's type checker that sizes its pool of verification
+%% processes, as text: init/1's lazy default for `:max_concurrency`,
+%% `max(erlang:system_info(schedulers_online), 2)`, Elixir 1.19 and 1.20.
+%% The value only caps how many cache and check processes run at once, so
+%% the judge ignores that read when this frame, the toolchain's code for it
+%% (first_kind and caller_kind), made it directly, at the bottom of a
+%% process proc_lib started, with no package frame on the stack
+%% (NccWorker.Portability.Events; pinned on the running toolchain by
+%% NccWorker.Tracer.CheckerPoolTest). The module carries a canary like the
+%% callers above (ncc_tracer canary_patterns/0).
+checker_pool_frames() ->
+    [{<<"Elixir.Module.ParallelChecker">>, <<"-init/1-fun-2-">>, 0}].
 
 %% The OS-identity reads the judge allows as path handling, by the summary
 %% classify/3 made of them: os:type/0, os:version/0 and

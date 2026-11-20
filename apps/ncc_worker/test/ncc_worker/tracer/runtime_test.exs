@@ -802,7 +802,9 @@ defmodule NccWorker.Tracer.RuntimeTest do
 
     named =
       for {m, _f, _a} <-
-            :ncc_tracer_channels.path_os_frames() ++ :ncc_tracer_channels.os_family_callers(),
+            :ncc_tracer_channels.path_os_frames() ++
+              :ncc_tracer_channels.os_family_callers() ++
+              :ncc_tracer_channels.checker_pool_frames(),
           do: String.to_atom(m)
 
     shapes =
@@ -815,6 +817,7 @@ defmodule NccWorker.Tracer.RuntimeTest do
     end
 
     assert Path in canaries and :filename in canaries and :erl_prim_loader in canaries
+    assert Module.ParallelChecker in canaries
   end
 
   # A `File` whose rm_rf/1 hands back the whole OS type, `{os:type(), ok}`:

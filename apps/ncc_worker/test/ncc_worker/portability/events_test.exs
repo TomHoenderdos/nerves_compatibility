@@ -1288,6 +1288,131 @@ defmodule NccWorker.Portability.EventsTest do
     end
   end
 
+  describe "the type checker sizing its pool (schedulers_online)" do
+    # A fresh `Module.ParallelChecker` (started by `get/0` for a module a
+    # dependency's `mix.exs` or a nested compile defines) reads
+    # `max(erlang:system_info(schedulers_online), 2)` in its init/1, in a
+    # process the trace takes for the package's by lineage: inflex's,
+    # gen_state_machine's and phoenix_pubsub's `mix.exs`, real traces.
+    @pool %{
+      "module" => "Elixir.Module.ParallelChecker",
+      "function" => "-init/1-fun-2-",
+      "arity" => 0,
+      "file" => "lib/module/parallel_checker.ex",
+      "line" => 571
+    }
+    @proc_lib %{
+      "module" => "proc_lib",
+      "function" => "init_p_do_apply",
+      "arity" => 3,
+      "file" => "proc_lib.erl",
+      "line" => 333
+    }
+    @pool_reason "compile-time host read: erlang:system_info/1 (schedulers_online) " <>
+                   "(lineage stack, first frame Elixir.Module.ParallelChecker)"
+
+    defp pool_read(overrides \\ %{}) do
+      Map.merge(
+        %{
+          "ts" => 50,
+          "pid" => "<0.161.0>",
+          "channel" => "os_identity",
+          "mfa" => "erlang:system_info/1",
+          "arg" => %{"key" => "schedulers_online"},
+          "extent" => "lineage",
+          "first" => @pool,
+          "first_kind" => "toolchain",
+          "caller" => @pool,
+          "caller_kind" => "toolchain",
+          "bottom" => @proc_lib,
+          "user" => nil
+        },
+        overrides
+      )
+    end
+
+    test "the checker's own pool size read is ignored, for every owner", %{ctx: ctx} do
+      for owner <- ["pkg", "dep", :outside] do
+        assert :ignore = Events.decide(pool_read(), ctx, owner), inspect(owner)
+      end
+
+      assert :ignore =
+               Events.decide(pool_read(%{"first" => %{@pool | "line" => 563}}), ctx, "pkg")
+    end
+
+    # The same key from any other frame, stack or kind still refuses, with
+    # the reason it always had.
+    test "the same read made any other way still refuses", %{ctx: ctx} do
+      assert {:refuse, @pool_reason} =
+               Events.decide(pool_read(%{"first_kind" => "user"}), ctx, "pkg")
+
+      for overrides <- [
+            %{"first_kind" => "user"},
+            %{"first_kind" => "glue"},
+            %{"first_kind" => nil},
+            %{"caller_kind" => "user"},
+            %{"caller_kind" => nil},
+            %{"first" => %{@pool | "function" => "-init/1-fun-1-"}},
+            %{"first" => %{@pool | "function" => "init"}},
+            %{"first" => %{@pool | "arity" => 1}},
+            %{"first" => %{@pool | "module" => "Elixir.Pkg.ParallelChecker"}},
+            %{"first" => %{@pool | "module" => "Elixir.Kernel.ParallelCompiler"}},
+            %{"caller" => %{@pool | "function" => "init"}},
+            %{"caller" => @user},
+            %{"caller" => nil},
+            %{"bottom" => %{@proc_lib | "function" => "init_p"}},
+            %{"bottom" => @pool},
+            %{"bottom" => nil},
+            %{"extent" => "frame", "user" => @user},
+            %{"extent" => "dispatcher"},
+            %{"extent" => "truncated"},
+            %{"user" => @user}
+          ] do
+        assert {:refuse, "compile-time host read: erlang:system_info/1 (schedulers_online)" <> _} =
+                 Events.decide(pool_read(overrides), ctx, "pkg"),
+               inspect(overrides)
+      end
+
+      for event <- [Map.delete(pool_read(), "bottom"), Map.delete(pool_read(), "caller")] do
+        assert {:refuse, _} = Events.decide(event, ctx, "pkg")
+      end
+    end
+
+    test "only the schedulers_online key", %{ctx: ctx} do
+      for key <- ~w(schedulers logical_processors logical_processors_online cpu_topology) do
+        assert {:refuse, reason} =
+                 Events.decide(pool_read(%{"arg" => %{"key" => key}}), ctx, "pkg")
+
+        assert reason =~ "compile-time host read: erlang:system_info/1 (#{key})", key
+      end
+    end
+
+    # codepagex's module body: Task.async_stream/3 sizing its own pool, and a
+    # module body asking for the count itself.
+    test "a package's own pool size read refuses", %{ctx: ctx} do
+      stream = %{
+        "module" => "Elixir.Task.Supervised",
+        "function" => "validate_stream_options",
+        "arity" => 1
+      }
+
+      for first <- [stream, {"Elixir.System", "schedulers_online", 0}, "Elixir.Pkg"] do
+        event =
+          ev("os_identity", "erlang:system_info/1", %{"key" => "schedulers_online"},
+            first:
+              if(is_map(first),
+                do: {first["module"], first["function"], first["arity"]},
+                else: first
+              )
+          )
+
+        assert {:refuse, "compile-time host read: erlang:system_info/1 (schedulers_online)" <> _} =
+                 Events.decide(event, ctx, "pkg"),
+               inspect(first)
+      end
+    end
+  end
+
   describe "items 5c and 5d: system_info keys and reasons" do
     test "keys constant within an OTP major are allowed; host-dependent ones are not",
          %{ctx: ctx} do
