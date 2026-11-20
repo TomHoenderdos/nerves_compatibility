@@ -42,9 +42,9 @@ defmodule Portal.Precompiled.WithheldTest do
   defp restore(old), do: Application.put_env(:portal, Withheld, old)
 
   describe "packages/0" do
-    test "defaults to phoenix_live_view" do
+    test "defaults to kino and phoenix_live_view" do
       put_withheld(nil)
-      assert Withheld.packages() == ["phoenix_live_view"]
+      assert Withheld.packages() == ["kino", "phoenix_live_view"]
     end
 
     test "reads the configured list" do
@@ -57,11 +57,29 @@ defmodule Portal.Precompiled.WithheldTest do
 
     test "a malformed list falls back to the default" do
       put_withheld(packages: [:phoenix_live_view])
-      assert Withheld.packages() == ["phoenix_live_view"]
+      assert Withheld.packages() == ["kino", "phoenix_live_view"]
 
       put_withheld(packages: "phoenix_live_view")
-      assert Withheld.packages() == ["phoenix_live_view"]
+      assert Withheld.packages() == ["kino", "phoenix_live_view"]
     end
+  end
+
+  # A `Kino.JS` module writes its asset archive into kino's priv when its
+  # package compiles; a firmware result publishes the writer's beams only
+  # and never records its config reads, so with kino in its lock it is
+  # withheld. A toolchain build that records its config reads is judged by
+  # its own trace, which refuses the foreign priv write, and is not.
+  test "a firmware result with kino in its lock is withheld by default" do
+    put_withheld(nil)
+    kino = %{"kino" => %{"version" => "0.19.1", "checksum" => "k"}}
+    firmware = %{system_pkg: "nerves_system_rpi4", compile_env_rule: nil, compile_env: nil}
+
+    assert Withheld.withheld?("kino_vega_lite", kino, Withheld.packages(), firmware)
+    assert Withheld.withheld?("kino", %{}, Withheld.packages(), firmware)
+    refute Withheld.withheld?("vega_lite", @decimal, Withheld.packages(), firmware)
+
+    recorded = %{compile_env_rule: 1, compile_env: [], run_id: "r", compile_env_run_id: "r"}
+    refute Withheld.withheld?("kino_vega_lite", kino, Withheld.packages(), recorded)
   end
 
   test "withheld? matches the package itself or any locked dependency" do

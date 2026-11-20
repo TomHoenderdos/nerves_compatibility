@@ -28,13 +28,22 @@ defmodule Portal.Precompiled.Withheld do
   served unless it records the compile-time config reads its compile made
   (see `withheld?/4`).
 
+  kino is on the list for a second reason. A module with `use Kino.JS`
+  (kino_vega_lite, kino_maplibre, kino_db, ...) writes its asset archive
+  into kino's `priv` when its own package compiles, and its beams load that
+  archive from there at runtime. A firmware result publishes the writer's
+  beams only, without the archive, and never records its config reads, so
+  every firmware result whose closure has kino is withheld. A toolchain or
+  pinned build that records its config reads is judged by its own trace,
+  which refuses a write into another package's `priv`, and is not.
+
   Configured with `config :portal, #{inspect(__MODULE__)}, packages: [...]`.
   Without that key, or with anything but a list of strings, the default
-  (`#{inspect(["phoenix_live_view"])}`) applies, so a misconfiguration
+  (`#{inspect(["kino", "phoenix_live_view"])}`) applies, so a misconfiguration
   withholds rather than publishes. An empty list withholds nothing.
   """
 
-  @default ["phoenix_live_view"]
+  @default ["kino", "phoenix_live_view"]
 
   @doc "The withheld package names, sorted."
   @spec packages() :: [String.t()]
