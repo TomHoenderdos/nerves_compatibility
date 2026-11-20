@@ -304,6 +304,74 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     assert %{items: [], problems: [], dropped: 2} = judge(decided, snap(entries))
   end
 
+  # DateTime's functions take the time zone database the key names as the
+  # default of their last argument, and `dbg/2` expands through the callback
+  # the key names: both values can change what a compile produces, so each
+  # is a match condition, valued from the snapshot like any other key.
+  # Elixir's own .app sets both, so a VM that loaded :elixir always holds
+  # them, and a client's lookup compares the same {:ok, value}.
+  test "Elixir's :time_zone_database and :dbg_callback are recorded, from any frame" do
+    reads = [
+      {"Elixir.DateTime", "time_zone_database"},
+      {"Elixir.Kernel", "dbg_callback"}
+    ]
+
+    for elixir <- ["1.19.5", "1.20.4"], {_first, key} <- reads do
+      reviewed = ConfigReads.reviewed(elixir)
+      assert {"elixir", key} in reviewed.record, "#{elixir} #{key}"
+      refute Enum.any?(reviewed.drop ++ reviewed.refuse, &match?({_, "elixir", ^key}, &1))
+    end
+
+    defaults = %{
+      {"elixir", "time_zone_database"} => enc({:ok, Calendar.UTCOnlyTimeZoneDatabase}),
+      {"elixir", "dbg_callback"} => enc({:ok, {Macro, :dbg, []}})
+    }
+
+    configured = %{
+      {"elixir", "time_zone_database"} => enc({:ok, Tz.TimeZoneDatabase}),
+      {"elixir", "dbg_callback"} => enc({:ok, {IEx.Pry, :dbg, []}})
+    }
+
+    for elixir <- ["1.19.5", "1.20.4"],
+        entries <- [defaults, configured],
+        owner <- ["pkg", "dep", :outside],
+        first <- ["Elixir.DateTime", "Elixir.Kernel", "Elixir.Calendar", "Elixir.Pkg"] do
+      decided =
+        for {_first, key} <- reads,
+            do: obs(owner, read("elixir", key, kind: "toolchain", first: first))
+
+      result = ConfigReads.judge(decided, elixir, snap(entries), @trees, %{})
+
+      assert %{problems: [], unreviewed: [], refusals: [], dropped: 0, inputs: []} = result
+
+      assert result.items == [
+               %{
+                 app: "elixir",
+                 path: ["dbg_callback"],
+                 value: entries[{"elixir", "dbg_callback"}]
+               },
+               %{
+                 app: "elixir",
+                 path: ["time_zone_database"],
+                 value: entries[{"elixir", "time_zone_database"}]
+               }
+             ]
+    end
+
+    # Package code reading either key itself records it, as before.
+    for {_first, key} <- reads do
+      assert keys(judge([obs("pkg", read("elixir", key))], snap(defaults))) ==
+               [{"elixir", [key]}]
+    end
+
+    # A snapshot cut short before the key records config_unrecorded, never
+    # an item a client could match.
+    decided = [obs("pkg", read("elixir", "time_zone_database", kind: "toolchain"))]
+
+    assert %{items: [], problems: [], inputs: [%{"kind" => "config_unrecorded"}]} =
+             judge(decided, snap(%{}, true))
+  end
+
   # rebar3 runs in a child VM the tracer follows, from Mix's own rebar3
   # escript: its logger state and cf's colour flag only shape its console
   # output. Each is dropped from the one frame that reads it.
@@ -478,8 +546,17 @@ defmodule NccWorker.Portability.ConfigReadsTest do
       {"cf", "cf", "colour_term"}
     ]
 
+    record = [
+      {"logger", "always_evaluate_messages"},
+      {"logger", "compile_time_application"},
+      {"logger", "compile_time_purge_level"},
+      {"logger", "compile_time_purge_matching"},
+      {"elixir", "time_zone_database"},
+      {"elixir", "dbg_callback"}
+    ]
+
     for {elixir, drop} <- [{"1.19.5", output}, {"1.20.4", output}] do
-      assert %{record: [_ | _], drop: ^drop} = ConfigReads.reviewed(elixir)
+      assert %{record: ^record, drop: ^drop} = ConfigReads.reviewed(elixir)
     end
   end
 
@@ -600,7 +677,39 @@ defmodule NccWorker.Portability.ConfigReadsTest do
 
       %{record: record} = ConfigReads.reviewed(System.version())
 
-      assert Enum.sort(record) == Enum.sort(read)
+      assert Enum.sort(for {"logger", _key} = k <- record, do: k) == Enum.sort(read)
+    end
+
+    # Calendar reads :time_zone_database in get_time_zone_database/0 only,
+    # and DateTime calls that only as the default of a database argument,
+    # in the functions the record list's comment names; Kernel reads
+    # :dbg_callback in dbg/2's expansion only. Both keys are Elixir's .app
+    # env, so a VM that loaded :elixir holds them.
+    test "records Elixir's time_zone_database and dbg_callback, read where reviewed" do
+      %{record: record} = ConfigReads.reviewed(System.version())
+      elixir = for {"elixir", _key} = k <- record, do: k
+      assert elixir == [{"elixir", "time_zone_database"}, {"elixir", "dbg_callback"}]
+
+      assert app_reads(source(:elixir, "lib/calendar.ex")) ==
+               [{:elixir, :time_zone_database, :get_time_zone_database}]
+
+      datetime = source(:elixir, "lib/calendar/datetime.ex")
+      assert app_reads(datetime) == []
+      {defaults, calls} = database_defaults(datetime)
+      assert length(calls) == length(defaults)
+
+      assert defaults |> Enum.uniq() |> Enum.sort() ==
+               [:add, :from_naive, :from_naive!, :new, :new!, :now, :now!] ++
+                 [:shift, :shift_zone, :shift_zone!]
+
+      kernel = source(:elixir, "lib/kernel.ex")
+
+      assert Enum.filter(app_reads(kernel), &match?({:elixir, _, _}, &1)) ==
+               [{:elixir, :dbg_callback, :dbg}]
+
+      {:ok, app_env} = :application.get_key(:elixir, :env)
+      assert Keyword.has_key?(app_env, :time_zone_database)
+      assert Keyword.has_key?(app_env, :dbg_callback)
     end
 
     test "drops only Mix's shell's ansi_enabled read, whose value only reaches output" do
@@ -1143,15 +1252,25 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     path |> File.read!() |> Code.string_to_quoted!()
   end
 
-  # Every Application read of a literal app and key, with the function it is in.
+  # Every Application read of a literal app and key, with the function or
+  # macro it is in. A macro's read through its caller's env
+  # (`compile_env!(__CALLER__, app, key)`) names the app and key after it.
   defp app_reads(ast) do
     {_ast, {_fun, reads}} =
       Macro.traverse(
         ast,
         {nil, []},
         fn
-          {kind, _, [head | _]} = node, {_fun, acc} when kind in [:def, :defp] ->
+          {kind, _, [head | _]} = node, {_fun, acc}
+          when kind in [:def, :defp, :defmacro, :defmacrop] ->
             {node, {fun_name(head), acc}}
+
+          {{:., _, [{:__aliases__, _, [:Application]}, f]}, _,
+           [{:__CALLER__, _, ctx}, app, key | _]} =
+              node,
+          {fun, acc}
+          when f in [:compile_env, :compile_env!] and is_atom(ctx) ->
+            {node, {fun, [{app, key, fun} | acc]}}
 
           {{:., _, [{:__aliases__, _, [:Application]}, f]}, _, [app, key | _]} = node, {fun, acc}
           when f in [:get_env, :fetch_env, :fetch_env!, :compile_env, :compile_env!] ->
@@ -1168,6 +1287,31 @@ defmodule NccWorker.Portability.ConfigReadsTest do
 
   defp fun_name({:when, _, [head | _]}), do: fun_name(head)
   defp fun_name({name, _, _}), do: name
+
+  # DateTime's calls of `Calendar.get_time_zone_database/0`, each as the
+  # function it is in: `{those that are an argument's default, all}`.
+  defp database_defaults(ast) do
+    {_ast, {_fun, defaults, calls}} =
+      Macro.prewalk(ast, {nil, [], []}, fn
+        {kind, _, [head | _]} = node, {_fun, d, c} when kind in [:def, :defp] ->
+          {node, {fun_name(head), d, c}}
+
+        {:\\, _, [_arg, default]} = node, {fun, d, c} ->
+          if database_call?(default), do: {node, {fun, [fun | d], c}}, else: {node, {fun, d, c}}
+
+        node, {fun, d, c} ->
+          if database_call?(node), do: {node, {fun, d, [fun | c]}}, else: {node, {fun, d, c}}
+      end)
+
+    {defaults, calls}
+  end
+
+  defp database_call?(
+         {{:., _, [{:__aliases__, _, [:Calendar]}, :get_time_zone_database]}, _, []}
+       ),
+       do: true
+
+  defp database_call?(_node), do: false
 
   # IO.ANSI calls that can depend on the key (format/1,2, format_fragment/1,2),
   # all of them and those passed straight to IO.puts/IO.write.

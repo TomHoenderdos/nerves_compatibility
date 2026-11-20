@@ -17,7 +17,8 @@ defmodule NccWorker.Portability.ConfigReads do
       recorded;
     * one the toolchain's own code makes (`first_kind` "toolchain": Logger's
       macros, Mix's shell) is recorded when `{app, key}` is on the
-      toolchain's reviewed `record` list (Logger's compile-time keys),
+      toolchain's reviewed `record` list (Logger's compile-time keys,
+      Elixir's `time_zone_database` and `dbg_callback`),
       dropped when `{first frame, app, key}` is on its reviewed `drop` list
       (`:elixir, :ansi_enabled` as read for `Mix.Shell.IO`, Logger's
       handler, the compiler's diagnostics printer and the type checker's
@@ -133,6 +134,34 @@ defmodule NccWorker.Portability.ConfigReads do
     {"logger", "compile_time_purge_matching"}
   ]
 
+  # `Calendar.get_time_zone_database/0` returns the module `{elixir,
+  # time_zone_database}` names, and DateTime's `new`, `new!`, `from_naive`,
+  # `from_naive!`, `shift_zone`, `shift_zone!`, `now`, `now!`, `add` and
+  # `shift` take it as the default of their database argument: every call
+  # without one reads the key, UTC or not. Package code calling them at
+  # compile time with a zone other than UTC gets an answer from that
+  # database, or an error from the UTC-only one, and can bake it into a
+  # beam. The read's first frame is DateTime's default-argument clause:
+  # `get_time_zone_database/0` tail-calls `Application.fetch_env!/2`.
+  #
+  # `dbg/2` expands through the callback `{elixir, dbg_callback}` names
+  # (`Macro.dbg/3` by default, `IEx.Pry` under `iex --dbg pry`): the value
+  # selects the generated code, which is why Mix recompiles a dependency
+  # that uses `dbg` when it changes. Its first frame is `Kernel`'s macro.
+  # Elixir 1.20 first takes a callback from the compiling process's
+  # dictionary (`Code.eval_quoted_with_env/4`'s `:dbg_callback`), which
+  # makes no config read and is the package's own choice.
+  #
+  # Both change what a compile produces, so both are match conditions.
+  # Elixir's own `.app` sets both keys and `:elixir` is loaded in every VM,
+  # so the snapshot holds them and a client's `Application.fetch_env/2`
+  # compares the same `{:ok, value}`: a project that configures either one
+  # differently misses.
+  @elixir_compile_keys [
+    {"elixir", "time_zone_database"},
+    {"elixir", "dbg_callback"}
+  ]
+
   # `Mix.Shell.IO.info/1`, `error/1` (which a dependency's Mix compiler
   # calls through `Mix.shell()`, as elixir_make does) pass
   # `IO.ANSI.format/1`'s result straight to `IO.puts/1,2` and return `:ok`:
@@ -214,7 +243,7 @@ defmodule NccWorker.Portability.ConfigReads do
   # shape) means the compile reached the host.
   @reviewed %{
     "1.19" => %{
-      record: @logger_compile_keys,
+      record: @logger_compile_keys ++ @elixir_compile_keys,
       drop: [
         @mix_shell_ansi,
         @logger_handler_ansi,
@@ -226,7 +255,7 @@ defmodule NccWorker.Portability.ConfigReads do
       refuse: @host_reads
     },
     "1.20" => %{
-      record: @logger_compile_keys,
+      record: @logger_compile_keys ++ @elixir_compile_keys,
       drop: [
         @mix_shell_ansi,
         @logger_handler_ansi,

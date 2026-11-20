@@ -367,6 +367,21 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
         def x(v), do: dbg(v)
       end
       """),
+    # Time-zone arithmetic at compile time through DateTime's functions,
+    # each taking the configured time zone database as its default.
+    "fx_tc_tz" =>
+      lib("fx_tc_tz", """
+      defmodule FxTcTz do
+        @now DateTime.now("Europe/Amsterdam")
+        @shifted DateTime.shift_zone(~U[2026-01-01 00:00:00Z], "Europe/Amsterdam")
+        @local DateTime.from_naive(~N[2026-01-01 00:00:00], "Europe/Amsterdam")
+        @added DateTime.add(~U[2026-01-01 00:00:00Z], 1, :day)
+        def now, do: @now
+        def shifted, do: @shifted
+        def local, do: @local
+        def added, do: @added
+      end
+      """),
     # A Mix compiler a dependency ships (as elixir_make does), printing
     # through Mix's shell while the package that names it compiles.
     "fx_tc_comp" => %{
@@ -545,6 +560,8 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     "fx_tc_native",
     "fx_tc_checker",
     "fx_tc_types",
+    "fx_tc_tz",
+    "fx_tc_dbg",
     "fx_net_cacerts",
     "fx_net_tls",
     "fx_net_connect"
@@ -729,12 +746,17 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
 
     expected =
       MapSet.new(
-        Enum.map(record, fn {app, key} -> {"Elixir.Logger", app, key} end) ++
+        Enum.map(record, fn {app, key} -> {record_frame({app, key}), app, key} end) ++
           (drop -- rebar3) ++ refuse
       )
 
     assert observed == expected, inspect(MapSet.to_list(observed))
   end
+
+  # The frame the reviewed fixtures read each recorded key through.
+  defp record_frame({"logger", _key}), do: "Elixir.Logger"
+  defp record_frame({"elixir", "time_zone_database"}), do: "Elixir.DateTime"
+  defp record_frame({"elixir", "dbg_callback"}), do: "Elixir.Kernel"
 
   # This small rebar3 compile makes its own log and colour reads on stacks
   # the tracer does not record (no package frame, not cut short), so none
@@ -949,13 +971,53 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     end
   end
 
-  # Toolchain reads no reviewed list holds: the build is not judged rather
-  # than published with a value a client cannot compare.
-  test "dbg/1 reads :dbg_callback while expanding and cannot be judged", ctx do
-    assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_tc_dbg")
+  # dbg/2 expands through the callback :dbg_callback names, so the value
+  # changes the generated code: recorded with the snapshot's value, which is
+  # Elixir's own .app default here, as a client's lookup sees it. Mix's
+  # tracer puts the same compile_env read in the .app; merged, it is listed
+  # once.
+  test "dbg/1 reads :dbg_callback while expanding and records it", ctx do
+    v = passes(ctx, "fx_tc_dbg")
+    entries = run_of(ctx, "fx_tc_dbg").traced.report.config_env.entries
+    assert v.observations["config_unreviewed"] == []
+    assert toolchain_reads(v, "fx_tc_dbg") == MapSet.new([{"elixir", "dbg_callback"}])
 
-    assert obs["problems"] == [
-             "unreviewed toolchain config read: elixir dbg_callback from Elixir.Kernel"
+    assert entries[{"elixir", "dbg_callback"}] == enc({:ok, {Macro, :dbg, []}})
+
+    assert item(v, "elixir", "dbg_callback") == %{
+             app: "elixir",
+             path: ["dbg_callback"],
+             value: entries[{"elixir", "dbg_callback"}]
+           }
+
+    run = run_of(ctx, "fx_tc_dbg")
+    app = Path.join(run.proj, "_build/host/lib/fx_tc_dbg/ebin/fx_tc_dbg.app")
+    merged = ConfigReads.merge(AppFile.read_compile_env(app), v.compile_env)
+    assert [only] = Enum.filter(merged, &(&1.app == "elixir" and &1.path == ["dbg_callback"]))
+    assert only.value == item(v, "elixir", "dbg_callback").value
+  end
+
+  # DateTime's functions default their database argument to the one
+  # :time_zone_database names, and its answers become the compiled values:
+  # recorded with the snapshot's value, Elixir's own .app default here.
+  test "DateTime's time-zone functions at compile time record :time_zone_database", ctx do
+    v = passes(ctx, "fx_tc_tz")
+    entries = run_of(ctx, "fx_tc_tz").traced.report.config_env.entries
+    assert v.observations["config_unreviewed"] == []
+    assert toolchain_reads(v, "fx_tc_tz") == MapSet.new([{"elixir", "time_zone_database"}])
+
+    for r <- v.observations["config_reads"],
+        do: assert(%{"first" => "Elixir.DateTime", "first_kind" => "toolchain"} = r)
+
+    assert entries[{"elixir", "time_zone_database"}] ==
+             enc({:ok, Calendar.UTCOnlyTimeZoneDatabase})
+
+    assert v.compile_env == [
+             %{
+               app: "elixir",
+               path: ["time_zone_database"],
+               value: entries[{"elixir", "time_zone_database"}]
+             }
            ]
   end
 
