@@ -74,29 +74,40 @@ defmodule NccWorker.CompileError do
   defp tl_or([_marker, rest], _default), do: rest
   defp tl_or(_parts, default), do: default
 
-  # An Elixir diagnostic, a `file:line: message`, or rebar3's failed file.
+  # An Elixir diagnostic, a `file:line: message`, a program the shell could
+  # not find, or rebar3's failed file.
   defp compiler(line, below) do
     trimmed = line |> String.trim() |> String.replace_prefix("===> ", "")
 
-    cond do
-      String.starts_with?(trimmed, "error: ") ->
-        trimmed <> location(below)
+    Enum.find_value(
+      [&elixir_error/2, &source_error/2, &missing_program/2, &rebar_failed/2],
+      & &1.(trimmed, below)
+    )
+  end
 
-      match = Regex.run(@source_error, trimmed) ->
-        [_, file, number, message] = match
-        unless warning?(message) or mfa?(message), do: "#{file}:#{number}: #{message}"
+  defp elixir_error("error: " <> _ = line, below), do: line <> location(below)
+  defp elixir_error(_line, _below), do: nil
 
-      Regex.match?(~r/\A\S*sh: (?:line )?\d+: .+: (?:command )?not found\z/u, trimmed) ->
-        trimmed
+  defp source_error(line, _below) do
+    case Regex.run(@source_error, line) do
+      [_, file, number, message] ->
+        if warning?(message) or mfa?(message), do: nil, else: "#{file}:#{number}: #{message}"
 
-      match = Regex.run(~r/\ACompiling (\S+) failed\z/u, trimmed) ->
-        case rebar_message(below) do
-          nil -> nil
-          message -> "Compiling #{Enum.at(match, 1)} failed: #{message}"
-        end
-
-      true ->
+      nil ->
         nil
+    end
+  end
+
+  defp missing_program(line, _below) do
+    if Regex.match?(~r/\A\S*sh: (?:line )?\d+: .+: (?:command )?not found\z/u, line), do: line
+  end
+
+  defp rebar_failed(line, below) do
+    with [_, file] <- Regex.run(~r/\ACompiling (\S+) failed\z/u, line),
+         message when is_binary(message) <- rebar_message(below) do
+      "Compiling #{file} failed: #{message}"
+    else
+      _ -> nil
     end
   end
 
