@@ -24,6 +24,18 @@ defmodule Portal.Precompiled.Batches do
   A deploy is such a restart: blue/green starts the new release on the other
   colour with an empty memo.
 
+  The fingerprint covers every database input of a manifest, the two settings
+  that decide one included (`host_native_enabled` and
+  `deterministic_builds_enabled`, through a count of their changes, so one
+  turned on and off again within a batch still reads as a change). A
+  manifest's other inputs are application config: the withheld list
+  (`Portal.Precompiled.Withheld`, in the fingerprint by value), the artifact
+  store's path and the code itself. They change only with a restart, which
+  empties the memo. An operator who changes the withheld list on a running
+  node (`Application.put_env/3` over rpc) and back within one batch could
+  leave a manifest rendered under the other list remembered, so change it
+  through the release's config and restart instead.
+
   ## Renders run in lanes
 
   A full render rendered 14,350 packages on production in 1,000 to 2,300

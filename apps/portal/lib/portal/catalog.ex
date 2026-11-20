@@ -1165,7 +1165,12 @@ defmodule Portal.Catalog do
   # and so do pinned builds (`Portal.Catalog.PinnedBuild`), whose every
   # revocation and withdrawal column, whose `reporters` (the manifest's
   # cap ranks by it) and whose builder's publishing state, as a run's, are
-  # in it as values.
+  # in it as values. Those two settings are the only ones a manifest depends
+  # on, so a package with a host-native or deterministic row, whatever the
+  # settings, also carries the settings rows' `publication_changes`, which a
+  # trigger counts up on every change to either: by the gated suffixes alone,
+  # a setting turned on and off again would read as no change. Not their
+  # `xmin`: the enqueue path writes `remote_auto_on`.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1255,6 +1260,13 @@ defmodule Portal.Catalog do
     FROM catalog_artifact_memberships m
     JOIN catalog_pinned_builds pb ON pb.id = m.pinned_build_id
     GROUP BY pb.package_id
+  ), setting_bound AS (
+    SELECT package_id FROM catalog_host_native_builds
+    UNION
+    SELECT package_id FROM catalog_deterministic_builds
+  ), setting_changes AS (
+    SELECT string_agg(format('%s/%s', st.id, st.publication_changes), ',' ORDER BY st.id) AS c
+    FROM settings st
   )
   SELECT p.name,
          md5(format('%s/%s/%s/%s/%s/%s/%s/%s', p.id, runs.fp, results.fp, rf.n, rf.h,
@@ -1264,8 +1276,11 @@ defmodule Portal.Catalog do
            CASE WHEN dt.package_id IS NULL THEN ''
                 ELSE '|deterministic:' || md5(format('%s/%s/%s', dt.fp, df.n, df.h)) END ||
            CASE WHEN pn.package_id IS NULL THEN ''
-                ELSE '|pinned:' || md5(format('%s/%s/%s', pn.fp, pf.n, pf.h)) END
+                ELSE '|pinned:' || md5(format('%s/%s/%s', pn.fp, pf.n, pf.h)) END ||
+           CASE WHEN sb.package_id IS NULL THEN ''
+                ELSE '|settings:' || coalesce(sc.c, '') END
   FROM catalog_packages p
+  CROSS JOIN setting_changes sc
   LEFT JOIN runs ON runs.package_id = p.id
   LEFT JOIN results ON results.package_id = p.id
   LEFT JOIN result_files rf ON rf.package_id = p.id
@@ -1277,6 +1292,7 @@ defmodule Portal.Catalog do
   LEFT JOIN deterministic_files df ON df.package_id = p.id
   LEFT JOIN pinned pn ON pn.package_id = p.id
   LEFT JOIN pinned_files pf ON pf.package_id = p.id
+  LEFT JOIN setting_bound sb ON sb.package_id = p.id
   WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL OR hn.package_id IS NOT NULL
      OR pn.package_id IS NOT NULL
   """
@@ -1290,6 +1306,8 @@ defmodule Portal.Catalog do
   manifests it vouches for: a write in between then only makes the next
   fingerprint differ. The withheld package list (`Portal.Precompiled.Withheld`)
   is part of every fingerprint, so a change to it renders every package again.
+  The settings a manifest depends on (`host_native_enabled`,
+  `deterministic_builds_enabled`) are in it through a count of their changes.
   """
   @spec precompiled_fingerprints() :: %{String.t() => String.t()}
   def precompiled_fingerprints do

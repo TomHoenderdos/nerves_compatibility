@@ -11,6 +11,8 @@ defmodule Portal.HostNativeTest do
   alias Portal.Catalog.{ArtifactMembership, HostNativeBuild}
   alias Portal.HostNative
   alias Portal.HostNative.Ingest
+  alias Portal.{BatchHooks, PrecompiledFixtures}
+  alias Portal.Precompiled.{Batches, Manifests}
 
   @elf Path.expand("../../../compatibility/test/fixtures/elf", __DIR__)
   @triple "aarch64-linux-gnu"
@@ -20,6 +22,7 @@ defmodule Portal.HostNativeTest do
   defp unique, do: "hnpkg_#{System.unique_integer([:positive])}"
   defp nif, do: File.read!(Path.join(@elf, "nif_aarch64.so"))
   defp on!, do: {:ok, _} = Portal.Settings.save(%{host_native_enabled: true})
+  defp off!, do: {:ok, _} = Portal.Settings.save(%{host_native_enabled: false})
 
   defp tmp(name) do
     dir = Path.join(System.tmp_dir!(), "#{name}-#{System.unique_integer([:positive])}")
@@ -411,6 +414,44 @@ defmodule Portal.HostNativeTest do
 
       on!()
       assert Map.fetch!(Catalog.precompiled_fingerprints(), other) == off
+    end
+
+    # A batch remembers a package's manifests only when its fingerprint
+    # read before the renders equals the one read after; the setting turned
+    # on and off again between the two must still read as a change.
+    test "the setting turned on and off again changes the fingerprint of its packages only",
+         %{name: name} do
+      PrecompiledFixtures.ingest_toolchain_build(name, "0.1.0")
+      other = "hn_aba_#{System.unique_integer([:positive])}"
+      PrecompiledFixtures.ingest_toolchain_build(other, "0.1.0")
+      before = Catalog.precompiled_fingerprints()
+
+      on!()
+      off!()
+
+      now = Catalog.precompiled_fingerprints()
+      refute now[name] == before[name]
+      assert now[other] == before[other]
+    end
+
+    @tag :tmp_dir
+    test "the setting turned on during a batch and off again leaves no stale manifest",
+         %{name: name, tmp_dir: dir} do
+      # Listed while the setting is off, through a toolchain build.
+      PrecompiledFixtures.ingest_toolchain_build(name, "0.1.0")
+      BatchHooks.signing_key!(dir)
+      on!()
+      reads = BatchHooks.settings_reads(name)
+      off!()
+
+      hook = BatchHooks.flip_during_render(&on!/0, &off!/0, reads)
+      {:ok, _b1} = Batches.build_and_sign()
+      assert BatchHooks.flipped?(hook)
+
+      {:ok, b2} = Batches.build_and_sign()
+      {:ok, bytes} = Manifests.read(Batches.manifests_v2(b2)[name])
+      assert {:ok, ^bytes} = Manifests.render_v2(name)
+      refute bytes =~ "builds_host_native"
     end
 
     test "a revoked build is not served", %{name: name, row: row} do

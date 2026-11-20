@@ -3,6 +3,11 @@ defmodule Portal.Settings.Setting do
   Admin-editable runtime settings. One row, keyed `"global"`; read through
   `Portal.Settings.get/0`, which falls back to the defaults when no row exists
   yet so a fresh database never fails a build.
+
+  The table's `publication_changes` column is no attribute here: a trigger
+  alone writes it, counting each change to `host_native_enabled` or
+  `deterministic_builds_enabled`, for
+  `Portal.Catalog.precompiled_fingerprints/0` (see the migration that adds it).
   """
 
   use Ash.Resource,

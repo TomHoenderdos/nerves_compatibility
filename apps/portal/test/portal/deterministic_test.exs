@@ -9,10 +9,19 @@ defmodule Portal.DeterministicTest do
 
   alias Portal.Catalog
   alias Portal.Catalog.{ArtifactMembership, DeterministicBuild, Ingestion, ToolchainBuild}
-  alias Portal.Precompiled.{DeterministicRevocation, ToolchainRevocation, Withheld}
+  alias Portal.BatchHooks
+
+  alias Portal.Precompiled.{
+    Batches,
+    DeterministicRevocation,
+    Manifests,
+    ToolchainRevocation,
+    Withheld
+  }
 
   defp sha(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
   defp on!, do: {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
+  defp off!, do: {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: false})
 
   defp unique,
     do:
@@ -252,6 +261,55 @@ defmodule Portal.DeterministicTest do
       assert Catalog.precompiled_manifest_v2(plain.name)["versions"]["1.0.0"] |> Map.keys() == [
                "builds"
              ]
+    end
+
+    # A batch remembers a package's manifests only when its fingerprint
+    # read before the renders equals the one read after; the setting turned
+    # on and off again between the two must still read as a change.
+    test "the setting turned on and off again changes the fingerprint of its packages only",
+         ctx do
+      %{name: other} = ingested_without_sibling()
+      before = Catalog.precompiled_fingerprints()
+
+      on!()
+      off!()
+
+      now = Catalog.precompiled_fingerprints()
+      refute now[ctx.name] == before[ctx.name]
+      assert now[other] == before[other]
+    end
+
+    # The settings' other columns decide no manifest. `remote_auto_on` is
+    # written from the enqueue path, so a fingerprint that read it would
+    # render a package with siblings again in every batch.
+    test "a setting that decides no manifest leaves every fingerprint as it was", ctx do
+      on!()
+      before = Catalog.precompiled_fingerprints()
+      assert Map.has_key?(before, ctx.name)
+
+      {:ok, _} = Portal.Settings.set_remote_auto_on(true)
+      {:ok, _} = Portal.Settings.save(%{argus_enabled: false, world_variants_enabled: true})
+      {:ok, _} = Portal.Settings.set_remote_auto_on(false)
+
+      assert Catalog.precompiled_fingerprints() == before
+    end
+
+    @tag :tmp_dir
+    test "the setting turned on during a batch and off again leaves no stale manifest",
+         %{name: name, tmp_dir: dir} do
+      BatchHooks.signing_key!(dir)
+      on!()
+      reads = BatchHooks.settings_reads(name)
+      off!()
+
+      hook = BatchHooks.flip_during_render(&on!/0, &off!/0, reads)
+      {:ok, _b1} = Batches.build_and_sign()
+      assert BatchHooks.flipped?(hook)
+
+      {:ok, b2} = Batches.build_and_sign()
+      {:ok, bytes} = Manifests.read(Batches.manifests_v2(b2)[name])
+      assert {:ok, ^bytes} = Manifests.render_v2(name)
+      refute bytes =~ "erl_compiler_options"
     end
 
     test "the sibling lever withdraws the sibling alone; undo puts it back", ctx do
