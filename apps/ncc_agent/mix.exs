@@ -38,7 +38,7 @@ defmodule NccAgent.MixProject do
       # are called, with `:public_key` and `:ssl` already started, so it is
       # not an application of the agent: its `.app` would start `:ssh`. The
       # release loads it (`hex_core: :load` in the root `mix.exs`).
-      {:hex_core, "~> 0.20.1", runtime: false},
+      {:hex_core, "~> 0.21.1", runtime: false},
       {:x509, "~> 0.9"},
       {:jason, "~> 1.2"},
       {:bandit, "~> 1.5", only: :test},
