@@ -790,6 +790,24 @@ defmodule NccWorker.ProjectTest do
       assert_received {:deps_get, ^dir, [{"MIX_ENV", "prod"}]}
     end
 
+    test "keeps the requirement the package was added with", %{project_dir: dir} do
+      File.write!(
+        Path.join(dir, "mix.exs"),
+        File.read!(Path.join(dir, "mix.exs")) |> String.replace(~s|"== 0.3.0"|, ~s|"~> 0.3"|)
+      )
+
+      assert {:ok, :added} =
+               Project.declare_as_app(
+                 dir,
+                 %{name: "hpack_erl", requirement: "~> 0.3"},
+                 "hpack",
+                 [],
+                 fn _, _ -> :ok end
+               )
+
+      assert File.read!(Path.join(dir, "mix.exs")) =~ ~s|{:hpack, "~> 0.3", hex: :hpack_erl}|
+    end
+
     test "a deps.get that fails is the caller's error", %{project_dir: dir} do
       package = %{name: "hpack_erl", version: "0.3.0"}
 

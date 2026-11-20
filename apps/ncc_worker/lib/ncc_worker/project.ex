@@ -219,8 +219,9 @@ defmodule NccWorker.Project do
   @doc """
   Declares the package `add_package/4` added as the application `app`
   (`hex_app/2`): its `{:name, ...}` entry is replaced by `{:app, "==
-  version", hex: :name}`, its lock entry and `deps/<name>` are removed, so
-  nothing of it stays under the old name, and `mix deps.get` runs again.
+  version", hex: :name}` (the requirement `add_package/4` wrote), its lock
+  entry and `deps/<name>` are removed, so nothing of it stays under the old
+  name, and `mix deps.get` runs again.
   """
   @spec declare_as_app(
           String.t(),
@@ -233,7 +234,7 @@ defmodule NccWorker.Project do
   # sobelow_skip ["Traversal.FileModule"]
   def declare_as_app(project_dir, %{name: name} = package, app, env, deps_get \\ &run_deps_get/2) do
     mix_exs_path = Path.join(project_dir, "mix.exs")
-    dep = %{name: app, requirement: "== " <> package.version, hex: name}
+    dep = %{name: app, requirement: app_requirement(package), hex: name}
 
     with true <- app_name?(app) or {:error, {:invalid_app, app}},
          :ok <- remove_deps(project_dir, [name]) |> removed(name),
@@ -245,6 +246,13 @@ defmodule NccWorker.Project do
       {:ok, :added}
     end
   end
+
+  # What `dep_tuple/1` writes for the package under its own name.
+  defp app_requirement(%{version: version}) when is_binary(version) and version != "",
+    do: "== " <> version
+
+  defp app_requirement(%{requirement: req}) when is_binary(req) and req != "", do: req
+  defp app_requirement(_package), do: ">= 0.0.0"
 
   defp removed(:ok, _name), do: :ok
   defp removed(:error, name), do: {:error, {:dep_not_declared, name}}
