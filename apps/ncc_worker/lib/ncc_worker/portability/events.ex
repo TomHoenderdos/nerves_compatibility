@@ -115,6 +115,13 @@ defmodule NccWorker.Portability.Events do
       otherwise be: `NccWorker.Portability` refuses each unless the copy
       changed no byte of that dependency's verified tree (judge revision
       27).
+    * Foreign priv (`ForeignPriv.decide/3`, with the job's `foreign_priv`
+      flag and an open gate only): kino's reviewed `Kino.JS` calls into its
+      build `priv/assets/<d>` are observed as `foreign_priv`, carrying the
+      refusal they would otherwise be; any other read, listing or stat
+      there refuses (`compile-time read of kino's asset archives: `), any
+      other write there refuses as before. The judge settles them
+      (`ForeignPriv.settle/2`).
     * A user `set_cwd` refuses: it changes what every later relative path
       names.
     * A call into a natively built dependency refuses in the package's
@@ -156,7 +163,7 @@ defmodule NccWorker.Portability.Events do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.Portability.{Context, MixExsSlice, Probes}
+  alias NccWorker.Portability.{Context, ForeignPriv, MixExsSlice, Probes}
 
   # Shared with the tracer, which counts these path-handling reads rather
   # than writing them (`:ncc_tracer_channels.path_os_read/3`): the rule
@@ -523,8 +530,12 @@ defmodule NccWorker.Portability.Events do
     end
   end
 
-  defp file_read(%{"arg" => %{"path" => path}} = e, ctx, owner) when is_binary(path),
-    do: readable(e, ctx, path, owner)
+  defp file_read(%{"arg" => %{"path" => path}} = e, ctx, owner) when is_binary(path) do
+    case ForeignPriv.decide(e, ctx, owner) do
+      :pass -> readable(e, ctx, path, owner)
+      decision -> foreign(decision, e, host_read(e, path))
+    end
+  end
 
   defp file_read(e, _ctx, _owner), do: {:refuse, host_read(e)}
 
@@ -638,6 +649,28 @@ defmodule NccWorker.Portability.Events do
     do: {:refuse, "compile-time write outside ebin: #{mfa} #{show(arg["path"])} (a link)"}
 
   defp file_write(%{"arg" => arg} = e, ctx, owner) do
+    case ForeignPriv.decide(e, ctx, owner) do
+      :pass -> write_as_today(e, arg, ctx, owner)
+      decision -> foreign(decision, e, outside_ebin(e, [arg["path"]]))
+    end
+  end
+
+  # Foreign priv spec 3.2 and 3.5 (`ForeignPriv.decide/3`): a reviewed Kino.JS
+  # call is observed with the refusal it would otherwise be; any other read
+  # under kino's priv/assets refuses as a read of its archives, any other
+  # write as the write outside ebin it always was.
+  defp foreign({:accept, item}, e, refusal),
+    do:
+      {:observe, "foreign_priv", e |> summary() |> Map.merge(item) |> Map.put("refusal", refusal)}
+
+  defp foreign(:refuse_read, e, _refusal),
+    do:
+      {:refuse,
+       Reasons.foreign_priv_read() <> e["mfa"] <> path_part(e["arg"]["path"]) <> where(e)}
+
+  defp foreign(:refuse_write, _e, refusal), do: {:refuse, refusal}
+
+  defp write_as_today(e, arg, ctx, owner) do
     targets = [arg["path"] | if(arg["from_kind"] == "write", do: [arg["from"]], else: [])]
     own = own_compile?(e, ctx, owner)
 

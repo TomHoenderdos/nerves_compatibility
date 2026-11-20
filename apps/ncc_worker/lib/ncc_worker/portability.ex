@@ -151,7 +151,8 @@ defmodule NccWorker.Portability do
     "priv_writes" => 50,
     "priv_probes" => 50,
     "own_priv_reads" => 50,
-    "own_tree_copies" => 50
+    "own_tree_copies" => 50,
+    "foreign_priv" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -1374,9 +1375,10 @@ defmodule NccWorker.Portability do
 
   # A firmware target's trace has no second build (`PrivRepro`), so the
   # package's own priv writes and the probes above that priv refuse there
-  # as they did before judge revision 21.
+  # as they did before judge revision 21, and a foreign priv write (never
+  # observed there: the gate stays closed in target mode).
   defp own_priv?({:observe, kind, %{"refusal" => refusal}})
-       when kind in ["priv_writes", "priv_probes"] and is_binary(refusal),
+       when kind in ["priv_writes", "priv_probes", "foreign_priv"] and is_binary(refusal),
        do: true
 
   defp own_priv?(_decision), do: false

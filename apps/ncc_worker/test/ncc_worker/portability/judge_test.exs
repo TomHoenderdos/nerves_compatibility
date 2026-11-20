@@ -3212,4 +3212,19 @@ defmodule NccWorker.Portability.JudgeTest do
                judge(proj, traced(proj, [arg], @snap))
     end
   end
+
+  test "a foreign priv write refuses in a firmware target's trace, flag or not", %{proj: proj} do
+    path =
+      Path.join(proj, "_build/host/lib/dep/priv/assets/Pkg_W/uxwh53kfq2wszgf23hqwgkuiza.tar.gz")
+
+    e = %{
+      event(35, "file:open/2", Path.join(proj, "deps/pkg/lib/pkg.ex"), "file_write")
+      | "arg" => %{"path" => path}
+    }
+
+    r = report(proj, %{events: [e]})
+
+    assert %{status: :skip, reason: "compile-time write outside ebin: file:open/2 " <> _} =
+             judge(proj, r, nif_waiver: true, target: "rpi4", foreign_priv: true)
+  end
 end
