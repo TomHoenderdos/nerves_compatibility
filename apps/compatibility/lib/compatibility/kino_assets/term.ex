@@ -9,11 +9,17 @@ defmodule Compatibility.KinoAssets.Term do
   Only what Elixir's debug info holds is read: integers, floats, atoms,
   binaries, bit strings, tuples, lists (improper ones too), maps, and a
   compressed term (inflated to at most `max_bytes`). A pid, a port, a
-  reference, a fun, an atom cache reference or nesting deeper than 10,000
-  is `:error`, and so is any byte past the term. Never raises.
+  reference, a fun, an atom cache reference, nesting deeper than 10,000, an
+  integer of more than 64 KiB of digits or a map whose keys repeat is
+  `:error`, and so is any byte past the term. Integers read in linear time.
+  Never raises.
   """
 
   @max_depth 10_000
+  # The digits of the largest integer read: 64 times the largest in the
+  # debug info of 6,074 real beams (1,024 bytes, an 8192-bit prime in OTP's
+  # `pubkey_ssh`).
+  @max_integer_bytes 64 * 1024
 
   @doc "The term in `bytes`, atoms as `{:atom, name}`, or `:error`."
   @spec decode(binary(), pos_integer()) :: {:ok, term()} | :error
@@ -68,6 +74,9 @@ defmodule Compatibility.KinoAssets.Term do
   defp value(<<110, n, sign, digits::binary-size(n), rest::binary>>, _depth),
     do: {:ok, big(sign, digits), rest}
 
+  defp value(<<111, n::32, _rest::binary>>, _depth) when n > @max_integer_bytes,
+    do: throw(:error)
+
   defp value(<<111, n::32, sign, digits::binary-size(n), rest::binary>>, _depth),
     do: {:ok, big(sign, digits), rest}
 
@@ -101,10 +110,11 @@ defmodule Compatibility.KinoAssets.Term do
     {:ok, improper(items, tail), rest}
   end
 
+  # A key that repeats is no term, as `binary_to_term` reads it.
   defp value(<<116, arity::32, rest::binary>>, depth) do
     {items, rest} = items(rest, 2 * arity, depth + 1, [])
-    pairs = items |> Enum.chunk_every(2) |> Enum.map(fn [k, v] -> {k, v} end)
-    {:ok, Map.new(pairs), rest}
+    map = items |> Enum.chunk_every(2) |> Map.new(fn [k, v] -> {k, v} end)
+    if map_size(map) == arity, do: {:ok, map, rest}, else: throw(:error)
   end
 
   defp value(_bytes, _depth), do: throw(:error)
@@ -127,8 +137,9 @@ defmodule Compatibility.KinoAssets.Term do
   defp improper(items, []), do: items
   defp improper(items, tail), do: List.foldr(items, tail, &[&1 | &2])
 
+  # Linear in the digits, little-endian as the format writes them.
   defp big(sign, digits) do
-    n = digits |> :binary.bin_to_list() |> Enum.reverse() |> Enum.reduce(0, &(&2 * 256 + &1))
+    n = :binary.decode_unsigned(digits, :little)
     if sign == 0, do: n, else: -n
   end
 end

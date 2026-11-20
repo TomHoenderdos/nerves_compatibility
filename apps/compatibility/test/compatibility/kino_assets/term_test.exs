@@ -101,4 +101,56 @@ defmodule Compatibility.KinoAssets.TermTest do
     assert Term.decode(<<131, 116, 0xFFFFFFFF::32>>, @max) == :error
     assert Term.decode(<<131, 105, 0xFFFFFFFF::32>>, @max) == :error
   end
+
+  # A LARGE_BIG_EXT of `digits` little-endian bytes.
+  defp large_big(digits, sign \\ 0), do: <<131, 111, byte_size(digits)::32, sign>> <> digits
+
+  # R-2: the largest integer in the debug info of 6,074 real beams (Elixir,
+  # OTP, the umbrella's deps) is 1,024 bytes, an 8192-bit prime in OTP's
+  # pubkey_ssh. 64 KiB of digits is the cap; up to it an integer reads in
+  # linear time, as `binary_to_term` reads it.
+  test "a large integer up to the cap reads in linear time, as binary_to_term reads it" do
+    digits = :crypto.strong_rand_bytes(64 * 1024)
+
+    for sign <- [0, 1] do
+      bytes = large_big(digits, sign)
+      {micros, result} = :timer.tc(fn -> Term.decode(bytes, @max) end)
+      assert result == {:ok, :erlang.binary_to_term(bytes)}
+      assert micros < 100_000, "#{micros} µs"
+    end
+
+    assert Term.decode(:erlang.term_to_binary(2 ** 8191 + 1), @max) == {:ok, 2 ** 8191 + 1}
+  end
+
+  test "an integer past the cap is no term" do
+    assert Term.decode(large_big(:binary.copy(<<1>>, 64 * 1024 + 1)), @max) == :error
+  end
+
+  # Zero digits compress to almost nothing, so a tiny beam can carry one.
+  @tag timeout: 10_000
+  test "a huge compressed integer is refused at once, never decoded" do
+    # 16 MiB of zero digits and a one: 2 ** (8 * 16 MiB), as
+    # `term_to_binary(_, [:compressed])` writes it.
+    digits = :binary.copy(<<0>>, 16 * 1024 * 1024) <> <<1>>
+    plain = <<111, byte_size(digits)::32, 0>> <> digits
+    bytes = <<131, 80, byte_size(plain)::32>> <> :zlib.compress(plain)
+    assert byte_size(bytes) < 100_000
+    {micros, result} = :timer.tc(fn -> Term.decode(bytes, @max) end)
+    assert result == :error
+    assert micros < 2_000_000, "#{micros} µs"
+  end
+
+  # R-3: `binary_to_term` refuses a map whose keys repeat; so does `Term`.
+  test "a map with a repeated key is no term" do
+    dup = <<131, 116, 2::32, 97, 1, 97, 2, 97, 1, 97, 3>>
+    assert_raise ArgumentError, fn -> :erlang.binary_to_term(dup) end
+    assert Term.decode(dup, @max) == :error
+
+    atom_dup = <<131, 116, 2::32, 119, 1, "k", 97, 2, 119, 1, "k", 97, 3>>
+    assert_raise ArgumentError, fn -> :erlang.binary_to_term(atom_dup) end
+    assert Term.decode(atom_dup, @max) == :error
+
+    fine = <<131, 116, 2::32, 97, 1, 97, 2, 97, 3, 97, 4>>
+    assert Term.decode(fine, @max) == {:ok, :erlang.binary_to_term(fine)}
+  end
 end
