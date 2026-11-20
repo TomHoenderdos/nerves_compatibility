@@ -668,7 +668,12 @@ A host-read reason names the `system_info` key or environment variable, the path
 made the call when it is not the package's own (`compile-time host read: erlang:system_info/1 (system_architecture)
 via CCPrecompiler.current_target/0 in ...`). `erlang:system_info/1` of `otp_release`, `machine`, `smp_support`, `threads` or
 `heap_type` is allowed: each is constant within an OTP major (item 5d), which the client checks; `version`,
-`nif_version`, `driver_version`, `endian` and every other key still refuse. A `Path.wildcard/2` (or
+`nif_version`, `driver_version`, `endian` and every other key still refuse. `schedulers_online` is allowed only when
+Elixir's type checker reads it to size its pool: `Module.ParallelChecker`'s init/1 default for `:max_concurrency`
+(the frame `:ncc_tracer_channels.checker_pool_frames/0` names, pinned per toolchain), with no package frame on the
+stack. A Hex dependency's `mix.exs` with code outside a plain `defmodule` (inflex's `Hex.start()`, gen_state_machine's
+OTP check) starts such a checker in that dependency's window. The value only caps how many verification processes
+run at once; the same read from any other frame (a module body, `Task.async_stream/3`'s default) still refuses. A `Path.wildcard/2` (or
 `filelib:wildcard/2,3`) is judged as a read of the literal directory it starts from, relative to the working
 directory when its second argument is a module (`Path.Wildcard`, `file`) rather than a directory (item 5b); a
 wildcard through any other module refuses as a host read (its file calls are not traced).
@@ -930,7 +935,10 @@ version and socket option reads: `compile-time config read: ...`); a toolchain r
 could not be judged" and is listed in `compile_observations.config_unreviewed`. A read of Hex's config (`:hex`, any key:
 the builder's API and mirror URLs, repos, proxies and keys) is never recorded and makes the build "portability could not
 be judged" too. `get_all_env` from package code, a read naming a non-atom key, and a compile-time Elixir version read
-that differs between patches of the minor (`compile-time Elixir patch dependence: ...`) are refusals. A trace pass that does not name its config reads at all
+that differs between patches of the minor (`compile-time Elixir patch dependence: ...`) are refusals, except the
+reviewed `System.version/0` reads of toolshed 0.5.0, toml 0.7.0, dialyxir 1.4.9, benchee 1.5.1, timex 3.1.25, moar
+5.0.1 and wallaby 0.31.0 (`NccWorker.Portability.ElixirVersion`, `@reviewed_reads`: each release by its outer
+checksum, its tree verified, every read at a reviewed site). A trace pass that does not name its config reads at all
 is judged "portability could not be judged" and publishes nothing. A `pure_elixir` system result whose files are
 published carries the same list and `"compile_env_rule": 1`; one whose `.app` cannot be read (`compile_env` `null`,
 which no client matches) publishes nothing either, as "portability could not be judged".
