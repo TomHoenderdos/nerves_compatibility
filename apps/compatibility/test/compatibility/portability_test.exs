@@ -153,30 +153,92 @@ defmodule Compatibility.PortabilityTest do
                "portability could not be judged (tracer: :timeout) (transient 5 times)"
     end
 
-    test "never stores a path, a quoted value or more than 200 characters" do
-      assert Portability.with_cause(Portability.could_not_judge(), [
-               "built outside the trace: kino (digest failed now: {:enoent, ~c\"/work/proj/_build/host/lib/kino/ebin\"})"
-             ]) ==
-               "portability could not be judged " <>
-                 "(built outside the trace: kino (digest failed now: {:enoent, ~c\"…/ebin\"}))"
+    defp cause(problems) do
+      Portability.could_not_judge()
+      |> Portability.with_cause(problems)
+      |> Portability.cause_of()
+    end
 
-      assert Portability.with_cause(Portability.could_not_judge(), [
+    test "never stores a path, absolute or under ~, spaces and all" do
+      assert cause([
+               "built outside the trace: kino (digest failed now: {:enoent, ~c\"/work/proj/_build/host/lib/kino/ebin\"})"
+             ]) == "built outside the trace: kino (digest failed now: {:enoent, ~c\"…\"})"
+
+      assert cause(["could not read /home/nerves/my secret dir/key.pem"]) ==
+               "could not read …"
+
+      assert cause(["could not read ~/.ssh/id_rsa (enoent)"]) == "could not read … (enoent)"
+
+      assert cause(["/etc/x: refused, then ~/a b/c, d"]) == "…: refused, then …, d"
+
+      assert cause(["file:make_dir/1 /work/proj/_build (a link)"]) ==
+               "file:make_dir/1 … (a link)"
+
+      # A path's line number is not part of it; relative paths and MFAs stay.
+      assert cause(["read /work/proj/deps/x/mix.exs:12 in Mix.Project.deps/0"]) ==
+               "read …:12 in Mix.Project.deps/0"
+
+      assert cause([
+               "dependency tree changed after the check: gpb (read descr_src/gpb_descriptor.erl)"
+             ]) ==
+               "dependency tree changed after the check: gpb (read descr_src/gpb_descriptor.erl)"
+    end
+
+    test "never stores a value an exception, a tracer or a dead process quotes" do
+      assert cause([
                "judge failed: no match of right hand side value: %{\"value\" => \"s3cr3t\"}"
              ]) ==
-               "portability could not be judged (judge failed: no match of right hand side value)"
+               "judge failed: no match of right hand side value"
 
-      assert Portability.with_cause(Portability.could_not_judge(), [
-               "tracer: {:install_failed, \"could not write /home/me/x\"}"
-             ]) == "portability could not be judged (tracer: :install_failed)"
+      assert cause(["tracer: {:install_failed, \"could not write /home/me/x\"}"]) ==
+               "tracer: :install_failed"
 
+      assert cause(["tracer: SECRET=abc"]) == "tracer: SECRET"
+      assert cause(["tracer: :timeout"]) == "tracer: :timeout"
+      assert cause(["trace collector died: killed"]) == "trace collector died: killed"
+
+      assert cause(["trace collector died: {badarg,[{m,f,[<<\"SECRET=abc\">>],[]}]}"]) ==
+               "trace collector died: badarg"
+
+      assert cause(["trace watcher died: {{nocatch,\"s3cr3t\"},[]}"]) ==
+               "trace watcher died:"
+
+      assert cause(["child trace of x: tracer: {:install_failed, \"SECRET=abc\"}"]) ==
+               "child trace of x: tracer: :install_failed"
+
+      assert cause(["child trace of dns_erlang: trace collector died: killed"]) ==
+               "child trace of dns_erlang: trace collector died: killed"
+    end
+
+    test "is one line of at most 200 bytes" do
       long = "windows [" <> Enum.join(List.duplicate("plug_crypto", 100), ", ") <> "]"
-      reason = Portability.with_cause(Portability.could_not_judge(), [long])
-      cause = reason |> String.replace_prefix("portability could not be judged (", "")
-      assert String.length(cause) == 201
-      assert String.ends_with?(cause, "…)")
+      long_cause = cause([long])
+      assert byte_size(long_cause) <= 200
+      assert byte_size(long_cause) > 190
+      assert String.ends_with?(long_cause, "…")
+      assert String.valid?(long_cause)
 
-      assert Portability.with_cause(Portability.could_not_judge(), ["one\nline\ttwo"]) ==
-               "portability could not be judged (one line two)"
+      # One grapheme of 5,000 combining marks is 10 KB.
+      marks = "e" <> String.duplicate("\u0301", 5_000)
+      marked = cause([marks])
+      assert byte_size(marked) <= 200
+      assert String.valid?(marked)
+
+      wide = cause([String.duplicate("ü", 300)])
+      assert byte_size(wide) <= 200
+      assert String.valid?(wide)
+
+      assert cause(["one\nline\ttwo\u2028three\u2029four\u0085five\u202Esix"]) ==
+               "one line two three four five six"
+    end
+
+    test "a bare could-not-judge problem names no cause" do
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               Portability.could_not_judge()
+             ]) == Portability.could_not_judge()
+
+      assert cause([Portability.could_not_judge(), "trace overflowed: queue"]) ==
+               "trace overflowed: queue"
     end
 
     test "leaves every other reason, and a could-not-judge with no problems, as it is" do

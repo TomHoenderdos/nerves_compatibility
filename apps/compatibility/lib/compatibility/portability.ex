@@ -80,10 +80,30 @@ defmodule Compatibility.Portability do
     "processes left running "
   ]
 
-  # Exception and tracer messages can quote a value the compile handled:
-  # only the words before their first value are kept.
-  @value_after ["judge failed: ", "tracer: ", "not a trace report: ", "second build failed: "]
+  # Exception, tracer and crash messages can quote a value the compile
+  # handled: only an atom or a tuple's tag is kept, or the words before the
+  # first value. A child VM's problem is its own, after its wrapper.
+  @value_after [
+    "judge failed: ",
+    "tracer: ",
+    "not a trace report: ",
+    "second build failed: ",
+    "trace collector died: ",
+    "trace watcher died: "
+  ]
+  @child ~r/\A(child trace of [^:\s]+: )(.*)\z/su
 
+  # An absolute path, or one under `~`, from its first `/` (or `~/`) to the
+  # first quote, bracket, comma or semicolon, a colon before a digit or a
+  # space (a line number, a message), or the end: spaces included, so a
+  # directory with spaces in its name goes whole.
+  @path ~r/(?<![\w.~-])~?\/(?:[^"'()\[\]{}<>,;:]|:(?![\d\s]|\z))*/u
+  # Line and paragraph separators, controls and format characters (bidi
+  # overrides included).
+  @breaks ~r/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/u
+
+  # Bytes, not characters: one character can carry thousands of combining
+  # marks.
   @max_cause 200
   @manager_mismatch "manager mismatch: "
   @tree_differs "dependency tree differs from its tarball: "
@@ -133,10 +153,11 @@ defmodule Compatibility.Portability do
   says the trace itself broke (its collector died, it overflowed, it was
   over the report's read budget), else the first that says the traced
   compile or the judge failed, else the first. It is made safe to store
-  and show: one line, every absolute path cut to its last segment, the
-  words of an exception or tracer message before any value it quotes, and
-  at most #{@max_cause} characters. With no usable problem the reason stays
-  bare.
+  and show: one line; every absolute path and every path under `~` cut out
+  whole, spaces and all (`…`); of an exception, tracer or crash message
+  only an atom, a tuple's tag or the words before any value it quotes; and
+  at most #{@max_cause} bytes. A problem that is the bare reason itself
+  names nothing; with no usable problem the reason stays bare.
   """
   @spec with_cause(term(), term()) :: term()
   def with_cause(@could_not_judge <> rest = reason, problems) do
@@ -177,18 +198,25 @@ defmodule Compatibility.Portability do
   defp run_failure?(problem), do: Enum.any?(@run_failures, &String.starts_with?(problem, &1))
 
   # A problem that is itself a could-not-judge ("portability could not be
-  # judged (dependency tree changed ...)") contributes what it wraps.
+  # judged (dependency tree changed ...)") contributes what it wraps, and
+  # the bare reason nothing.
   defp clean(problem) do
-    problem
-    |> String.replace(~r/[[:cntrl:]]+/u, " ")
-    |> unwrap()
-    |> without_value()
-    |> String.replace(
-      ~r|(?<![\w.~-])/(?:[^\s,;:()\[\]{}"'<>]*/)?([^\s,;:()\[\]{}"'<>/]+)|u,
-      "…/\\1"
-    )
-    |> String.trim()
+    if String.valid?(problem) do
+      problem
+      |> String.replace(@breaks, " ")
+      |> unwrap()
+      |> without_value()
+      |> String.replace(@path, &cut_path/1)
+      |> String.trim()
+    else
+      ""
+    end
   end
+
+  # The path goes; a space it swallowed before what follows stays.
+  defp cut_path(path), do: if(String.ends_with?(path, " "), do: "… ", else: "…")
+
+  defp unwrap(@could_not_judge), do: ""
 
   defp unwrap(@could_not_judge <> " (" <> rest) do
     if String.ends_with?(rest, ")"), do: String.slice(rest, 0..-2//1), else: rest
@@ -197,30 +225,57 @@ defmodule Compatibility.Portability do
   defp unwrap(problem), do: problem
 
   defp without_value(problem) do
-    case Enum.find(@value_after, &String.starts_with?(problem, &1)) do
-      nil ->
+    case {Regex.run(@child, problem), Enum.find(@value_after, &String.starts_with?(problem, &1))} do
+      {[_, wrapper, inner], _} ->
+        wrapper <> without_value(inner)
+
+      {nil, nil} ->
         problem
 
-      prefix ->
-        rest = String.replace_prefix(problem, prefix, "")
-
-        kept =
-          case Regex.run(~r/\A\{?:(\w+)/u, rest) do
-            # An atom (`:timeout`), or an error tuple's tag.
-            [_, atom] -> ":" <> atom
-            nil -> rest |> String.split(~r/[:\[{(<"'%#~]|\d/u, parts: 2) |> hd()
-          end
-
-        String.trim_trailing(prefix <> kept)
+      {nil, prefix} ->
+        String.trim_trailing(prefix <> value_free(String.replace_prefix(problem, prefix, "")))
     end
   end
 
+  # A bare atom (`killed`), an atom (`:timeout`) or a tuple's tag
+  # (`{:install_failed, ...}`, `{badarg, ...}`) is kept; anything else up to
+  # its first value (a quote, a bracket, a map, a number, an `=`).
+  defp value_free(rest) do
+    cond do
+      Regex.match?(~r/\A[a-z]\w*\z/u, rest) ->
+        rest
+
+      tag = Regex.run(~r/\A(?:\{\s*)?(:?[a-z]\w*)/u, rest, capture: :all_but_first) ->
+        if String.starts_with?(rest, ["{", ":"]),
+          do: hd(tag),
+          else: words(rest)
+
+      true ->
+        words(rest)
+    end
+  end
+
+  defp words(rest), do: rest |> String.split(~r/[:\[{(<"'%#~=]|\d/u, parts: 2) |> hd()
+
   defp bounded(nil), do: nil
 
+  # Whole code points up to the byte limit, the ellipsis included.
+  defp bounded(cause) when byte_size(cause) <= @max_cause, do: cause
+
   defp bounded(cause) do
-    if String.length(cause) > @max_cause,
-      do: String.slice(cause, 0, @max_cause - 1) <> "…",
-      else: cause
+    budget = @max_cause - byte_size("…")
+
+    cause
+    |> String.codepoints()
+    |> Enum.reduce_while({[], 0}, fn cp, {acc, used} ->
+      if used + byte_size(cp) <= budget,
+        do: {:cont, {[cp | acc], used + byte_size(cp)}},
+        else: {:halt, {acc, used}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> IO.iodata_to_binary()
+    |> Kernel.<>("…")
   end
 
   @doc """
