@@ -34,14 +34,17 @@ defmodule NccWorker.Portability.ElixirVersion do
   requirement that cuts inside the minor refuses even above the built
   patch.
 
-  One reviewed read is let through (`reviewed_apps/2`, `@reviewed_reads`):
-  a window's only `System.version/0` read, at the reviewed file and line of
-  a module body, in an app whose locked release is the reviewed version
-  with the reviewed outer checksum and whose source tree matched that
-  verified tarball before the compile (`NccWorker.Portability.Trees`). The
-  reviewed comparison is evaluated again over the built minor's patches
-  and pre-releases. Every other observation of the window is judged as
-  above.
+  Reviewed reads are let through (`reviewed_apps/2`, `@reviewed_reads`): a
+  window whose `System.version/0` reads are exactly the reviewed sites of
+  its app's release, each read once, at the reviewed file and line of a
+  module body, with the reviewed frame kind, in an app whose locked release
+  is the reviewed version with the reviewed outer checksum and whose source
+  tree matched that verified tarball before the compile
+  (`NccWorker.Portability.Trees`). Each site's reviewed comparison is
+  evaluated again over the built minor's patches and pre-releases. Those
+  reads and the `Version.match?/2` and `Version.compare/2` calls made at
+  the same sites are dropped; every other observation of the window is
+  judged as above.
 
   A refusal, `compile-time Elixir patch dependence: ...`, belongs to its
   window: in the package's it refuses the package, in a dependency's it
@@ -58,11 +61,18 @@ defmodule NccWorker.Portability.ElixirVersion do
   @install_reads ["System.build_info/0", "System.compiled_endianness/0"]
   @no_version "no Elixir version in the trace"
 
-  # Reviewed `System.version/0` reads, by app (judge round 3). Each passes
-  # only for the release with exactly this outer checksum, as the lock pins
-  # it and the verified tarball's tree matched before the compile.
+  # Reviewed `System.version/0` reads, by app and release. Each release
+  # passes only with exactly this outer checksum, as the lock pins it and
+  # the verified tarball's tree matched before the compile. A site is the
+  # file and line the trace names for the read (a module body's, its
+  # `first_kind`) and the comparison the reviewed code makes of the version,
+  # evaluated again over the built minor on every build. The count rule
+  # above cannot take these: the version goes through `Version.parse!/1`,
+  # a struct or its fields, and the same shape is not safe by itself (croma
+  # 0.13.0 and serum 1.5.1 keep `Version.parse!(System.version())` in a
+  # module attribute their functions bake, so their beams hold the patch).
   #
-  # toolshed 0.5.0: the tarball's only Elixir-version read is
+  # toolshed 0.5.0 (judge round 3): the tarball's only Elixir-version read is
   # `lib_src/core/cmd.ex:13`, `if System.version() >= "1.16" do`, in the
   # body of `defimpl Collectable, for: SanitizerStream`, choosing between
   # two `into/1` definitions. No `Version` call, no other `System.version`
@@ -72,16 +82,141 @@ defmodule NccWorker.Portability.ElixirVersion do
   # `lib/toolshed.ex:13` in a module body (`elixir_compiler_N`). Invariant:
   # under Erlang term order every "1.19.P" and "1.20.P" binary, pre-releases
   # included, is `>= "1.16"` (byte 3, or byte 2 for 1.20, decides it before
-  # the patch is reached); checked by evaluating the comparison over
-  # 1.19/1.20 x.y.0..99, `-rc.N` and `-dev`, and evaluated again per build.
+  # the patch is reached).
+  #
+  # The dependencies whose read tainted the most builds, each tarball read
+  # whole (every file, `mix.exs` included) for `System.version`,
+  # `System.build_info`, `System.compiled_endianness` and `Version.`; every
+  # read not listed is in a function body run only at runtime, which the
+  # trace would name as another site:
+  #
+  #   * toml 0.7.0, `lib/provider.ex:49`: `has_config_api? =
+  #     Version.match?(Version.parse!(System.version()), ">= 1.9.0")` in
+  #     `Toml.Provider`'s body, a local the module's three `if`s read to
+  #     define `@behaviour Config.Provider` and its callbacks. Line 215 is
+  #     `is_distillery_env?/0`, called from `init/1` at runtime.
+  #   * dialyxir 1.4.9: `lib/dialyxir/project.ex:467`, `if System.version()
+  #     |> Version.parse!() |> (&(&1.major >= 1 and &1.minor >= 15)).() do`,
+  #     choosing between two `app_dep_specs/1`; `lib/mix/tasks/dialyzer.ex:350`,
+  #     `if Version.match?(System.version(), ">= 1.15.0") do`, choosing
+  #     between two `check_dialyzer/0`. `project.ex:250` and `:275` name PLT
+  #     files at runtime.
+  #   * benchee 1.5.1: `lib/benchee/benchmark/collect/memory.ex:19`, the body
+  #     of `defmacrop compatible_stacktrace`, `if
+  #     Version.match?(Version.parse!(System.version()), "~> 1.7") do`,
+  #     choosing `__STACKTRACE__` or `System.stacktrace()`; the macro is
+  #     expanded once, in `start_runner/2`, which erl_eval runs, so the trace
+  #     names line 56 with a glue first frame. `lib/benchee/profile.ex:31`,
+  #     `if Version.match?(System.version(), ">= 1.17.0") &&
+  #     String.to_integer(System.otp_release()) >= 27 do`, adding `:tprof`
+  #     to a module attribute. `mix.exs:64` is R4's (`MixExsSlice`);
+  #     `lib/benchee/system.ex:85` is runtime.
+  #   * timex 3.1.25, `lib/datetime/inspect.ex:15`, a file body: `if
+  #     System.version |> Version.parse! |> Version.compare(Version.parse!(
+  #     "1.5.0-rc.1")) == :lt do`, defining an `Inspect` implementation for
+  #     `DateTime` only before Elixir 1.5.
+  #   * moar 5.0.1: `lib/datetime.ex:35`, the body of `defmacrop at_time`, `if
+  #     System.version() |> Version.parse!() |> Version.compare(
+  #     Version.parse!("1.17.0")) == :lt do`, choosing one of two quotes; the
+  #     macro is expanded once, in `at/2`, so the trace names line 70 with a
+  #     glue first frame. `lib/file.ex:31`, `if Version.compare(
+  #     System.version(), "1.16.0") in [:gt, :eq] do`, choosing definitions.
+  #   * wallaby 0.31.0, `lib/wallaby/selenium.ex:382`: `@binread_arg if
+  #     Version.parse!(System.version()).minor >= 13, do: :eof, else: :all`,
+  #     the argument one function hands `IO.binread/2`.
   @reviewed_reads %{
-    "toolshed" => %{
-      version: "0.5.0",
-      checksum: "44a39f384d813d1991c4637eca23f62e9f91135e496c868c400b42ed01eb51d2",
-      file: "lib/toolshed.ex",
-      line: 13,
-      compare: {:>=, "1.16"}
-    }
+    "toolshed" => [
+      %{
+        version: "0.5.0",
+        checksum: "44a39f384d813d1991c4637eca23f62e9f91135e496c868c400b42ed01eb51d2",
+        sites: [%{file: "lib/toolshed.ex", line: 13, kind: "user", compare: {:term, :>=, "1.16"}}]
+      }
+    ],
+    "toml" => [
+      %{
+        version: "0.7.0",
+        checksum: "0690246a2478c1defd100b0c9b89b4ea280a22be9a7b313a8a058a2408a2fa70",
+        sites: [%{file: "lib/provider.ex", line: 49, kind: "user", compare: {:match, ">= 1.9.0"}}]
+      }
+    ],
+    "dialyxir" => [
+      %{
+        version: "1.4.9",
+        checksum: "1c049c22b47680f4fff78ed0b0fe377073a762e96af153fdfe28bf00131de76d",
+        sites: [
+          %{
+            file: "lib/dialyxir/project.ex",
+            line: 467,
+            kind: "user",
+            compare: {:fields, major: 1, minor: 15}
+          },
+          %{
+            file: "lib/mix/tasks/dialyzer.ex",
+            line: 350,
+            kind: "user",
+            compare: {:match, ">= 1.15.0"}
+          }
+        ]
+      }
+    ],
+    "benchee" => [
+      %{
+        version: "1.5.1",
+        checksum: "a539301f8dfd4efc5c5123bfb9d47ebde20092a863a5b5b16c2a60d2243dfce7",
+        sites: [
+          %{
+            file: "lib/benchee/benchmark/collect/memory.ex",
+            line: 56,
+            kind: "glue",
+            compare: {:match, "~> 1.7"}
+          },
+          %{
+            file: "lib/benchee/profile.ex",
+            line: 31,
+            kind: "user",
+            compare: {:match, ">= 1.17.0"}
+          }
+        ]
+      }
+    ],
+    "moar" => [
+      %{
+        version: "5.0.1",
+        checksum: "f0448ac83d02ebd46b134faa22d6102f4a963f8bf285411dec94b3863a366a78",
+        sites: [
+          %{file: "lib/datetime.ex", line: 70, kind: "glue", compare: {:compare, "1.17.0"}},
+          %{file: "lib/file.ex", line: 31, kind: "user", compare: {:compare, "1.16.0"}}
+        ]
+      }
+    ],
+    "wallaby" => [
+      %{
+        version: "0.31.0",
+        checksum: "a3e7a5f13c1db49d32c17dafe8d4654fe556987efd12d422673b902455871c50",
+        sites: [
+          %{
+            file: "lib/wallaby/selenium.ex",
+            line: 382,
+            kind: "user",
+            compare: {:fields, minor: 13}
+          }
+        ]
+      }
+    ],
+    "timex" => [
+      %{
+        version: "3.1.25",
+        checksum: "218b5ac7fd7e6a6ced68d91e9d57de3ab79c5e57b0c677ed3f024ccbb0021391",
+        sites: [
+          %{
+            file: "lib/datetime/inspect.ex",
+            line: 15,
+            kind: "user",
+            compare: {:compare, "1.5.0-rc.1"}
+          }
+        ]
+      }
+    ]
   }
 
   @type result :: %{refusals: [{term(), {:refuse, String.t()}}], problems: [String.t()]}
@@ -91,8 +226,8 @@ defmodule NccWorker.Portability.ElixirVersion do
   `decided` (`{owner, decision}`, already limited to the package's closure)
   for a trace made on Elixir `built`.
   """
-  @spec judge([{term(), term()}], String.t() | nil, MapSet.t()) :: result()
-  def judge(decided, built, reviewed \\ MapSet.new()) do
+  @spec judge([{term(), term()}], String.t() | nil, %{String.t() => map()}) :: result()
+  def judge(decided, built, reviewed \\ %{}) do
     decided
     |> Enum.flat_map(fn
       {owner, {:observe, "elixir_version", item}} when is_map(item) ->
@@ -106,22 +241,23 @@ defmodule NccWorker.Portability.ElixirVersion do
   end
 
   @doc """
-  The apps whose reviewed read (`@reviewed_reads`) may pass: the locked
-  release in `releases` (`%{app => %{name, version, checksum}}`) is the
-  reviewed version with the reviewed outer checksum, and the tree in
-  `trees` (`NccWorker.Portability.Trees.snapshot/5`) matched that verified
-  tarball before the compile. Anything else, none.
+  The apps whose reviewed reads (`@reviewed_reads`) may pass, each with its
+  reviewed release: the locked release in `releases` (`%{app => %{name,
+  version, checksum}}`) is a reviewed version with its reviewed outer
+  checksum, and the tree in `trees` (`NccWorker.Portability.Trees.snapshot/5`)
+  matched that verified tarball before the compile. Anything else, none.
   """
-  @spec reviewed_apps(map(), map()) :: MapSet.t()
+  @spec reviewed_apps(map(), map()) :: %{String.t() => map()}
   def reviewed_apps(releases, trees) when is_map(releases) and is_map(trees) do
-    for {app, %{version: version, checksum: sum}} <- @reviewed_reads,
+    for {app, reviewed} <- @reviewed_reads,
+        %{version: version, checksum: sum} = release <- reviewed,
         match?(%{name: ^app, version: ^version, checksum: ^sum}, releases[app]),
         match?({:ok, %{}}, trees[app]),
-        into: MapSet.new(),
-        do: app
+        into: %{},
+        do: {app, release}
   end
 
-  def reviewed_apps(_releases, _trees), do: MapSet.new()
+  def reviewed_apps(_releases, _trees), do: %{}
 
   # `System.build_info/0` and `System.compiled_endianness/0`
   # (`@install_reads`) refuse whatever the built version is, so a window with
@@ -145,15 +281,22 @@ defmodule NccWorker.Portability.ElixirVersion do
     end
   end
 
-  # The window's items without its reviewed read, when it has exactly one
-  # `System.version/0` read and that read is the reviewed one; else all of
-  # them.
+  # The window's items without its reviewed reads and the comparisons made
+  # at their sites, when its `System.version/0` reads are exactly the
+  # sites of its app's reviewed release, each read once and each as
+  # reviewed; else all of them.
   defp unreviewed(items, owner, {:ok, versions}, reviewed) when is_binary(owner) do
-    with true <- MapSet.member?(reviewed, owner),
-         %{} = review <- Map.get(@reviewed_reads, owner),
-         [read] <- Enum.filter(items, &(&1["mfa"] == "System.version/0")),
-         true <- reviewed_read?(read, review, versions) do
-      List.delete(items, read)
+    with %{sites: sites} <- Map.get(reviewed, owner),
+         reads = Enum.filter(items, &(&1["mfa"] == "System.version/0")),
+         true <-
+           Enum.sort(Enum.map(reads, &site_key/1)) ==
+             Enum.sort(Enum.map(sites, &{&1.file, &1.line})),
+         true <- Enum.all?(reads, &reviewed_read?(&1, sites, versions)) do
+      keys = MapSet.new(sites, &{&1.file, &1.line})
+
+      Enum.reject(items, fn item ->
+        item["mfa"] in ["System.version/0" | @judged] and MapSet.member?(keys, site_key(item))
+      end)
     else
       _ -> items
     end
@@ -161,18 +304,25 @@ defmodule NccWorker.Portability.ElixirVersion do
 
   defp unreviewed(items, _owner, _versions, _reviewed), do: items
 
-  defp reviewed_read?(read, review, versions) do
-    read["file"] == review.file and read["line"] == review.line and
-      read["first_kind"] == "user" and module_body?(read["module"]) and
-      invariant_compare?(review.compare, versions)
+  defp site_key(item), do: {item["file"], item["line"]}
+
+  defp reviewed_read?(read, sites, versions) do
+    case Enum.find(sites, &({&1.file, &1.line} == site_key(read))) do
+      %{kind: kind, compare: compare} ->
+        read["first_kind"] == kind and module_body?(read["module"]) and
+          invariant_compare?(compare, versions)
+
+      nil ->
+        false
+    end
   end
 
   defp module_body?("elixir_compiler_" <> n) when n != "", do: String.match?(n, ~r/^[0-9]+$/)
   defp module_body?(_module), do: false
 
-  # The reviewed term comparison gives one answer over the built version and
+  # The reviewed comparison gives one answer over the built version and
   # every patch of its minor, with `-rc.N` and `-dev` pre-releases.
-  defp invariant_compare?({op, literal}, versions) do
+  defp invariant_compare?(compare, versions) do
     [built | _] = versions
     {:ok, %Version{major: major, minor: minor}} = Version.parse(built)
 
@@ -181,11 +331,30 @@ defmodule NccWorker.Portability.ElixirVersion do
           suffix <- ["", "-dev" | Enum.map(0..9, &"-rc.#{&1}")],
           do: "#{major}.#{minor}.#{p}#{suffix}"
 
-    results = for v <- [built | candidates], uniq: true, do: term_compare(op, v, literal)
-    match?([true], results) or match?([false], results)
+    results = for v <- [built | candidates], uniq: true, do: reviewed_compare(compare, v)
+    match?([{:ok, _}], results)
   end
 
-  defp term_compare(:>=, a, b), do: a >= b
+  # What the reviewed code computes from the version `v`: a term comparison
+  # of the version string, `Version.match?/2` of its struct against a
+  # requirement, `Version.compare/2` of it against another version, or its
+  # fields each at least a bound.
+  defp reviewed_compare(compare, v) do
+    {:ok, evaluate(compare, v)}
+  rescue
+    _ -> :error
+  end
+
+  defp evaluate({:term, :>=, literal}, v), do: v >= literal
+  defp evaluate({:match, requirement}, v), do: Version.match?(Version.parse!(v), requirement)
+
+  defp evaluate({:compare, other}, v),
+    do: Version.compare(Version.parse!(v), Version.parse!(other))
+
+  defp evaluate({:fields, bounds}, v) do
+    version = Version.parse!(v)
+    Enum.all?(bounds, fn {field, bound} -> Map.fetch!(version, field) >= bound end)
+  end
 
   defp compared(_items, _built, :error), do: :unjudged
 

@@ -224,7 +224,7 @@ defmodule NccWorker.Portability.ElixirVersionTest do
       do: ElixirVersion.judge(Enum.map(items, &obs("toolshed", &1)), built, apps)
 
     test "passes on every patch and pre-release of 1.19 and 1.20" do
-      assert reviewed() == MapSet.new(["toolshed"])
+      assert Map.keys(reviewed()) == ["toolshed"]
 
       for minor <- ["1.19", "1.20"], p <- [0, 5, 9, 10, 99], suffix <- ["", "-rc.0", "-dev"] do
         built = "#{minor}.#{p}#{suffix}"
@@ -239,9 +239,9 @@ defmodule NccWorker.Portability.ElixirVersionTest do
             reviewed(release(), %{"toolshed" => {:unverified, "no verified tarball"}}),
             reviewed(release(), %{"toolshed" => {:differs, "modified file lib/toolshed.ex"}}),
             reviewed(release(), %{}),
-            MapSet.new()
+            %{}
           ] do
-        assert apps == MapSet.new()
+        assert apps == %{}
 
         assert %{refusals: [{"toolshed", {:refuse, reason}}]} =
                  judge_toolshed([toolshed_read()], @built, apps)
@@ -288,6 +288,233 @@ defmodule NccWorker.Portability.ElixirVersionTest do
 
       assert %{refusals: [{"toolshed", {:refuse, @prefix <> "Version.match?/2" <> _}}]} =
                judge_toolshed([toolshed_read(), bad])
+    end
+  end
+
+  # The System.version/0 reads of six releases whose beams do not depend on
+  # the patch, as the real traces of 1.19.5 and 1.20.5 name them. Each reads
+  # the version through `Version.parse!/1` (a struct the count rule cannot
+  # take, rightly: croma and serum keep such a struct in a module attribute
+  # their functions bake) or through its fields.
+  describe "the reviewed reads of toml, dialyxir, benchee, timex, moar and wallaby" do
+    @struct ~s("\#{major => 1,minor => 19,build => nil,'__struct__' => 'Elixir.Version',pre => [],patch => 5}")
+    @v1_17 ~s("\#{major => 1,minor => 17,build => nil,'__struct__' => 'Elixir.Version',pre => [],patch => 0}")
+    @rc ~s("\#{major => 1,minor => 5,build => nil,'__struct__' => 'Elixir.Version',pre => [<<\"rc\">>,1],patch => 0}")
+
+    @releases %{
+      "toml" => {"0.7.0", "0690246a2478c1defd100b0c9b89b4ea280a22be9a7b313a8a058a2408a2fa70"},
+      "dialyxir" => {"1.4.9", "1c049c22b47680f4fff78ed0b0fe377073a762e96af153fdfe28bf00131de76d"},
+      "benchee" => {"1.5.1", "a539301f8dfd4efc5c5123bfb9d47ebde20092a863a5b5b16c2a60d2243dfce7"},
+      "timex" => {"3.1.25", "218b5ac7fd7e6a6ced68d91e9d57de3ab79c5e57b0c677ed3f024ccbb0021391"},
+      "moar" => {"5.0.1", "f0448ac83d02ebd46b134faa22d6102f4a963f8bf285411dec94b3863a366a78"},
+      "wallaby" => {"0.31.0", "a3e7a5f13c1db49d32c17dafe8d4654fe556987efd12d422673b902455871c50"}
+    }
+
+    defp site(mfa, file, line, kind, arg \\ %{}) do
+      %{
+        "mfa" => mfa,
+        "arg" => arg,
+        "module" => "elixir_compiler_7",
+        "file" => file,
+        "line" => line,
+        "first" => "elixir_compiler_7",
+        "first_kind" => kind,
+        "extent" => "frame"
+      }
+    end
+
+    defp version_read(file, line, kind \\ "user"),
+      do: site("System.version/0", file, line, kind)
+
+    # The observations each release's own window holds, as traced.
+    defp traced("toml") do
+      [
+        version_read("lib/provider.ex", 49),
+        site("Version.match?/2", "lib/provider.ex", 49, "user", %{
+          "left" => @struct,
+          "right" => ~s(">= 1.9.0")
+        })
+      ]
+    end
+
+    defp traced("dialyxir") do
+      [
+        version_read("lib/dialyxir/project.ex", 467),
+        version_read("lib/mix/tasks/dialyzer.ex", 350),
+        site("Version.match?/2", "lib/mix/tasks/dialyzer.ex", 350, "user", %{
+          "left" => ~s("#{@built}"),
+          "right" => ~s(">= 1.15.0")
+        })
+      ]
+    end
+
+    # benchee's `defmacrop compatible_stacktrace` runs through erl_eval while
+    # `start_runner/2` (line 56) expands it: glue first, its module body the
+    # user frame.
+    defp traced("benchee") do
+      [
+        version_read("lib/benchee/benchmark/collect/memory.ex", 56, "glue"),
+        site("Version.match?/2", "lib/benchee/benchmark/collect/memory.ex", 56, "glue", %{
+          "left" => @struct,
+          "right" => ~s("~> 1.7")
+        }),
+        version_read("lib/benchee/profile.ex", 31),
+        site("Version.match?/2", "lib/benchee/profile.ex", 31, "user", %{
+          "left" => ~s("#{@built}"),
+          "right" => ~s(">= 1.17.0")
+        })
+      ]
+    end
+
+    defp traced("timex") do
+      [
+        version_read("lib/datetime/inspect.ex", 15),
+        site("Version.compare/2", "lib/datetime/inspect.ex", 15, "user", %{
+          "left" => @struct,
+          "right" => @rc
+        })
+      ]
+    end
+
+    # moar's `defmacrop at_time`, expanded by erl_eval in `at/2` (line 70).
+    defp traced("moar") do
+      [
+        version_read("lib/datetime.ex", 70, "glue"),
+        site("Version.compare/2", "lib/datetime.ex", 70, "glue", %{
+          "left" => @struct,
+          "right" => @v1_17
+        }),
+        version_read("lib/file.ex", 31),
+        site("Version.compare/2", "lib/file.ex", 31, "user", %{
+          "left" => ~s("#{@built}"),
+          "right" => ~s("1.16.0")
+        })
+      ]
+    end
+
+    # `Version.parse!(System.version()).minor`: no Version call at all.
+    defp traced("wallaby"), do: [version_read("lib/wallaby/selenium.ex", 382)]
+
+    defp locked(app, overrides \\ []) do
+      {version, sum} = @releases[app]
+      version = Keyword.get(overrides, :version, version)
+      sum = Keyword.get(overrides, :checksum, sum)
+      %{app => %{name: app, version: version, checksum: sum}}
+    end
+
+    defp tree(app), do: %{app => {:ok, %{"mix.exs" => "x"}}}
+
+    defp judge_app(app, items, built \\ @built, reviewed \\ nil) do
+      reviewed = reviewed || ElixirVersion.reviewed_apps(locked(app), tree(app))
+      ElixirVersion.judge(Enum.map(items, &obs(app, &1)), built, reviewed)
+    end
+
+    test "each release's own reads pass on every patch and pre-release of 1.19 and 1.20" do
+      for {app, _} <- @releases,
+          minor <- ["1.19", "1.20"],
+          p <- [0, 3, 5, 99],
+          suffix <- ["", "-rc.0", "-dev"] do
+        built = "#{minor}.#{p}#{suffix}"
+
+        assert %{refusals: [], problems: []} = judge_app(app, traced(app), built),
+               "#{app} #{built}"
+      end
+    end
+
+    test "without the reviewed release the same reads still refuse" do
+      for {app, _} <- @releases do
+        none = ElixirVersion.reviewed_apps(%{}, %{})
+
+        wrong_sum =
+          ElixirVersion.reviewed_apps(locked(app, checksum: String.duplicate("0", 64)), tree(app))
+
+        other_version = ElixirVersion.reviewed_apps(locked(app, version: "0.0.1"), tree(app))
+        changed = ElixirVersion.reviewed_apps(locked(app), %{app => {:differs, "modified file"}})
+
+        for reviewed <- [none, wrong_sum, other_version, changed] do
+          assert reviewed == %{}
+
+          assert %{refusals: [{^app, {:refuse, reason}}]} =
+                   judge_app(app, traced(app), @built, reviewed)
+
+          assert reason =~ "System.version/0 read without a patch-invariant Version comparison"
+        end
+      end
+    end
+
+    # The shape alone is never enough: a fork with the same file and line
+    # (gsmlg_toml, tomler) or croma's struct compare refuse as before.
+    test "the same observations in another app refuse" do
+      reviewed = ElixirVersion.reviewed_apps(locked("toml"), tree("toml"))
+
+      for app <- ["gsmlg_toml", "tomler", "croma"] do
+        assert %{refusals: [{^app, _}]} =
+                 ElixirVersion.judge(Enum.map(traced("toml"), &obs(app, &1)), @built, reviewed)
+      end
+    end
+
+    test "a read at any other site, a repeated or a missing site refuses" do
+      extra = version_read("lib/toml.ex", 10)
+
+      for app <- Map.keys(@releases) do
+        assert %{refusals: [{^app, _}]} = judge_app(app, traced(app) ++ [extra]), app
+
+        [first | _] = Enum.filter(traced(app), &(&1["mfa"] == "System.version/0"))
+        assert %{refusals: [{^app, _}]} = judge_app(app, traced(app) ++ [first]), app
+      end
+
+      # With its plain `Version.match?/2` site gone, the window is not the
+      # reviewed one, and the struct site is judged by the count rule alone.
+      for {app, plain} <- [
+            {"dialyxir", "lib/mix/tasks/dialyzer.ex"},
+            {"benchee", "lib/benchee/profile.ex"}
+          ] do
+        items = Enum.reject(traced(app), &(&1["file"] == plain))
+        assert %{refusals: [{^app, _}]} = judge_app(app, items), app
+      end
+    end
+
+    test "a site read from another frame kind or outside a module body refuses" do
+      for app <- Map.keys(@releases) do
+        items = traced(app)
+        read = Enum.find(items, &(&1["mfa"] == "System.version/0"))
+
+        for overrides <- [
+              %{"first_kind" => "none"},
+              %{"first_kind" => if(read["first_kind"] == "glue", do: "user", else: "glue")},
+              %{"module" => "Elixir.Toml.Provider"},
+              %{"line" => read["line"] + 1},
+              %{"file" => "lib/other.ex"}
+            ] do
+          changed =
+            List.replace_at(
+              items,
+              Enum.find_index(items, &(&1 == read)),
+              Map.merge(read, overrides)
+            )
+
+          assert %{refusals: [{^app, _}]} = judge_app(app, changed),
+                 "#{app} #{inspect(overrides)}"
+        end
+      end
+    end
+
+    # benchee's `>= 1.17.0` and dialyxir's `>= 1.15.0` cut a minor's
+    # pre-releases from its finals: on that minor they are not invariant.
+    test "a reviewed comparison is evaluated again over the built minor" do
+      assert %{refusals: [{"benchee", _}]} = judge_app("benchee", traced("benchee"), "1.17.3")
+      assert %{refusals: [{"dialyxir", _}]} = judge_app("dialyxir", traced("dialyxir"), "1.15.2")
+      assert %{refusals: []} = judge_app("dialyxir", traced("dialyxir"), "1.16.2")
+    end
+
+    test "every other comparison of the window is still judged" do
+      bad = ev("Version.match?/2", {@built, ">= 1.19.6"})
+
+      for app <- Map.keys(@releases) do
+        assert %{refusals: [{^app, {:refuse, @prefix <> "Version.match?/2" <> _}}]} =
+                 judge_app(app, traced(app) ++ [bad]),
+               app
+      end
     end
   end
 end
