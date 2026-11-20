@@ -1675,12 +1675,17 @@ defmodule Portal.Catalog do
 
   # A `fail` row whose `mix compile` a signal killed: the worker's host
   # compile error as `Portal.Catalog.Ingestion` stores it, with an exit code
-  # of 128 + the signal (134 SIGABRT, 137 SIGKILL, 143 SIGTERM). The build
-  # host's memory or a watchdog stopped the compile, which says nothing about
-  # the package, so unlike every other `fail` it is no verdict. NULL (no
-  # reason) reads as a verdict.
+  # of 128 + the signal (134 SIGABRT, 137 SIGKILL, 143 SIGTERM), or one that
+  # exited 1 because a signal killed the C or C++ compiler under it, which
+  # the compiler error the reason names says (`NccWorker.CompileError`,
+  # `"c++: fatal error: Killed signal terminated program cc1plus"`). The
+  # build host's memory or a watchdog stopped the compile, which says
+  # nothing about the package, so unlike every other `fail` it is no
+  # verdict. NULL (no reason) reads as a verdict.
   @killed_compile """
-  coalesce(t.reason ~ '^compile failed: .*exited with code (12[89]|1[3-9][0-9]|2[0-5][0-9])$', false)
+  coalesce(t.reason ~ '^compile failed: .*exited with code (12[89]|1[3-9][0-9]|2[0-5][0-9])$'
+    OR t.reason ~ '^compile failed: .*exited with code 1 \\(\\S+: fatal error: Killed signal terminated program \\S+\\)$',
+    false)
   """
 
   # A live row of the identity (see `@toolchain_candidates_sql`'s comment for

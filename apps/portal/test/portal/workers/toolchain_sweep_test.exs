@@ -259,6 +259,24 @@ defmodule Portal.Workers.ToolchainSweepTest do
         )
       end
 
+      # The build's memory limit killing the C compiler is no verdict either,
+      # though `mix compile` itself exits 1: the reason names the compiler
+      # error (`Compatibility.Portability.with_compile_error/2`).
+      run!("cc_killed", "1.0.0")
+
+      toolchain_row!("cc_killed", "1.0.0", :fail,
+        reason:
+          @compile_failed <> " (c++: fatal error: Killed signal terminated program cc1plus)",
+        finished_at: ago(8 * @day)
+      )
+
+      run!("cc_error", "1.0.0")
+
+      toolchain_row!("cc_error", "1.0.0", :fail,
+        reason: @compile_failed <> " (c_src/x.c:3: fatal error: openssl/err.h: No such file)",
+        finished_at: ago(8 * @day)
+      )
+
       run!("killed_recently", "1.0.0")
 
       toolchain_row!("killed_recently", "1.0.0", :fail,
@@ -267,9 +285,9 @@ defmodule Portal.Workers.ToolchainSweepTest do
       )
 
       assert Catalog.toolchain_backlog("1.19/28", 1, 100) |> Enum.map(& &1.package) |> Enum.sort() ==
-               ["sigabrt", "sigkill", "sigterm"]
+               ["cc_killed", "sigabrt", "sigkill", "sigterm"]
 
-      assert %{"1.19/28" => %{fail: 9, backlog: 3}} = Catalog.toolchain_counts()
+      assert %{"1.19/28" => %{fail: 11, backlog: 4}} = Catalog.toolchain_counts()
     end
 
     test "a row for another toolchain or builder version is not live here" do

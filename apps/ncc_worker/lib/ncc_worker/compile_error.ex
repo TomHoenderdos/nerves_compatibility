@@ -13,7 +13,8 @@ defmodule NccWorker.CompileError do
     1. a compiler's own error: an Elixir diagnostic (`error: ...`, with the
        file and line of the `└─` under it), an Erlang or C compiler's
        `file:line: message` that is not a warning, a note or a stacktrace
-       entry, a shell's `...: not found` for a build program, or rebar3's
+       entry, a shell's `...: not found` for a build program, a compiler
+       driver's `fatal error: Killed signal terminated program`, or rebar3's
        `Compiling <file> failed` with the first message under it that is not
        a warning;
     2. an exception (`** (Error) message`), other than Mix's summary of a
@@ -80,7 +81,7 @@ defmodule NccWorker.CompileError do
     trimmed = line |> String.trim() |> String.replace_prefix("===> ", "")
 
     Enum.find_value(
-      [&elixir_error/2, &source_error/2, &missing_program/2, &rebar_failed/2],
+      [&elixir_error/2, &source_error/2, &missing_program/2, &killed_compiler/2, &rebar_failed/2],
       & &1.(trimmed, below)
     )
   end
@@ -100,6 +101,13 @@ defmodule NccWorker.CompileError do
 
   defp missing_program(line, _below) do
     if Regex.match?(~r/\A\S*sh: (?:line )?\d+: .+: (?:command )?not found\z/u, line), do: line
+  end
+
+  # A compiler driver whose compiler a signal killed (the build's memory
+  # limit): `c++: fatal error: Killed signal terminated program cc1plus`.
+  defp killed_compiler(line, _below) do
+    if Regex.match?(~r/\A\S+: fatal error: Killed signal terminated program \S+\z/u, line),
+      do: line
   end
 
   defp rebar_failed(line, below) do

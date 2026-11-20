@@ -125,6 +125,20 @@ defmodule NccWorker.CompileErrorTest do
              "/bin/sh: line 1: cmake: command not found"
   end
 
+  # The build's memory limit killed the C++ compiler: its driver's own line
+  # says so, which the portal's killed-compile rule reads.
+  test "a compiler a signal killed" do
+    log = """
+    c++: fatal error: Killed signal terminated program cc1plus
+    compilation terminated.
+    gmake[6]: *** [CMakeFiles/rocksdb.dir/build.make:790: CMakeFiles/rocksdb.dir/db/db_impl.cc.o] Error 1
+    ** (Mix) Could not compile dependency :rocksdb, "rebar3 bare compile" command failed.
+    """
+
+    assert CompileError.first(log, @proj) ==
+             "c++: fatal error: Killed signal terminated program cc1plus"
+  end
+
   test "rebar3's failed file, with the first error under it, not a warning above it" do
     log = """
     ===> Compiling gen_smtp
