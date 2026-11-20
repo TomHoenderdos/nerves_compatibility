@@ -921,6 +921,20 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     assert %{status: :skip, reason: @cnj, observations: obs} = verdict(ctx, "fx_mix_rerun")
     assert Enum.any?(obs["problems"], &(&1 =~ "in a window with a nested compile")), inspect(obs)
     assert "Mix.Task.rerun/2" in nested_mfas(ctx, "fx_mix_rerun")
+
+    # Mix's elixir compiler reads :dbg_callback for its manifest, here on
+    # the package's stack: recorded like dbg/2's own read, so the nested
+    # compile is all that holds the build back.
+    assert Enum.all?(obs["problems"], &(&1 =~ "in a window with a nested compile")),
+           inspect(obs["problems"])
+
+    assert obs["config_unreviewed"] == []
+
+    assert Enum.any?(
+             obs["config_reads"],
+             &(&1["first"] == "Elixir.Mix.Compilers.Elixir" and
+                 &1["arg"]["key_name"] == "dbg_callback")
+           )
   end
 
   test "a hook on the compile's diagnostics registered from package code marks the window",

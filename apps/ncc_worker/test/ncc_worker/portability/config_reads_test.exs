@@ -335,7 +335,13 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     for elixir <- ["1.19.5", "1.20.4"],
         entries <- [defaults, configured],
         owner <- ["pkg", "dep", :outside],
-        first <- ["Elixir.DateTime", "Elixir.Kernel", "Elixir.Calendar", "Elixir.Pkg"] do
+        first <- [
+          "Elixir.DateTime",
+          "Elixir.Kernel",
+          "Elixir.Mix.Compilers.Elixir",
+          "Elixir.Calendar",
+          "Elixir.Pkg"
+        ] do
       decided =
         for {_first, key} <- reads,
             do: obs(owner, read("elixir", key, kind: "toolchain", first: first))

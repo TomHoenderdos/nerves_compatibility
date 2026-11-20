@@ -150,7 +150,11 @@ defmodule NccWorker.Portability.ConfigReads do
   # that uses `dbg` when it changes. Its first frame is `Kernel`'s macro.
   # Elixir 1.20 first takes a callback from the compiling process's
   # dictionary (`Code.eval_quoted_with_env/4`'s `:dbg_callback`), which
-  # makes no config read and is the package's own choice.
+  # makes no config read and is the package's own choice. Mix's elixir
+  # compiler reads the key too (`Mix.Compilers.Elixir`, which keeps it in
+  # its manifest to pick what to recompile when it changes): package code
+  # running that compiler itself makes the read on its own stack, and
+  # recording it there is only stricter.
   #
   # Both change what a compile produces, so both are match conditions.
   # Elixir's own `.app` sets both keys and `:elixir` is loaded in every VM,
