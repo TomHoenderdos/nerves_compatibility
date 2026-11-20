@@ -24,7 +24,8 @@ defmodule Portal.Settings do
     world_variants_enabled: false,
     firmware_world_enabled: false,
     host_native_enabled: false,
-    deterministic_builds_enabled: false
+    deterministic_builds_enabled: false,
+    foreign_priv_enabled: false
   }
 
   resources do

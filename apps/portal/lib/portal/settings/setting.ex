@@ -63,7 +63,8 @@ defmodule Portal.Settings.Setting do
         :world_variants_enabled,
         :firmware_world_enabled,
         :host_native_enabled,
-        :deterministic_builds_enabled
+        :deterministic_builds_enabled,
+        :foreign_priv_enabled
       ])
 
       upsert?(true)
@@ -179,6 +180,16 @@ defmodule Portal.Settings.Setting do
     # and siblings are published: a version's `deterministic` key and their
     # files. Off by default; stored rows stay when it is turned off, unserved.
     attribute :deterministic_builds_enabled, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Whether foreign priv builds (Kino.JS writers, foreign priv spec 4) are
+    # published under a version's `foreign_priv` object, and toolchain jobs
+    # carry the judge's `foreign_priv` flag (`Portal.Builder.judge_input/1`).
+    # Off by default; stored rows stay when it is turned off, unserved.
+    attribute :foreign_priv_enabled, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)

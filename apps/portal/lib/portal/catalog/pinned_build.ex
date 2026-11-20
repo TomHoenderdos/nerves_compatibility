@@ -67,6 +67,8 @@ defmodule Portal.Catalog.PinnedBuild do
     :compile_env,
     :compile_env_rule,
     :compile_inputs,
+    :foreign_priv,
+    :foreign_priv_rule,
     :file_manifest,
     :optional_deps,
     :native,
@@ -110,8 +112,9 @@ defmodule Portal.Catalog.PinnedBuild do
       upsert_identity(:unique_identity)
       # A rebuild clears `attempted_at` with the verdict it replaces; it never
       # writes `revoked_at` or `unpublished_at`, so a withdrawal holds.
-      upsert_fields((@mutable -- [:sibling_attempted]) ++ [:attempted_at])
+      upsert_fields((@mutable -- [:sibling_attempted]) ++ [:attempted_at, :foreign_priv_run_id])
       change(set_attribute(:attempted_at, nil))
+      change(Portal.Catalog.ForeignPrivMark)
 
       # A recorded sibling attempt is never lowered: on a conflict it is the
       # row's own OR the new write's, so a backfill `Portal.Pins.from_lock/2`
@@ -183,6 +186,10 @@ defmodule Portal.Catalog.PinnedBuild do
     attribute(:compile_env, {:array, :map}, public?: true)
     attribute(:compile_env_rule, :integer, public?: true)
     attribute(:compile_inputs, {:array, :map}, public?: true)
+    # Foreign priv spec 4.1, as `Portal.Catalog.ToolchainBuild`'s.
+    attribute(:foreign_priv, {:array, :map}, public?: true)
+    attribute(:foreign_priv_rule, :string, public?: true)
+    attribute(:foreign_priv_run_id, :string, public?: true)
     attribute(:file_manifest, :map, public?: true)
     attribute(:optional_deps, :map, public?: true)
     attribute(:native, :boolean, public?: true)

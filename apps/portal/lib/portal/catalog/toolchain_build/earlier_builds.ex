@@ -75,7 +75,10 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
     :compile_inputs,
     :compile_env_rule,
     :compile_env_run_id,
-    :file_manifest
+    :file_manifest,
+    :foreign_priv,
+    :foreign_priv_rule,
+    :foreign_priv_run_id
   ]
 
   # Not served, but what a revocation judges an entry by (moduledoc).
@@ -145,14 +148,28 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
     |> Enum.take(@max)
   end
 
-  @doc "Every file sha the earlier builds list, which the row keeps as memberships."
+  @doc """
+  Every file sha the earlier builds list, which the row keeps as
+  memberships: their manifests' files, and the foreign priv files of an
+  entry whose list is still its own run's (`Portal.Precompiled.ForeignPriv.counted/1`).
+  """
   @spec shas([map()] | nil) :: [String.t()]
   def shas(earlier) do
     earlier
     |> List.wrap()
-    |> Enum.flat_map(fn entry -> manifest_shas(entry["file_manifest"]) end)
+    |> Enum.flat_map(fn entry -> manifest_shas(entry["file_manifest"]) ++ foreign_shas(entry) end)
     |> Enum.uniq()
   end
+
+  defp foreign_shas(%{
+         "foreign_priv" => [_ | _] = list,
+         "run_id" => run,
+         "foreign_priv_run_id" => run
+       })
+       when is_binary(run),
+       do: for(%{"sha256" => sha} <- list, is_binary(sha) and sha != "", do: sha)
+
+  defp foreign_shas(_entry), do: []
 
   defp manifest_shas(%{} = manifest) do
     for key <- @manifest_keys,

@@ -88,6 +88,8 @@ defmodule Portal.Catalog.ToolchainBuild do
     :declared,
     :compile_env,
     :compile_inputs,
+    :foreign_priv,
+    :foreign_priv_rule,
     :file_manifest,
     :optional_deps,
     :finished_at,
@@ -202,6 +204,7 @@ defmodule Portal.Catalog.ToolchainBuild do
 
       validate({Portal.Catalog.ToolchainBuild.KnownConfigVariant, []})
       change(Portal.Catalog.ToolchainBuild.MarkRun)
+      change(Portal.Catalog.ForeignPrivMark)
     end
 
     create :upsert do
@@ -217,12 +220,13 @@ defmodule Portal.Catalog.ToolchainBuild do
 
       validate({Portal.Catalog.ToolchainBuild.KnownConfigVariant, []})
       change(Portal.Catalog.ToolchainBuild.MarkRun)
+      change(Portal.Catalog.ForeignPrivMark)
       upsert?(true)
       upsert_identity(:unique_config_identity)
       # Every mutable field, so a rebuild fully replaces the previous outcome:
       # a field the new build leaves nil (a cleared `reason`) must not survive.
       # `revoked_at` is deliberately absent: a rebuild does not un-revoke.
-      upsert_fields([:compile_env_run_id | @mutable])
+      upsert_fields([:compile_env_run_id, :foreign_priv_run_id | @mutable])
     end
 
     update :revoke do
@@ -391,6 +395,23 @@ defmodule Portal.Catalog.ToolchainBuild do
     # (`Compatibility.CompileInputs`); nil before they were recorded, or when
     # the build's list was malformed (then `compile_env` is nil too).
     attribute :compile_inputs, {:array, :map} do
+      public?(true)
+    end
+
+    # Foreign priv spec 4.1: the archives this build's compile wrote into
+    # kino's priv, each re-proved on the host (`Portal.Catalog.ToolchainForeignPriv`),
+    # the rule that let them through, and the run whose write set them
+    # (`Portal.Catalog.ForeignPrivMark`): the list counts only while that is
+    # the row's `run_id` (`Portal.Precompiled.ForeignPriv.counted/1`).
+    attribute :foreign_priv, {:array, :map} do
+      public?(true)
+    end
+
+    attribute :foreign_priv_rule, :string do
+      public?(true)
+    end
+
+    attribute :foreign_priv_run_id, :string do
       public?(true)
     end
 

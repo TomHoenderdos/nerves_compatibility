@@ -75,8 +75,12 @@ defmodule Portal.Catalog.DeterministicBuild do
         :judge_revision,
         :file_manifest,
         :compile_observations,
+        :foreign_priv,
+        :foreign_priv_rule,
         :finished_at
       ])
+
+      change(Portal.Catalog.ForeignPrivMark)
     end
 
     update :revoke do
@@ -110,6 +114,11 @@ defmodule Portal.Catalog.DeterministicBuild do
     attribute(:judge_revision, :integer, public?: true)
     attribute(:file_manifest, :map, public?: true)
     attribute(:compile_observations, :map, public?: true)
+    # Foreign priv spec 4.1, as `Portal.Catalog.ToolchainBuild`'s: the
+    # sibling's own archives (its compile stamped its own tar times).
+    attribute(:foreign_priv, {:array, :map}, public?: true)
+    attribute(:foreign_priv_rule, :string, public?: true)
+    attribute(:foreign_priv_run_id, :string, public?: true)
     attribute(:finished_at, :utc_datetime_usec, public?: true)
     attribute(:revoked_at, :utc_datetime_usec, public?: true)
     attribute(:revoked_reason, :string, public?: true)
