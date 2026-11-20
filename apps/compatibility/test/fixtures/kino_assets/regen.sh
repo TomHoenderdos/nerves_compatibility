@@ -26,7 +26,7 @@ mix deps.get
 mix deps.compile
 lib="$work/kv/_build/prod/lib"
 cp "$HEX_HOME/packages/hexpm/kino_vega_lite-0.1.13.tar" "$here/"
-tar -xOf "$HEX_HOME/packages/hexpm/kino-0.19.1.tar" contents.tar.gz | tar -xzOf - lib/kino/js.ex > "$here/kino-0.19.1-js.ex"
+tar -xOf "$HEX_HOME/packages/hexpm/kino-0.19.1.tar" contents.tar.gz | tar -xzOf - lib/kino/js.ex > "$here/kino-0.19.1-js.ex.txt"
 cp "$lib/kino_vega_lite/ebin/Elixir.Kino.VegaLite.beam" "$lib/kino_vega_lite/ebin/Elixir.KinoVegaLite.ChartCell.beam" "$here/"
 rm -rf "$here/otp27" "$here/otp28" "$here/otp29"
 for d in Kino_VegaLite KinoVegaLite_ChartCell; do
@@ -44,4 +44,4 @@ for pair in 27.2.4:otp27 29.1.1:otp29; do
       halt()."
   done
 done
-shasum -a 256 "$here/kino-0.19.1-js.ex"
+shasum -a 256 "$here/kino-0.19.1-js.ex.txt"

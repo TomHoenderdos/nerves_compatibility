@@ -139,16 +139,22 @@ defmodule NccWorker.Portability.ForeignPriv do
 
     cond do
       # A copy or rename out of A: its target may be anywhere, so never split it.
-      below_assets?(from, gate) ->
-        :refuse_write
+      below_assets?(from, gate) -> :refuse_write
+      below_assets?(real, gate) -> below(channel, e, gate, ctx, owner, real)
+      true -> at_or_above(channel, e, gate, ctx, owner, real)
+    end
+  end
 
-      below_assets?(real, gate) ->
-        below(channel, e, gate, ctx, owner, real)
+  def decide(_event, _ctx, _owner), do: :pass
 
+  # `A` itself or a directory above it: only `File.mkdir_p!/1`'s walk there
+  # is accepted, and a listing or stat of `A` itself is a read under `A` too
+  # (spec 3.5).
+  defp at_or_above(channel, e, gate, ctx, owner, real) do
+    cond do
       on_path?(real, gate) and mkdir_p?(e, gate, ctx, owner) and owner_dirs(gate, owner) != [] ->
         {:accept, item("mkdir_p", nil, real, gate, e)}
 
-      # A listing or stat of `A` itself is a read under `A` too (spec 3.5).
       channel == "file_read" and real == gate.assets ->
         :refuse_read
 
@@ -157,25 +163,15 @@ defmodule NccWorker.Portability.ForeignPriv do
     end
   end
 
-  def decide(_event, _ctx, _owner), do: :pass
-
+  # Strictly below `A`: the reviewed call the event is, if any, accepted only
+  # in a directory of the window's own (`writer_dir?/3`). The calls differ
+  # by mfa and by whether they have a user frame, so no event is two of them.
   defp below("file_read", e, gate, ctx, owner, real) do
     {d, rest} = split(real, gate)
 
-    cond do
-      rest == [] and e["mfa"] in @rm_rf_reads and toolchain?(e) and
-        frame?(e, gate.rule.rm_rf, ctx, owner) and
-          writer_dir?(gate, owner, d) ->
-        {:accept, item("rm_rf", d, real, gate, e)}
-
-      rest == [] and mkdir_p?(e, gate, ctx, owner) and writer_dir?(gate, owner, d) ->
-        {:accept, item("mkdir_p", d, real, gate, e)}
-
-      frameless_stat?(e) and writer_dir?(gate, owner, d) ->
-        {:accept, item("stat", d, real, gate, e)}
-
-      true ->
-        :refuse_read
+    case read_call(e, rest, gate, ctx, owner) do
+      nil -> :refuse_read
+      call -> accept(call, d, nil, {real, gate, e, owner}, :refuse_read)
     end
   end
 
@@ -183,26 +179,52 @@ defmodule NccWorker.Portability.ForeignPriv do
     {d, rest} = split(real, gate)
     hash = archive_hash(rest)
 
-    cond do
-      e["arg"]["from"] != nil or e["arg"]["ram"] == true ->
-        :refuse_write
-
-      rest == [] and e["mfa"] == "file:make_dir/1" and mkdir_p?(e, gate, ctx, owner) and
-          writer_dir?(gate, owner, d) ->
-        {:accept, item("mkdir_p", d, real, gate, e)}
-
-      hash != nil and e["mfa"] == "file:open/2" and frame?(e, gate.rule.archive, ctx, owner) and
-          writer_dir?(gate, owner, d) ->
-        {:accept, Map.put(item("archive", d, real, gate, e), "hash", hash)}
-
-      hash != nil and e["mfa"] == "prim_file:open/2" and e["user"] == nil and
-          writer_dir?(gate, owner, d) ->
-        {:accept, Map.put(item("stream", d, real, gate, e), "hash", hash)}
-
-      true ->
-        :refuse_write
+    case write_call(e, rest, hash, gate, ctx, owner) do
+      nil -> :refuse_write
+      call -> accept(call, d, hash, {real, gate, e, owner}, :refuse_write)
     end
   end
+
+  defp accept(call, d, hash, {real, gate, e, owner}, refusal) do
+    if writer_dir?(gate, owner, d) do
+      item = item(call, d, real, gate, e)
+      {:accept, if(hash, do: Map.put(item, "hash", hash), else: item)}
+    else
+      refusal
+    end
+  end
+
+  defp read_call(e, rest, gate, ctx, owner) do
+    cond do
+      rest == [] and rm_rf?(e, gate, ctx, owner) -> "rm_rf"
+      rest == [] and mkdir_p?(e, gate, ctx, owner) -> "mkdir_p"
+      frameless_stat?(e) -> "stat"
+      true -> nil
+    end
+  end
+
+  # A copy, a rename or an in-memory file is never a reviewed call.
+  defp write_call(%{"arg" => %{"from" => from}}, _rest, _hash, _gate, _ctx, _owner)
+       when not is_nil(from),
+       do: nil
+
+  defp write_call(%{"arg" => %{"ram" => true}}, _rest, _hash, _gate, _ctx, _owner), do: nil
+
+  defp write_call(%{"mfa" => "file:make_dir/1"} = e, [], _hash, gate, ctx, owner),
+    do: if(mkdir_p?(e, gate, ctx, owner), do: "mkdir_p")
+
+  defp write_call(%{"mfa" => "file:open/2"} = e, _rest, hash, gate, ctx, owner)
+       when is_binary(hash),
+       do: if(frame?(e, gate.rule.archive, ctx, owner), do: "archive")
+
+  defp write_call(%{"mfa" => "prim_file:open/2"} = e, _rest, hash, _gate, _ctx, _owner)
+       when is_binary(hash),
+       do: if(e["user"] == nil, do: "stream")
+
+  defp write_call(_e, _rest, _hash, _gate, _ctx, _owner), do: nil
+
+  defp rm_rf?(e, gate, ctx, owner),
+    do: e["mfa"] in @rm_rf_reads and toolchain?(e) and frame?(e, gate.rule.rm_rf, ctx, owner)
 
   # Strictly below `A`: `{d, the segments below A/<d>}`.
   defp split(real, gate) do
@@ -489,27 +511,23 @@ defmodule NccWorker.Portability.ForeignPriv do
     name = Path.basename(path)
 
     with {:ok, %File.Stat{type: :directory}} <- File.lstat(gate.assets),
-         {:ok, %File.Stat{type: :directory}} <- File.lstat(dir) do
-      case File.ls(dir) do
-        {:ok, [^name]} ->
-          case File.lstat(Path.join(dir, name)) do
-            {:ok, %File.Stat{type: :regular, mode: mode}} when (mode &&& 0o111) == 0 ->
-              {:ok, name}
-
-            _ ->
-              {:refuse, "its archive is not a regular file without an execute bit"}
-          end
-
-        {:ok, _other} ->
-          {:refuse, "holds more than its archive"}
-
-        {:error, _} ->
-          {:refuse, "is not a directory of its own"}
-      end
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(dir),
+         {:ok, entries} <- File.ls(dir) do
+      only_entry(dir, name, entries)
     else
       _ -> {:refuse, "is not a directory of its own"}
     end
   end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp only_entry(dir, name, [name]) do
+    case File.lstat(Path.join(dir, name)) do
+      {:ok, %File.Stat{type: :regular, mode: mode}} when (mode &&& 0o111) == 0 -> {:ok, name}
+      _ -> {:refuse, "its archive is not a regular file without an execute bit"}
+    end
+  end
+
+  defp only_entry(_dir, _name, _entries), do: {:refuse, "holds more than its archive"}
 
   # S3.
   defp not_kinos(gate, d) do

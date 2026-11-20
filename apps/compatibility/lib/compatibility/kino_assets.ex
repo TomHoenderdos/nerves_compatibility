@@ -253,33 +253,25 @@ defmodule Compatibility.KinoAssets do
       version::binary-2, uname::binary-32, gname::binary-32, _major::binary-8, _minor::binary-8,
       prefix::binary-155, _pad::binary-12>> = h
 
-    cond do
-      not checksum_ok?(h) ->
-        {:error, "tar header checksum does not match"}
+    # In order: the first that fails is the reason.
+    failed =
+      Enum.find(
+        [
+          {checksum_ok?(h), "tar header checksum does not match"},
+          {type not in @pax_or_gnu, "tar archive has a pax or GNU header"},
+          {type == ?0, "tar member is not a regular file"},
+          {{magic, version} == {"ustar\0", "00"}, "tar header is not ustar"},
+          {octal(mode) == {:ok, 0o100644}, "tar member mode is not 0100644"},
+          {Enum.map([uid, gid], &octal/1) == [{:ok, 0}, {:ok, 0}], "tar member owner is not 0"},
+          {Enum.all?([link, uname, gname], &zero?/1), "tar member names a link or an owner"},
+          {zero?(prefix), "tar member name has a prefix"}
+        ],
+        &(not elem(&1, 0))
+      )
 
-      type in @pax_or_gnu ->
-        {:error, "tar archive has a pax or GNU header"}
-
-      type != ?0 ->
-        {:error, "tar member is not a regular file"}
-
-      magic != "ustar\0" or version != "00" ->
-        {:error, "tar header is not ustar"}
-
-      octal(mode) != {:ok, 0o100644} ->
-        {:error, "tar member mode is not 0100644"}
-
-      octal(uid) != {:ok, 0} or octal(gid) != {:ok, 0} ->
-        {:error, "tar member owner is not 0"}
-
-      not (zero?(link) and zero?(uname) and zero?(gname)) ->
-        {:error, "tar member names a link or an owner"}
-
-      not zero?(prefix) ->
-        {:error, "tar member name has a prefix"}
-
-      true ->
-        name_and_size(name, size)
+    case failed do
+      nil -> name_and_size(name, size)
+      {false, why} -> {:error, why}
     end
   end
 

@@ -14,7 +14,7 @@ defmodule NccWorker.KinoFixtures do
   @libs %{"nif_check" => "ok", "mapped_libs" => ["/usr/lib/libc.so.6"]}
 
   def dir, do: @dir
-  def js_ex, do: File.read!(Path.join(@dir, "kino-0.19.1-js.ex"))
+  def js_ex, do: File.read!(Path.join(@dir, "kino-0.19.1-js.ex.txt"))
   def writer_tarball, do: File.read!(Path.join(@dir, "kino_vega_lite-0.1.13.tar"))
   def beam(module), do: File.read!(Path.join(@dir, module <> ".beam"))
 

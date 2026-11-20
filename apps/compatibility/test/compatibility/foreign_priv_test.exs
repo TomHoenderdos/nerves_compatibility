@@ -9,7 +9,7 @@ defmodule Compatibility.ForeignPrivTest do
   @h "uxwh53kfq2wszgf23hqwgkuiza"
   @beams MapSet.new(["ebin/Elixir.Kino.VegaLite.beam", "ebin/Elixir.KinoVegaLite.ChartCell.beam"])
 
-  defp js, do: File.read!(Path.join(@fixtures, "kino-0.19.1-js.ex"))
+  defp js, do: File.read!(Path.join(@fixtures, "kino-0.19.1-js.ex.txt"))
 
   # An outer Hex tarball whose contents.tar.gz holds `files` (`path => bytes`).
   defp hex_tarball(files) do
