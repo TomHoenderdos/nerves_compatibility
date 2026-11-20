@@ -402,7 +402,7 @@ specific(init, F, []) when F =:= get_arguments; F =:= get_plain_arguments -> {en
 specific(erlang, open_port, [Name | _]) -> {programs, #{port => term_bin(Name)}};
 specific(os, cmd, [Cmd | _]) -> {programs, #{cmd => chars(Cmd)}};
 specific(os, find_executable, [Name | _]) -> {programs, #{name => chars(Name)}};
-specific(M, open, [Path, Modes]) when M =:= file; M =:= prim_file -> open(Path, Modes);
+specific(M, open, [Path, Modes]) when M =:= file; M =:= prim_file -> open(M, Path, Modes);
 specific(M, get_cwd, _) when M =:= file; M =:= prim_file -> {file_read, #{cwd => true}};
 specific(M, set_cwd, [Dir]) when M =:= file; M =:= prim_file -> {cwd, #{path => chars(Dir)}};
 specific(filelib, wildcard, [Pattern]) -> wildcard(Pattern, "");
@@ -485,14 +485,20 @@ by_module(M, _F, _Args) ->
 
 %% A RAM file's "path" is its contents (`:erl_tar.extract({:binary, Bytes},
 %% ...)` opens its archive that way): tens of MB, never a path, and never
-%% written into an event (the collector died JSON-encoding a 31 MB one). The
-%% judge refuses it as it did the contents taken for a path
-%% (NccWorker.Portability.Events).
-open(Path, Modes) ->
+%% written into an event (the collector died JSON-encoding a 31 MB one).
+%% Only file:open/2 opens one, and only for a mode list with `ram` and
+%% without `raw` (both is a badarg), as file.erl decides; prim_file:open/2
+%% skips `ram` and opens the real file at that path. A read stays a read and
+%% a write a write: the judge refuses them as it did the contents taken for
+%% a path (NccWorker.Portability.Events).
+open(M, Path, Modes) ->
     List = case is_list(Modes) of true -> Modes; false -> [Modes] end,
     Write = lists:any(fun(Mode) -> lists:member(Mode, ?WRITE_MODES) end, List),
-    case {lists:member(ram, List), Write} of
-        {true, _} -> {file_read, #{ram => true}};
+    Ram = M =:= file andalso is_list(Modes) andalso lists:member(ram, Modes)
+        andalso not lists:member(raw, Modes),
+    case {Ram, Write} of
+        {true, true} -> {file_write, #{ram => true}};
+        {true, false} -> {file_read, #{ram => true}};
         {false, true} -> {file_write, #{path => chars(Path)}};
         {false, false} -> {file_read, #{path => chars(Path)}}
     end.

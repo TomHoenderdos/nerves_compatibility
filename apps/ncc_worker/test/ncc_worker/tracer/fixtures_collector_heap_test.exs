@@ -98,4 +98,91 @@ defmodule NccWorker.Tracer.FixturesCollectorHeapTest do
            } =
              TracerFixtures.judge(proj, "fx_ram", traced)
   end
+
+  # A dependency's `mix.exs` evaluated in the traced Mix VM: `deps/0` runs
+  # the open (R4 slices `deps` from what it reads), which `body` names.
+  defp mix_exs_project(dir, body) do
+    mix_exs = """
+    defmodule FxMixRam.MixProject do
+      use Mix.Project
+      def project, do: [app: :fx_mix_ram, version: "0.1.0", deps: deps()]
+
+      defp deps do
+    #{body}
+        []
+      end
+    end
+    """
+
+    TracerFixtures.project(dir, ["fx_mix_ram"], %{
+      "fx_mix_ram" =>
+        TracerFixtures.lib("fx_mix_ram", "defmodule FxMixRam do\nend\n", %{mix_exs: mix_exs})
+    })
+  end
+
+  defp mix_exs_verdict(proj) do
+    traced = TracerFixtures.trace(proj, ["fx_mix_ram"])
+    assert {:ok, 0} = traced.result, traced.log
+    assert traced.report.problems == [], inspect(traced.report.problems)
+    TracerFixtures.judge(proj, "fx_mix_ram", traced)
+  end
+
+  # `prim_file:open/2` skips `ram` and writes the real file: the write
+  # outside ebin it is, which R4 never allows.
+  test "a prim_file open with ram in a dependency's mix.exs writes the host and refuses", %{
+    tmp_dir: dir
+  } do
+    host = Path.join(dir, "host_written")
+
+    proj =
+      mix_exs_project(dir, """
+          {:ok, fd} = :prim_file.open(#{inspect(host)}, [:write, :ram])
+          :ok = :prim_file.write(fd, "x")
+          :ok = :prim_file.close(fd)
+      """)
+
+    assert %{status: :skip, reason: "compile-time write outside ebin: prim_file:open/2 " <> rest} =
+             mix_exs_verdict(proj)
+
+    assert rest =~ "host_written"
+    assert File.read!(host) == "x"
+  end
+
+  # A genuine RAM file in a dependency's mix.exs refuses, as it did before
+  # the tracer stopped recording the file's contents. A read is R4's, which
+  # allows it in `deps/0`, but OTP's `ram_file` opens a port to its driver,
+  # and a port opened from mix.exs refuses outright. A write is a write
+  # outside ebin, which R4 never allows.
+  test "a RAM file in a dependency's mix.exs refuses, read or write", %{tmp_dir: dir} do
+    read =
+      dir
+      |> Path.join("read")
+      |> mix_exs_project("""
+          {:ok, fd} = :file.open("data", [:ram, :binary, :read])
+          {:ok, "da"} = :file.read(fd, 2)
+          :ok = :file.close(fd)
+      """)
+
+    assert %{status: :skip, reason: reason, observations: obs} = mix_exs_verdict(read)
+
+    assert reason =~
+             ~r/^compile-time host read: erlang:open_port\/2 via ram_file:ll_open\/3 in FxMixRam\.MixProject\.deps\/0 /
+
+    assert Enum.any?(obs["mix_exs_allowed"], &(&1["mfa"] == "file:open/2")),
+           inspect(obs["mix_exs_allowed"])
+
+    write =
+      dir
+      |> Path.join("write")
+      |> mix_exs_project("""
+          {:ok, fd} = :file.open("data", [:ram, :binary, :write])
+          :ok = :file.write(fd, "x")
+          :ok = :file.close(fd)
+      """)
+
+    assert %{
+             status: :skip,
+             reason: "compile-time write outside ebin: file:open/2 (an in-memory file)"
+           } = mix_exs_verdict(write)
+  end
 end

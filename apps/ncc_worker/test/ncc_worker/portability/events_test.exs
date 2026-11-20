@@ -353,10 +353,41 @@ defmodule NccWorker.Portability.EventsTest do
   end
 
   # The tracer records a RAM file's open without its contents, which it
-  # used to take for a path: still the host read it was then, now saying so.
-  test "an open of a RAM file refuses as a host read, without its contents", %{ctx: ctx} do
+  # used to take for a path: a read is still the host read it was then, a
+  # write the write outside ebin, now saying so.
+  test "an open of a RAM file refuses as before, without its contents", %{ctx: ctx} do
     assert {:refuse, "compile-time host read: file:open/2 (an in-memory file) in " <> _} =
              Events.decide(ev("file_read", "file:open/2", %{"ram" => true}), ctx, "pkg")
+
+    assert {:refuse, "compile-time write outside ebin: file:open/2 (an in-memory file)"} =
+             Events.decide(ev("file_write", "file:open/2", %{"ram" => true}), ctx, "pkg")
+  end
+
+  # Inside a dependency's mix.exs a RAM read goes to R4 as every read does;
+  # a RAM write is a write, which R4 never allows. So is a `prim_file:open/2`
+  # with `ram` (the tracer records it as the real write it is).
+  test "a RAM open in mix.exs: a read goes to R4, a write refuses", %{ctx: ctx, pkg: pkg} do
+    read = in_mix_exs(ev("file_read", "file:open/2", %{"ram" => true}), pkg, 4)
+
+    assert {:observe, "mix_exs_allowed", %{"mfa" => "file:open/2", "line" => 4}} =
+             Events.decide(read, ctx, "pkg")
+
+    assert {:refuse, "compile-time host read in mix.exs: file:open/2 sets elixirc_options" <> _} =
+             Events.decide(put_in(read, ["user", "line"], 5), ctx, "pkg")
+
+    write = in_mix_exs(ev("file_write", "file:open/2", %{"ram" => true}), pkg, 4)
+
+    assert {:refuse, "compile-time write outside ebin: file:open/2 (an in-memory file)"} =
+             Events.decide(write, ctx, "pkg")
+
+    {:file_write, arg} =
+      :ncc_tracer_channels.classify(:prim_file, :open, ["/etc/x", [:write, :ram]])
+
+    arg = Map.new(arg, fn {k, v} -> {Atom.to_string(k), v} end)
+    host = in_mix_exs(ev("file_write", "prim_file:open/2", arg), pkg, 4)
+
+    assert {:refuse, "compile-time write outside ebin: prim_file:open/2 /etc/x"} =
+             Events.decide(host, ctx, "pkg")
   end
 
   test "an unjudged stack, an unknown channel or a malformed event could not be judged",

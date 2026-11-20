@@ -719,6 +719,9 @@ defmodule NccWorker.Portability.Events do
 
   defp own_mix_exs?(_e, _ctx, _owner), do: false
 
+  defp outside_ebin(%{"arg" => %{"ram" => true}} = e, _outside),
+    do: "compile-time write outside ebin: #{e["mfa"]} (an in-memory file)"
+
   defp outside_ebin(e, [bad | _]), do: "compile-time write outside ebin: #{e["mfa"]} #{show(bad)}"
 
   # Judge revision 21: the package's own compile writing into its own build
@@ -879,11 +882,12 @@ defmodule NccWorker.Portability.Events do
   defp detail(%{"channel" => "env", "arg" => %{"name" => name}}) when is_binary(name),
     do: " (#{name})"
 
-  # A RAM file's open (`:erl_tar.extract({:binary, bytes}, ...)`), which the
-  # tracer records without its "path", the file's contents. It refuses as
-  # every open of a path no rule allows does, as it did while the contents
-  # were taken for one: a reviewed tool's unpack is set apart before that
-  # (`NccWorker.Portability`, `@reviewed_unpacks`).
+  # A RAM file's open (`file:open/2` with `ram`; `:erl_tar.extract({:binary,
+  # bytes}, ...)`), which the tracer records without its "path", the file's
+  # contents. A read refuses as every read of a path no rule allows does, a
+  # write as a write outside ebin (`outside_ebin/2`), as they did while the
+  # contents were taken for a path: a reviewed tool's unpack is set apart
+  # before that (`NccWorker.Portability`, `@reviewed_unpacks`).
   defp detail(%{"channel" => "file_read", "arg" => %{"ram" => true}}),
     do: " (an in-memory file)"
 

@@ -66,18 +66,38 @@ defmodule NccWorker.Tracer.ChannelsTest do
   end
 
   # `:erl_tar.extract({:binary, bytes}, ...)` opens its archive as a RAM
-  # file: the first argument is the archive's bytes, tens of MB for an icon
-  # set (material_symbols), not a path. It is never written into an event:
-  # the collector JSON-encoded one 31 MB "path" past its heap cap.
-  test "a RAM file's open records no path, only that it is one" do
+  # file: `file:open/2`'s first argument is then the archive's bytes, tens
+  # of MB for an icon set (material_symbols), not a path. It is never
+  # written into an event: the collector JSON-encoded one 31 MB "path" past
+  # its heap cap. A read stays a read and a write a write.
+  test "file:open/2 of a RAM file records no path, only that it is one" do
     data = :binary.copy(<<0, 1, 2>>, 1_000_000)
 
-    for modes <- [[:ram, :binary, :read], [:read, :ram], [:ram, :write]] do
-      assert {:file_read, arg} = classify(:file, :open, [data, modes])
-      assert arg == %{ram: true}, inspect(modes)
+    for modes <- [[:ram, :binary, :read], [:read, :ram], [:ram]] do
+      assert classify(:file, :open, [data, modes]) == {:file_read, %{ram: true}}, inspect(modes)
+    end
+
+    for modes <- [[:ram, :write], [:read, :write, :ram], [:ram, :append]] do
+      assert classify(:file, :open, [data, modes]) == {:file_write, %{ram: true}}, inspect(modes)
     end
 
     assert {:file_read, %{path: "a"}} = classify(:file, :open, ["a", :read])
+  end
+
+  # Only `file:open/2` opens a RAM file, and only for a mode list with `ram`
+  # and without `raw` (both is a badarg): `prim_file:open/2` skips the
+  # `ram` atom and opens, reads or writes the real file at that path.
+  test "prim_file:open/2 with ram, or ram beside raw, opens the path" do
+    assert {:file_write, %{path: "/etc/x"}} =
+             classify(:prim_file, :open, ["/etc/x", [:write, :ram]])
+
+    assert {:file_read, %{path: "/etc/x"}} =
+             classify(:prim_file, :open, ["/etc/x", [:read, :ram]])
+
+    assert {:file_write, %{path: "/etc/x"}} =
+             classify(:file, :open, ["/etc/x", [:raw, :ram, :write]])
+
+    assert {:file_read, %{path: "/etc/x"}} = classify(:file, :open, ["/etc/x", :ram])
   end
 
   # Item 5b: Path.wildcard/2 passes Path.Wildcard as filelib:wildcard/2's
