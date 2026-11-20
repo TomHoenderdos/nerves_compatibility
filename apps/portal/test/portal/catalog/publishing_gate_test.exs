@@ -105,6 +105,50 @@ defmodule Portal.Catalog.PublishingGateTest do
     assert {:ok, ^bytes} = Manifests.render("jason")
   end
 
+  # An agent's requests write its row about once a minute (`Builders.touch/2`):
+  # its last-seen time and version decide nothing a manifest says, so they may
+  # not render its packages again in every batch (equal fingerprints are what
+  # the batch's memo reuses a package's manifests on).
+  test "a builder's heartbeat leaves its packages' fingerprints as they were" do
+    builder = builder!("gate-touch")
+    {:ok, builder} = Builders.set_publishing(builder, true)
+    _remote = ingest!(builder.id, "remote-touch")
+    before = Catalog.precompiled_fingerprints()
+
+    touched = Builders.touch(builder, "9.9.9")
+    assert touched.last_seen_at != builder.last_seen_at
+
+    assert Catalog.precompiled_fingerprints() == before
+  end
+
+  # By value alone the flag turned off and on again reads as no change: every
+  # change to it, or to the status, counts, through any writer.
+  for {how, flip} <- [
+        {"its action", quote(do: fn b, flag -> {:ok, _} = Builders.set_publishing(b, flag) end)},
+        {"plain SQL",
+         quote(
+           do: fn b, flag ->
+             Portal.Repo.query!("UPDATE builders SET publishing = $2 WHERE id = $1", [
+               Ecto.UUID.dump!(b.id),
+               flag
+             ])
+           end
+         )}
+      ] do
+    test "publishing turned off and on again through #{how} changes the fingerprints" do
+      flip = unquote(flip)
+      builder = builder!("gate-flip-#{System.unique_integer([:positive])}")
+      {:ok, builder} = Builders.set_publishing(builder, true)
+      _remote = ingest!(builder.id, "remote-flip")
+      before = Catalog.precompiled_fingerprints()
+
+      flip.(builder, false)
+      flip.(builder, true)
+
+      assert Catalog.precompiled_fingerprints()["jason"] != before["jason"]
+    end
+  end
+
   # A-B-A: the flag flips right after a batch read its fingerprints, so that
   # batch renders the other state, and flips back before the next batch.
   # Neither the remembered fingerprint nor the reverted flag may let the next

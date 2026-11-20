@@ -1141,9 +1141,12 @@ defmodule Portal.Catalog do
   # the builder state it filters runs by. `xmin` is the transaction that last
   # wrote the row, so it changes on any update, including the plain SQL ones
   # that leave `updated_at` alone (`Portal.Catalog.ManifestModeRepair`
-  # rewrites `beam_scan` that way). A builder's `xmin` is in it too: by value
-  # alone, publishing turned on and off again would read as no change. The
-  # columns that decide publication
+  # rewrites `beam_scan` that way). A builder is in it by its
+  # `publication_changes`, which a trigger counts up on every change to its
+  # `publishing` or `status`, not by its `xmin`: by value alone, publishing
+  # turned on and off again would read as no change, and every agent check-in
+  # (`Portal.Builders.touch/2`) writes the row, so by `xmin` every batch
+  # rendered each of its packages again. The columns that decide publication
   # (revocation, carried-from, builder publishing and status, toolchain build
   # status) are in it as values too. Memberships are only ever inserted and
   # deleted, and number millions, so they are an order-independent count and
@@ -1166,9 +1169,9 @@ defmodule Portal.Catalog do
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', r.id, r.xmin, r.updated_at,
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s', r.id, r.xmin, r.updated_at,
                                  r.revoked_at, r.builder_id, b.publishing, b.status,
-                                 b.xmin, b.updated_at),
+                                 b.publication_changes),
                           ',' ORDER BY r.id)) AS fp
     FROM catalog_runs r
     LEFT JOIN builders b ON b.id = r.builder_id
@@ -1238,10 +1241,10 @@ defmodule Portal.Catalog do
     GROUP BY d.package_id
   ), pinned AS (
     SELECT pb.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', pb.id, pb.xmin,
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', pb.id, pb.xmin,
                                  pb.updated_at, pb.status, pb.revoked_at, pb.unpublished_at,
                                  pb.reporters, pb.builder_id, md5(pb.compile_inputs::text),
-                                 pbb.publishing, pbb.status, pbb.xmin, pbb.updated_at),
+                                 pbb.publishing, pbb.status, pbb.publication_changes),
                           ',' ORDER BY pb.id)) AS fp
     FROM catalog_pinned_builds pb
     LEFT JOIN builders pbb ON pbb.id = pb.builder_id

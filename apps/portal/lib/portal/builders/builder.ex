@@ -1,5 +1,12 @@
 defmodule Portal.Builders.Builder do
-  @moduledoc "A remote build machine, identified by its current client certificate's fingerprint."
+  @moduledoc """
+  A remote build machine, identified by its current client certificate's
+  fingerprint.
+
+  The table's `publication_changes` column is no attribute here: a trigger
+  alone writes it, counting each change to `publishing` or `status`, for
+  `Portal.Catalog.precompiled_fingerprints/0` (see the migration that adds it).
+  """
   use Ash.Resource, domain: Portal.Builders, data_layer: AshPostgres.DataLayer
 
   postgres do
