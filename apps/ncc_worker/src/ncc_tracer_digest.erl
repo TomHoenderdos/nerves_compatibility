@@ -31,20 +31,24 @@
 -define(CHUNK_BYTES, 1048576).
 -define(TIMEOUT_MS, 60000).
 
-%% tree: the real path of the ebin or priv being walked.
--record(lim, {max_files, max_bytes, chunk, deadline, before_read, tree}).
+%% tree: the real path of the ebin or priv being walked; exclude: the
+%% build-dir-relative paths left out, as a set.
+-record(lim, {max_files, max_bytes, chunk, deadline, before_read, tree, exclude = #{}}).
 
 dir(Dir) -> dir(Dir, #{}).
 
-%% Opts (tests): max_files, max_bytes, chunk_bytes, timeout_ms, and
-%% before_read, a fun called with each file's path just before it is read.
+%% Opts (tests): max_files, max_bytes, chunk_bytes, timeout_ms, before_read,
+%% a fun called with each file's path just before it is read, and exclude,
+%% build-dir-relative paths skipped with everything under them (the judge's
+%% foreign priv exclusion): a path equal to one is never read or followed.
 dir(Dir, Opts) ->
-    Lim = #lim{max_files = maps:get(max_files, Opts, ?MAX_FILES),
-               max_bytes = maps:get(max_bytes, Opts, ?MAX_BYTES),
-               chunk = maps:get(chunk_bytes, Opts, ?CHUNK_BYTES),
-               deadline = now_ms() + maps:get(timeout_ms, Opts, ?TIMEOUT_MS),
-               before_read = maps:get(before_read, Opts, fun(_) -> ok end)},
     try
+        Lim = #lim{max_files = maps:get(max_files, Opts, ?MAX_FILES),
+                   max_bytes = maps:get(max_bytes, Opts, ?MAX_BYTES),
+                   chunk = maps:get(chunk_bytes, Opts, ?CHUNK_BYTES),
+                   deadline = now_ms() + maps:get(timeout_ms, Opts, ?TIMEOUT_MS),
+                   before_read = maps:get(before_read, Opts, fun(_) -> ok end),
+                   exclude = maps:from_keys([name(P) || P <- maps:get(exclude, Opts, [])], true)},
         Root = name(Dir),
         {_, Files0} = walk_top(Root, <<"priv">>, walk_top(Root, <<"ebin">>, {0, []}, Lim), Lim),
         Files = lists:sort(Files0),
@@ -55,9 +59,15 @@ dir(Dir, Opts) ->
         _:Reason -> {error, Reason}
     end.
 
-%% ebin or priv itself: followed when it is a link, empty when it is missing.
-%% Acc is {files so far, [{Rel, Path, Exec, Size}]}.
+%% ebin or priv itself: followed when it is a link, empty when it is missing
+%% or excluded. Acc is {files so far, [{Rel, Path, Exec, Size}]}.
 walk_top(Root, Sub, Acc, Lim) ->
+    case excluded(Sub, Lim) of
+        true -> Acc;
+        false -> walk_top_(Root, Sub, Acc, Lim)
+    end.
+
+walk_top_(Root, Sub, Acc, Lim) ->
     Path = filename:join(Root, Sub),
     case file:read_file_info(Path) of
         {ok, Info} -> entry(Info, Path, Sub, 0, Acc, Lim#lim{tree = realpath(Path)});
@@ -92,13 +102,21 @@ walk_dir(Path, Rel, Depth, Acc, Lim) ->
 child(Path, Rel, Name0, Depth, Acc, Lim) ->
     check_deadline(Lim),
     Name = name(Name0),
-    Child = within_tree(filename:join(Path, Name), Lim),
-    case file:read_file_info(Child) of
-        {ok, Info} -> entry(Info, Child, <<Rel/binary, $/, Name/binary>>, Depth, Acc, Lim);
-        %% A dangling link is no regular file.
-        {error, enoent} -> Acc;
-        {error, Why} -> throw({digest, {read, Why}})
+    ChildRel = <<Rel/binary, $/, Name/binary>>,
+    case excluded(ChildRel, Lim) of
+        true ->
+            Acc;
+        false ->
+            Child = within_tree(filename:join(Path, Name), Lim),
+            case file:read_file_info(Child) of
+                {ok, Info} -> entry(Info, Child, ChildRel, Depth, Acc, Lim);
+                %% A dangling link is no regular file.
+                {error, enoent} -> Acc;
+                {error, Why} -> throw({digest, {read, Why}})
+            end
     end.
+
+excluded(Rel, #lim{exclude = Exclude}) -> maps:is_key(Rel, Exclude).
 
 %% The path to read Path by: a link must resolve inside the tree, and is
 %% then read by its real path, so links never pile up in a path (the OS

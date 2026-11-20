@@ -160,4 +160,60 @@ defmodule NccWorker.Tracer.DigestTest do
       assert {:error, :too_many_files} = :ncc_tracer_digest.dir(dir, %{max_files: 2})
     end
   end
+
+  describe "exclude (foreign priv spec 3.5)" do
+    test "an excluded subtree is ignored, by whole segments", %{tmp_dir: dir} do
+      a = Path.join(dir, "a")
+      b = Path.join(dir, "b")
+
+      for root <- [a, b] do
+        put(root, "ebin/x.beam", "X")
+        put(root, "priv/assets/Kino_HTML/k.tar.gz", "K")
+        put(root, "priv/assets/Kino_VegaLiteX/y.tar.gz", "Y")
+      end
+
+      put(a, "priv/assets/Kino_VegaLite/v.tar.gz", "V")
+      put(a, "priv/assets/Kino_VegaLite/deep/w", "W")
+
+      assert {:ok, digest, 3} = :ncc_tracer_digest.dir(b)
+
+      assert {:ok, ^digest, 3} =
+               :ncc_tracer_digest.dir(a, %{exclude: ["priv/assets/Kino_VegaLite"]})
+    end
+
+    # The window-close digest covered every regular file: a file under an
+    # excluded dir then is in it, and missing from the digest now.
+    test "a file under an excluded dir at window close makes the digests differ",
+         %{tmp_dir: dir} do
+      put(dir, "ebin/x.beam", "X")
+      put(dir, "priv/assets/Kino_VegaLite/old.tar.gz", "O")
+      {:ok, at_close, 2} = :ncc_tracer_digest.dir(dir)
+
+      assert {:ok, now, 1} =
+               :ncc_tracer_digest.dir(dir, %{exclude: ["priv/assets/Kino_VegaLite"]})
+
+      refute now == at_close
+    end
+
+    test "a link out of the tree elsewhere still errors", %{tmp_dir: dir} do
+      build = Path.join(dir, "build")
+      put(build, "priv/assets/Kino_VegaLite/v.tar.gz", "V")
+      put(dir, "elsewhere/secret", "S")
+      File.ln_s!("../../elsewhere", Path.join(build, "priv/up"))
+
+      assert {:error, :outside_tree} =
+               :ncc_tracer_digest.dir(build, %{exclude: ["priv/assets/Kino_VegaLite"]})
+    end
+
+    test "excluding a file skips that file only; no exclude is today's digest", %{tmp_dir: dir} do
+      put(dir, "ebin/x.beam", "X")
+      put(dir, "priv/static/app.js", "JS")
+      put(dir, "priv/static/app.css", "CSS")
+      {:ok, today, 3} = :ncc_tracer_digest.dir(dir)
+      assert {:ok, ^today, 3} = :ncc_tracer_digest.dir(dir, %{exclude: []})
+      assert {:ok, ^today, 3} = :ncc_tracer_digest.dir(dir, %{})
+      assert {:ok, other, 2} = :ncc_tracer_digest.dir(dir, %{exclude: ["priv/static/app.js"]})
+      refute other == today
+    end
+  end
 end
