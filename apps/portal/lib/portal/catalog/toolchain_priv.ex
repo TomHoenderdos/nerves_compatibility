@@ -82,22 +82,32 @@ defmodule Portal.Catalog.ToolchainPriv do
           {:ok, binary()} | {:refused, String.t()} | {:error, term()}
   def signed_tarball(build, opts) do
     case release(opts) do
-      {:ok, {name, version}} ->
-        checked =
-          with {:ok, checksum} <- registry_checksum(name, version, opts),
-               :ok <- same_as_lock(build["package_checksum"], checksum),
-               {:ok, tarball} <- tarball(name, version, opts),
-               :ok <- served_is_signed(tarball, checksum) do
-            {:ok, tarball}
-          end
+      {:ok, {name, version}} -> signed_release(name, version, build["package_checksum"], opts)
+      :error -> {:refused, "names no Hex release to check its files against"}
+    end
+  end
 
-        case checked do
-          {:ok, tarball} -> {:ok, tarball}
-          other -> outcome(other, name, version)
-        end
+  @doc """
+  Steps 1 and 2 for the release `name` `version` locked at `locked`: its
+  tarball as the host fetched it, `{:ok, bytes}` only when its checksum is
+  the signed registry's and `locked`. For a dependency's tarball
+  (`Portal.Catalog.ToolchainForeignPriv` checks kino's). Refusals and Hex
+  errors as `verify/3`'s.
+  """
+  @spec signed_release(String.t(), String.t(), term(), map()) ::
+          {:ok, binary()} | {:refused, String.t()} | {:error, term()}
+  def signed_release(name, version, locked, opts) do
+    checked =
+      with {:ok, checksum} <- registry_checksum(name, version, opts),
+           :ok <- same_as_lock(locked, checksum),
+           {:ok, tarball} <- tarball(name, version, opts),
+           :ok <- served_is_signed(tarball, checksum) do
+        {:ok, tarball}
+      end
 
-      :error ->
-        {:refused, "names no Hex release to check its files against"}
+    case checked do
+      {:ok, tarball} -> {:ok, tarball}
+      other -> outcome(other, name, version)
     end
   end
 

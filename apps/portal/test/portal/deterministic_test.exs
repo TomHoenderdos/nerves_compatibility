@@ -5,6 +5,7 @@ defmodule Portal.DeterministicTest do
   # `deterministic_builds_enabled` setting is on and their build is served.
   use Portal.DataCase, async: false
 
+  import ExUnit.CaptureLog
   require Ash.Query
 
   alias Portal.Catalog
@@ -18,6 +19,8 @@ defmodule Portal.DeterministicTest do
     ToolchainRevocation,
     Withheld
   }
+
+  alias Portal.Test.ForeignPrivFixtures
 
   defp sha(bytes), do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
   defp on!, do: {:ok, _} = Portal.Settings.save(%{deterministic_builds_enabled: true})
@@ -212,6 +215,131 @@ defmodule Portal.DeterministicTest do
       assert without.id == tb.id
       assert sibling_of(without) == nil
     end
+
+    # Foreign priv spec 3.8 row 4 and 4.2: a foreign build's sibling is kept
+    # only with the build's foreign paths, each archive passing the content
+    # proof and holding the build's members; its archives are its own (its
+    # compile stamped other tar times), stored with their blobs.
+    test "a foreign build's sibling with the same members is stored with its own archive blobs" do
+      {sibling, beams} = foreign_sibling(ForeignPrivFixtures.entries("otp29"))
+      result = Map.put(ForeignPrivFixtures.writer_result(), "deterministic_build", sibling)
+      opts = ForeignPrivFixtures.ingest_opts(ForeignPrivFixtures.files_dir!(beams))
+      assert {:ok, row} = Ingestion.ingest_toolchain(result, opts)
+      assert %DeterministicBuild{status: :pass} = d = sibling_of(row)
+      assert d.foreign_priv_rule == "kino_js_v1"
+      assert d.foreign_priv_run_id == d.run_id
+
+      shas = ForeignPrivFixtures.entries("otp29") |> Enum.map(& &1["sha256"]) |> Enum.sort()
+      assert d.foreign_priv |> Enum.map(& &1["sha256"]) |> Enum.sort() == shas
+      refute shas == ForeignPrivFixtures.entries() |> Enum.map(& &1["sha256"]) |> Enum.sort()
+
+      owned =
+        ArtifactMembership
+        |> Ash.Query.filter(deterministic_build_id == ^d.id)
+        |> Ash.read!(domain: Catalog)
+        |> Enum.map(& &1.sha256)
+
+      assert Enum.all?(shas, &(&1 in owned))
+    end
+
+    test "a foreign build's sibling whose archive members differ is left out, the build stored" do
+      [vl, chart] = ForeignPrivFixtures.entries("otp29")
+
+      {:ok, [{name, bytes}]} =
+        :erl_tar.extract({:binary, archive_bytes(vl)}, [:memory, :compressed])
+
+      changed = tar_gz([{name, bytes <> " "}])
+
+      changed_vl = %{
+        vl
+        | "sha256" => ForeignPrivFixtures.sha(changed),
+          "size" => byte_size(changed)
+      }
+
+      {sibling, beams} = foreign_sibling([changed_vl, chart])
+      result = Map.put(ForeignPrivFixtures.writer_result(), "deterministic_build", sibling)
+      opts = ForeignPrivFixtures.ingest_opts(ForeignPrivFixtures.files_dir!([changed | beams]))
+
+      log =
+        capture_log(fn ->
+          assert {:ok, row} = Ingestion.ingest_toolchain(result, opts)
+          assert row.status == :pass
+          assert sibling_of(row) == nil
+        end)
+
+      # Its own content proof refuses it first; the members comparison
+      # behind it can only differ with the same name, an md5 collision.
+      assert log =~
+               "left out: foreign priv refused on the host: foreign priv file priv/assets/Kino_VegaLite/"
+
+      assert log =~ "archive members differ"
+    end
+
+    test "a foreign build's sibling with other foreign paths is left out" do
+      {sibling, beams} = foreign_sibling(ForeignPrivFixtures.entries("otp29") |> Enum.take(1))
+      result = Map.put(ForeignPrivFixtures.writer_result(), "deterministic_build", sibling)
+      opts = ForeignPrivFixtures.ingest_opts(ForeignPrivFixtures.files_dir!(beams))
+
+      log =
+        capture_log(fn ->
+          assert {:ok, row} = Ingestion.ingest_toolchain(result, opts)
+          assert sibling_of(row) == nil
+        end)
+
+      assert log =~ "left out: its foreign_priv differs"
+    end
+  end
+
+  # The fixture writer's sibling: its beams the build's with a deterministic
+  # compile info (an Elixir module's other chunks are the build's), its
+  # foreign entries `entries`; and the sibling beams' bytes, to stage.
+  defp foreign_sibling(entries) do
+    build = ForeignPrivFixtures.writer_result()["toolchain_build"]
+
+    beams =
+      for %{"path" => "ebin/" <> file} <- build["file_manifest"]["ebin"] do
+        {file, deterministic_beam(ForeignPrivFixtures.beam(Path.rootname(file)))}
+      end
+
+    ebin =
+      for {file, bytes} <- beams,
+          do: %{
+            "path" => "ebin/" <> file,
+            "sha256" => ForeignPrivFixtures.sha(bytes),
+            "size" => byte_size(bytes),
+            "mode" => 33_188
+          }
+
+    sibling =
+      Map.merge(build, %{
+        "erl_compiler_options" => Compatibility.DeterministicBeams.options(),
+        "file_manifest" => %{"ebin" => ebin, "priv" => []},
+        "foreign_priv" => entries
+      })
+
+    {sibling, Enum.map(beams, &elem(&1, 1))}
+  end
+
+  defp deterministic_beam(beam) do
+    {:ok, _module, chunks} = :beam_lib.all_chunks(beam)
+    info = :erlang.term_to_binary(version: ~c"9.0")
+    chunks = List.keyreplace(chunks, ~c"CInf", 0, {~c"CInf", info})
+    {:ok, bytes} = :beam_lib.build_module(chunks)
+    bytes
+  end
+
+  defp archive_bytes(%{"path" => "priv/assets/" <> rel}) do
+    [d, file] = String.split(rel, "/")
+    File.read!(Path.join([ForeignPrivFixtures.dir(), "otp29", d, file]))
+  end
+
+  defp tar_gz(members) do
+    path = Path.join(System.tmp_dir!(), "dt-#{System.unique_integer([:positive])}.tar.gz")
+    files = for {name, bytes} <- members, do: {name, bytes}
+    :ok = :erl_tar.create(String.to_charlist(path), files, [:compressed])
+    bytes = File.read!(path)
+    File.rm!(path)
+    bytes
   end
 
   describe "publishing" do

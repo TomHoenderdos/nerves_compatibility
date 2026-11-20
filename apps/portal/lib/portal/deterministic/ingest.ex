@@ -18,7 +18,14 @@ defmodule Portal.Deterministic.Ingest do
     * its `ebin` blobs, read from the run's files and hashed here, pass
       `Compatibility.DeterministicBeams.compare_ebin/2` against the build's;
     * its `priv` passes `Portal.Catalog.ToolchainPriv.verify/3` as the
-      build's did.
+      build's did;
+    * a foreign priv build's sibling (foreign priv spec 3.8 row 4) lists the
+      build's `foreign_priv_rule` and exactly the build's foreign paths, its
+      own archives pass `Portal.Catalog.ToolchainForeignPriv.verify/3` on its
+      own beams, and each holds the members of the build's archive at that
+      path (`Compatibility.KinoAssets.members/1`): the two compiles stamp
+      different tar times, so the bytes differ and the sibling publishes its
+      own.
 
   `candidate/3` is `{:ok, sibling}` (with `"shas"`, every blob it lists),
   `{:skip, reason}` (logged by the caller; the build is stored without a
@@ -49,11 +56,11 @@ defmodule Portal.Deterministic.Ingest do
   """
 
   alias Compatibility.DeterministicBeams
-  alias Portal.Catalog.ToolchainPriv
+  alias Portal.Catalog.{ToolchainForeignPriv, ToolchainPriv}
 
   @first_revision 29
   @same ~w(deps_lock package_checksum declared manager compile_env compile_env_rule
-           compile_inputs built_priv)
+           compile_inputs built_priv foreign_priv_rule)
   @sha ~r/\A[0-9a-f]{64}\z/
   # The most ebin bytes read back to compare: far above any package's.
   @max_ebin_bytes 256 * 1024 * 1024
@@ -80,14 +87,20 @@ defmodule Portal.Deterministic.Ingest do
          :ok <- same_fields(sibling, raw),
          {:ok, manifest} <- same_paths(sibling["file_manifest"], build["file_manifest"]),
          :ok <- same_priv(manifest, build["file_manifest"], raw["built_priv"]),
+         :ok <- same_foreign_paths(sibling, build),
          :ok <- beams(manifest, build["file_manifest"], opts.files_dir),
-         :ok <- priv(result, manifest, raw, opts) do
+         :ok <- priv(result, manifest, raw, opts),
+         :ok <- foreign(result, sibling, manifest, {raw, build}, opts) do
+      foreign = foreign_entries(sibling)
+
       {:ok,
        %{
          "judge_revision" => sibling["judge_revision"],
          "file_manifest" => manifest,
          "compile_observations" => observations(sibling["compile_observations"]),
-         "shas" => shas(manifest)
+         "foreign_priv" => foreign,
+         "foreign_priv_rule" => if(foreign != [], do: sibling["foreign_priv_rule"]),
+         "shas" => shas(manifest) ++ for(%{"sha256" => sha} <- foreign, do: sha)
        }}
     end
   end
@@ -270,6 +283,59 @@ defmodule Portal.Deterministic.Ingest do
       :ok -> :ok
       {:refused, reason} -> {:skip, "priv refused on the host: " <> reason}
       {:error, reason} -> {:skip, "priv not checked: #{inspect(reason, limit: 5)}"}
+    end
+  end
+
+  # The same foreign paths as the build, which the host proved
+  # (`Portal.Catalog.Ingestion`), none for none.
+  defp same_foreign_paths(sibling, build) do
+    if foreign_paths(sibling) == foreign_paths(build),
+      do: :ok,
+      else: {:skip, "its foreign_priv differs"}
+  end
+
+  defp foreign_paths(build),
+    do: build |> foreign_entries() |> Enum.map(& &1["path"]) |> Enum.sort()
+
+  defp foreign_entries(%{"foreign_priv" => entries}) when is_list(entries),
+    do: Enum.filter(entries, &is_map/1)
+
+  defp foreign_entries(_build), do: []
+
+  # The sibling's archives, proved on the host as the build's were but
+  # against the sibling's own beams, and each holding the build's members.
+  defp foreign(_result, %{"foreign_priv" => [_ | _]} = sibling, manifest, {raw, build}, opts) do
+    proved = %{
+      "status" => "pass",
+      "file_manifest" => manifest,
+      "deps_lock" => raw["deps_lock"],
+      "package_checksum" => raw["package_checksum"],
+      "foreign_priv" => sibling["foreign_priv"],
+      "foreign_priv_rule" => sibling["foreign_priv_rule"]
+    }
+
+    case ToolchainForeignPriv.verify(%{}, proved, opts) do
+      :ok -> same_members(foreign_entries(sibling), foreign_entries(build), opts)
+      {:refused, reason} -> {:skip, "foreign priv refused on the host: " <> reason}
+      {:error, reason} -> {:skip, "foreign priv not checked: #{inspect(reason, limit: 5)}"}
+    end
+  end
+
+  defp foreign(_result, _sibling, _manifest, _builds, _opts), do: :ok
+
+  defp same_members(sibling, build, opts) do
+    by_path = Map.new(build, &{&1["path"], &1})
+
+    case Enum.find(sibling, &(not same_members?(&1, by_path[&1["path"]], opts))) do
+      nil -> :ok
+      %{"path" => path} -> {:skip, "its foreign_priv archives differ (#{path})"}
+    end
+  end
+
+  defp same_members?(sibling, build, opts) do
+    case ToolchainForeignPriv.archive_members(sibling, opts) do
+      {:ok, members} -> ToolchainForeignPriv.archive_members(build, opts) == {:ok, members}
+      :error -> false
     end
   end
 

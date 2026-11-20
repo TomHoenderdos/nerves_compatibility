@@ -63,6 +63,7 @@ defmodule Portal.Catalog.Ingestion do
     SystemLog,
     SystemResult,
     ToolchainBuild,
+    ToolchainForeignPriv,
     ToolchainPriv
   }
 
@@ -809,9 +810,29 @@ defmodule Portal.Catalog.Ingestion do
       |> gate_pins(result, opts)
 
     case ToolchainPriv.verify(result, build, opts) do
-      :ok -> stage_toolchain_build(result, keyed(build), opts)
+      :ok -> foreign_checked(result, build, opts)
       {:refused, reason} -> stage_toolchain_build(result, refused(build, reason), opts)
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Foreign priv spec 4.2, once the build's own priv held: the archives its
+  # compile wrote into kino's priv, proved again on the host
+  # (`ToolchainForeignPriv`). A refusal publishes none of the build's files.
+  defp foreign_checked(result, build, opts) do
+    case ToolchainForeignPriv.verify(result, build, opts) do
+      :ok ->
+        stage_toolchain_build(result, keyed(build), opts)
+
+      {:refused, why} ->
+        stage_toolchain_build(
+          result,
+          refused(build, why, "foreign priv refused on the host: "),
+          opts
+        )
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -861,18 +882,20 @@ defmodule Portal.Catalog.Ingestion do
   # beams included: its beams read data that is not published with them. It
   # is stored as a `fail`, a verdict the sweep leaves alone rather than one
   # it re-queues at once.
-  defp refused(build, reason) do
+  defp refused(build, reason, prefix \\ "priv refused on the host: ") do
     Map.merge(build, %{
       "status" => "fail",
-      "reason" => "priv refused on the host: " <> reason,
-      "file_manifest" => nil
+      "reason" => prefix <> reason,
+      "file_manifest" => nil,
+      "foreign_priv" => nil,
+      "foreign_priv_rule" => nil
     })
   end
 
   defp stage_toolchain_build(result, build, opts) do
     # Checked first: the check reads the build's blobs from the run's files.
     sibling = Portal.Deterministic.Ingest.candidate(result, build, opts)
-    wanted = build |> Map.get("file_manifest") |> shas_from_manifest()
+    wanted = shas_from_manifest(Map.get(build, "file_manifest")) ++ foreign_shas(build)
     staged = stage_shas(wanted, opts.files_dir)
 
     case wanted -- Enum.map(staged, & &1.sha256) do
@@ -888,6 +911,13 @@ defmodule Portal.Catalog.Ingestion do
         {:error, {:artifacts_unstaged, missing}}
     end
   end
+
+  # A pass build's foreign priv archives (`ToolchainForeignPriv` proved
+  # them): staged with its own files, all or nothing, and owned by its row.
+  defp foreign_shas(%{"status" => "pass", "foreign_priv" => [_ | _] = entries}),
+    do: for(%{"sha256" => sha} <- entries, do: sha)
+
+  defp foreign_shas(_build), do: []
 
   # Each firmware target's deterministic sibling, checked before its blobs
   # are staged (`Portal.Deterministic.Ingest.firmware_candidate/3`).
@@ -1364,6 +1394,8 @@ defmodule Portal.Catalog.Ingestion do
       manager: manager(build["manager"]),
       compile_observations: compile_observations(build["compile_observations"]),
       compile_env_rule: compile_env_rule(Map.get(build, "compile_env_rule"), compiled_env),
+      foreign_priv: foreign_priv(status, build),
+      foreign_priv_rule: foreign_priv_rule(status, build),
       transient_attempts: attempts,
       finished_at: parse_datetime(result["finished_at"]),
       # Named, or the upsert leaves the kept row's attempt in place: the
@@ -1376,6 +1408,18 @@ defmodule Portal.Catalog.Ingestion do
 
   defp optional_deps(%{} = optional_deps), do: optional_deps
   defp optional_deps(_), do: nil
+
+  # A pass build's foreign priv list and rule, as the host checked them
+  # (`ToolchainForeignPriv`); none on any other status, a gate's skip
+  # included, so no unchecked list is ever stored.
+  defp foreign_priv(:pass, %{"foreign_priv" => entries}) when is_list(entries), do: entries
+  defp foreign_priv(_status, _build), do: nil
+
+  defp foreign_priv_rule(:pass, %{"foreign_priv" => [_ | _], "foreign_priv_rule" => rule})
+       when is_binary(rule),
+       do: rule
+
+  defp foreign_priv_rule(_status, _build), do: nil
 
   @max_observation_bytes 256 * 1024
 
@@ -1644,6 +1688,8 @@ defmodule Portal.Catalog.Ingestion do
       compile_env: compiled_env,
       compile_env_rule: compile_env_rule(Map.get(build, "compile_env_rule"), compiled_env),
       compile_inputs: inputs,
+      foreign_priv: foreign_priv(status, build),
+      foreign_priv_rule: foreign_priv_rule(status, build),
       file_manifest: file_manifest(build["file_manifest"]),
       optional_deps: optional_deps(result["optional_deps"]),
       judge_revision: judge_revision(build["judge_revision"]),

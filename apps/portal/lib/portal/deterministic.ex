@@ -201,6 +201,8 @@ defmodule Portal.Deterministic do
       judge_revision: sibling["judge_revision"],
       file_manifest: sibling["file_manifest"],
       compile_observations: sibling["compile_observations"],
+      foreign_priv: sibling["foreign_priv"],
+      foreign_priv_rule: sibling["foreign_priv_rule"],
       finished_at: build.finished_at
     }
 
