@@ -197,6 +197,33 @@ defmodule NccWorker.ToolchainModeTest do
                compile_observations: nil
              } = build
     end
+
+    test "a failed host compile records the first compiler error of its log",
+         %{tmp_dir: work_dir} do
+      {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+
+      log =
+        "==> sample\n    error: undefined variable \"package\"\n    │\n" <>
+          "    └─ #{project}/deps/sample/mix.exs:11:15: Sample.MixProject.project/0\n"
+
+      host = %{status: :fail, error: "mix compile exited with code 1", log_tail: log}
+      build = Worker.toolchain_build(project, "sample", host, @toolchain, nil)
+
+      assert %{
+               status: "error",
+               reason: "host compile failed: mix compile exited with code 1",
+               portability_rule: nil,
+               compile_observations: %{
+                 "compile_error" =>
+                   ~s|error: undefined variable "package" (deps/sample/mix.exs:11)|
+               }
+             } = build
+
+      host = %{host | log_tail: "==> sample\nCompiling 1 file (.ex)\n"}
+
+      assert %{compile_observations: nil} =
+               Worker.toolchain_build(project, "sample", host, @toolchain, nil)
+    end
   end
 
   describe "the judge revision" do

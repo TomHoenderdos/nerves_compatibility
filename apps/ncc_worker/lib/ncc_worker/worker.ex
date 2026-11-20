@@ -9,6 +9,7 @@ defmodule NccWorker.Worker do
     BeamScan,
     BuildCache,
     BuildSelection,
+    CompileError,
     DepsGetClassifier,
     Deterministic,
     DepsLock,
@@ -2851,7 +2852,21 @@ defmodule NccWorker.Worker do
         judge_toolchain_build(build, project_dir, package_name, portability, host_result, opts)
 
       host ->
-        %{build | reason: "host compile failed: " <> describe_error(host[:error])}
+        %{
+          build
+          | reason: "host compile failed: " <> describe_error(host[:error]),
+            compile_observations: compile_failure(host, project_dir)
+        }
+    end
+  end
+
+  # A failed host compile's observations: the first compiler error its log
+  # names (`NccWorker.CompileError`), which the portal puts in the stored
+  # reason; nil when the log names none.
+  defp compile_failure(host, project_dir) do
+    case CompileError.first(host[:log_tail], project_dir) do
+      nil -> nil
+      error -> %{"compile_error" => error}
     end
   end
 

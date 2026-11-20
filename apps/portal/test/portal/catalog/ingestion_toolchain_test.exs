@@ -352,6 +352,51 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert memberships(tb) == []
   end
 
+  # The worker's `compile_observations.compile_error` (`NccWorker.CompileError`)
+  # is named in the stored reason, cleaned and bounded; the row keeps it.
+  test "a failed host compile's reason names its compiler error" do
+    name = unique_name()
+
+    error =
+      "** (RuntimeError) git_hooks: /work/proj/deps/git_hooks is not inside a git working tree."
+
+    result =
+      skipped_result(name)
+      |> put_in(["toolchain_build", "status"], "error")
+      |> put_in(
+        ["toolchain_build", "reason"],
+        "host compile failed: mix compile exited with code 1"
+      )
+      |> put_in(["toolchain_build", "compile_observations"], %{"compile_error" => error})
+
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+
+    assert tb.status == :fail
+
+    assert tb.reason ==
+             "compile failed: host compile failed: mix compile exited with code 1 " <>
+               "(** (RuntimeError) git_hooks: … is not inside a git working tree.)"
+
+    assert tb.compile_observations == %{"compile_error" => error}
+  end
+
+  # A signal's exit code keeps the reason the killed-compile rule matches.
+  test "a compile a signal ended is stored without its compiler error" do
+    name = unique_name()
+
+    result =
+      skipped_result(name)
+      |> put_in(["toolchain_build", "status"], "error")
+      |> put_in(
+        ["toolchain_build", "reason"],
+        "host compile failed: mix compile exited with code 137"
+      )
+      |> put_in(["toolchain_build", "compile_observations"], %{"compile_error" => "error: x"})
+
+    assert {:ok, tb} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+    assert tb.reason == "compile failed: host compile failed: mix compile exited with code 137"
+  end
+
   # Processes left running after the build are not a compile failure: the
   # worker's own reason is stored under its own label.
   test "a build the worker's process sweep failed is stored with the sweep's reason" do

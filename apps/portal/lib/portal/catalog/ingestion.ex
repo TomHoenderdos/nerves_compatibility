@@ -1396,16 +1396,25 @@ defmodule Portal.Catalog.Ingestion do
   The reason a build's row stores: a could-not-judge names its cause
   (`Compatibility.Portability.with_cause/2`), one of the problems of the
   build's own trace (`compile_observations.problems`, which the row keeps
-  in full); any other reason as the worker gave it. The worker's reason is
-  the bare one, so this runs after the transient check and count, which
-  read it.
+  in full); a failed host compile names its first compiler error
+  (`Compatibility.Portability.with_compile_error/2`, from the worker's
+  `compile_observations.compile_error`), unless a signal ended it; any
+  other reason as the worker gave it. The worker's reason is the bare one,
+  so this runs after the transient check and count, and the kept-row check,
+  which read it.
   """
   @spec judged_reason(term(), map()) :: term()
-  def judged_reason(reason, build),
-    do: Compatibility.Portability.with_cause(reason, trace_problems(build))
+  def judged_reason(reason, build) do
+    reason
+    |> Compatibility.Portability.with_cause(trace_problems(build))
+    |> Compatibility.Portability.with_compile_error(compile_error(build))
+  end
 
   defp trace_problems(%{"compile_observations" => %{"problems" => problems}}), do: problems
   defp trace_problems(_build), do: nil
+
+  defp compile_error(%{"compile_observations" => %{"compile_error" => error}}), do: error
+  defp compile_error(_build), do: nil
 
   defp bounded_reason(reason) when is_binary(reason), do: String.slice(reason, 0, 1000)
   defp bounded_reason(_reason), do: nil
