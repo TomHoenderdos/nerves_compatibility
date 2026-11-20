@@ -127,6 +127,35 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
              F.entries("otp29") |> Enum.map(& &1["sha256"]) |> Enum.sort()
   end
 
+  # Spec 3.8 row 2: a rebuild against another lock keeps the build it
+  # replaced as an earlier build, its foreign entries with it, rendered under
+  # `foreign_priv` like the row and its archives still served.
+  test "an earlier build keeps its foreign entries and is listed under foreign_priv", %{
+    writer: writer
+  } do
+    lock =
+      Map.put(writer.deps_lock, "table", %{
+        "version" => "0.1.2",
+        "checksum" => String.duplicate("c", 64)
+      })
+
+    {:ok, rebuilt} = F.ingest!(%{"deps_lock" => lock})
+    assert rebuilt.id == writer.id
+    assert [%{"foreign_priv" => [_, _], "run_id" => run}] = rebuilt.earlier_builds
+    assert run == writer.run_id
+
+    on!()
+    m = manifest("kino_vega_lite")
+    assert_contract!(m)
+    PortalWeb.ApiSpecAssertions.assert_api_schema(m, "ManifestV2")
+    %{"builds_with_inputs" => entries} = m["versions"]["0.1.13"]["foreign_priv"]
+    assert length(entries) == 2
+    assert Enum.all?(entries, &(length(&1["foreign_priv"]) == 2))
+    assert entries |> Enum.map(& &1["build"]["deps"]) |> Enum.uniq() |> length() == 2
+
+    for %{"sha256" => sha} <- writer.foreign_priv, do: assert(Catalog.published_sha256?(sha))
+  end
+
   test "format 1 never carries a foreign build or kino's own" do
     on!()
 
