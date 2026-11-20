@@ -1131,6 +1131,91 @@ defmodule NccWorker.ToolchainModeTest do
            )
   end
 
+  # The run's own setup, `deps.get` injected: `mix new`, the package, then
+  # `as_app/3` before the lock policy (review F4). What Hex writes for
+  # hpack_erl 0.3.0: the lock under the name the project gave it, and the
+  # release's `hex_metadata.config`, whose `app` is hpack.
+  describe "toolchain_setup/3" do
+    defp hex_deps_get(parent, second_lock) do
+      fn project_dir, _env ->
+        mix_exs = File.read!(Path.join(project_dir, "mix.exs"))
+        send(parent, {:deps_get, mix_exs})
+
+        if mix_exs =~ "{:hpack_erl," do
+          File.mkdir_p!(Path.join(project_dir, "deps/hpack_erl"))
+
+          File.write!(
+            Path.join(project_dir, "deps/hpack_erl/hex_metadata.config"),
+            ~s({<<"name">>,<<"hpack_erl">>}.\n{<<"app">>,<<"hpack">>}.\n)
+          )
+
+          File.write!(Path.join(project_dir, "mix.lock"), """
+          %{
+            "hpack_erl": {:hex, :hpack_erl, "0.3.0", "i", [:rebar3], [], "hexpm", "o"},
+          }
+          """)
+        else
+          File.write!(Path.join(project_dir, "mix.lock"), second_lock)
+        end
+
+        :ok
+      end
+    end
+
+    defp setup_input(dir) do
+      out = Path.join(dir, "out")
+      File.mkdir_p!(Path.join(out, "logs"))
+
+      paths = %{
+        work_dir: Path.join(dir, "work"),
+        output_dir: out,
+        logs_dir: Path.join(out, "logs")
+      }
+
+      input = %{run_id: "r1", mode: "toolchain", package: %{name: "hpack_erl", version: "0.3.0"}}
+      {input, paths}
+    end
+
+    test "declares a package whose application has another name as that application",
+         %{tmp_dir: dir} do
+      {input, paths} = setup_input(dir)
+
+      lock = """
+      %{
+        "hpack": {:hex, :hpack_erl, "0.3.0", "i", [:rebar3], [], "hexpm", "o"},
+      }
+      """
+
+      assert {:ok, project_dir, set_up} =
+               Worker.toolchain_setup(input, paths, deps_get: hex_deps_get(self(), lock))
+
+      assert set_up.package == %{name: "hpack_erl", version: "0.3.0", app: "hpack"}
+      assert_received {:deps_get, first}
+      assert first =~ ~s|{:hpack_erl, "== 0.3.0"}|
+      assert_received {:deps_get, second}
+      assert second =~ ~s|{:hpack, "== 0.3.0", hex: :hpack_erl}|
+      refute second =~ "{:hpack_erl,"
+      refute File.exists?(Path.join(project_dir, "deps/hpack_erl"))
+    end
+
+    test "the lock policy judges the lock the application's deps.get wrote", %{tmp_dir: dir} do
+      {input, paths} = setup_input(dir)
+
+      lock = """
+      %{
+        "hpack": {:hex, :hpack_erl, "0.3.0", "i", [:rebar3], [], "hexpm", "o"},
+        "evil": {:git, "https://example.invalid/evil.git", "abc", []},
+      }
+      """
+
+      assert {:error, :policy_violation} =
+               Worker.toolchain_setup(input, paths, deps_get: hex_deps_get(self(), lock))
+
+      assert_received {:deps_get, _first}
+      assert_received {:deps_get, _second}
+    end
+  end
+
   describe "a Gleam package" do
     # What `mix deps.get` leaves for a Gleam release: its `gleam.toml`, the
     # Erlang it generated, no file Mix picks a build tool by, and a lock

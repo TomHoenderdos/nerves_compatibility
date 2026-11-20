@@ -2087,11 +2087,28 @@ defmodule NccWorker.Worker do
   end
 
   defp toolchain_run(input, paths, toolchain) do
-    with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
-         {:ok, _} <- Project.add_package(project_dir, input.package, host_env(project_dir)),
-         {:ok, input} <- as_app(project_dir, input, paths),
-         :ok <- LockPolicy.validate(project_dir) do
+    with {:ok, project_dir, input} <- toolchain_setup(input, paths) do
       toolchain_project(project_dir, input, paths, toolchain, [])
+    end
+  end
+
+  @doc false
+  # A toolchain run's project: `mix new`, the package and its `deps.get`,
+  # the package declared by its application when that has another name
+  # (`as_app/4`), and then the lock policy, on the lock that declaration
+  # fetched. Returns the input whose package carries the application.
+  # Public for tests, which inject `deps_get:` (`Project.run_deps_get/2`'s
+  # shape).
+  @spec toolchain_setup(map(), map(), keyword()) :: {:ok, String.t(), map()} | {:error, term()}
+  def toolchain_setup(input, paths, opts \\ []) do
+    deps_get = Keyword.get(opts, :deps_get, &Project.run_deps_get/2)
+
+    with {:ok, project_dir} <- Project.create_plain(paths.work_dir, @wrapper_app),
+         {:ok, _} <-
+           Project.add_package(project_dir, input.package, host_env(project_dir), deps_get),
+         {:ok, input} <- as_app(project_dir, input, paths, deps_get),
+         :ok <- LockPolicy.validate(project_dir) do
+      {:ok, project_dir, input}
     end
   end
 
@@ -2101,7 +2118,7 @@ defmodule NccWorker.Worker do
   # Hex name Mix builds it and then stops at "could not find an app file".
   # The input's package then carries the application as `app`, which the
   # run builds and judges; the result still names the Hex package.
-  defp as_app(project_dir, %{package: %{name: name} = package} = input, paths) do
+  defp as_app(project_dir, %{package: %{name: name} = package} = input, paths, deps_get) do
     case Project.hex_app(project_dir, name) do
       nil ->
         {:ok, input}
@@ -2110,7 +2127,7 @@ defmodule NccWorker.Worker do
         log_host(paths, "Hex package #{name} is the application #{app}, declared as such")
 
         with {:ok, _} <-
-               Project.declare_as_app(project_dir, package, app, host_env(project_dir)) do
+               Project.declare_as_app(project_dir, package, app, host_env(project_dir), deps_get) do
           {:ok, %{input | package: Map.put(package, :app, app)}}
         end
     end
