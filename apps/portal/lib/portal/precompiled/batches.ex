@@ -291,21 +291,24 @@ defmodule Portal.Precompiled.Batches do
   # not in the store, has no size, and so renders as heavy.
   defp last_sizes(names) do
     case latest() do
-      nil ->
-        %{}
-
-      %Batch{payload: payload} ->
-        doc = JSON.decode!(payload)
-        formats = [doc["manifests"] || %{}, doc["manifests_v2"] || %{}]
-
-        for name <- names,
-            shas = for(format <- formats, sha = format[name], do: sha),
-            shas != [],
-            into: %{} do
-          sizes = Enum.map(shas, &blob_size/1)
-          {name, if(nil in sizes, do: nil, else: Enum.sum(sizes))}
-        end
+      nil -> %{}
+      %Batch{payload: payload} -> sizes_named(JSON.decode!(payload), names)
     end
+  end
+
+  defp sizes_named(doc, names) do
+    formats = [doc["manifests"] || %{}, doc["manifests_v2"] || %{}]
+
+    for name <- names,
+        shas = Enum.flat_map(formats, &List.wrap(&1[name])),
+        shas != [],
+        into: %{},
+        do: {name, stored_size(shas)}
+  end
+
+  defp stored_size(shas) do
+    sizes = Enum.map(shas, &blob_size/1)
+    if nil in sizes, do: nil, else: Enum.sum(sizes)
   end
 
   defp blob_size(sha) do

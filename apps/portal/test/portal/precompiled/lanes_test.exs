@@ -17,18 +17,19 @@ defmodule Portal.Precompiled.LanesTest do
   defp tracked(gauge, ms \\ 15) do
     fn {kind, n} ->
       raise_max(gauge, @most, :atomics.add_get(gauge, @running, 1))
-
-      case kind do
-        :heavy -> raise_max(gauge, @most_heavy, :atomics.add_get(gauge, @heavy, 1))
-        :light -> if :atomics.get(gauge, @heavy) > 0, do: :atomics.put(gauge, @beside, 1)
-      end
-
+      note_start(gauge, kind)
       Process.sleep(ms)
       if kind == :heavy, do: :atomics.sub(gauge, @heavy, 1)
       :atomics.sub(gauge, @running, 1)
       n * 10
     end
   end
+
+  defp note_start(gauge, :heavy),
+    do: raise_max(gauge, @most_heavy, :atomics.add_get(gauge, @heavy, 1))
+
+  defp note_start(gauge, :light),
+    do: if(:atomics.get(gauge, @heavy) > 0, do: :atomics.put(gauge, @beside, 1))
 
   defp raise_max(gauge, slot, value) do
     current = :atomics.get(gauge, slot)
