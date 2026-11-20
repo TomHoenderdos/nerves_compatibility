@@ -14,7 +14,9 @@ defmodule Compatibility.PortabilityTest do
           "closure dependency observed the host: d (compile-time host read: os:type/0)",
           "rebar3 build runs pre_hooks",
           "compile-time native library load: /tmp/evil.so",
-          "compile-time priv write not reproducible: priv/assets/x.tar.gz differs"
+          "compile-time priv write not reproducible: priv/assets/x.tar.gz differs",
+          "foreign priv write refused: two writers of kino priv/assets/X",
+          "compile-time read of kino's asset archives: file:read_file/1 /x"
         ] do
       assert Portability.refusal?(reason), reason
     end
@@ -34,7 +36,8 @@ defmodule Compatibility.PortabilityTest do
                "compile-time tracing or system flag: ",
                "compile-time Elixir patch dependence: ",
                "compile-time priv write not reproducible: ",
-               "bakes the build path: "
+               "bakes the build path: ",
+               "compile-time read of kino's asset archives: "
              ])
 
     for reason <- [
@@ -42,6 +45,7 @@ defmodule Compatibility.PortabilityTest do
           "calls natively built dependency at compile time: circuits_gpio:open/2",
           "rebar3 build runs pre_hooks",
           "compile-time native library load: /tmp/evil.so",
+          "foreign priv write refused: two writers of kino priv/assets/X",
           "portability could not be judged"
         ] do
       refute Portability.withdraws?(reason), reason

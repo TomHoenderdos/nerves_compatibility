@@ -24,7 +24,9 @@ defmodule Compatibility.Portability do
     "compile-time Elixir patch dependence: ",
     "compile-time priv write not reproducible: ",
     "manager mismatch: ",
-    "dependency tree differs from its tarball: "
+    "dependency tree differs from its tarball: ",
+    "foreign priv write refused: ",
+    "compile-time read of kino's asset archives: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
@@ -36,7 +38,8 @@ defmodule Compatibility.Portability do
   # dependency and the rebar3 rules do not: they speak of a dependency or of
   # the trace's own coverage, not of the package's own compile. A native
   # library load (`NccWorker.Portability.MappedLibs`) is a refusal but, until
-  # that is decided on its own, withdraws nothing either.
+  # that is decided on its own, withdraws nothing either. R1 also covers a
+  # read of kino's asset archives, whose tar times are the builder's clock.
   @withdrawing_prefixes [
     "compile-time host read: ",
     "compile-time host read in mix.exs: ",
@@ -44,7 +47,8 @@ defmodule Compatibility.Portability do
     "compile-time tracing or system flag: ",
     "compile-time Elixir patch dependence: ",
     "compile-time priv write not reproducible: ",
-    "bakes the build path: "
+    "bakes the build path: ",
+    "compile-time read of kino's asset archives: "
   ]
 
   # The oldest judge revision (`NccWorker.Portability.judge_revision/1`)
@@ -112,6 +116,8 @@ defmodule Compatibility.Portability do
   @manager_mismatch "manager mismatch: "
   @tree_differs "dependency tree differs from its tarball: "
   @priv_not_reproduced "compile-time priv write not reproducible: "
+  @foreign_priv_refused "foreign priv write refused: "
+  @foreign_priv_read "compile-time read of kino's asset archives: "
 
   @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
@@ -360,6 +366,14 @@ defmodule Compatibility.Portability do
   """
   @spec priv_not_reproduced() :: String.t()
   def priv_not_reproduced, do: @priv_not_reproduced
+
+  @doc "A foreign priv archive the judge's settle refused (`NccWorker.Portability.ForeignPriv`)."
+  @spec foreign_priv_refused() :: String.t()
+  def foreign_priv_refused, do: @foreign_priv_refused
+
+  @doc "A compile-time read, listing or stat under kino's `priv/assets` while the gate is open."
+  @spec foreign_priv_read() :: String.t()
+  def foreign_priv_read, do: @foreign_priv_read
 
   @doc "Whether `reason` is a trace refusal (and not a rule 1 reason or could-not-judge)."
   @spec refusal?(term()) :: boolean()
