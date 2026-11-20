@@ -69,7 +69,8 @@ defmodule NccWorker.Portability.Context do
     ensured: %{},
     trees: %{},
     hook_scripts: %{},
-    drivers: %{}
+    drivers: %{},
+    foreign_priv: nil
   ]
 
   @type dep :: %{
@@ -98,7 +99,8 @@ defmodule NccWorker.Portability.Context do
           trees: %{String.t() => Trees.tree()},
           hook_scripts: %{String.t() => String.t()},
           deps_path: String.t() | nil,
-          drivers: %{String.t() => String.t()}
+          drivers: %{String.t() => String.t()},
+          foreign_priv: map() | nil
         }
 
   @max_hops 40
@@ -470,16 +472,26 @@ defmodule NccWorker.Portability.Context do
   end
 
   @doc """
-  The package's own build `priv` (`_build/<env>/lib/<package>/priv`), real
-  path, when it is a directory of its own: `nil` for any other app, and
-  when the build's `priv` is a link (Mix links it to `deps/<d>/priv` when
-  the package ships one), since a write through that link lands in the
-  package's source tree. A `priv` that is not there resolves to its own
-  path. Judge revision 21: the package's own compile may write here
-  (`NccWorker.Portability.Events`).
+  The package's own build `priv` (`target_priv/2` of the package): `nil`
+  for any other app. Judge revision 21: the package's own compile may write
+  here (`NccWorker.Portability.Events`).
   """
   @spec own_priv(t(), term()) :: String.t() | nil
-  def own_priv(%__MODULE__{package: package} = ctx, app) when is_binary(app) and app == package do
+  def own_priv(%__MODULE__{package: package} = ctx, app) when is_binary(app) and app == package,
+    do: target_priv(ctx, app)
+
+  def own_priv(_ctx, _app), do: nil
+
+  @doc """
+  A closure app's build `priv` (`_build/<env>/lib/<app>/priv`), real path,
+  when it is a directory of its own: `nil` when the build's `priv` is a link
+  (Mix links it to `deps/<d>/priv` when the app ships one, so a write
+  through it lands in a source tree) or lies under a dependency's source
+  dir. A `priv` that is not there resolves to its own path. Foreign priv
+  spec 3.1, gate 3, for kino; `own_priv/2` for the package.
+  """
+  @spec target_priv(t(), term()) :: String.t() | nil
+  def target_priv(%__MODULE__{} = ctx, app) when is_binary(app) do
     with %{build: build} when is_binary(build) <- Map.get(ctx.deps, app),
          priv = Path.join(build, "priv"),
          ^priv <- realpath(priv) do
@@ -489,7 +501,21 @@ defmodule NccWorker.Portability.Context do
     end
   end
 
-  def own_priv(_ctx, _app), do: nil
+  def target_priv(_ctx, _app), do: nil
+
+  @doc "The modules `app`'s built `.app` lists, as strings; none when it cannot be read."
+  @spec app_modules(t(), term()) :: MapSet.t(String.t())
+  # sobelow_skip ["Traversal.FileModule"]
+  def app_modules(ctx, app) do
+    with ebin when is_binary(ebin) <- ebin(ctx, app),
+         {:ok, [{:application, _name, props}]} <-
+           :file.consult(String.to_charlist(Path.join(ebin, app <> ".app"))),
+         modules when is_list(modules) <- props[:modules] do
+      for m <- modules, is_atom(m), into: MapSet.new(), do: Atom.to_string(m)
+    else
+      _ -> MapSet.new()
+    end
+  end
 
   @doc """
   `path`, written in `owner`'s window, as a path relative to the package's

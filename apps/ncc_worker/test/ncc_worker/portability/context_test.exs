@@ -467,4 +467,25 @@ defmodule NccWorker.Portability.ContextTest do
       refute Context.under?("/etc/hosts", "/")
     end
   end
+
+  describe "target_priv/2 (foreign priv spec 3.1, gate 3)" do
+    test "a closure app's build priv of its own, else nil", %{tmp_dir: dir} do
+      f = NccWorker.KinoFixtures.project(dir)
+      assert Context.target_priv(f.ctx, "kino") == Path.join(f.kino_build, "priv")
+      assert Context.target_priv(f.ctx, "nope") == nil
+      linked = NccWorker.KinoFixtures.project(Path.join(dir, "l"), link_kino_priv: true)
+      assert Context.target_priv(linked.ctx, "kino") == nil
+      # own_priv/2 is target_priv/2 for the package and nil for any other app.
+      assert Context.own_priv(f.ctx, "kino") == nil
+
+      assert Context.own_priv(f.ctx, "kino_vega_lite") ==
+               Context.target_priv(f.ctx, "kino_vega_lite")
+    end
+
+    test "app_modules/2 reads the built .app", %{tmp_dir: dir} do
+      f = NccWorker.KinoFixtures.project(dir)
+      assert Context.app_modules(f.ctx, "kino") == MapSet.new(~w(Elixir.Kino.JS Elixir.Kino.HTML))
+      assert Context.app_modules(f.ctx, "nope") == MapSet.new()
+    end
+  end
 end

@@ -111,6 +111,7 @@ defmodule NccWorker.Portability do
     Context,
     ElixirVersion,
     Events,
+    ForeignPriv,
     MappedLibs,
     PrivRepro,
     Probes,
@@ -512,7 +513,7 @@ defmodule NccWorker.Portability do
         trees: trees,
         hook_scripts: hooks,
         deps_path: deps
-      ] ++ Keyword.take(opts, [:target, :roots, :host_native])
+      ] ++ Keyword.take(opts, [:target, :roots, :host_native, :foreign_priv])
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
@@ -874,6 +875,8 @@ defmodule NccWorker.Portability do
   defp facts(project_dir, package, report, native, opts) do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
+    gate = ForeignPriv.gate(ctx, scope, opts)
+    ctx = %{ctx | foreign_priv: gate}
 
     decided =
       report
@@ -955,7 +958,14 @@ defmodule NccWorker.Portability do
       manager_mismatch: manager_mismatch(ctx, scope, Keyword.get(opts, :declassified, %{})),
       tree_refusal: tree_refusal(ctx, scope),
       native_output: if(target(opts), do: native_output(ctx, scope)),
-      host_native: host_native
+      host_native: host_native,
+      foreign: %{
+        stat: ForeignPriv.stat(opts, gate),
+        gate: gate,
+        flag: Keyword.get(opts, :foreign_priv) == true,
+        entries: %{},
+        exclude: []
+      }
     }
   end
 
@@ -1267,7 +1277,11 @@ defmodule NccWorker.Portability do
   end
 
   defp traced_tool_modules(ctx, scope, tool_apps) do
-    listed = for app <- scope, Context.dep?(ctx, app), into: %{}, do: {app, app_modules(ctx, app)}
+    listed =
+      for app <- scope,
+          Context.dep?(ctx, app),
+          into: %{},
+          do: {app, Context.app_modules(ctx, app)}
 
     {tools, others} = Enum.split_with(listed, fn {app, _mods} -> app in tool_apps end)
     other = others |> Enum.map(&elem(&1, 1)) |> Enum.reduce(MapSet.new(), &MapSet.union/2)
@@ -1276,20 +1290,6 @@ defmodule NccWorker.Portability do
     |> Enum.map(&elem(&1, 1))
     |> Enum.reduce(MapSet.new(), &MapSet.union/2)
     |> MapSet.difference(other)
-  end
-
-  # The modules an application's built `.app` lists, as strings; none when
-  # it cannot be read.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp app_modules(ctx, app) do
-    with ebin when is_binary(ebin) <- Context.ebin(ctx, app),
-         {:ok, [{:application, _name, props}]} <-
-           :file.consult(String.to_charlist(Path.join(ebin, app <> ".app"))),
-         modules when is_list(modules) <- props[:modules] do
-      for m <- modules, is_atom(m), into: MapSet.new(), do: Atom.to_string(m)
-    else
-      _ -> MapSet.new()
-    end
   end
 
   # In target mode, what a native tool's own code did is `native_build`
@@ -2684,7 +2684,13 @@ defmodule NccWorker.Portability do
       "config_items" => length(facts.config.items),
       "config_dropped" => facts.config.dropped
     })
+    |> put_foreign_stat(facts)
   end
+
+  defp put_foreign_stat(stats, %{foreign: %{stat: nil}}), do: stats
+
+  defp put_foreign_stat(stats, %{foreign: %{stat: stat}}),
+    do: Map.put(stats, "foreign_priv", stat)
 
   defp dep_rebar(deps), do: Enum.map(deps, fn {app, result} -> {app, result.rebar} end)
 
