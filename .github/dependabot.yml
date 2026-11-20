@@ -1,0 +1,46 @@
+# Dependabot: weekly grouped update PRs per ecosystem, as in autosift.
+# Pull requests run the test, audit, CodeQL, Credo and Sobelow workflows;
+# nothing deploys until a PR is merged into main.
+version: 2
+
+updates:
+  # The umbrella's one shared mix.lock lives at the root; never let anything
+  # resolve deps inside apps/* (CLAUDE.md).
+  - package-ecosystem: mix
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    groups:
+      hex:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "chore(ci)"
+
+  # The worker image's nerves_system_br base (pinned by digest). A bump moves
+  # every firmware build to a new Buildroot and toolchain: review it like a
+  # worker change and run `make test-integration` before merging.
+  - package-ecosystem: docker
+    directory: /apps/ncc_worker
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Amsterdam
+    commit-message:
+      prefix: "chore(docker)"
