@@ -273,19 +273,25 @@ defmodule Portal.Precompiled.BatchesTest do
     end
 
     # The first batch knows no package's size, so it may not run two
-    # renders at once, nor may a batch whose packages were named heavy.
-    test "packages of unknown or heavy size render one at a time" do
+    # renders at once, nor may a batch whose heavy packages each fill the
+    # budget; heavy ones within it render beside each other.
+    test "packages of unknown size, or heavy past the budget, render one at a time" do
       Application.put_env(:portal, Batches, lanes: 3)
       {first, {:ok, _}} = render_spans(fn -> Batches.build_and_sign() end)
       assert map_size(first) >= 6
       assert most_at_once(first) == 1
 
       forget_memo()
-      Application.put_env(:portal, Batches, lanes: 3, heavy_bytes: 1)
+      Application.put_env(:portal, Batches, lanes: 3, heavy_bytes: 1, heavy_budget_bytes: 1)
       {heavy, {:ok, batch}} = render_spans(fn -> Batches.build_and_sign() end)
       assert map_size(heavy) >= 6
       assert most_at_once(heavy) == 1
       assert_stored_bytes_are_fresh_renders(batch)
+
+      forget_memo()
+      Application.put_env(:portal, Batches, lanes: 3, heavy_bytes: 1)
+      {within, {:ok, _}} = render_spans(fn -> Batches.build_and_sign() end)
+      assert most_at_once(within) > 1
     end
   end
 

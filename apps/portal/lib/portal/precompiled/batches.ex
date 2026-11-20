@@ -30,14 +30,16 @@ defmodule Portal.Precompiled.Batches do
   seconds, one at a time, and every deploy needs one. A render is mostly CPU
   in this node, so the packages to render go through `Portal.Precompiled.Lanes`,
   four at once by default (`config :portal, Portal.Precompiled.Batches,
-  lanes:`, `NCC_PRECOMPILED_BATCH_LANES`). A render's memory grows with its manifest
-  (the largest, near 50 MB of manifest, peaked near 0.9 GB), so a package
-  whose manifests the newest batch named at 1 MB or more (`heavy_bytes:`), or
-  that it did not name, renders in no lane beside another such package. The
-  lanes share the node's database pool, holding a connection only while a
-  query runs, so they open no connection to Postgres. Results do not depend on
-  the lanes: each package's manifests are its own render, and the batch maps
-  them by name.
+  lanes:`, `NCC_PRECOMPILED_BATCH_LANES`). A render's memory grows with its
+  manifest (the largest, near 50 MB of manifest, peaked near 0.9 GB), so a
+  package whose manifests the newest batch named at 1 MB or more
+  (`heavy_bytes:`) is heavy, weighing those bytes, and heavy packages render
+  at once only while they weigh 24 MB or less together
+  (`heavy_budget_bytes:`); a heavier one, or one the newest batch did not
+  name, renders as the only heavy one. The lanes share the node's database
+  pool, holding a connection only while a query runs, so they open no
+  connection to Postgres. Results do not depend on the lanes: each package's
+  manifests are its own render, and the batch maps them by name.
 
   Content origins (`Portal.Precompiled.Content`) are read for every batch and
   go into the payload only; no manifest depends on them, so they are not part
@@ -64,11 +66,13 @@ defmodule Portal.Precompiled.Batches do
   # `{name, fingerprint, v1_sha | nil, v2_sha | nil, absent_shas}` per package.
   @memo Module.concat(__MODULE__, Memo)
 
-  # Packages rendered at once, and the manifest bytes (both formats, as the
-  # newest batch named them) from which a package renders as heavy, one at a
-  # time; see the moduledoc.
+  # Packages rendered at once; the manifest bytes (both formats, as the newest
+  # batch named them) from which a package renders as heavy; and the most
+  # manifest bytes of heavy packages rendered at once, unless one alone weighs
+  # more. See the moduledoc.
   @lanes 4
   @heavy_bytes 1_048_576
+  @heavy_budget 24 * 1_048_576
 
   # A batch is signed every 15 minutes; clients refuse one older than 24 hours
   # anyway (freshness bound), so a longer lifetime only widens the window in
@@ -222,7 +226,8 @@ defmodule Portal.Precompiled.Batches do
 
   # Renders and stores each package in `Portal.Precompiled.Lanes`, by the
   # size the newest batch named its manifests at: a render's memory grows
-  # with its manifest, so a heavy one never runs beside another.
+  # with its manifest, so the heavy ones running at once are bounded by the
+  # sum of those sizes.
   defp render_packages([], _fingerprints, _lanes), do: []
 
   defp render_packages(names, fingerprints, lanes) do
@@ -230,7 +235,7 @@ defmodule Portal.Precompiled.Batches do
     {heavy, light} = Lanes.split(names, &Map.get(sizes, &1), heavy_bytes())
 
     heavy
-    |> Lanes.map(light, &render_package(&1, Map.get(fingerprints, &1)), lanes)
+    |> Lanes.map(light, &render_package(&1, Map.get(fingerprints, &1)), lanes, heavy_budget())
     |> Enum.map(&elem(&1, 1))
   end
 
@@ -321,11 +326,13 @@ defmodule Portal.Precompiled.Batches do
   end
 
   # How many packages render at once, `config :portal, Portal.Precompiled.Batches,
-  # lanes:` (`NCC_PRECOMPILED_BATCH_LANES`), and from how many manifest bytes
-  # a package renders as heavy (`heavy_bytes:`). Anything but a positive
-  # integer, or a string of one, keeps the default.
+  # lanes:` (`NCC_PRECOMPILED_BATCH_LANES`), from how many manifest bytes a
+  # package renders as heavy (`heavy_bytes:`), and how many manifest bytes of
+  # heavy packages render at once (`heavy_budget_bytes:`). Anything but a
+  # positive integer, or a string of one, keeps the default.
   defp lanes, do: positive(:lanes, @lanes)
   defp heavy_bytes, do: positive(:heavy_bytes, @heavy_bytes)
+  defp heavy_budget, do: positive(:heavy_budget_bytes, @heavy_budget)
 
   defp positive(key, default) do
     case Application.get_env(:portal, __MODULE__, [])[key] do
