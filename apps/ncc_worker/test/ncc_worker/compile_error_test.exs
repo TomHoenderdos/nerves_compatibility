@@ -139,6 +139,37 @@ defmodule NccWorker.CompileErrorTest do
              "c++: fatal error: Killed signal terminated program cc1plus"
   end
 
+  # GCC prints a template's instantiation context ("required from here")
+  # before a warning or an error. Only a C-family line GCC or Clang labels
+  # `error:` or `fatal error:` is an error, so a context line above a killed
+  # compiler never hides the kill the portal's killed-compile rule reads.
+  test "a C or C++ line is an error only when labelled one" do
+    log = """
+    ===> Compiling /work/proj/deps/rocksdb/c_src/db.cc
+    /work/proj/deps/rocksdb/c_src/db.cc: In instantiation of 'void f(T) [with T = int]':
+    /work/proj/deps/rocksdb/c_src/db.cc:10:5:   required from here
+    /work/proj/deps/rocksdb/c_src/db.cc:4:7: warning: unused variable 'x' [-Wunused-variable]
+    c_src/db.h:3:1: note: declared here
+    c++: fatal error: Killed signal terminated program cc1plus
+    compilation terminated.
+    ** (Mix) Could not compile dependency :rocksdb, "rebar3 bare compile" command failed.
+    """
+
+    assert CompileError.first(log, @proj) ==
+             "c++: fatal error: Killed signal terminated program cc1plus"
+
+    log = """
+    c_src/db.cc:10:5:   required from here
+    c_src/db.cc:12:3: error: 'g' was not declared in this scope
+    """
+
+    assert CompileError.first(log, @proj) ==
+             "c_src/db.cc:12: error: 'g' was not declared in this scope"
+
+    assert CompileError.first("c_src/x.c:2:10: fatal error: zlib.h: No such file\n", @proj) ==
+             "c_src/x.c:2: fatal error: zlib.h: No such file"
+  end
+
   test "rebar3's failed file, with the first error under it, not a warning above it" do
     log = """
     ===> Compiling gen_smtp

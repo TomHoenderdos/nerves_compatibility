@@ -11,9 +11,10 @@ defmodule NccWorker.CompileError do
   lines are searched, in this order, for:
 
     1. a compiler's own error: an Elixir diagnostic (`error: ...`, with the
-       file and line of the `└─` under it), an Erlang or C compiler's
+       file and line of the `└─` under it), an Erlang compiler's
        `file:line: message` that is not a warning, a note or a stacktrace
-       entry, a shell's `...: not found` for a build program, a compiler
+       entry, a C-family one whose message is `error:` or `fatal error:`
+       (never GCC's "required from here" context), a shell's `...: not found` for a build program, a compiler
        driver's `fatal error: Killed signal terminated program`, or rebar3's
        `Compiling <file> failed` with the first message under it that is not
        a warning;
@@ -35,6 +36,10 @@ defmodule NccWorker.CompileError do
   # Not an Elixir file: Elixir reports an error as `error:`, and an Elixir
   # file's `file:line: ...` is a warning's or a stacktrace's location.
   @source_error ~r/\A(\S+\.(?:erl|hrl|xrl|yrl|c|h|cc|cpp|cxx|hpp|hh|m|mm)):(\d+)(?::\d+)?: (.+)\z/u
+  # GCC and Clang label every error (`error:`, `fatal error:`); their other
+  # lines are warnings, notes and context ("required from here", "In file
+  # included from"), which are not.
+  @c_family ~w(.c .h .cc .cpp .cxx .hpp .hh .m .mm)
   @max_bytes 1000
   # How far below an error its location or message is looked for.
   @window 20
@@ -92,11 +97,17 @@ defmodule NccWorker.CompileError do
   defp source_error(line, _below) do
     case Regex.run(@source_error, line) do
       [_, file, number, message] ->
-        if warning?(message) or mfa?(message), do: nil, else: "#{file}:#{number}: #{message}"
+        if error_message?(file, message), do: "#{file}:#{number}: #{message}"
 
       nil ->
         nil
     end
+  end
+
+  defp error_message?(file, message) do
+    if Path.extname(file) in @c_family,
+      do: Regex.match?(~r/\A(?:fatal )?error: /u, message),
+      else: not (warning?(message) or mfa?(message))
   end
 
   defp missing_program(line, _below) do
