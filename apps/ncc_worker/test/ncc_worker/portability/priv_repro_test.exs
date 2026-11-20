@@ -244,4 +244,16 @@ defmodule NccWorker.Portability.PrivReproTest do
     assert v.reason == Reasons.could_not_judge()
     assert "priv/assets/a.txt: does not inflate" in v.observations["problems"]
   end
+
+  test "a held pass keeps its foreign priv entries until the second build gives them back",
+       %{dir: dir, pass: pass, own: own} do
+    entry = %{"path" => "priv/assets/X/uxwh53kfq2wszgf23hqwgkuiza.tar.gz"}
+    pass = Map.merge(pass, %{foreign_priv: [entry], foreign_priv_rule: "kino_js_v1"})
+    held = PrivRepro.hold(pass, own)
+    assert %{status: :skip, foreign_priv: nil, foreign_priv_rule: nil} = held
+    assert %{foreign_priv: [^entry], foreign_priv_rule: "kino_js_v1"} = held.priv_repro
+
+    assert %{status: :pass, foreign_priv: [^entry], foreign_priv_rule: "kino_js_v1"} =
+             settle(held, dir, second(%{"assets/a.txt" => "a"}))
+  end
 end

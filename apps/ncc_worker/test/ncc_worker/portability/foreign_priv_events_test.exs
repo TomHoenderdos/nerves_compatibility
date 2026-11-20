@@ -237,6 +237,19 @@ defmodule NccWorker.Portability.ForeignPrivEventsTest do
              :pass
   end
 
+  # Spec 3.2 row F5: the real-VM fixture on Elixir 1.19 and 1.20 shows no
+  # frameless stat after an accepted call, so none is in the rule.
+  test "a frameless stat of A/<d> refuses as a read", %{on: on, a: a} do
+    vl = Path.join(a, "Kino_VegaLite")
+
+    for mfa <- ~w(prim_file:read_file_info/2 prim_file:read_link_info/2) do
+      assert {:refuse, "compile-time read of kino's asset archives: " <> rest} =
+               Events.decide(ev("file_read", mfa, vl, nil), on, "kino_vega_lite")
+
+      assert rest =~ mfa
+    end
+  end
+
   test "an accepted event keeps the refusal it would have been", %{on: on, a: a} do
     assert {:observe, "foreign_priv",
             %{"refusal" => "compile-time write outside ebin: file:open/2 " <> _}} =

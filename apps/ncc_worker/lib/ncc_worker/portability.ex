@@ -51,6 +51,15 @@ defmodule NccWorker.Portability do
   tarball's after the compile, otherwise the refusal of its window
   (`own_tree_copies/2`, judge revision 27).
 
+  A job sent `foreign_priv: true` (`NCC_INPUT.judge.foreign_priv`) opens the
+  foreign priv gate when its four conditions hold (`ForeignPriv.gate/3`):
+  kino's reviewed `Kino.JS` writes into its build `priv/assets/<d>` are
+  observed (`Events`), settled per window (`ForeignPriv.settle/2`: a failure
+  is that window's refusal), and the settled directories are left out of
+  kino's built check. A pass then carries `foreign_priv`, the package's own
+  settled archives, and `foreign_priv_rule`; `trace_stats["foreign_priv"]`
+  records `"on"` or `"off"`. Without the flag nothing here changes.
+
   The package's own compile writing into its own build `priv`, and the
   probes `File.mkdir_p/1` makes of the directories above it (`Events`'
   `priv_writes` and `priv_probes`, judge revision 21), refuse nothing here,
@@ -128,7 +137,9 @@ defmodule NccWorker.Portability do
           required(:observations) => map(),
           optional(:compile_env) => [ConfigReads.item()] | nil,
           optional(:compile_inputs) => [map()] | nil,
-          optional(:manager) => String.t() | nil
+          optional(:manager) => String.t() | nil,
+          optional(:foreign_priv) => [map()] | nil,
+          optional(:foreign_priv_rule) => String.t() | nil
         }
 
   @default_timeout_ms 30 * 60 * 1000
@@ -722,6 +733,7 @@ defmodule NccWorker.Portability do
     }
     |> Map.put(:compile_env, nil)
     |> Map.put(:compile_inputs, nil)
+    |> ForeignPriv.unpass()
   end
 
   defp judge_compile({:ok, 0}), do: "finished"
@@ -922,6 +934,8 @@ defmodule NccWorker.Portability do
       |> own_priv_reads(ctx)
       |> own_tree_copies(ctx)
 
+    {decided, settled} = ForeignPriv.settle(decided, ctx)
+
     package_r2 = package_build_root(ctx)
     {decided, deps} = dep_results(ctx, report, decided, libs, target(opts) != nil)
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
@@ -945,7 +959,7 @@ defmodule NccWorker.Portability do
         ),
       trace_problems:
         trace_problems(report, ctx) ++
-          built_problems(ctx, report, opts) ++
+          built_problems(ctx, report, opts, settled.exclude) ++
           unjudged ++
           libs.problems ++
           config.problems ++
@@ -964,8 +978,8 @@ defmodule NccWorker.Portability do
         stat: ForeignPriv.stat(opts, gate),
         gate: gate,
         flag: Keyword.get(opts, :foreign_priv) == true,
-        entries: %{},
-        exclude: []
+        entries: settled.entries,
+        exclude: settled.exclude
       }
     }
   end
@@ -1836,14 +1850,16 @@ defmodule NccWorker.Portability do
   # The recompute is bounded as a whole (`built_budget_ms:`, default 5 min)
   # on top of each digest's own limits: a dependency checked once the
   # budget is spent is not judged ("no time left").
-  defp built_problems(ctx, report, opts) do
+  defp built_problems(ctx, report, opts, exclude) do
     if Keyword.get(opts, :built_check, true) do
       clock = Keyword.get(opts, :built_clock, fn -> System.monotonic_time(:millisecond) end)
       deadline = clock.() + Keyword.get(opts, :built_budget_ms, @built_budget_ms)
 
       ctx
       |> Context.closure_of(ctx.package)
-      |> Enum.map(&built_mismatch(ctx, report, &1, deadline - clock.()))
+      |> Enum.map(
+        &built_mismatch(ctx, report, &1, deadline - clock.(), excluded(ctx, &1, exclude))
+      )
       |> Enum.reject(&is_nil/1)
       |> Enum.map(&("built outside the trace: " <> &1))
     else
@@ -1851,14 +1867,22 @@ defmodule NccWorker.Portability do
     end
   end
 
-  defp built_mismatch(_ctx, _report, app, left_ms) when left_ms <= 0, do: "#{app} (no time left)"
+  # Foreign priv spec 3.5: kino's digest leaves out exactly the directories
+  # that settled in a window other than kino's (`ForeignPriv.settle/2`).
+  # Equal to the one taken when kino's window closed, it shows nothing else
+  # changed and no file was under them then.
+  defp excluded(%Context{foreign_priv: %{target: app}}, app, exclude), do: exclude
+  defp excluded(_ctx, _app, _exclude), do: []
 
-  defp built_mismatch(ctx, report, app, left_ms) do
+  defp built_mismatch(_ctx, _report, app, left_ms, _exclude) when left_ms <= 0,
+    do: "#{app} (no time left)"
+
+  defp built_mismatch(ctx, report, app, left_ms, exclude) do
     recorded = Map.get(report.built || %{}, app)
 
     case {recorded, Map.get(ctx.deps, app)} do
       {%{digest: want}, %{build: dir}} when is_binary(want) and is_binary(dir) ->
-        compare_built(app, want, digest_now(dir, left_ms))
+        compare_built(app, want, digest_now(dir, left_ms, exclude))
 
       {%{error: why}, _dep} when is_binary(why) ->
         "#{app} (digest failed at window close: #{why})"
@@ -1877,9 +1901,13 @@ defmodule NccWorker.Portability do
   defp compare_built(app, _want, {:error, why}),
     do: "#{app} (digest failed now: #{inspect(why, limit: 5, printable_limit: 200)})"
 
-  # The digest's own limits, its time cut to what is left of the budget.
-  defp digest_now(dir, left_ms) do
-    case :ncc_tracer_digest.dir(dir, %{timeout_ms: min(left_ms, @digest_timeout_ms)}) do
+  # The digest's own limits, its time cut to what is left of the budget, and
+  # the build-dir-relative paths it leaves out (`excluded/3`).
+  defp digest_now(dir, left_ms, exclude \\ []) do
+    opts = %{timeout_ms: min(left_ms, @digest_timeout_ms)}
+    opts = if exclude == [], do: opts, else: Map.put(opts, :exclude, exclude)
+
+    case :ncc_tracer_digest.dir(dir, opts) do
       {:ok, digest, files} when is_binary(digest) -> {:ok, digest, files}
       {:error, why} -> {:error, why}
       other -> {:error, {:unexpected, other}}
@@ -2456,14 +2484,16 @@ defmodule NccWorker.Portability do
 
     status = if reason, do: :skip, else: :pass
 
-    verdict = %{
-      status: status,
-      reason: reason,
-      observations: observations(facts, problems),
-      compile_env: if(status == :pass, do: facts.config.items),
-      compile_inputs: if(status == :pass, do: facts.inputs),
-      manager: Context.manager(facts.ctx, facts.ctx.package)
-    }
+    verdict =
+      %{
+        status: status,
+        reason: reason,
+        observations: observations(facts, problems),
+        compile_env: if(status == :pass, do: facts.config.items),
+        compile_inputs: if(status == :pass, do: facts.inputs),
+        manager: Context.manager(facts.ctx, facts.ctx.package)
+      }
+      |> ForeignPriv.put_verdict(facts.foreign, status, facts.ctx.package)
 
     if status == :pass, do: PrivRepro.hold(verdict, own_priv(facts)), else: verdict
   end
@@ -2607,6 +2637,12 @@ defmodule NccWorker.Portability do
       for {owner, {:observe, kind, item}} <- facts.decided,
           do: {kind, Map.put(item, "owner", owner_name(owner))}
 
+    # Foreign priv: kino's own window alone makes more accepted calls than
+    # the cap (each Kino.JS module's `File.mkdir_p!/1` probes every directory
+    # from `/` down), and they are inert (`ForeignPriv`). Every other
+    # window's come first, in order, so the cap keeps the writers'.
+    observed = Enum.sort_by(observed, &kino_own_call?(&1, facts.ctx.foreign_priv))
+
     refusals =
       for {owner, {:refuse, reason}} <- facts.decided,
           do: %{"owner" => owner_name(owner), "reason" => reason}
@@ -2644,6 +2680,9 @@ defmodule NccWorker.Portability do
         {:observe, kind, path} <- list,
         do: {kind, %{"owner" => owner_name(app), "path" => path}}
   end
+
+  defp kino_own_call?({"foreign_priv", %{"owner" => owner}}, %{target: owner}), do: true
+  defp kino_own_call?(_observed, _gate), do: false
 
   defp collect(observed, kind, cap) do
     observed

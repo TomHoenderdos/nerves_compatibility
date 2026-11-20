@@ -238,6 +238,37 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     end
   end
 
+  # Kino.JS writers (foreign priv spec, rule kino_js_v1): their compile packs
+  # each module's assets into kino's build priv. With the job's flag they
+  # pass, and the archives they wrote are listed. kino must resolve to
+  # 0.19.1, the reviewed release (rule 6 of the lead's rulings): a newer
+  # kino needs its own review first.
+  @foreign_priv [
+    {"kino_vega_lite", "0.1.13", ["KinoVegaLite_ChartCell", "Kino_VegaLite"]},
+    {"kino_maplibre", "0.1.13", ["KinoMapLibre_MapCell", "Kino_MapLibre"]}
+  ]
+
+  for {package, version, dirs} <- @foreign_priv do
+    @tag package: package, version: version, variant: "include", dirs: dirs
+    test "foreign priv: #{package} #{version} passes with its archives", ctx do
+      %{package: package, version: version, dirs: dirs} = ctx
+      {golden, stats} = build(ctx, package, version, "include", %{foreign_priv: true})
+      report(ctx, golden, stats)
+
+      assert golden["status"] == "pass",
+             inspect(Map.take(golden, ["status", "reason", "observations"]),
+               pretty: true,
+               limit: :infinity
+             )
+
+      assert golden["foreign_priv_rule"] == "kino_js_v1"
+
+      assert golden["foreign_priv"]
+             |> Enum.map(&(&1["path"] |> Path.split() |> Enum.at(2)))
+             |> Enum.sort() == dirs
+    end
+  end
+
   # --- the run -----------------------------------------------------------------
 
   defp build(ctx, package, version, variant, judge \\ nil) do
@@ -303,7 +334,13 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       "optional_deps" => Map.take(result["optional_deps"] || %{}, ["added", "dropped", "reason"]),
       "observations" => Map.delete(obs, "trace_stats")
     }
+    |> put_present("foreign_priv", tb["foreign_priv"])
+    |> put_present("foreign_priv_rule", tb["foreign_priv_rule"])
   end
+
+  # nil adds nothing, so every committed golden stays as it is.
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 
   # The trace's own verdict, read back through `Worker.combine/2`: a trace
   # refusal always wins the reason (a refusal ordered before an unreadable

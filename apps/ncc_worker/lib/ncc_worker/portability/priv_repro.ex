@@ -56,7 +56,7 @@ defmodule NccWorker.Portability.PrivRepro do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.Portability.{Context, PrivRoots, TarTimes}
+  alias NccWorker.Portability.{Context, ForeignPriv, PrivRoots, TarTimes}
 
   @gap_ms 1_100
   @hold_problem "own priv writes wait for a second build"
@@ -96,6 +96,7 @@ defmodule NccWorker.Portability.PrivRepro do
   defp unpassed(verdict, reason) do
     %{verdict | status: :skip, reason: reason, compile_env: nil}
     |> Map.put(:compile_inputs, nil)
+    |> ForeignPriv.unpass()
   end
 
   defp held(verdict, own) do
@@ -105,12 +106,15 @@ defmodule NccWorker.Portability.PrivRepro do
       built_priv: own.built,
       dir: own.dir,
       build: own.build,
-      trees: Map.get(own, :trees)
+      trees: Map.get(own, :trees),
+      foreign_priv: Map.get(verdict, :foreign_priv),
+      foreign_priv_rule: Map.get(verdict, :foreign_priv_rule)
     }
 
     %{verdict | status: :skip, reason: Reasons.could_not_judge(), compile_env: nil}
     |> Map.put(:compile_inputs, nil)
     |> Map.put(:priv_repro, held)
+    |> ForeignPriv.unpass()
     |> update_problems(&(&1 ++ [@hold_problem]))
   end
 
@@ -400,9 +404,16 @@ defmodule NccWorker.Portability.PrivRepro do
     %{verdict | status: :pass, reason: nil, compile_env: held.compile_env}
     |> Map.put(:compile_inputs, held.compile_inputs)
     |> Map.put(:built_priv, held.built_priv)
+    |> restore_foreign(held)
     |> Map.delete(:priv_repro)
     |> update_problems(&List.delete(&1, @hold_problem))
     |> put_repro("same")
+  end
+
+  defp restore_foreign(verdict, held) do
+    if Map.has_key?(verdict, :foreign_priv),
+      do: Map.merge(verdict, Map.take(held, [:foreign_priv, :foreign_priv_rule])),
+      else: verdict
   end
 
   defp refuse(verdict, why) do

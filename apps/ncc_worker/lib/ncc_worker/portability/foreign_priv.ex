@@ -22,7 +22,11 @@ defmodule NccWorker.Portability.ForeignPriv do
   `decide/3` (Task A5) and `settle/2` (Task A6) apply the rule.
   """
 
+  import Bitwise
+
   alias Compatibility.ForeignPriv, as: Rules
+  alias Compatibility.KinoAssets
+  alias Compatibility.Portability, as: Reasons
   alias NccWorker.Portability.Context
 
   @kino_js "Elixir.Kino.JS"
@@ -281,5 +285,346 @@ defmodule NccWorker.Portability.ForeignPriv do
     else
       real
     end
+  end
+
+  @doc """
+  Settles the accepted events once every event is decided (spec 3.3), in
+  every window but kino's own, all or nothing per window:
+
+    * F4: each `stream` follows an `archive` of the same path in the same
+      window, at most one per archive; each `stat` follows an `rm_rf` or
+      `mkdir_p` of its path there (kino's window too);
+    * S6: at most 64 archives, 10 MiB in all (each inflating to at most
+      64 MiB, `Compatibility.KinoAssets`);
+    * S4: every beam in the window's ebin that exports `__assets_info__/0`
+      has its directory among the archives, in every closure app but kino,
+      calls or no calls;
+    * per directory `d`: one `archive` for it in this window and no
+      accepted event naming it in another (S1); `A/<d>` is a directory of
+      its own holding exactly that archive, a regular file without an
+      execute bit (S2); `d` is not kino's own (S3); exactly one module of
+      the window's `.app` has `d` as its directory, and its beam exports
+      `__assets_info__/0` (S4); `KinoAssets.verify/1` passes on the
+      archive, that beam and the window's verified Hex tarball (S5).
+
+  `decided` comes back with one refusal added in each window that does not
+  settle; `entries` are the settled windows' `foreign_priv` entries and
+  `exclude` their directories, relative to kino's build dir, for its built
+  check. A closed gate settles nothing.
+  """
+  @spec settle([{term(), term()}], Context.t()) ::
+          {[{term(), term()}], %{entries: %{String.t() => [map()]}, exclude: [String.t()]}}
+  def settle(decided, %Context{foreign_priv: nil}), do: {decided, %{entries: %{}, exclude: []}}
+
+  def settle(decided, %Context{foreign_priv: gate} = ctx) do
+    accepted =
+      for {owner, {:observe, "foreign_priv", item}} <- decided,
+          is_binary(owner),
+          do: {owner, item}
+
+    unpaired = unpaired(accepted)
+
+    # Every closure app is settled, not only those with accepted calls: an
+    # app whose beams export `__assets_info__/0` with no archive the trace
+    # saw written points at nothing (S4), whatever made it so.
+    windows =
+      accepted
+      |> Enum.map(&elem(&1, 0))
+      |> Kernel.++(Map.keys(gate.dirs))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    {refusals, entries} =
+      Enum.reduce(windows, {[], %{}}, fn window, {refusals, entries} ->
+        result =
+          cond do
+            Map.has_key?(unpaired, window) -> {:refuse, unpaired[window]}
+            window == gate.target -> {:ok, []}
+            true -> settle_window(window, accepted, gate, ctx)
+          end
+
+        case result do
+          {:ok, []} ->
+            {refusals, entries}
+
+          {:ok, list} ->
+            {refusals, Map.put(entries, window, list)}
+
+          {:refuse, why} ->
+            {[{window, {:refuse, Reasons.foreign_priv_refused() <> why}} | refusals], entries}
+        end
+      end)
+
+    exclude =
+      for {_window, list} <- entries,
+          %{"path" => path} <- list,
+          into: [],
+          do: path |> Path.dirname()
+
+    {decided ++ Enum.reverse(refusals), %{entries: entries, exclude: Enum.sort(exclude)}}
+  end
+
+  # Spec 3.2 rows F4 and F5: per window, the first open or stat no accepted
+  # call explains.
+  defp unpaired(accepted) do
+    accepted
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.flat_map(fn {window, items} ->
+      case first_unpaired(Enum.sort_by(items, & &1["ts"])) do
+        nil -> []
+        why -> [{window, why}]
+      end
+    end)
+    |> Map.new()
+  end
+
+  defp first_unpaired(items) do
+    {why, _open} =
+      Enum.reduce_while(items, {nil, %{}}, fn item, {nil, open} ->
+        case item["call"] do
+          "archive" ->
+            {:cont, {nil, Map.update(open, item["path"], 1, &(&1 + 1))}}
+
+          c when c in ["rm_rf", "mkdir_p"] ->
+            {:cont, {nil, Map.put(open, {:seen, item["path"]}, true)}}
+
+          "stream" ->
+            stream_paired(item, open)
+
+          "stat" ->
+            stat_paired(item, open)
+
+          _other ->
+            {:cont, {nil, open}}
+        end
+      end)
+
+    why
+  end
+
+  defp stat_paired(item, open) do
+    if open[{:seen, item["path"]}],
+      do: {:cont, {nil, open}},
+      else: {:halt, {"a stat of kino #{item["path"]} no reviewed call made", open}}
+  end
+
+  defp stream_paired(item, open) do
+    case Map.get(open, item["path"], 0) do
+      0 -> {:halt, {"an open of kino #{item["path"]} no reviewed call made", open}}
+      n -> {:cont, {nil, Map.put(open, item["path"], n - 1)}}
+    end
+  end
+
+  defp settle_window(window, accepted, gate, ctx) do
+    items = for {^window, item} <- accepted, do: item
+    dirs = for(%{"call" => "archive", "dir" => d} <- items, do: d) |> Enum.uniq() |> Enum.sort()
+
+    with :ok <- count_ok(dirs),
+         :ok <- every_asset_module(window, dirs, ctx),
+         {:ok, entries} <- each_dir(dirs, &settle_dir(window, &1, items, accepted, gate, ctx)) do
+      size_ok(entries)
+    end
+  end
+
+  defp count_ok(dirs) do
+    if length(dirs) > Rules.max_entries(),
+      do: {:refuse, "more than #{Rules.max_entries()} foreign priv files"},
+      else: :ok
+  end
+
+  defp size_ok(entries) do
+    if entries |> Enum.map(& &1["size"]) |> Enum.sum() > Rules.max_bytes(),
+      do: {:refuse, "more than 10 MiB of foreign priv files"},
+      else: {:ok, entries}
+  end
+
+  defp each_dir(dirs, fun) do
+    Enum.reduce_while(dirs, {:ok, []}, fn d, {:ok, acc} ->
+      case fun.(d) do
+        {:ok, entry} -> {:cont, {:ok, [entry | acc]}}
+        {:refuse, _} = refusal -> {:halt, refusal}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      refusal -> refusal
+    end
+  end
+
+  defp settle_dir(window, d, items, accepted, gate, ctx) do
+    with :ok <- one_writer(window, d, items, accepted),
+         {:ok, name} <- only_archive(gate, d, items),
+         :ok <- not_kinos(gate, d),
+         {:ok, module, beam} <- writer_module(window, d, ctx),
+         {:ok, bytes} <- read_archive(Path.join([gate.assets, d, name])),
+         {:ok, proof} <- proof(window, d, name, bytes, module, beam, ctx) do
+      {:ok,
+       %{
+         "app" => gate.target,
+         "path" => Rules.archive_path(d, proof.hash),
+         "sha256" => :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower),
+         "size" => byte_size(bytes),
+         "mode" => Rules.mode(),
+         "module" => module,
+         "assets_path" => proof.assets_path
+       }}
+    else
+      {:refuse, :two_writers} -> {:refuse, "two writers of kino priv/assets/#{d}"}
+      {:refuse, why} -> {:refuse, "kino priv/assets/#{d}: #{why}"}
+    end
+  end
+
+  # S1.
+  defp one_writer(window, d, items, accepted) do
+    archives = Enum.count(items, &(&1["call"] == "archive" and &1["dir"] == d))
+    elsewhere = Enum.any?(accepted, fn {owner, item} -> owner != window and item["dir"] == d end)
+    if archives == 1 and not elsewhere, do: :ok, else: {:refuse, :two_writers}
+  end
+
+  # S2: lstat, never following a link.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp only_archive(gate, d, items) do
+    dir = Path.join(gate.assets, d)
+    %{"path" => path} = Enum.find(items, &(&1["call"] == "archive" and &1["dir"] == d))
+    name = Path.basename(path)
+
+    with {:ok, %File.Stat{type: :directory}} <- File.lstat(gate.assets),
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(dir) do
+      case File.ls(dir) do
+        {:ok, [^name]} ->
+          case File.lstat(Path.join(dir, name)) do
+            {:ok, %File.Stat{type: :regular, mode: mode}} when (mode &&& 0o111) == 0 ->
+              {:ok, name}
+
+            _ ->
+              {:refuse, "its archive is not a regular file without an execute bit"}
+          end
+
+        {:ok, _other} ->
+          {:refuse, "holds more than its archive"}
+
+        {:error, _} ->
+          {:refuse, "is not a directory of its own"}
+      end
+    else
+      _ -> {:refuse, "is not a directory of its own"}
+    end
+  end
+
+  # S3.
+  defp not_kinos(gate, d) do
+    if MapSet.member?(Map.get(gate.dirs, gate.target, MapSet.new()), d),
+      do: {:refuse, "is kino's own"},
+      else: :ok
+  end
+
+  # S4, first half: the one module of the window whose directory `d` is.
+  defp writer_module(window, d, ctx) do
+    with [module] <- for(m <- Context.app_modules(ctx, window), Rules.dir_name(m) == d, do: m),
+         ebin when is_binary(ebin) <- Context.ebin(ctx, window),
+         {:ok, beam} <- read_beam(Path.join(ebin, module <> ".beam")),
+         true <- exports_assets?(beam) do
+      {:ok, module, beam}
+    else
+      [] -> {:refuse, "no module of #{window} packs it"}
+      [_ | _] -> {:refuse, "two modules of #{window} pack it"}
+      _ -> {:refuse, "its module's beam exports no __assets_info__/0"}
+    end
+  end
+
+  # S4, second half.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp every_asset_module(window, dirs, ctx) do
+    ebin = Context.ebin(ctx, window)
+
+    missing =
+      if is_binary(ebin) do
+        ebin
+        |> Path.join("*.beam")
+        |> Path.wildcard()
+        |> Enum.sort()
+        |> Enum.find(fn path ->
+          {:ok, beam} = read_beam(path)
+          module = Path.basename(path, ".beam")
+          exports_assets?(beam) and Rules.dir_name(module) not in dirs
+        end)
+      end
+
+    case missing do
+      nil -> :ok
+      path -> {:refuse, "#{Path.basename(path, ".beam")} has assets but no archive"}
+    end
+  end
+
+  defp exports_assets?(beam) do
+    case :beam_lib.chunks(beam, [:exports]) do
+      {:ok, {_module, [exports: exports]}} -> {:__assets_info__, 0} in exports
+      _ -> false
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_beam(path) do
+    case File.read(path) do
+      {:ok, bytes} -> {:ok, bytes}
+      {:error, _} -> {:refuse, "its module's beam cannot be read"}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_archive(path) do
+    with {:ok, %File.Stat{size: size}} when size <= 10 * 1024 * 1024 <- File.lstat(path),
+         {:ok, bytes} <- File.read(path) do
+      {:ok, bytes}
+    else
+      {:ok, %File.Stat{}} -> {:refuse, "its archive is over 10 MiB"}
+      _ -> {:refuse, "its archive cannot be read"}
+    end
+  end
+
+  # S5, against the window's verified Hex tarball.
+  defp proof(window, d, name, bytes, module, beam, %Context{hex: {_home, releases}} = ctx) do
+    with %{version: version} <- Map.get(releases, window),
+         tarball when is_binary(tarball) <- Context.tarball(ctx, window),
+         {:ok, proof} <-
+           KinoAssets.verify(%{
+             name: d <> "/" <> name,
+             archive: bytes,
+             module: module,
+             beam: beam,
+             tarball: tarball,
+             app: window,
+             version: version
+           }) do
+      {:ok, proof}
+    else
+      {:error, why} -> {:refuse, why}
+      _ -> {:refuse, "#{window} has no verified Hex tarball"}
+    end
+  end
+
+  @doc """
+  The verdict's `foreign_priv` and `foreign_priv_rule` (spec 3.6), only
+  when the job sent the flag: the package's settled entries on a pass
+  (`[]` for none) and the rule when there are any; both nil otherwise.
+  """
+  @spec put_verdict(map(), map(), :pass | :skip, String.t() | nil) :: map()
+  def put_verdict(verdict, %{flag: false}, _status, _package), do: verdict
+
+  def put_verdict(verdict, %{flag: true} = foreign, status, package) do
+    entries = Map.get(foreign.entries, package, [])
+
+    Map.merge(verdict, %{
+      foreign_priv: if(status == :pass, do: entries),
+      foreign_priv_rule: if(status == :pass and entries != [], do: foreign.gate.rule.id)
+    })
+  end
+
+  @doc "A verdict demoted from a pass: both foreign fields nil, where it has them."
+  @spec unpass(map()) :: map()
+  def unpass(verdict) do
+    Enum.reduce([:foreign_priv, :foreign_priv_rule], verdict, fn key, acc ->
+      if Map.has_key?(acc, key), do: Map.put(acc, key, nil), else: acc
+    end)
   end
 end
