@@ -226,7 +226,7 @@ defmodule Portal.Precompiled.Batches do
   defp render_packages([], _fingerprints, _lanes), do: []
 
   defp render_packages(names, fingerprints, lanes) do
-    sizes = last_sizes()
+    sizes = last_sizes(names)
     {heavy, light} = Lanes.split(names, &Map.get(sizes, &1), heavy_bytes())
 
     heavy
@@ -286,23 +286,25 @@ defmodule Portal.Precompiled.Batches do
   defp ok_sha(:error), do: nil
   defp ok_sha(sha), do: sha
 
-  # The bytes of each package's manifests in the newest batch, both formats
-  # summed, by name. A package that batch did not name, or one of whose
-  # manifests is not in the store, has no size, and so renders as heavy.
-  defp last_sizes do
+  # The bytes of each of `names`' manifests in the newest batch, both formats
+  # summed. A package that batch did not name, or one of whose manifests is
+  # not in the store, has no size, and so renders as heavy.
+  defp last_sizes(names) do
     case latest() do
       nil ->
         %{}
 
       %Batch{payload: payload} ->
         doc = JSON.decode!(payload)
+        formats = [doc["manifests"] || %{}, doc["manifests_v2"] || %{}]
 
-        [doc["manifests"] || %{}, doc["manifests_v2"] || %{}]
-        |> Enum.flat_map(&Map.to_list/1)
-        |> Enum.reduce(%{}, fn {name, sha}, sizes ->
-          size = blob_size(sha)
-          Map.update(sizes, name, size, &(&1 && size && &1 + size))
-        end)
+        for name <- names,
+            shas = for(format <- formats, sha = format[name], do: sha),
+            shas != [],
+            into: %{} do
+          sizes = Enum.map(shas, &blob_size/1)
+          {name, if(nil in sizes, do: nil, else: Enum.sum(sizes))}
+        end
     end
   end
 
