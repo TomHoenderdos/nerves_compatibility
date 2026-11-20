@@ -227,7 +227,7 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
       refute Catalog.published_sha256?(sha)
     end
 
-    test "a foreign blob of a revoked or withheld build is not served", %{writer: writer} do
+    test "a foreign blob of a revoked build is not served", %{writer: writer} do
       on!()
       [%{"sha256" => sha} | _] = writer.foreign_priv
       assert Catalog.published_sha256?(sha)
@@ -238,6 +238,48 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
       )
 
       refute Catalog.published_sha256?(sha)
+    end
+
+    # Spec 4.4, item 4: kino on the list never withholds a foreign build,
+    # which records its config reads, but the writer's own name does, its
+    # toolchain and pinned builds alike, in the manifest and the files route.
+    test "the writer's own name on the withheld list withholds its foreign builds", %{
+      writer: writer
+    } do
+      on!()
+      {:ok, pinned} = F.ingest_pinned!()
+      [%{"sha256" => sha} | _] = writer.foreign_priv
+      [%{"sha256" => beam_sha} | _] = writer.file_manifest["ebin"]
+      [%{"sha256" => pinned_sha} | _] = pinned.foreign_priv
+
+      foreign = fn ->
+        get_in(manifest("kino_vega_lite") || %{}, ["versions", "0.1.13", "foreign_priv"])
+      end
+
+      assert %{"builds_with_inputs" => [_], "builds_closure" => [_]} = foreign.()
+      assert Catalog.published_sha256?(sha)
+      assert Catalog.published_sha256?(pinned_sha)
+
+      old = Application.get_env(:portal, Portal.Precompiled.Withheld)
+      on_exit(fn -> restore_withheld(old) end)
+
+      Application.put_env(:portal, Portal.Precompiled.Withheld,
+        packages: ["kino", "kino_vega_lite", "phoenix_live_view"]
+      )
+
+      assert foreign.() == nil
+      refute Catalog.published_sha256?(sha)
+      refute Catalog.published_sha256?(beam_sha)
+      refute Catalog.published_sha256?(pinned_sha)
+      refute "kino_vega_lite" in Catalog.packages_with_precompiled_files()
+
+      # Another package's name withholds nothing of the writer's.
+      Application.put_env(:portal, Portal.Precompiled.Withheld,
+        packages: ["kino", "phoenix_live_view"]
+      )
+
+      assert %{"builds_with_inputs" => [_]} = foreign.()
+      assert Catalog.published_sha256?(sha)
     end
 
     test "a sibling's foreign blob is served with the sibling only" do
@@ -341,4 +383,7 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
       assert Enum.sort(changed) == ["kino", "kino_vega_lite"]
     end
   end
+
+  defp restore_withheld(nil), do: Application.delete_env(:portal, Portal.Precompiled.Withheld)
+  defp restore_withheld(old), do: Application.put_env(:portal, Portal.Precompiled.Withheld, old)
 end

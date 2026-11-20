@@ -81,7 +81,9 @@ defmodule Portal.Pins.Served do
       compile_env_rule: build.compile_env_rule,
       compile_env: build.compile_env,
       run_id: build.run_id,
-      compile_env_run_id: build.run_id
+      compile_env_run_id: build.run_id,
+      foreign_priv: build.foreign_priv,
+      foreign_priv_run_id: build.foreign_priv_run_id
     })
   end
 

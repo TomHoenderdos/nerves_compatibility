@@ -1383,11 +1383,23 @@ defmodule Portal.Catalog do
                              ))
   withheld_lock_clause = @withheld_lock_clause
 
+  # `Withheld.withheld?/4`'s foreign priv rule for the build aliased `table`
+  # of the package `p`: a build with counted foreign priv entries (the list
+  # of the row's own run) is withheld when its own package is on the list,
+  # whatever it records. `to_jsonb/1` reads the column (`jsonb[]`) and an
+  # earlier build's entry (`jsonb`) alike.
+  withheld_foreign = fn table ->
+    "NOT (p.name = ANY($W::text[]) " <>
+      "AND #{table}.foreign_priv_run_id = #{table}.run_id " <>
+      "AND coalesce(to_jsonb(#{table}.foreign_priv), '[]'::jsonb) <> '[]'::jsonb)"
+  end
+
   # `Withheld.withheld?/4` for the toolchain build aliased `table`.
   withheld_toolchain = fn table ->
-    withheld_lock_clause
-    |> String.replace("$L", "#{table}.deps_lock")
-    |> String.replace("$E", records_config_reads.(table))
+    (withheld_lock_clause
+     |> String.replace("$L", "#{table}.deps_lock")
+     |> String.replace("$E", records_config_reads.(table))) <>
+      " AND " <> withheld_foreign.(table)
   end
 
   # `Withheld.config_variant_served?/2` for the toolchain build aliased
@@ -1482,6 +1494,7 @@ defmodule Portal.Catalog do
        OR EXISTS (SELECT 1 FROM builders pbb
                   WHERE pbb.id = pb.builder_id AND pbb.publishing AND pbb.status = 'enrolled'))
   AND #{withheld_lock_clause |> String.replace("$L", "pb.deps_lock") |> String.replace("$E", "(pb.compile_env_rule = 1 AND pb.compile_env IS NOT NULL AND pb.run_id IS NOT NULL)")}
+  AND #{withheld_foreign.("pb")}
   """
 
   # A pinned build's deterministic sibling `d`: the setting on, a pass, not
