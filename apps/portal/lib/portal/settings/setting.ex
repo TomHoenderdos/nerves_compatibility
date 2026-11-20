@@ -5,8 +5,8 @@ defmodule Portal.Settings.Setting do
   yet so a fresh database never fails a build.
 
   The table's `publication_changes` column is no attribute here: a trigger
-  alone writes it, counting each change to `host_native_enabled` or
-  `deterministic_builds_enabled`, for
+  alone writes it, counting each change to `host_native_enabled`,
+  `deterministic_builds_enabled` or `foreign_priv_enabled`, for
   `Portal.Catalog.precompiled_fingerprints/0` (see the migration that adds it).
   """
 

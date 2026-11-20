@@ -2,6 +2,8 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
   use Portal.DataCase, async: false
 
   alias Portal.Catalog
+  alias Portal.BatchHooks
+  alias Portal.Precompiled.{Batches, Manifests}
   alias Portal.Test.ForeignPrivFixtures, as: F
 
   import Portal.Test.ForeignPrivFixtures, only: [assert_contract!: 1]
@@ -208,6 +210,85 @@ defmodule Portal.Catalog.ManifestForeignPrivTest do
       refute Catalog.published_sha256?(sha)
       on!()
       assert Catalog.published_sha256?(sha)
+    end
+
+    # A batch remembers a package's manifests only when its fingerprint read
+    # before the renders equals the one read after: the setting turned on and
+    # off again between the two must still read as a change (the settings
+    # trigger counts it, `Portal.Catalog.precompiled_fingerprints/0`).
+    test "the setting turned on and off again changes the fingerprints of kino and the writer only" do
+      off!()
+      before = Catalog.precompiled_fingerprints()
+      on!()
+      off!()
+      now = Catalog.precompiled_fingerprints()
+      changed = for {name, fp} <- now, before[name] != fp, do: name
+      assert Enum.sort(changed) == ["kino", "kino_vega_lite"]
+    end
+
+    test "a toolchain or pinned row's foreign columns are in its fingerprint", %{writer: writer} do
+      before = Catalog.precompiled_fingerprints()["kino_vega_lite"]
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET foreign_priv_rule = 'kino_js_v0' WHERE id = $1",
+        [Ecto.UUID.dump!(writer.id)]
+      )
+
+      changed = Catalog.precompiled_fingerprints()["kino_vega_lite"]
+      refute changed == before
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET foreign_priv_rule = 'kino_js_v1' WHERE id = $1",
+        [Ecto.UUID.dump!(writer.id)]
+      )
+
+      # The pinned fixture's own package: its row, its foreign run mark.
+      {:ok, pinned} = F.ingest_pinned!()
+      pinned_before = Catalog.precompiled_fingerprints()["kino_vega_lite"]
+
+      Portal.Repo.query!(
+        "UPDATE catalog_pinned_builds SET foreign_priv_run_id = NULL WHERE id = $1",
+        [Ecto.UUID.dump!(pinned.id)]
+      )
+
+      refute Catalog.precompiled_fingerprints()["kino_vega_lite"] == pinned_before
+    end
+
+    # Plan ruling 1 and spec 4.3: the setting decides whether the writer's
+    # `foreign_priv` object and kino's own builds (0b) render. One turned on
+    # after a batch's first fingerprint read and off again once its renders
+    # read it must leave no manifest rendered while it was on.
+    @tag :tmp_dir
+    test "the setting turned on during a batch and off again leaves no stale manifest",
+         %{tmp_dir: dir} do
+      # Listed while the setting is off too, through a plain build.
+      ingest_toolchain_build("kino_vega_lite", "0.1.12", compile_env_rule: 1)
+      BatchHooks.signing_key!(dir)
+
+      for name <- ["kino_vega_lite", "kino"] do
+        on!()
+        reads = BatchHooks.settings_reads(name)
+        off!()
+
+        hook = BatchHooks.flip_during_render(&on!/0, &off!/0, reads)
+        {:ok, _b1} = Batches.build_and_sign()
+        assert BatchHooks.flipped?(hook), name
+
+        {:ok, b2} = Batches.build_and_sign()
+
+        case {Batches.manifests_v2(b2)[name], Manifests.render_v2(name)} do
+          {nil, :none} ->
+            :ok
+
+          {sha, {:ok, fresh}} when is_binary(sha) ->
+            {:ok, bytes} = Manifests.read(sha)
+            assert bytes == fresh, name
+            refute bytes =~ "foreign_priv", name
+
+          other ->
+            flunk("#{name}: the batch and a fresh render differ: #{inspect(other)}")
+        end
+      end
     end
 
     test "flipping the setting changes the fingerprints of kino and the writer only" do

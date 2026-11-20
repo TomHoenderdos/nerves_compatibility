@@ -1165,18 +1165,18 @@ defmodule Portal.Catalog do
   # and so do pinned builds (`Portal.Catalog.PinnedBuild`), whose every
   # revocation and withdrawal column, whose `reporters` (the manifest's
   # cap ranks by it) and whose builder's publishing state, as a run's, are
-  # in it as values. Those two settings are the only ones a manifest depends
-  # on, so a package with a host-native or deterministic row, whatever the
-  # settings, also carries the settings rows' `publication_changes`, which a
-  # trigger counts up on every change to either: by the gated suffixes alone,
-  # a setting turned on and off again would read as no change. Not their
-  # `xmin`: the enqueue path writes `remote_auto_on`.
-  # And kino and the packages with foreign priv builds while
-  # `foreign_priv_enabled` is on, in a suffix of their own: the setting
-  # decides whether their builds are listed (`Portal.Precompiled.ForeignPriv`),
-  # so its flip renders exactly those packages again. They are setting-bound
-  # too, and the settings trigger counts that setting's changes, so it turned
-  # on and off again within a batch is a change as well.
+  # in it as values, and so are every build's foreign priv columns. And kino
+  # and the packages with a counted foreign priv build (`foreign_pkgs`)
+  # while `foreign_priv_enabled` is on, in a suffix of their own: the setting
+  # decides whether their `foreign_priv` objects and kino's own builds are
+  # listed (`Portal.Precompiled.ForeignPriv`), so its flip renders exactly
+  # those packages again. Those three settings are the only ones a manifest
+  # depends on, so a package with a host-native, deterministic or foreign
+  # priv row (or kino), whatever the settings, also carries the settings
+  # rows' `publication_changes`, which a trigger counts up on every change
+  # to any of them: by the gated suffixes alone, a setting turned on and off
+  # again would read as no change. Not their `xmin`: the enqueue path writes
+  # `remote_auto_on`.
   @precompiled_fingerprints_sql """
   WITH runs AS (
     SELECT r.package_id,
@@ -1207,8 +1207,10 @@ defmodule Portal.Catalog do
     GROUP BY r.package_id
   ), toolchain AS (
     SELECT t.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s', t.id, t.xmin, t.updated_at, t.status,
-                                 t.revoked_at, md5(t.compile_inputs::text)),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', t.id, t.xmin, t.updated_at,
+                                 t.status, t.revoked_at, md5(t.compile_inputs::text),
+                                 md5(to_jsonb(t.foreign_priv)::text), t.foreign_priv_rule,
+                                 t.foreign_priv_run_id),
                           ',' ORDER BY t.id)) AS fp
     FROM catalog_toolchain_builds t
     WHERE t.variant IN #{ToolchainBuild.variants_sql()}
@@ -1237,8 +1239,10 @@ defmodule Portal.Catalog do
     GROUP BY h.package_id
   ), deterministic AS (
     SELECT d.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s', d.id, d.xmin, d.updated_at, d.status,
-                                 d.revoked_at, d.run_id),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', d.id, d.xmin, d.updated_at,
+                                 d.status, d.revoked_at, d.run_id,
+                                 md5(to_jsonb(d.foreign_priv)::text), d.foreign_priv_rule,
+                                 d.foreign_priv_run_id),
                           ',' ORDER BY d.id)) AS fp
     FROM catalog_deterministic_builds d
     WHERE EXISTS (SELECT 1 FROM settings st WHERE st.deterministic_builds_enabled)
@@ -1252,10 +1256,12 @@ defmodule Portal.Catalog do
     GROUP BY d.package_id
   ), pinned AS (
     SELECT pb.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', pb.id, pb.xmin,
-                                 pb.updated_at, pb.status, pb.revoked_at, pb.unpublished_at,
-                                 pb.reporters, pb.builder_id, md5(pb.compile_inputs::text),
-                                 pbb.publishing, pbb.status, pbb.publication_changes),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', pb.id,
+                                 pb.xmin, pb.updated_at, pb.status, pb.revoked_at,
+                                 pb.unpublished_at, pb.reporters, pb.builder_id,
+                                 md5(pb.compile_inputs::text), pbb.publishing, pbb.status,
+                                 pbb.publication_changes, md5(to_jsonb(pb.foreign_priv)::text),
+                                 pb.foreign_priv_rule, pb.foreign_priv_run_id),
                           ',' ORDER BY pb.id)) AS fp
     FROM catalog_pinned_builds pb
     LEFT JOIN builders pbb ON pbb.id = pb.builder_id
@@ -1324,7 +1330,8 @@ defmodule Portal.Catalog do
   fingerprint differ. The withheld package list (`Portal.Precompiled.Withheld`)
   is part of every fingerprint, so a change to it renders every package again.
   The settings a manifest depends on (`host_native_enabled`,
-  `deterministic_builds_enabled`) are in it through a count of their changes.
+  `deterministic_builds_enabled`, `foreign_priv_enabled`) are in it through a
+  count of their changes.
   """
   @spec precompiled_fingerprints() :: %{String.t() => String.t()}
   def precompiled_fingerprints do

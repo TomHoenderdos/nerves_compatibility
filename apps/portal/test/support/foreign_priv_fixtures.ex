@@ -239,4 +239,56 @@ defmodule Portal.Test.ForeignPrivFixtures do
     {:ok, bytes} = :beam_lib.build_module(chunks)
     bytes
   end
+
+  @doc """
+  Ingests the writer as a pinned toolchain build of `[kino]` (a set holding
+  kino alone, its lock the set): `{:ok, pinned_build}`, as
+  `Portal.Catalog.Ingestion.ingest_pinned/2` answers.
+  """
+  def ingest_pinned!(over \\ %{}) do
+    kino = %{
+      "name" => "kino",
+      "hex" => "kino",
+      "version" => "0.19.1",
+      "checksum" => sha(kino_tarball())
+    }
+
+    checksum = sha(writer_tarball())
+
+    hash =
+      Compatibility.Pins.hash(%{
+        package: "kino_vega_lite",
+        version: "0.1.13",
+        package_checksum: checksum,
+        deps: [kino]
+      })
+
+    result =
+      over
+      |> Map.put("deps_lock", Compatibility.Pins.to_lock([kino]))
+      |> writer_result()
+      |> Map.merge(%{
+        "requested_optional_deps" => "pinned",
+        "pins" => %{"hash" => hash, "status" => "reproduced"},
+        "optional_deps" => %{
+          "added" => [],
+          "dropped" => [],
+          "skipped" => [],
+          "reason" => "pinned"
+        }
+      })
+
+    opts =
+      files_dir!()
+      |> ingest_opts()
+      |> Map.delete(:variant)
+      |> Map.merge(%{
+        pin_hash: hash,
+        pins: %{"hash" => hash, "package_checksum" => checksum, "deps" => [kino]},
+        target: "pure_elixir",
+        builder_version: Portal.Toolchains.builder_version()
+      })
+
+    Ingestion.ingest_pinned(result, opts)
+  end
 end
