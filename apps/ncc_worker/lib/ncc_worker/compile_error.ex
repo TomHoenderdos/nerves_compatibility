@@ -13,7 +13,7 @@ defmodule NccWorker.CompileError do
     1. a compiler's own error: an Elixir diagnostic (`error: ...`, with the
        file and line of the `└─` under it), an Erlang or C compiler's
        `file:line: message` that is not a warning, a note or a stacktrace
-       entry, or rebar3's
+       entry, a shell's `...: not found` for a build program, or rebar3's
        `Compiling <file> failed` with the first message under it that is not
        a warning;
     2. an exception (`** (Error) message`), other than Mix's summary of a
@@ -85,6 +85,9 @@ defmodule NccWorker.CompileError do
       match = Regex.run(@source_error, trimmed) ->
         [_, file, number, message] = match
         unless warning?(message) or mfa?(message), do: "#{file}:#{number}: #{message}"
+
+      Regex.match?(~r/\A\S*sh: (?:line )?\d+: .+: (?:command )?not found\z/u, trimmed) ->
+        trimmed
 
       match = Regex.run(~r/\ACompiling (\S+) failed\z/u, trimmed) ->
         case rebar_message(below) do

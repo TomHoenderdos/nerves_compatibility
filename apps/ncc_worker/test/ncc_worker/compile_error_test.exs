@@ -111,6 +111,20 @@ defmodule NccWorker.CompileErrorTest do
              "** (RuntimeError) git_hooks: deps/git_hooks is not inside a git working tree."
   end
 
+  test "a build program the shell could not find" do
+    log = """
+    sh: 1: exec: cargo: not found
+    ===> Hook for compile failed!
+
+    ** (Mix) Could not compile dependency :multihash, "/home/nerves/.mix/elixir/1-19-otp-28/rebar3 bare compile --paths /work/proj/_build/host/lib/*/ebin" command failed.
+    """
+
+    assert CompileError.first(log, @proj) == "sh: 1: exec: cargo: not found"
+
+    assert CompileError.first("/bin/sh: line 1: cmake: command not found\n", @proj) ==
+             "/bin/sh: line 1: cmake: command not found"
+  end
+
   test "rebar3's failed file, with the first error under it, not a warning above it" do
     log = """
     ===> Compiling gen_smtp
