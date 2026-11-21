@@ -4,6 +4,8 @@ defmodule Portal.Workers.UpdateCheckTest do
 
   import Ecto.Query
 
+  require Ash.Query
+
   alias Portal.Catalog.Package
   alias Portal.Catalog.Run
   alias Portal.Repo
@@ -564,6 +566,29 @@ defmodule Portal.Workers.UpdateCheckTest do
   # `latest_version` stays behind. UpdateCheck nominates the registry's
   # latest version for a toolchain build instead (`hex_latest_version`).
   describe "the Hex latest version as a toolchain build candidate" do
+    defp toolchains, do: Enum.map(Portal.Toolchains.images(), & &1.toolchain)
+
+    # A default-config toolchain row of `name` `version` on `toolchain`:
+    # a `with` pass unless `opts` say otherwise.
+    defp verdict!(name, version, toolchain, opts \\ []) do
+      package =
+        Package |> Ash.Query.filter(name == ^name) |> Ash.read_one!(domain: Portal.Catalog)
+
+      Portal.Catalog.ToolchainBuild
+      |> Ash.Changeset.for_create(:create, %{
+        package_id: package.id,
+        version: version,
+        toolchain: toolchain,
+        builder_version: Portal.Toolchains.builder_version(),
+        variant: Keyword.get(opts, :variant, :with),
+        config_variant: "default",
+        status: Keyword.get(opts, :status, :pass),
+        optional_deps: Keyword.get(opts, :optional_deps),
+        finished_at: DateTime.utc_now()
+      })
+      |> Ash.create!(domain: Portal.Catalog)
+    end
+
     defp hex_latest(name),
       do:
         Repo.one(
@@ -621,13 +646,51 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert hex_latest("alpha") == "1.2.4"
     end
 
-    test "a nomination is cleared once a toolchain row of it exists" do
+    test "a nomination is cleared once every toolchain has a verdict of it" do
       passing_package("alpha", "1.2.3")
       hex_says([{"alpha", "1.2.4"}])
       assert {:ok, %{nominated: 1}} = UpdateCheck.run()
 
-      Portal.PrecompiledFixtures.ingest_toolchain_build("alpha", "1.2.4")
+      # One toolchain is not every toolchain: the other one is still to build.
+      verdict!("alpha", "1.2.4", "1.19/28")
       assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == "1.2.4"
+
+      verdict!("alpha", "1.2.4", "1.20/29")
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == nil
+    end
+
+    # Review R3: an `error` row is no verdict. Clearing on it left the
+    # version with no way into the backlog, and it was never built again.
+    test "an error row of the nominated version keeps the nomination" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+      assert {:ok, %{nominated: 1}} = UpdateCheck.run()
+
+      for toolchain <- toolchains(), do: verdict!("alpha", "1.2.4", toolchain, status: :error)
+
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == "1.2.4"
+    end
+
+    test "a nomination stays until the without build its with build wants has a verdict" do
+      passing_package("alpha", "1.2.3")
+      hex_says([{"alpha", "1.2.4"}])
+      assert {:ok, %{nominated: 1}} = UpdateCheck.run()
+
+      added = %{"added" => ["jason"], "dropped" => [], "reason" => nil, "skipped" => []}
+
+      for toolchain <- toolchains(),
+          do: verdict!("alpha", "1.2.4", toolchain, optional_deps: added)
+
+      assert {:ok, _} = UpdateCheck.run()
+      assert hex_latest("alpha") == "1.2.4"
+
+      for toolchain <- toolchains(),
+          do: verdict!("alpha", "1.2.4", toolchain, variant: :without, status: :skipped)
+
+      assert {:ok, _} = UpdateCheck.run()
       assert hex_latest("alpha") == nil
     end
 
@@ -667,14 +730,14 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert {:ok, %{nominated: 0}} = UpdateCheck.run()
       assert hex_latest("alpha") == "1.4.1"
 
-      Portal.PrecompiledFixtures.ingest_toolchain_build("alpha", "1.4.1")
+      for toolchain <- toolchains(), do: verdict!("alpha", "1.4.1", toolchain)
       assert {:ok, %{nominated: 0}} = UpdateCheck.run()
       assert hex_latest("alpha") == nil
     end
 
     test "a hidden stable release with a toolchain build, or of a native package, is not nominated" do
       passing_package("built", "2.0.0-rc.1")
-      Portal.PrecompiledFixtures.ingest_toolchain_build("built", "1.4.1")
+      for toolchain <- toolchains(), do: verdict!("built", "1.4.1", toolchain)
       native_passing_package("native", "2.0.0-rc.1")
       passing_package("only_pre", "0.1.0-rc.2")
       now = DateTime.utc_now()

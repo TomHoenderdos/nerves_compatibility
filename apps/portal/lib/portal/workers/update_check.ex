@@ -52,7 +52,10 @@ defmodule Portal.Workers.UpdateCheck do
   `Portal.Catalog.toolchain_backlog/3` offers as a new build (#105). It only
   nominates: the toolchain build compiles and judges that version itself.
   A prerelease is never nominated, and a nomination is cleared once a full
-  run reaches its version or a toolchain build of it exists.
+  run reaches its version or the backlog has nothing left to build of it:
+  a verdict (not an `error`, which the backlog retries after a day) of its
+  `with` build on every configured toolchain, and of the `without` build
+  each `with` build wants.
 
   A package with native code in its dependency closure (`native?/1`, read
   the same way `Portal.Catalog.toolchain_backlog/3`'s pure-BEAM clause is)
@@ -300,26 +303,24 @@ defmodule Portal.Workers.UpdateCheck do
 
   # The registry's latest version of each package whose release earns no
   # full run, as a toolchain build candidate (`hex_latest_version`), unless
-  # a toolchain build of it exists already. Counts the rows it changed.
-  # A prerelease is never nominated: prerelease churn would queue builds,
-  # and some prereleases are not to be published.
+  # the backlog has nothing left to build of it (`@nomination_done`). Counts
+  # the rows it changed. A prerelease is never nominated: prerelease churn
+  # would queue builds, and some prereleases are not to be published.
   defp nominate(patch_only) do
+    toolchains = toolchains()
+    builder_version = Portal.Toolchains.builder_version()
+
     patch_only
     |> Enum.filter(fn {_package, entry} -> stable?(entry.latest_version) end)
     |> Enum.count(fn {package, entry} ->
-      {count, _} =
-        Portal.Repo.update_all(
-          from(p in "catalog_packages",
-            where:
-              p.id == type(^package.id, Ecto.UUID) and
-                (is_nil(p.hex_latest_version) or p.hex_latest_version != ^entry.latest_version) and
-                not fragment(
-                  "EXISTS (SELECT 1 FROM catalog_toolchain_builds t WHERE t.package_id = ? AND t.version = ? AND t.config_variant = 'default')",
-                  p.id,
-                  ^entry.latest_version
-                )
-          ),
-          set: [hex_latest_version: entry.latest_version]
+      %{num_rows: count} =
+        Portal.Repo.query!(
+          """
+          UPDATE catalog_packages p SET hex_latest_version = $2
+          WHERE p.id = $1::uuid AND p.hex_latest_version IS DISTINCT FROM $2
+            AND NOT #{nomination_done("p.id", "$2", "$3", "$4")}
+          """,
+          [Ecto.UUID.dump!(package.id), entry.latest_version, toolchains, builder_version]
         )
 
       count == 1
@@ -330,25 +331,58 @@ defmodule Portal.Workers.UpdateCheck do
     match?({:ok, %Version{pre: []}}, Version.parse(version || ""))
   end
 
-  # A nomination is done once a full run reached its version or a toolchain
-  # build of it exists (any toolchain and status, the default config
-  # variant): the backlog has nothing left to offer for it.
+  # A nomination is done once a full run reached its version, or once the
+  # backlog has nothing left to build of it: on every configured toolchain,
+  # at the current builder version, a verdict of its default `with` build
+  # (any status but `error`, which is no verdict and which the backlog
+  # retries after a day; or a revoked row) and, when that `with` build wants
+  # its `without` one (it added an optional dependency; the backlog's rule),
+  # a verdict of that one too. Clearing it any sooner leaves a version with
+  # no run of its own no way into the backlog.
   defp clear_stale do
-    Portal.Repo.update_all(
-      from(p in "catalog_packages",
-        where:
-          not is_nil(p.hex_latest_version) and
-            (p.hex_latest_version == p.latest_version or
-               fragment(
-                 "EXISTS (SELECT 1 FROM catalog_toolchain_builds t WHERE t.package_id = ? AND t.version = ? AND t.config_variant = 'default')",
-                 p.id,
-                 p.hex_latest_version
-               ))
-      ),
-      set: [hex_latest_version: nil]
+    Portal.Repo.query!(
+      """
+      UPDATE catalog_packages p SET hex_latest_version = NULL
+      WHERE p.hex_latest_version IS NOT NULL
+        AND (p.hex_latest_version = p.latest_version
+             OR #{nomination_done("p.id", "p.hex_latest_version", "$1", "$2")})
+      """,
+      [toolchains(), Portal.Toolchains.builder_version()]
     )
 
     :ok
+  end
+
+  defp toolchains, do: Enum.map(Portal.Toolchains.images(), & &1.toolchain)
+
+  defp nomination_done(package, version, toolchains, builder_version) do
+    row = fn alias, variant ->
+      """
+      #{alias}.package_id = #{package} AND #{alias}.version = #{version}
+        AND #{alias}.toolchain = tc.toolchain AND #{alias}.builder_version = #{builder_version}
+        AND #{alias}.variant = '#{variant}' AND #{alias}.config_variant = 'default'
+      """
+    end
+
+    """
+    NOT EXISTS (
+      SELECT 1 FROM unnest(#{toolchains}::text[]) AS tc(toolchain)
+      WHERE NOT EXISTS (
+              SELECT 1 FROM catalog_toolchain_builds w
+              WHERE #{row.("w", "with")}
+                AND (w.status <> 'error' OR w.revoked_at IS NOT NULL))
+         OR EXISTS (
+              SELECT 1 FROM catalog_toolchain_builds w
+              WHERE #{row.("w", "with")}
+                AND (w.status = 'pass' OR (w.status = 'skipped' AND w.portability_rule = 2))
+                AND w.revoked_at IS NULL
+                AND jsonb_typeof(w.optional_deps -> 'added') = 'array'
+                AND jsonb_array_length(w.optional_deps -> 'added') > 0
+                AND NOT EXISTS (
+                  SELECT 1 FROM catalog_toolchain_builds o
+                  WHERE #{row.("o", "without")}
+                    AND (o.status <> 'error' OR o.revoked_at IS NOT NULL))))
+    """
   end
 
   # A tracked package with no version on record has never produced a build
