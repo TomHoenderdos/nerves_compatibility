@@ -45,6 +45,10 @@ defmodule NccWorker.Portability.RebarPlugins do
   alias Compatibility.KinoAssets
   alias NccWorker.Portability.{HexFiles, Rebar}
 
+  # The most distinct plugin releases a build's record holds (review S5 R3):
+  # the 12 reviewed packages, a few releases each. A build that ran more
+  # refuses rather than record part of them.
+  @max_releases 64
   @max_tarball_bytes 32 * 1024 * 1024
   @max_files 2_000
   @max_bytes 64 * 1024 * 1024
@@ -70,6 +74,31 @@ defmodule NccWorker.Portability.RebarPlugins do
       |> Enum.sort()
       |> Enum.find_value(:ok, fn {name, dir} -> failed(release(name, dir, cache, pins)) end)
     end
+  end
+
+  @doc "The most distinct plugin releases a build may run and record."
+  @spec max_releases() :: pos_integer()
+  def max_releases, do: @max_releases
+
+  @doc """
+  A closure's record (review S5 R3): `releases/2`'s entries of every rebar3
+  app, `[{owner, [release]}]`, as one entry per distinct release with the
+  apps that ran it (`"owners"`, sorted), sorted by name and version. Never
+  cut: `{:over, record}` when it holds more than `max_releases/0`, which
+  refuses the build.
+  """
+  @spec record([{String.t(), [map()]}]) :: {:ok, [map()]} | {:over, [map()]}
+  def record(per_app) do
+    record =
+      per_app
+      |> Enum.flat_map(fn {owner, releases} -> Enum.map(releases, &{&1, owner}) end)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.map(fn {release, owners} ->
+        Map.put(release, "owners", owners |> Enum.uniq() |> Enum.sort())
+      end)
+      |> Enum.sort_by(&{&1["name"], &1["version"], &1["sha256"] || ""})
+
+    if length(record) > @max_releases, do: {:over, record}, else: {:ok, record}
   end
 
   @doc """

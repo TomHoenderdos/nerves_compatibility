@@ -51,34 +51,55 @@ defmodule Portal.Precompiled.PluginWatch do
   @name ~r/\A[a-z][a-z0-9_]{0,63}\z/
   @version ~r/\A[0-9A-Za-z][0-9A-Za-z.+-]{0,63}\z/
   @sha ~r/\A[0-9a-f]{64}\z/
-  @max_plugins 50
+  # The worker's bound (`NccWorker.Portability.RebarPlugins.max_releases/0`).
+  @max_releases 64
+  # The record of a run that ran plugin releases this cannot list: withheld
+  # whatever the watch holds (`served_clause/1`).
+  @unrecorded {"*", "unrecorded", nil}
+
+  @doc "The most distinct plugin releases one run's record holds."
+  @spec max_releases() :: pos_integer()
+  def max_releases, do: @max_releases
 
   @doc """
   Records the plugin releases run `run_id` ran, from its build's
   `compile_observations` (`"rebar3_plugins"`: `%{"name", "version",
-  "sha256"}` each). Malformed entries are skipped; anything else records
-  nothing. Idempotent.
+  "sha256"}` each). Deduplicated first and never cut (review S5 R3): a
+  record of more than `max_releases/0` releases, or one with any malformed
+  entry, records the withholding mark instead, `*`, which no watch state
+  serves. Observations without the key record nothing (a build from before
+  the record). Idempotent.
   """
   @spec record(String.t() | nil, term()) :: :ok
-  def record(run_id, %{"rebar3_plugins" => plugins})
-      when is_binary(run_id) and run_id != "" and is_list(plugins) do
-    rows =
-      for %{"name" => name, "version" => version} = plugin <- Enum.take(plugins, @max_plugins),
-          is_binary(name) and Regex.match?(@name, name),
-          is_binary(version) and Regex.match?(@version, version),
-          uniq: true,
-          do: [run_id, name, version, sha(plugin["sha256"])]
-
-    Enum.each(rows, fn row ->
+  def record(run_id, %{"rebar3_plugins" => plugins}) when is_binary(run_id) and run_id != "" do
+    Enum.each(releases(plugins), fn {name, version, sha} ->
       Portal.Repo.query!(
         "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256) " <>
           "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-        row
+        [run_id, name, version, sha]
       )
     end)
   end
 
   def record(_run_id, _observations), do: :ok
+
+  defp releases(plugins) when is_list(plugins) do
+    parsed = Enum.map(plugins, &release/1)
+    unique = parsed |> Enum.reject(&(&1 == :error)) |> Enum.uniq_by(&Tuple.delete_at(&1, 2))
+
+    if :error in parsed or length(unique) > @max_releases, do: [@unrecorded], else: unique
+  end
+
+  defp releases(_plugins), do: [@unrecorded]
+
+  defp release(%{"name" => name, "version" => version} = plugin)
+       when is_binary(name) and is_binary(version) do
+    if Regex.match?(@name, name) and Regex.match?(@version, version),
+      do: {name, version, sha(plugin["sha256"])},
+      else: :error
+  end
+
+  defp release(_plugin), do: :error
 
   defp sha(sha) when is_binary(sha), do: if(Regex.match?(@sha, sha), do: sha)
   defp sha(_sha), do: nil
@@ -175,8 +196,7 @@ defmodule Portal.Precompiled.PluginWatch do
         %{rows: rows} =
           Portal.Repo.query!(
             "SELECT DISTINCT bp.run_id FROM rebar3_plugin_runs bp " <>
-              "JOIN rebar3_plugin_watch pw ON pw.package = bp.package " <>
-              "WHERE bp.run_id = ANY($1::text[])",
+              "WHERE bp.run_id = ANY($1::text[]) AND #{withholds("bp")}",
             [ids]
           )
 
@@ -186,11 +206,19 @@ defmodule Portal.Precompiled.PluginWatch do
 
   @doc """
   The SQL predicate that serves a build whose run id is the expression
-  `run_id` only while its run ran no watched package. Literal SQL only.
+  `run_id` only while its run ran no watched package and its record is not
+  the withholding mark. Literal SQL only.
   """
   @spec served_clause(String.t()) :: String.t()
   def served_clause(run_id) do
     "NOT EXISTS (SELECT 1 FROM rebar3_plugin_runs bp " <>
-      "JOIN rebar3_plugin_watch pw ON pw.package = bp.package WHERE bp.run_id = #{run_id})"
+      "WHERE bp.run_id = #{run_id} AND #{withholds("bp")})"
+  end
+
+  # Whether the record row aliased `bp` withholds its run: the mark, or a
+  # watched package.
+  defp withholds(bp) do
+    "(#{bp}.package = '*' OR EXISTS (SELECT 1 FROM rebar3_plugin_watch pw " <>
+      "WHERE pw.package = #{bp}.package))"
   end
 end

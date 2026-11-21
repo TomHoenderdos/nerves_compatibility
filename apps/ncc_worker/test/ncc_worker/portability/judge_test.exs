@@ -2084,15 +2084,40 @@ defmodule NccWorker.Portability.JudgeTest do
                observations: obs
              } = judge(proj, r, opts)
 
-      # The build records what it ran, so the portal can find it.
+      # The build records what it ran, so the portal can find it: each
+      # release once, with the apps that ran it (review S5 R3).
       assert obs["rebar3_plugins"] == [
                %{
-                 "owner" => "dep",
                  "name" => "rebar3_ex_doc",
                  "version" => "0.3.99",
-                 "sha256" => nil
+                 "sha256" => nil,
+                 "owners" => ["dep"]
                }
              ]
+    end
+
+    # Review S5 R3: the record is never cut. More distinct plugin releases
+    # than it holds refuse the build.
+    test "a closure running more plugin releases than the record holds refuses", %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      cache = Path.join(Path.dirname(proj), "rebar3-cache")
+      opts = rebar_opts(proj, ["dep"]) ++ [rebar_cache: cache]
+      max = NccWorker.Portability.RebarPlugins.max_releases()
+
+      for i <- 1..(max + 1) do
+        dir = Path.join(proj, "deps/dep/_build/default/plugins/fx_p#{i}")
+        File.mkdir_p!(dir)
+
+        File.write!(
+          Path.join(dir, "hex_metadata.config"),
+          ~s({<<"name">>,<<"fx_p#{i}">>}.\n{<<"version">>,<<"1.0.0">>}.\n)
+        )
+      end
+
+      assert %{status: :skip, reason: reason, observations: obs} = judge(proj, r, opts)
+      assert reason == "rebar3 build runs more than #{max} plugin releases"
+      assert length(obs["rebar3_plugins"]) == max + 1
     end
 
     test "a dependency whose mix.rebar.config is missing could not be judged", %{proj: proj} do

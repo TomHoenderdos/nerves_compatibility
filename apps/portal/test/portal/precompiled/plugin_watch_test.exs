@@ -34,14 +34,11 @@ defmodule Portal.Precompiled.PluginWatchTest do
   @reviewed_hex Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys() |> Enum.sort()
 
   describe "record/2" do
-    test "keeps each plugin release a run ran, once, and nothing malformed" do
+    test "keeps each plugin release a run ran, once" do
       plugins = [
         ran("rebar3_hex", "7.5.0"),
         ran("hex_core", "0.21.1", nil),
-        ran("rebar3_hex", "7.5.0"),
-        %{"name" => "Bad Name", "version" => "1.0.0"},
-        %{"name" => "verl"},
-        "junk"
+        ran("rebar3_hex", "7.5.0")
       ]
 
       assert :ok = PluginWatch.record("tc-1", observations(plugins))
@@ -52,6 +49,30 @@ defmodule Portal.Precompiled.PluginWatchTest do
 
       assert PluginWatch.ran("tc-1") == [{"hex_core", "0.21.1"}, {"rebar3_hex", "7.5.0"}]
       assert PluginWatch.ran("tc-2") == []
+    end
+
+    # Review S5 R3: deduplicated first and never cut; a record that is over
+    # the bound or malformed withholds the build whatever the watch holds.
+    test "a record over the bound, or malformed, is the withholding mark" do
+      max = PluginWatch.max_releases()
+      many = for i <- 1..(max + 1), do: ran("rebar3_hex", "7.#{i}.0")
+      dup = for _ <- 1..(max + 5), do: ran("rebar3_hex", "7.5.0")
+
+      assert :ok = PluginWatch.record("tc-dup", observations(dup))
+      assert PluginWatch.ran("tc-dup") == [{"rebar3_hex", "7.5.0"}]
+
+      assert :ok = PluginWatch.record("tc-many", observations(many))
+      assert PluginWatch.ran("tc-many") == [{"*", "unrecorded"}]
+
+      for {id, bad} <- [
+            {"tc-bad-name", [%{"name" => "Bad Name", "version" => "1.0.0"}]},
+            {"tc-no-version", [ran("rebar3_hex", "7.5.0"), %{"name" => "verl"}]},
+            {"tc-junk", ["junk"]},
+            {"tc-not-list", %{"name" => "x"}}
+          ] do
+        assert :ok = PluginWatch.record(id, %{"rebar3_plugins" => bad})
+        assert PluginWatch.ran(id) == [{"*", "unrecorded"}], id
+      end
     end
   end
 
@@ -129,6 +150,21 @@ defmodule Portal.Precompiled.PluginWatchTest do
       assert Catalog.published_sha256?(ctx.sha)
       assert ctx.name in Catalog.packages_with_precompiled_files()
       assert Catalog.precompiled_fingerprints()[ctx.name] == before
+    end
+
+    test "a build whose record is the withholding mark is withheld while nothing is watched",
+         ctx do
+      Portal.Repo.query!(
+        "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256) " <>
+          "SELECT run_id, '*', 'unrecorded', NULL FROM catalog_toolchain_builds t " <>
+          "JOIN catalog_packages p ON p.id = t.package_id WHERE p.name = $1",
+        [ctx.name]
+      )
+
+      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      refute served?(ctx.name)
+      refute Catalog.published_sha256?(ctx.sha)
+      assert served?(ctx.other)
     end
 
     test "a watched dependency of the plugin withholds it too", ctx do

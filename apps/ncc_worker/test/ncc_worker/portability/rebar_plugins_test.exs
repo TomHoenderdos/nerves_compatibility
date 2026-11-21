@@ -111,6 +111,29 @@ defmodule NccWorker.Portability.RebarPluginsTest do
     assert RebarPlugins.releases(Path.join(root, "none"), i.cache) == []
   end
 
+  test "a closure's record is each release once, with the apps that ran it, never cut" do
+    hex = %{"name" => "rebar3_hex", "version" => "7.5.0", "sha256" => "a"}
+    lint = %{"name" => "rebar3_lint", "version" => "5.0.4", "sha256" => "b"}
+
+    assert RebarPlugins.record([{"b_app", [hex, lint]}, {"a_app", [hex]}, {"c_app", []}]) ==
+             {:ok,
+              [
+                Map.put(hex, "owners", ["a_app", "b_app"]),
+                Map.put(lint, "owners", ["b_app"])
+              ]}
+
+    # One app per release past the bound: the record holds every one, and says so.
+    max = RebarPlugins.max_releases()
+    apps = for i <- 1..(max + 1), do: {"app#{i}", [%{hex | "version" => "7.#{i}.0"}]}
+    assert {:over, record} = RebarPlugins.record(apps)
+    assert length(record) == max + 1
+
+    # The same release run by many apps is one entry.
+    many = for i <- 1..(max + 1), do: {"app#{i}", [hex]}
+    assert {:ok, [%{"owners" => owners}]} = RebarPlugins.record(many)
+    assert length(owners) == max + 1
+  end
+
   test "a release the table does not pin refuses, naming the plugin and its version",
        %{tmp_dir: root} do
     i = install(root, "fx_plugin", "1.0.1")

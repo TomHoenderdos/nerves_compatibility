@@ -1081,6 +1081,7 @@ defmodule NccWorker.Portability do
           version.problems ++
           endian_problems(decided, endian) ++ os_type_problems(decided, os_type),
       libs: libs,
+      plugins: plugin_record(ctx, scope),
       package_window: window_problem(report, ctx.package),
       package_r2: package_r2,
       package_rebar: package_rebar,
@@ -2986,6 +2987,7 @@ defmodule NccWorker.Portability do
           fn -> facts.manager_mismatch end,
           fn -> facts.tree_refusal end,
           fn -> first_refusal(facts.decided, :outside) end,
+          fn -> plugin_refusal(facts) end,
           fn -> first_refusal(facts.decided, facts.ctx.package) end,
           fn -> if facts.package_window, do: Reasons.could_not_judge() end,
           fn -> package_r2(facts.package_r2) end,
@@ -3194,18 +3196,24 @@ defmodule NccWorker.Portability do
   end
 
   # The rebar3 plugin releases installed for every rebar3 app in the
-  # package's closure (`RebarPlugins.releases/2`), so the portal can find
-  # each build that ran one (`Portal.Precompiled.PluginWatch`).
-  defp rebar3_plugins(%{ctx: ctx, scope: scope}) do
-    for app <- Enum.sort(scope),
-        Context.manager(ctx, app) == "rebar3",
-        dest = Context.dest(ctx, app),
-        is_binary(dest),
-        release <- RebarPlugins.releases(dest, ctx.rebar_cache) do
-      Map.put(release, "owner", app)
-    end
-    |> Enum.take(50)
+  # package's closure (`RebarPlugins.releases/2`), each once with the apps
+  # that ran it, so the portal can find each build that ran one
+  # (`Portal.Precompiled.PluginWatch`). Never cut (review S5 R3): `{:over,
+  # record}` past `RebarPlugins.max_releases/0`, which refuses the build.
+  defp plugin_record(ctx, scope) do
+    scope
+    |> Enum.sort()
+    |> Enum.filter(&(Context.manager(ctx, &1) == "rebar3" and is_binary(Context.dest(ctx, &1))))
+    |> Enum.map(&{&1, RebarPlugins.releases(Context.dest(ctx, &1), ctx.rebar_cache)})
+    |> RebarPlugins.record()
   end
+
+  defp rebar3_plugins(%{plugins: {_ok_or_over, record}}), do: record
+
+  defp plugin_refusal(%{plugins: {:over, _record}}),
+    do: "rebar3 build runs more than #{RebarPlugins.max_releases()} plugin releases"
+
+  defp plugin_refusal(_facts), do: nil
 
   defp tree_summary(%{ctx: ctx, scope: scope}) do
     for {app, tree} <- ctx.trees, MapSet.member?(scope, app), into: %{} do
