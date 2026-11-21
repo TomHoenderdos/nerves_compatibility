@@ -4352,10 +4352,6 @@
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
-      },
-      {
-        "owner": "exqlite",
         "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
       },
       {
@@ -4436,10 +4432,6 @@
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time probe of whether a module is loaded: Elixir.Mix via erlang:function_exported/3"
-      },
-      {
-        "owner": "exqlite",
         "reason": "compile-time write outside ebin: file:make_dir/1 /home"
       },
       {
@@ -4492,7 +4484,7 @@
       }
     ],
     "taint": {
-      "exqlite": "compile-time probe of whether a module is loaded: Elixir.Mix via erlang:function_exported/3",
+      "exqlite": "compile-time probe of an OTP application outside the closure: inets via application_controller:load_application/1",
       "websock_adapter": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
     },
     "target_reads": [],

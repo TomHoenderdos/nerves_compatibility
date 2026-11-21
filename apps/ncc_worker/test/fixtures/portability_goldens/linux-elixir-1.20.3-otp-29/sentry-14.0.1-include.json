@@ -3479,6 +3479,14 @@
     "declared_absent": [
       {
         "declared": [
+          "castore"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.CAStore",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
           "decimal"
         ],
         "kind": "module_absent",
@@ -3789,10 +3797,6 @@
     "problems": [],
     "refusals": [
       {
-        "owner": "mint",
-        "reason": "compile-time probe of a dependency outside the closure: Elixir.CAStore via Code.ensure_loaded?/1"
-      },
-      {
         "owner": "outside",
         "reason": "compile-time host read: init:get_plain_arguments/0 (dispatcher stack, first frame erl_eval)"
       },
@@ -3810,7 +3814,6 @@
       }
     ],
     "taint": {
-      "mint": "compile-time probe of a dependency outside the closure: Elixir.CAStore via Code.ensure_loaded?/1",
       "websock_adapter": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
     },
     "target_reads": [],
