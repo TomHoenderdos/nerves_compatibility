@@ -163,6 +163,30 @@ defmodule Portal.Workers.ClosureDrift do
   @spec run(keyword()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) do
     dry_run? = Keyword.get(opts, :dry_run, false)
+
+    toolchain_phase(
+      [priority: @priority, reason: @reason, max: max_per_run(), dry_run: dry_run?],
+      &put_firmware(&1, &2, &3, dry_run?, &4)
+    )
+  end
+
+  @doc """
+  The toolchain phase of a run for the builds that lock `dep` only, the
+  release fast path's (`Portal.Workers.ReleaseFastPath`): the same judge
+  and the same kept build, with its own `:priority`, `:reason` and cap
+  (`:max`), and no firmware phase. Returns the summary `run/1` does,
+  without `firmware`. Option `:dry_run` as for `run/1`.
+  """
+  @spec rebuild_dependents(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def rebuild_dependents(dep, opts) when is_binary(dep) do
+    opts
+    |> Keyword.take([:priority, :reason, :max, :dry_run])
+    |> Keyword.put(:dep, dep)
+    |> toolchain_phase(fn summary, _index, _releases, _deadline -> summary end)
+  end
+
+  defp toolchain_phase(opts, and_then) do
+    dry_run? = Keyword.get(opts, :dry_run, false)
     deadline = System.monotonic_time(:millisecond) + budget_ms()
 
     with {:ok, registry} <- registry_source().snapshot(all_versions: true) do
@@ -175,7 +199,8 @@ defmodule Portal.Workers.ClosureDrift do
           builder_version: builder_version,
           toolchains: Map.keys(images),
           variants: ToolchainRow.optional_deps_variants() ++ Toolchains.world_variants(),
-          limit: scan_limit()
+          limit: scan_limit(),
+          dep: Keyword.get(opts, :dep)
         )
 
       queue_for = MemoryRouting.router(candidates |> Enum.map(& &1.package) |> Enum.uniq())
@@ -186,7 +211,10 @@ defmodule Portal.Workers.ClosureDrift do
         builder_version: builder_version,
         queue_for: queue_for,
         releases: releases,
-        deadline: deadline
+        deadline: deadline,
+        priority: Keyword.fetch!(opts, :priority),
+        reason: Keyword.fetch!(opts, :reason),
+        max: Keyword.fetch!(opts, :max)
       }
 
       summary =
@@ -194,7 +222,7 @@ defmodule Portal.Workers.ClosureDrift do
           candidates
           |> judge_all(index, context, dry_run?)
           |> log_summary()
-          |> put_firmware(index, releases, dry_run?, deadline)
+          |> and_then.(index, releases, deadline)
         after
           Process.delete(memo)
         end
@@ -203,10 +231,10 @@ defmodule Portal.Workers.ClosureDrift do
     end
   end
 
-  # In candidate order, until `max_per_run/0` are queued or the run's time
-  # budget is spent.
+  # In candidate order, until the run's cap is queued or its time budget is
+  # spent.
   defp judge_all(candidates, index, context, dry_run?) do
-    max = max_per_run()
+    max = context.max
     summary = %{candidates: length(candidates), drifted: 0, enqueued: 0, pending: 0, unknown: 0}
 
     Enum.reduce_while(candidates, summary, fn
@@ -280,11 +308,11 @@ defmodule Portal.Workers.ClosureDrift do
       builder_version: context.builder_version,
       variant: candidate.variant,
       config_variant: candidate.config_variant,
-      reason: @reason,
+      reason: context.reason,
       drift: Enum.take(changes, @changes_shown)
     }
 
-    opts = [priority: @priority, queue: context.queue_for.(candidate.package)]
+    opts = [priority: context.priority, queue: context.queue_for.(candidate.package)]
 
     case args |> ToolchainBuild.new(opts) |> Oban.insert() do
       {:ok, %Oban.Job{conflict?: true}} ->

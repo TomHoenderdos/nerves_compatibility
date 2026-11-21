@@ -235,6 +235,63 @@ defmodule Portal.Workers.ClosureDriftTest do
     refute_received {:asked_hex, "certifi", _opts}
   end
 
+  describe "rebuild_dependents/2" do
+    # certifi and jason both released; only the builds locking certifi are
+    # the release's to rebuild.
+    defp two_releases(names) do
+      registry([
+        {"certifi", ["2.18.0", "2.19.0"]},
+        {"jason", ["1.0.0", "1.1.0"]} | Enum.map(names, &{&1, ["0.4.0"]})
+      ])
+
+      hex_releases(
+        Map.new(names, fn name ->
+          {name, [release("0.4.0", [{"certifi", "~> 2.18"}, {"jason", "~> 1.0"}])]}
+        end)
+        |> Map.put("certifi", [release("2.18.0", []), release("2.19.0", [])])
+        |> Map.put("jason", [release("1.0.0", []), release("1.1.0", [])])
+      )
+    end
+
+    test "queues the drifted builds that lock the dependency, at the given priority and reason" do
+      [dependent, other] = [name(), name()]
+      two_releases([dependent, other])
+      built!(dependent, "0.4.0", "2.18.0")
+
+      ingest_toolchain_build(other, "0.4.0",
+        deps_lock: %{"jason" => %{"version" => "1.0.0", "checksum" => "j"}},
+        finished_at: @built
+      )
+
+      assert {:ok, %{candidates: 1, drifted: 1, enqueued: 1}} =
+               ClosureDrift.rebuild_dependents("certifi",
+                 priority: 1,
+                 reason: "release_fast_path",
+                 max: 10
+               )
+
+      assert [job] = all_enqueued(worker: ToolchainBuild)
+      assert job.priority == 1
+      assert %{"package" => ^dependent, "reason" => "release_fast_path"} = job.args
+
+      assert [%{earlier_builds: [_kept]}] =
+               ToolchainRow
+               |> Ash.Query.filter(package.name == ^dependent)
+               |> Ash.read!(domain: Catalog)
+    end
+
+    test "queues at most its cap" do
+      names = [name(), name(), name()]
+      two_releases(names)
+      Enum.each(names, &built!(&1, "0.4.0", "2.18.0"))
+
+      assert {:ok, %{enqueued: 2}} =
+               ClosureDrift.rebuild_dependents("certifi", priority: 1, reason: "fast", max: 2)
+
+      assert length(all_enqueued(worker: ToolchainBuild)) == 2
+    end
+  end
+
   test "a registry outage fails the run" do
     Process.put(:hex_answer, {:error, :hex_registry_unavailable})
     assert {:error, :hex_registry_unavailable} = perform_job(ClosureDrift, %{"manual" => true})

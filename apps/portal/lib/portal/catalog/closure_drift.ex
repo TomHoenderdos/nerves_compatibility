@@ -181,12 +181,14 @@ defmodule Portal.Catalog.ClosureDrift do
       AND t.toolchain = ANY($4::text[]) AND t.variant = ANY($5::text[])
       AND t.variant IN #{ToolchainBuild.variants_sql()}
       AND jsonb_typeof(t.deps_lock) = 'object'
+      AND ($7::text IS NULL OR t.deps_lock ? $7::text)
   ), behind AS (
     SELECT DISTINCT s.id
     FROM served s
     CROSS JOIN LATERAL jsonb_each(s.deps_lock) d
     JOIN newest n ON n.name = d.key
     WHERE d.value->>'version' IS DISTINCT FROM n.version
+      AND ($7::text IS NULL OR d.key = $7::text)
   )
   SELECT s.id, s.name, s.version, s.toolchain, s.variant, s.config_variant, s.deps_lock,
          s.built_at
@@ -201,7 +203,8 @@ defmodule Portal.Catalog.ClosureDrift do
   `:toolchains`, of one of `:variants` (names), of each package's newest
   stable release in `index`, that lock some dependency at anything but its
   newest release: the builds `drift/3` may find drifted, most downloaded
-  package first, at most `:limit`.
+  package first, at most `:limit`. With `:dep`, only the builds that lock
+  that package at anything but its newest release.
   """
   @spec candidates(%{String.t() => package()}, keyword()) :: [map()]
   def candidates(index, opts) do
@@ -221,7 +224,8 @@ defmodule Portal.Catalog.ClosureDrift do
           Keyword.fetch!(opts, :builder_version),
           Keyword.fetch!(opts, :toolchains),
           Enum.map(Keyword.fetch!(opts, :variants), &to_string/1),
-          Keyword.fetch!(opts, :limit)
+          Keyword.fetch!(opts, :limit),
+          Keyword.get(opts, :dep)
         ],
         timeout: :timer.minutes(2)
       )
