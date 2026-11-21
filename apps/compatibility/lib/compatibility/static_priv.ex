@@ -25,11 +25,12 @@ defmodule Compatibility.StaticPriv do
   execute bit, and native code it ships verbatim (file_system's
   `inotifywait.exe`, a package's prebuilt dylibs), are the same on every OS
   and architecture. A manifest publishes the mode as 0755 when it has any
-  execute bit and 0644 otherwise (`Portal.Catalog.publish_mode/1`), so what
-  a client installs has the execute bits the user's own unpack gives. Native code is told by name (`.so`, `.dylib`, `.dll`,
-  `.a`, `.o`, `.node`, a versioned `.so.N`) or by magic (ELF, Mach-O thin in
-  both widths and byte orders, fat in both byte orders, PE, `ar`); only a
-  file the build made is refused for it.
+  execute bit and 0644 otherwise (`Portal.Catalog.publish_mode/1`), so a
+  client installs the file executable exactly when the user's own unpack
+  does. Native code is told by name (`.so`, `.dylib`, `.dll`, `.a`, `.o`,
+  `.node`, a versioned `.so.N`) or by magic (ELF, Mach-O thin in both
+  widths and byte orders, fat in both byte orders, PE, `ar`); only a file
+  the build made is refused for it.
 
   One kind of file is static without being in the tarball: one the package's
   own compile wrote into its own build `priv`, such as the asset archives
