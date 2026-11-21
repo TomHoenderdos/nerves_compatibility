@@ -22,8 +22,8 @@ defmodule Portal.Workers.CoverageRefresh do
 
   @impl Oban.Worker
   def perform(%Oban.Job{}) do
-    report = Coverage.store(Coverage.report())
-    metrics = refresh_metrics()
+    report = safely(fn -> Coverage.store(Coverage.report()) end)
+    metrics = safely(&refresh_metrics/0)
 
     case {report, metrics} do
       {{:ok, _stored}, {:ok, _metrics}} -> :ok
@@ -36,6 +36,14 @@ defmodule Portal.Workers.CoverageRefresh do
     with {:ok, registry} <- registry_source().snapshot(all_versions: true) do
       registry |> CoverageMetrics.compute() |> CoverageMetrics.store()
     end
+  end
+
+  # A step that raises is an error like any other, so the other step still
+  # runs and stores; the job then fails and Oban retries both.
+  defp safely(step) do
+    step.()
+  rescue
+    exception -> {:error, Exception.message(exception)}
   end
 
   defp registry_source,

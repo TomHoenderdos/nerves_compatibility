@@ -800,6 +800,23 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       assert has_element?(view, "#coverage-metrics-computed-at")
     end
 
+    defmodule RaisingHexDeps do
+      def releases(_name, _opts \\ []), do: raise("repo.hex.pm went away")
+    end
+
+    # Review R13: one that fails leaves the other stored, a raise included.
+    test "a top packages report that raises still stores the metrics" do
+      ranked!("cov_built", 3_000)
+      toolchain_pass!("cov_built")
+      previous = Application.get_env(:portal, :hex_deps)
+      Application.put_env(:portal, :hex_deps, RaisingHexDeps)
+      on_exit(fn -> Application.put_env(:portal, :hex_deps, previous) end)
+
+      assert {:error, _} = perform_job(Portal.Workers.CoverageRefresh, %{})
+      assert Portal.Catalog.CoverageMetrics.latest()
+      assert Portal.Catalog.Coverage.latest() == nil
+    end
+
     test "before any metrics the page says so", %{conn: conn} do
       {view, _html} = live_maintenance(conn)
       assert has_element?(view, "#coverage-metrics-none")

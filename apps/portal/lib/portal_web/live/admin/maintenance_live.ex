@@ -1028,7 +1028,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
             <p class="mt-1 text-sm leading-6 text-base-content/70">
               Every package at the newest stable release on Hex: the share of recent downloads
               served, and the share of the packages that compile. Nerves tooling and packages
-              with nothing to compile are left out.
+              with nothing to compile are left out. A build whose closure is withheld counts as
+              served; a compile failure is a failed toolchain compile (not one a signal killed),
+              or, with no toolchain build, a failed host compile in the firmware project.
             </p>
             <p
               :if={@coverage_metrics == nil}
@@ -1080,8 +1082,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                 </tbody>
               </table>
             </div>
-            <h3 class="mt-5 text-sm font-semibold">Most downloaded packages</h3>
           </div>
+
+          <h3 class="mt-5 text-sm font-semibold">Most downloaded packages</h3>
 
           <p :if={@coverage == nil} id="coverage-none" class="mt-5 text-sm text-base-content/70">
             No coverage report yet. The hourly refresh computes one, or queue it now.
