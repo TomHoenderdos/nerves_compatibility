@@ -59,6 +59,9 @@ config :portal, :hex_package_lookup, Portal.Test.FakeHexLookup
 # The admin coverage report reads optional dependencies from repo.hex.pm.
 config :portal, :hex_deps, Portal.Test.FakeHexDeps
 
+# The coverage metrics read the Hex registry; tests script it.
+config :portal, :coverage_registry_source, Portal.Test.FakeHexRegistry
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :portal, PortalWeb.Endpoint,

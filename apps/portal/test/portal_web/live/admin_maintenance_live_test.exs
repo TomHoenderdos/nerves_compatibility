@@ -772,6 +772,39 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       refute has_element?(view, ~s(#coverage [data-gap="cov_later"]))
     end
 
+    test "shows the two coverage metrics the refresh stored", %{conn: conn} do
+      ranked!("cov_built", 3_000)
+      toolchain_pass!("cov_built")
+      ranked!("cov_missing", 1_000)
+
+      Process.put(
+        {Portal.Test.FakeHexRegistry, :answer},
+        {:ok,
+         for name <- ~w(cov_built cov_missing) do
+           %{
+             name: name,
+             latest_version: "1.0.0",
+             updated_at: ~U[2026-11-20 00:00:00Z],
+             versions: ["1.0.0"],
+             retired: []
+           }
+         end}
+      )
+
+      assert :ok = perform_job(Portal.Workers.CoverageRefresh, %{})
+      {view, _html} = live_maintenance(conn)
+
+      row = ~s(#coverage-metrics [data-toolchain="1.19/28"])
+      assert has_element?(view, row <> ~s( [data-column="download_percent"]), "75.0%")
+      assert has_element?(view, row <> ~s( [data-column="compile_percent"]), "50.0%")
+      assert has_element?(view, "#coverage-metrics-computed-at")
+    end
+
+    test "before any metrics the page says so", %{conn: conn} do
+      {view, _html} = live_maintenance(conn)
+      assert has_element?(view, "#coverage-metrics-none")
+    end
+
     test "before any report the page says so", %{conn: conn} do
       {view, _html} = live_maintenance(conn)
 

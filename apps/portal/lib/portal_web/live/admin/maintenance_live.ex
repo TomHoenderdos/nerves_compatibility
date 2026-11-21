@@ -3,8 +3,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
   Admin Maintenance tab: the hex.pm update check, bulk rebuilds with their
   sweeps in a Cinder table, precompiled signing, the toolchain backlog and
   how much of the most downloaded packages the toolchain builds cover
-  (`Portal.Catalog.Coverage`), as the last `Portal.Workers.CoverageRefresh`
-  stored it: the page and its buttons ask Hex nothing, and the refresh button
+  (`Portal.Catalog.Coverage`) and the two coverage metrics over every
+  package (`Portal.Catalog.CoverageMetrics`), as the last
+  `Portal.Workers.CoverageRefresh` stored them: the page and its buttons ask Hex nothing, and the refresh button
   only queues that job.
 
   The sweeps' counts follow along live from two `Portal.AdminEvents` topics.
@@ -32,6 +33,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
   alias Portal.BulkRebuild
   alias Portal.Catalog.Coverage
+  alias Portal.Catalog.CoverageMetrics
   alias Portal.Workers.CoverageRefresh
   alias PortalWeb.AdminMessages
 
@@ -83,6 +85,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
       # The stored report: computing it asks Hex about every ranked
       # package, which a page load must not (`Portal.Workers.CoverageRefresh`).
       coverage: Coverage.latest(),
+      coverage_metrics: CoverageMetrics.latest(),
       build_cache_l2: Portal.BuildCache.L2.status()
     )
     |> load_toolchain_counts()
@@ -1018,6 +1021,66 @@ defmodule PortalWeb.Admin.MaintenanceLive do
             >
               Refresh now
             </button>
+          </div>
+
+          <div id="coverage-metrics" class="mt-5">
+            <h3 class="text-sm font-semibold">All packages</h3>
+            <p class="mt-1 text-sm leading-6 text-base-content/70">
+              Every package at the newest stable release on Hex: the share of recent downloads
+              served, and the share of the packages that compile. Nerves tooling and packages
+              with nothing to compile are left out.
+            </p>
+            <p
+              :if={@coverage_metrics == nil}
+              id="coverage-metrics-none"
+              class="mt-3 text-sm text-base-content/70"
+            >
+              No metrics yet. The hourly refresh computes them, or queue it now.
+            </p>
+            <p
+              :if={@coverage_metrics}
+              id="coverage-metrics-computed-at"
+              class="mt-3 text-sm text-base-content/70"
+            >
+              Computed
+              <time datetime={DateTime.to_iso8601(@coverage_metrics.computed_at)}>
+                {Calendar.strftime(@coverage_metrics.computed_at, "%Y-%m-%d %H:%M UTC")}
+              </time>
+            </p>
+            <div :if={@coverage_metrics} class="mt-3 overflow-x-auto">
+              <table class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Toolchain</th>
+                    <th class="text-right">Packages</th>
+                    <th class="text-right">Served</th>
+                    <th class="text-right">Download-weighted</th>
+                    <th class="text-right">Of packages that compile</th>
+                    <th class="text-right">Compile failures</th>
+                    <th class="text-right">Nothing to compile</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={row <- @coverage_metrics.metrics.toolchains}
+                    data-toolchain={row.toolchain}
+                  >
+                    <td class="font-mono">{row.toolchain}</td>
+                    <td class="text-right tabular-nums">{row.packages}</td>
+                    <td class="text-right tabular-nums">{row.served}</td>
+                    <td data-column="download_percent" class="text-right tabular-nums">
+                      {format_percent(row.download_percent)}
+                    </td>
+                    <td data-column="compile_percent" class="text-right tabular-nums">
+                      {format_percent(row.compile_percent)}
+                    </td>
+                    <td class="text-right tabular-nums">{row.compile_failures}</td>
+                    <td class="text-right tabular-nums">{row.nothing_to_compile}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <h3 class="mt-5 text-sm font-semibold">Most downloaded packages</h3>
           </div>
 
           <p :if={@coverage == nil} id="coverage-none" class="mt-5 text-sm text-base-content/70">

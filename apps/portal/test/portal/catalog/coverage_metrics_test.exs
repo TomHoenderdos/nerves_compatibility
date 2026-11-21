@@ -1,0 +1,141 @@
+defmodule Portal.Catalog.CoverageMetricsTest do
+  # Not async: it swaps the `Portal.Toolchains` application env.
+  use Portal.DataCase, async: false
+
+  import Portal.Test.NotPrecompiledFixtures
+
+  alias Portal.Catalog.{CoverageMetrics, Run, SystemResult}
+
+  setup do
+    previous = Application.fetch_env!(:portal, Portal.Toolchains)
+
+    Application.put_env(
+      :portal,
+      Portal.Toolchains,
+      Keyword.merge(previous,
+        images: [%{toolchain: "1.19/28", image: "ncc-worker:elixir-1.19-otp-28"}]
+      )
+    )
+
+    on_exit(fn -> Application.put_env(:portal, Portal.Toolchains, previous) end)
+    :ok
+  end
+
+  defp entry(name, versions) do
+    %{
+      name: name,
+      latest_version: List.last(versions),
+      updated_at: ~U[2026-11-20 00:00:00Z],
+      versions: versions,
+      retired: []
+    }
+  end
+
+  defp host_failed!(name, version) do
+    run =
+      Ash.create!(
+        Run,
+        %{
+          run_id: "#{name}-#{System.unique_integer([:positive])}",
+          package_id: package!(name).id,
+          version_tested: version,
+          overall_status: :fail,
+          finished_at: DateTime.utc_now()
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+    Ash.create!(SystemResult, %{run_id: run.id, system_pkg: "host", status: :fail},
+      action: :create,
+      domain: Portal.Catalog
+    )
+  end
+
+  # Downloads: served 400 + hidden 100 = 500 of 1,000 counted.
+  defp seed! do
+    package!("served", 400)
+    build!("served", "1.1.0", status: :pass)
+    build!("served", "1.1.0", status: :skipped, variant: :without, reason: "no compiled beams")
+
+    # Its newest release is a prerelease; a fresh resolve takes 1.1.0.
+    package!("hidden", 100)
+    build!("hidden", "1.1.0", status: :pass, variant: :without)
+
+    package!("older_only", 200)
+    build!("older_only", "1.0.0", status: :pass)
+
+    package!("unbuilt", 50)
+
+    package!("compile_fail", 150)
+    build!("compile_fail", "1.1.0", status: :fail, reason: "compile failed: mix compile exited 1")
+
+    package!("host_fail", 100)
+    host_failed!("host_fail", "1.1.0")
+
+    package!("nothing", 60)
+    build!("nothing", "1.1.0", status: :skipped, reason: "no compiled beams")
+
+    # Only a named config variant passes: it serves only that config.
+    package!("named_only", 0)
+    build!("named_only", "1.1.0", status: :pass, config_variant: "phx_prod")
+
+    package!("nerves_system_rpi4", 5_000)
+    package!("not_on_hex", 5_000)
+    build!("not_on_hex", "1.0.0", status: :pass)
+
+    [
+      entry("served", ["1.0.0", "1.1.0"]),
+      entry("hidden", ["1.0.0", "1.1.0", "2.0.0-rc.1"]),
+      entry("older_only", ["1.0.0", "1.1.0"]),
+      entry("unbuilt", ["1.1.0"]),
+      entry("compile_fail", ["1.1.0"]),
+      entry("host_fail", ["1.1.0"]),
+      entry("nothing", ["1.1.0"]),
+      entry("named_only", ["1.1.0"]),
+      entry("nerves_system_rpi4", ["1.1.0"]),
+      entry("not_tracked", ["1.0.0"])
+    ]
+  end
+
+  test "counts each package at its newest stable release, on each toolchain" do
+    registry = seed!()
+
+    assert %{toolchains: [row]} = CoverageMetrics.compute(registry)
+
+    assert row.toolchain == "1.19/28"
+    # served, hidden, older_only, unbuilt, compile_fail, host_fail, named_only
+    assert row.packages == 7
+    assert row.downloads == 1_000
+    assert row.served == 2
+    assert row.served_downloads == 500
+    assert row.download_percent == 50.0
+    assert row.nothing_to_compile == 1
+    assert row.compile_failures == 2
+    assert row.compile_failure_downloads == 250
+    # 2 served of the 5 that compile.
+    assert row.compile_percent == 40.0
+  end
+
+  test "an empty registry is all zeros, not an error" do
+    assert %{toolchains: [%{packages: 0, download_percent: +0.0, compile_percent: +0.0}]} =
+             CoverageMetrics.compute([])
+  end
+
+  test "stores what it computed, and reads it back with when" do
+    assert CoverageMetrics.latest() == nil
+
+    registry = seed!()
+    assert {:ok, _} = registry |> CoverageMetrics.compute() |> CoverageMetrics.store()
+
+    assert %{metrics: %{toolchains: [%{served: 2, download_percent: 50.0}]}, computed_at: at} =
+             CoverageMetrics.latest()
+
+    assert %DateTime{} = at
+  end
+
+  test "is stored apart from the top packages report" do
+    assert {:ok, _} = [] |> CoverageMetrics.compute() |> CoverageMetrics.store()
+    assert Portal.Catalog.Coverage.latest() == nil
+  end
+end
