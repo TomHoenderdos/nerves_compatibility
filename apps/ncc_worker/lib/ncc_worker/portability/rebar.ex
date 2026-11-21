@@ -103,7 +103,9 @@ defmodule NccWorker.Portability.Rebar do
 
   What rebar3 evaluates itself refuses (review S5 S2): an app's
   `.app.src.script` (`rebar_app_utils`, `app_src_script`) and a `.app.src`
-  whose `vsn` is not a string (`git`, `semver`, `{git, _}`, `{cmd, Cmd}`:
+  whose `vsn` is not a plain string (`git`, `semver`, `{git, _}`, `{cmd,
+  Cmd}`, and the strings `"git"`, `"semver"`, `"hg"`, `"pkg"` and
+  `"git_subdir"`, which rebar3 takes as the same directives:
   `rebar_utils:vcs_vsn/3` runs a command). rebar3 evaluates them in its own
   VM, where the code has only OTP and rebar3 frames, so the trace drops what
   it does, and the result goes into the `.app` it writes, a published file.
@@ -149,6 +151,11 @@ defmodule NccWorker.Portability.Rebar do
   @max_config_bytes 1024 * 1024
   @max_contents_bytes 64 * 1024 * 1024
   @config_files [~c"rebar.config", ~c"rebar.config.script"]
+  # The `vsn` strings rebar3 takes as a directive, not a version (review S5
+  # F1): its resource types and "semver" (`rebar_utils:vcs_vsn_cmd/3`). "git"
+  # writes the enclosing repo's `git describe` ("0.0.0" outside one), so a
+  # user whose project is a git repo compiles another `.app`.
+  @vsn_directives ~w(git semver hg pkg git_subdir)
 
   @typedoc """
   A rebar3 app's own config files: `rebar.config`'s text (or `nil`) and
@@ -311,9 +318,12 @@ defmodule NccWorker.Portability.Rebar do
   defp vsn_of({{:atom, "vsn"}, vsn}), do: [vsn]
   defp vsn_of(_prop), do: []
 
-  # One `vsn`, a non-empty string: rebar3 takes it as it is.
+  # One `vsn`, a non-empty string that names no resource type: rebar3
+  # takes it as it is.
   defp plain_vsn([vsn]) when is_list(vsn) and vsn != [] do
-    if List.ascii_printable?(vsn), do: :ok, else: computed_vsn()
+    if List.ascii_printable?(vsn) and List.to_string(vsn) not in @vsn_directives,
+      do: :ok,
+      else: computed_vsn()
   end
 
   defp plain_vsn(_vsns), do: computed_vsn()

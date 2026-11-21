@@ -2728,6 +2728,16 @@ defmodule NccWorker.Portability.JudgeTest do
        "rebar3 build .app.src unreadable"}
     ]
 
+    # Review S5 F1: a `vsn` string that names a resource type is a directive
+    # too (`rebar_utils:vcs_vsn_cmd/3`): "git" writes the enclosing repo's
+    # `git describe`, "hg" and "pkg" fail the compile.
+    @vsn_directive_cases (for directive <- ~w(git semver hg pkg git_subdir) do
+                            app_src = ~s|{application, x, [{vsn, "#{directive}"}]}.\n|
+
+                            {"vsn_string_" <> directive, %{"src/x.app.src" => app_src},
+                             "rebar3 build computes its .app.src vsn"}
+                          end)
+
     defp write_tree(dir, name, files) do
       d = Path.join(dir, name)
 
@@ -2743,7 +2753,14 @@ defmodule NccWorker.Portability.JudgeTest do
       plain = %{"src/x.app.src" => ~s|{application, x, [{vsn, "1.0.0"}, {registered, []}]}.\n|}
       assert :ok = Rebar.check(write_tree(dir, "plain", plain))
 
-      for {name, files, reason} <- @app_src_cases do
+      # A version that only contains a directive's name, or another case of
+      # it, is plain.
+      for {name, vsn} <- [{"git_suffix", "1.0.0-git"}, {"git_case", "Git"}, {"pkg_in", "pkg1"}] do
+        files = %{"src/x.app.src" => ~s|{application, x, [{vsn, "#{vsn}"}]}.\n|}
+        assert :ok = Rebar.check(write_tree(dir, name, files)), name
+      end
+
+      for {name, files, reason} <- @app_src_cases ++ @vsn_directive_cases do
         # On disk (`check/2`) and from the verified tarball (`check_sources/3`).
         assert {:refuse, ^reason} = Rebar.check(write_tree(dir, name, files)), name
 
