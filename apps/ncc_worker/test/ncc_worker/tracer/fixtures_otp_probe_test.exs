@@ -524,6 +524,55 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
   end
 
+  # Round 3, R2-3 (the reviewer's E3): fx_probe declares fx_tgt, not
+  # optional, with `targets: [:rpi4]`, which Hex metadata does not keep. A
+  # host build lacks it, but Mix still makes it a child of fx_probe wherever
+  # it is present, so the client's closure check does not tell the two
+  # apart: its module's probe refuses.
+  test "a probe of an absent non-optional declared dependency's module refuses",
+       %{tmp_dir: dir} do
+    home = Path.join(dir, "hex")
+
+    req = [
+      {"name", "fx_tgt"},
+      {"app", "fx_tgt"},
+      {"optional", false},
+      {"requirement", "~> 0.1"},
+      {"repository", "hexpm"}
+    ]
+
+    {app, release} =
+      TracerFixtures.hex_release(home, "fx_probe", ["lib", "mix.exs"], %{}, [
+        {"requirements", [req]}
+      ])
+
+    TracerFixtures.hex_release(home, "fx_tgt", ["lib"], %{
+      "lib/fx_tgt.ex" => "defmodule FxTgt.Mod do\nend\n"
+    })
+
+    proj =
+      TracerFixtures.project(Path.join(dir, "p"), ["fx_probe"], %{
+        "fx_probe" => %{
+          files: %{
+            "lib/fx_probe.ex" =>
+              TracerFixtures.attr_module("FxProbe", "Code.ensure_loaded?(FxTgt.Mod)")
+          }
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"])
+    assert {:ok, 0} = traced.result, traced.log
+
+    assert %{status: :skip, reason: reason} =
+             TracerFixtures.judge(proj, "fx_probe", traced, [],
+               releases: %{app => release},
+               hex_home: home
+             )
+
+    assert reason ==
+             "compile-time probe of a dependency outside the closure: Elixir.FxTgt.Mod via Code.ensure_loaded?/1"
+  end
+
   # A closure dependency's module can be found the same way pruned or not;
   # whether it is loaded now is the earlier compiles' doing, unless the same
   # process ensure-loads it first.

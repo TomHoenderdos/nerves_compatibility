@@ -76,6 +76,29 @@ defmodule NccWorker.Portability.DeclaredTest do
     refute Map.has_key?(index.apps, "fx_dep")
   end
 
+  # Round 3, R2-3: only an optional declaration counts (a non-optional one
+  # the build lacks is a `targets:` dependency, which Mix still makes a
+  # child of its declarer), and only when the lock, not only the closure,
+  # lacks the dependency.
+  test "a non-optional declared dependency is not declared-absent", %{tmp_dir: dir} do
+    index = Declared.index(ctx(dir, requirements: [req("fx_opt", false)]))
+    assert index == %{modules: %{}, apps: %{}, owners: %{}}
+  end
+
+  test "a declared dependency the lock holds is not declared-absent", %{tmp_dir: dir} do
+    c = ctx(dir)
+    {home, releases} = c.hex
+    {_, opt} = TracerFixtures.hex_release(home, "fx_opt", ["lib"])
+    index = Declared.index(%{c | hex: {home, Map.put(releases, "fx_opt", opt)}})
+    assert index == %{modules: %{}, apps: %{}, owners: %{}}
+  end
+
+  test "each module names the declared packages that define it", %{tmp_dir: dir} do
+    index = Declared.index(ctx(dir))
+    assert index.owners["Elixir.FxOpt.Inner"] == ["fx_opt"]
+    assert index.owners["fx_opt_erl"] == ["fx_opt"]
+  end
+
   test "a declared dependency whose tarball is not cached holds no known module", %{tmp_dir: dir} do
     index = Declared.index(ctx(dir, cached: false))
     assert index.modules == %{}
@@ -86,13 +109,13 @@ defmodule NccWorker.Portability.DeclaredTest do
   test "a declaration from another repository is not read", %{tmp_dir: dir} do
     other = List.keyreplace(req("fx_opt"), "repository", 0, {"repository", "acme"})
     index = Declared.index(ctx(dir, requirements: [other]))
-    assert index == %{modules: %{}, apps: %{}}
+    assert index == %{modules: %{}, apps: %{}, owners: %{}}
   end
 
   test "an unreadable declarer's tarball declares nothing", %{tmp_dir: dir} do
     c = ctx(dir)
     c = %{c | hex: {elem(c.hex, 0), %{}}}
-    assert Declared.index(c) == %{modules: %{}, apps: %{}}
+    assert Declared.index(c) == %{modules: %{}, apps: %{}, owners: %{}}
   end
 end
 

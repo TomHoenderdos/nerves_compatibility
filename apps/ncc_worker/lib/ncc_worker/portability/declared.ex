@@ -48,16 +48,28 @@ defmodule NccWorker.Portability.Declared do
   @fetch_timeout_sec 120
   @name ~r/\A[a-z][a-z0-9_]*\z/
 
-  @type t :: %{modules: %{String.t() => [String.t()]}, apps: %{String.t() => [String.t()]}}
+  @type t :: %{
+          modules: %{String.t() => [String.t()]},
+          apps: %{String.t() => [String.t()]},
+          owners: %{String.t() => [String.t()]}
+        }
 
-  @doc "The declared-absent dependencies' modules and applications, each with the members that declare it."
+  @doc """
+  The declared-absent dependencies' modules and applications, each with the
+  members that declare it (`modules`, `apps`), and each module with the
+  declared packages that define it (`owners`). Declared-absent: an
+  `optional: true` requirement (round 3, R2-3: a non-optional one the build
+  lacks is a `targets:` dependency, which Mix still makes a child of its
+  declarer) whose application the lock does not hold.
+  """
   @spec index(Context.t()) :: t()
-  def index(%Context{deps: deps, hex: {home, _releases}} = ctx) do
-    present = deps |> Map.keys() |> MapSet.new()
+  def index(%Context{deps: deps, hex: {home, releases}} = ctx) do
+    present = deps |> Map.keys() |> Enum.concat(Map.keys(releases || %{})) |> MapSet.new()
 
     declared =
       for {member, _dep} <- deps,
           req <- requirements(Context.tarball(ctx, member)),
+          req.optional,
           not MapSet.member?(present, req.app),
           do: {req, member}
 
@@ -66,19 +78,29 @@ defmodule NccWorker.Portability.Declared do
       |> Enum.group_by(fn {req, _} -> req.app end, &elem(&1, 1))
       |> Map.new(fn {app, members} -> {app, members |> Enum.uniq() |> Enum.sort()} end)
 
-    modules =
+    {modules, owners} =
       for {name, members} <- Enum.group_by(declared, fn {req, _} -> req.name end, &elem(&1, 1)),
           module <- modules_of(home, name),
-          reduce: %{} do
-        acc -> Map.update(acc, module, Enum.uniq(members), &Enum.uniq(&1 ++ members))
+          reduce: {%{}, %{}} do
+        {acc, own} ->
+          {Map.update(acc, module, Enum.uniq(members), &Enum.uniq(&1 ++ members)),
+           Map.update(own, module, [name], &Enum.uniq([name | &1]))}
       end
 
-    %{modules: Map.new(modules, fn {m, ms} -> {m, Enum.sort(ms)} end), apps: apps}
+    %{
+      modules: Map.new(modules, fn {m, ms} -> {m, Enum.sort(ms)} end),
+      apps: apps,
+      owners: Map.new(owners, fn {m, ns} -> {m, Enum.sort(ns)} end)
+    }
   rescue
-    _ -> %{modules: %{}, apps: %{}}
+    _ -> empty()
   end
 
-  def index(_ctx), do: %{modules: %{}, apps: %{}}
+  def index(_ctx), do: empty()
+
+  @doc "The index of a build that declares nothing absent."
+  @spec empty() :: t()
+  def empty, do: %{modules: %{}, apps: %{}, owners: %{}}
 
   @doc """
   Downloads into `home` (the run's `HEX_HOME`) the declared-absent
@@ -97,6 +119,7 @@ defmodule NccWorker.Portability.Declared do
     names =
       for {app, _release} <- releases,
           req <- requirements(Context.release_tarball(home, releases, app)),
+          req.optional,
           not MapSet.member?(locked, req.app),
           not cached?(home, req.name),
           uniq: true,
@@ -177,7 +200,9 @@ defmodule NccWorker.Portability.Declared do
   end
 
   @doc "The `hexpm` requirements a Hex tarball's `metadata.config` declares."
-  @spec requirements(binary() | nil) :: [%{name: String.t(), app: String.t()}]
+  @spec requirements(binary() | nil) :: [
+          %{name: String.t(), app: String.t(), optional: boolean()}
+        ]
   def requirements(bytes) when is_binary(bytes) do
     with {:ok, [{_, meta}]} <-
            :erl_tar.extract({:binary, bytes}, [:memory, {:files, [~c"metadata.config"]}]),
@@ -209,7 +234,7 @@ defmodule NccWorker.Portability.Declared do
          true <- Regex.match?(~r/\A[a-z][a-z0-9_]*\z/, name),
          repo when repo in [nil, "hexpm"] <- map["repository"] do
       app = if is_binary(map["app"]), do: map["app"], else: name
-      %{name: name, app: app}
+      %{name: name, app: app, optional: map["optional"] in [true, {:atom, "true"}]}
     else
       _ -> nil
     end
