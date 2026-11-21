@@ -11,6 +11,7 @@ defmodule Portal.Catalog.SystemResult do
   @rule2_revocation "rule 2 revoked"
   @baked_build_path "baked build path"
   @superseded_by_refusal "newer build path refusal"
+  @judge_refusal "firmware judge refusal"
 
   @doc """
   The `unpublished_reason` of a `pure_elixir` result
@@ -30,12 +31,25 @@ defmodule Portal.Catalog.SystemResult do
 
   @doc """
   The `unpublished_reason` of a firmware result
-  `Portal.Precompiled.FirmwareRefusal` withdrew: a newer run of the same
-  version refused or could not judge that target's build for a baked build
-  path (`build_root`).
+  `Portal.Precompiled.FirmwareRefusal` withdrew for a baked build path: a
+  newer run of the same version refused or could not judge that target's
+  build by R2 (`build_root`). A firmware judge refusal withdraws with
+  `judge_refusal/0` instead.
   """
   @spec superseded_by_refusal() :: String.t()
   def superseded_by_refusal, do: @superseded_by_refusal
+
+  @doc """
+  The `unpublished_reason` (and hold reason) of a firmware build the
+  firmware judge's refusal of its target keeps out
+  (`Portal.Precompiled.FirmwareRefusal`, `Portal.Precompiled.Holds`): a
+  result whose `firmware_judge` is "skipped" withdraws the target's builds
+  built before it and every build of the target that is no judge pass, and
+  holds every later one that is no judge pass. Its timestamp is the refusing
+  result's `inserted_at`.
+  """
+  @spec judge_refusal() :: String.t()
+  def judge_refusal, do: @judge_refusal
 
   @doc """
   The `unpublished_reason`s of a firmware result that do not hold the
@@ -49,6 +63,23 @@ defmodule Portal.Catalog.SystemResult do
   """
   @spec rejudged_reasons() :: [String.t()]
   def rejudged_reasons, do: [@baked_build_path, @superseded_by_refusal]
+
+  # A reason naming a probe, a plugin or a rebar3 rule or hook is in the
+  # package's own code (or a dependency's), whatever system it was built
+  # for: it holds every firmware system of the version (review S10). The
+  # 1b withhold's taint tag names none of them, and holds its system only.
+  @version_wide ~r/probe|plugin|rebar3|hook/i
+
+  @doc """
+  The pattern (`~*` in SQL) of a hold reason that holds every firmware
+  system of its package version, not only its own (review S10).
+  """
+  @spec version_wide_pattern() :: String.t()
+  def version_wide_pattern, do: Regex.source(@version_wide)
+
+  @doc "Whether a hold `reason` holds every firmware system of its version."
+  @spec version_wide?(String.t()) :: boolean()
+  def version_wide?(reason) when is_binary(reason), do: Regex.match?(@version_wide, reason)
 
   @doc """
   The most rebar3 plugin releases a firmware result's `rebar3_plugins`
@@ -113,7 +144,8 @@ defmodule Portal.Catalog.SystemResult do
         :build_root,
         :declared_absent,
         :rebar3_plugins,
-        :firmware_judge
+        :firmware_judge,
+        :other_holds
       ])
     end
 
@@ -280,6 +312,15 @@ defmodule Portal.Catalog.SystemResult do
     # Carried copies keep it, and so does a later build of a firmware target
     # that a revocation holds (`rejudged_reasons/0`).
     attribute :unpublished_reason, :string do
+      public?(true)
+    end
+
+    # The row's other holds (`Portal.Precompiled.Holds`): `unpublished_reason`
+    # and `unpublished_at` are one, each entry here another, `%{"reason",
+    # "at"}` (`at` ISO 8601 with microseconds). The row is served only when
+    # it has none; a check constraint keeps `unpublished_at` set while any is
+    # here. Carried copies keep them.
+    attribute :other_holds, {:array, :map} do
       public?(true)
     end
 

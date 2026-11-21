@@ -88,6 +88,95 @@ defmodule Portal.PinnedFirmwareIngestTest do
     assert shas(row) == []
   end
 
+  describe "the firmware judge and the holds (stream S8, review S2)" do
+    @refused %{
+      "status" => "skipped",
+      "reason" => "rebar3 build runs plugins",
+      "classes" => ["plugins_hooks"]
+    }
+
+    test "a target the judge refused is skipped with its verdict and no files" do
+      name = unique()
+      assert {:ok, row} = ingest_firmware(name, pins(name), judge: @refused)
+
+      assert row.status == :skipped
+      assert row.reason == "firmware judge (plugins_hooks): rebar3 build runs plugins"
+      assert row.firmware_judge == @refused
+      assert shas(row) == []
+    end
+
+    test "a judge pass is stored with its verdict and its files" do
+      name = unique()
+      pass = %{"status" => "pass", "reason" => nil, "classes" => []}
+      assert {:ok, row} = ingest_firmware(name, pins(name), judge: pass)
+
+      assert row.status == :pass and row.firmware_judge == pass
+      assert shas(row) == [sha("beam-" <> name)]
+    end
+
+    test "a revoked pinned build of the version holds a new one of another set" do
+      name = unique()
+      assert {:ok, first} = ingest_firmware(name, pins(name))
+
+      Repo.query!(
+        "UPDATE catalog_pinned_builds SET revoked_at = $2, revoked_reason = $3 WHERE id = $1",
+        [
+          Ecto.UUID.dump!(first.id),
+          ~N[2026-11-21 13:01:33.162146],
+          "compile-time probe revoked (own)"
+        ]
+      )
+
+      other =
+        pins(name, [
+          %{"name" => "decimal", "hex" => "decimal", "version" => "2.2.0", "checksum" => @b}
+        ])
+
+      assert {:ok, row} = ingest_firmware(name, other)
+
+      assert row.status == :pass
+      assert row.unpublished_reason == "compile-time probe revoked (own)"
+      assert row.unpublished_at == ~U[2026-11-21 13:01:33.162146Z]
+      refute row.id in Enum.map(Portal.Pins.Served.served(row.package_id, name, []), & &1.id)
+    end
+
+    test "a judge refusal holds a later pinned build of the target that is no judge pass" do
+      name = unique()
+      assert {:ok, refusal} = ingest_firmware(name, pins(name), judge: @refused)
+
+      other =
+        pins(name, [
+          %{"name" => "decimal", "hex" => "decimal", "version" => "2.2.0", "checksum" => @b}
+        ])
+
+      assert {:ok, row} = ingest_firmware(name, other)
+
+      assert row.unpublished_reason == Catalog.SystemResult.judge_refusal()
+      assert row.unpublished_at == refusal.inserted_at
+    end
+
+    test "a newer judge refusal withdraws an older pinned pass of the target" do
+      name = unique()
+      assert {:ok, old} = ingest_firmware(name, pins(name))
+
+      Repo.query!("UPDATE catalog_pinned_builds SET finished_at = $2 WHERE id = $1", [
+        Ecto.UUID.dump!(old.id),
+        ~U[2026-11-18 10:00:00.000000Z]
+      ])
+
+      other =
+        pins(name, [
+          %{"name" => "decimal", "hex" => "decimal", "version" => "2.2.0", "checksum" => @b}
+        ])
+
+      assert {:ok, _refusal} = ingest_firmware(name, other, judge: @refused)
+
+      _ = Portal.Precompiled.FirmwareRefusal.withdraw_superseded()
+      old = Ash.get!(Catalog.PinnedBuild, old.id, domain: Catalog)
+      assert old.unpublished_reason == Catalog.SystemResult.judge_refusal()
+    end
+  end
+
   test "a target R2 passed is still stored as pass with its files" do
     name = unique()
 

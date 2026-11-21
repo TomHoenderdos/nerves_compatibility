@@ -4,12 +4,16 @@ defmodule Portal.Catalog.FirmwareHoldTest do
 
   alias Portal.Catalog
   alias Portal.Catalog.{Ingestion, SystemResult}
+  alias Portal.Precompiled.Holds
 
   require Ash.Query
 
   @fixture Path.join([__DIR__, "..", "..", "support", "fixtures", "result.json"])
   @probe "compile-time probe revoked (own)"
   @plugin "rebar3 plugin revoked"
+  # A reason whose class is per system: a closure's taint.
+  @taint "firmware withheld: closure toolchain refusal (S8 1b: taint)"
+  @judge "firmware judge refusal"
 
   defp sha(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
 
@@ -49,6 +53,7 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       |> Map.put("beam_scan", %{"footprint" => %{"file_manifest" => manifest(bytes)}})
       |> Map.put("build_root", %{"status" => "pass", "reason" => nil, "observations" => []})
       |> Map.merge(Keyword.get(opts, :rpi4, %{}))
+      |> put_judge(Keyword.get(opts, :judge))
 
     systems =
       fixture["systems"]
@@ -85,6 +90,17 @@ defmodule Portal.Catalog.FirmwareHoldTest do
 
     run
   end
+
+  # The worker's verdict: a "skipped" one has withheld the target's files.
+  defp put_judge(rpi4, nil), do: rpi4
+
+  defp put_judge(rpi4, %{"status" => "skipped"} = judge),
+    do: rpi4 |> Map.put("firmware_judge", judge) |> Map.put("beam_scan", %{"footprint" => %{}})
+
+  defp put_judge(rpi4, judge), do: Map.put(rpi4, "firmware_judge", judge)
+
+  defp verdict(status, reason \\ nil, classes \\ []),
+    do: %{"status" => status, "reason" => reason, "classes" => classes}
 
   defp result_of(run, system) do
     SystemResult
@@ -150,8 +166,9 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       assert same_instant?(held.unpublished_at, at)
       refute served_rpi4?("1.4.0")
 
-      # The other targets of the run are not held.
-      assert is_nil(result_of(new, "nerves_system_x86_64").unpublished_at)
+      # A probe is in the package's own code: the run's other firmware
+      # target is held too (review S10), its host result never.
+      assert result_of(new, "nerves_system_x86_64").unpublished_reason == @probe
       assert is_nil(result_of(new, "host").unpublished_at)
     end
 
@@ -170,7 +187,8 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       at = revoke!(rpi4_of(old), @probe)
       new = run!("1.4.0", "2026-11-02T10:00:00Z", "new-beam")
 
-      assert undo!(@probe, at) == 2
+      # The old build, and the new run's rpi4 and x86_64 (version-wide).
+      assert undo!(@probe, at) == 3
       assert is_nil(rpi4_of(old).unpublished_at)
       assert is_nil(rpi4_of(new).unpublished_at)
       assert served_rpi4?("1.4.0")
@@ -215,6 +233,7 @@ defmodule Portal.Catalog.FirmwareHoldTest do
 
       assert rpi4_of(new).unpublished_reason == @plugin
       assert same_instant?(rpi4_of(new).unpublished_at, at)
+      assert [%{"reason" => @probe}] = rpi4_of(new).other_holds
     end
 
     test "holds a target whose new build fails too, as the rule-2 hold does" do
@@ -251,14 +270,29 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       assert is_nil(rpi4_of(new).unpublished_at)
     end
 
-    test "a revocation of another target holds only that target" do
+    test "a per-system reason on another target holds only that target" do
       old = run!("1.4.0", "2026-11-01T10:00:00Z", "old-beam")
-      _ = revoke!(result_of(old, "nerves_system_x86_64"), @probe)
+      _ = revoke!(result_of(old, "nerves_system_x86_64"), @taint)
 
       new = run!("1.4.0", "2026-11-02T10:00:00Z", "new-beam")
 
       assert is_nil(rpi4_of(new).unpublished_at)
-      assert result_of(new, "nerves_system_x86_64").unpublished_reason == @probe
+      assert result_of(new, "nerves_system_x86_64").unpublished_reason == @taint
+    end
+
+    # Review S10: a probe or a plugin is in the package's own code, so it
+    # is in a build for any system, also one the version was not revoked on.
+    test "a probe or plugin revocation on one target holds every target of the version" do
+      for reason <- [@probe, @plugin, "otp application probe revoked"] do
+        version = "1.7.#{System.unique_integer([:positive])}"
+        old = run!(version, "2026-11-01T10:00:00Z", "old-#{version}")
+        at = revoke!(result_of(old, "nerves_system_x86_64"), reason)
+
+        new = run!(version, "2026-11-02T10:00:00Z", "new-#{version}")
+
+        assert rpi4_of(new).unpublished_reason == reason, reason
+        assert same_instant?(rpi4_of(new).unpublished_at, at)
+      end
     end
 
     test "a host result is not held" do
@@ -268,6 +302,223 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       new = run!("1.4.0", "2026-11-02T10:00:00Z", "new-beam")
 
       assert is_nil(result_of(new, "host").unpublished_at)
+    end
+  end
+
+  # Review B1: the judge's own refusal holds as a judge-class revocation
+  # does. Only the target's own traced pass is served over it.
+  describe "a firmware judge refusal" do
+    # Every way a target ends unjudged in the worker (`NccWorker.FirmwareInputs`).
+    @unjudged [
+      "firmware judge budget spent",
+      "closure differs from the run's",
+      "Nerves env exited 1",
+      "run budget exhausted",
+      "the traced compile's beams differ from the published ones",
+      "compile-time host read: os:getenv/1 (HOME)",
+      "no inputs"
+    ]
+
+    test "holds every later run of the target that is no judge pass, whatever the cause" do
+      refused =
+        run!("1.4.0", "2026-11-01T10:00:00Z", "refused",
+          judge: verdict("skipped", "rebar3 build runs plugins", ["plugins_hooks"])
+        )
+
+      refusal = rpi4_of(refused)
+      assert is_nil(refusal.unpublished_at)
+      refute served_rpi4?("1.4.0")
+
+      # Every unjudged cause, and the judge off (no verdict at all).
+      later = Enum.map(@unjudged, &verdict("unjudged", &1)) ++ [nil]
+
+      for {judge, i} <- Enum.with_index(later) do
+        run = run!("1.4.0", "2026-11-02T1#{i}:00:00Z", "later-#{i}", judge: judge)
+
+        held = rpi4_of(run)
+        assert held.unpublished_reason == @judge, inspect(judge)
+        assert held.unpublished_at == refusal.inserted_at
+        refute served_rpi4?("1.4.0"), inspect(judge)
+      end
+    end
+
+    test "a later traced pass of the target is served" do
+      _ =
+        run!("1.4.0", "2026-11-01T10:00:00Z", "refused",
+          judge: verdict("skipped", "x", ["probe"])
+        )
+
+      pass = run!("1.4.0", "2026-11-02T10:00:00Z", "pass", judge: verdict("pass"))
+
+      assert is_nil(rpi4_of(pass).unpublished_at)
+      assert served_rpi4?("1.4.0")
+    end
+
+    test "a later run's own refusal joins the holds of the next run" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a", judge: verdict("skipped", "x", ["probe"]))
+      b = run!("1.4.0", "2026-11-02T10:00:00Z", "b", judge: verdict("skipped", "y", ["probe"]))
+      c = run!("1.4.0", "2026-11-03T10:00:00Z", "c")
+
+      assert rpi4_of(c).unpublished_reason == @judge
+      assert rpi4_of(c).unpublished_at == rpi4_of(b).inserted_at
+
+      assert [%{"reason" => @judge, "at" => older}] = rpi4_of(c).other_holds
+      assert older == rpi4_of(a).inserted_at |> DateTime.to_naive() |> NaiveDateTime.to_iso8601()
+    end
+
+    test "a probe or plugin refusal holds every system of the version; a taint only its own" do
+      _ =
+        run!("1.4.0", "2026-11-01T10:00:00Z", "a",
+          judge: verdict("skipped", "rebar3 build runs plugins", ["plugins_hooks"])
+        )
+
+      later = run!("1.4.0", "2026-11-02T10:00:00Z", "b")
+      assert result_of(later, "nerves_system_x86_64").unpublished_reason == @judge
+
+      _ =
+        run!("1.5.0", "2026-11-01T10:00:00Z", "c",
+          judge:
+            verdict(
+              "skipped",
+              "closure dependency observed the host: d (rebar3 build runs pre_hooks)",
+              ["taint"]
+            )
+        )
+
+      other = run!("1.5.0", "2026-11-02T10:00:00Z", "d")
+      assert rpi4_of(other).unpublished_reason == @judge
+      assert is_nil(result_of(other, "nerves_system_x86_64").unpublished_at)
+    end
+
+    test "a refusal in a revoked run holds nothing" do
+      refused =
+        run!("1.4.0", "2026-11-01T10:00:00Z", "a", judge: verdict("skipped", "x", ["probe"]))
+
+      Repo.query!("UPDATE catalog_runs SET revoked_at = now() WHERE id = $1", [
+        Ecto.UUID.dump!(refused.id)
+      ])
+
+      later = run!("1.4.0", "2026-11-02T10:00:00Z", "b")
+      assert is_nil(rpi4_of(later).unpublished_at)
+    end
+
+    # The sweep side of the rule: a later build that is no judge pass,
+    # ingested before the refusal arrived (a late remote lease), is
+    # withdrawn by the refusal's ingest; a later pass is not.
+    test "withdraws a later build that is no judge pass, ingested before the refusal" do
+      early = run!("1.4.0", "2026-11-03T10:00:00Z", "early")
+      pass = run!("1.4.0", "2026-11-04T10:00:00Z", "pass", judge: verdict("pass"))
+
+      refused =
+        run!("1.4.0", "2026-11-02T10:00:00Z", "a", judge: verdict("skipped", "x", ["probe"]))
+
+      assert rpi4_of(early).unpublished_reason == @judge
+      assert rpi4_of(early).unpublished_at == rpi4_of(refused).inserted_at
+      assert is_nil(rpi4_of(pass).unpublished_at)
+    end
+
+    # Review S5: the judge's withdrawals have a reason of their own, so an
+    # undo of R2's (`newer build path refusal`) never puts them back.
+    test "its withdrawals of older builds carry the judge's reason, not R2's" do
+      old = run!("1.4.0", "2026-11-01T10:00:00Z", "old")
+
+      refused =
+        run!("1.4.0", "2026-11-02T10:00:00Z", "a", judge: verdict("skipped", "x", ["probe"]))
+
+      assert rpi4_of(old).unpublished_reason == @judge
+      assert rpi4_of(old).unpublished_at == rpi4_of(refused).inserted_at
+      refute rpi4_of(old).unpublished_reason == SystemResult.superseded_by_refusal()
+    end
+
+    test "an undo cannot release it: the refusal withdraws the rows again" do
+      _ = run!("1.4.0", "2026-11-01T10:00:00Z", "old")
+
+      refused =
+        run!("1.4.0", "2026-11-02T10:00:00Z", "a", judge: verdict("skipped", "x", ["probe"]))
+
+      later = run!("1.4.0", "2026-11-03T10:00:00Z", "b")
+      at = DateTime.to_naive(rpi4_of(refused).inserted_at)
+
+      assert {:ok, _counts} = Holds.undo(@judge, at)
+      assert rpi4_of(later).unpublished_reason == @judge
+      refute served_rpi4?("1.4.0")
+    end
+  end
+
+  # Review S3 and S4: a row carries every hold it was given; an undo
+  # releases only its own, keeps what else holds, and re-runs the
+  # superseding refusals.
+  describe "Holds.undo/2" do
+    test "a row held twice stays withdrawn until both holds are undone" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      b = run!("1.4.0", "2026-11-01T12:00:00Z", "b")
+      probe_at = revoke!(rpi4_of(a), @probe)
+      taint_at = revoke!(rpi4_of(b), @taint)
+      new = run!("1.4.0", "2026-11-02T10:00:00Z", "new")
+
+      assert rpi4_of(new).unpublished_reason == @taint
+      assert [%{"reason" => @probe}] = rpi4_of(new).other_holds
+
+      # `new` keeps its probe hold; `b`, released, is held again by the
+      # probe revocation of the version (re-derived, below).
+      assert {:ok, %{released: 0, kept: 2}} = Holds.undo(@taint, taint_at)
+      assert rpi4_of(new).unpublished_reason == @probe
+      assert same_instant?(rpi4_of(new).unpublished_at, probe_at)
+      assert rpi4_of(new).other_holds in [nil, []]
+      assert rpi4_of(b).unpublished_reason == @probe
+
+      # a, b, and the new run's rpi4 and x86_64 (the probe is version-wide).
+      assert {:ok, %{released: 4, kept: 0}} = Holds.undo(@probe, probe_at)
+      assert Enum.all?([a, b, new], &is_nil(rpi4_of(&1).unpublished_at))
+      assert served_rpi4?("1.4.0")
+    end
+
+    test "a bare undo of one hold of a row that has another fails, and serves nothing" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      b = run!("1.4.0", "2026-11-01T12:00:00Z", "b")
+      _ = revoke!(rpi4_of(a), @probe)
+      taint_at = revoke!(rpi4_of(b), @taint)
+      new = run!("1.4.0", "2026-11-02T10:00:00Z", "new")
+
+      assert_raise Postgrex.Error, ~r/catalog_system_results_holds_withdrawn/, fn ->
+        undo!(@taint, taint_at)
+      end
+
+      assert rpi4_of(new).unpublished_reason == @taint
+    end
+
+    test "re-runs the superseding refusals: a released row a newer refusal covers stays withdrawn" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      at = revoke!(rpi4_of(a), @taint)
+      # A newer refusal, which skipped the already withdrawn row.
+      _ = run!("1.4.0", "2026-11-02T10:00:00Z", "r", judge: verdict("skipped", "x", ["taint"]))
+      assert rpi4_of(a).unpublished_reason == @taint
+
+      assert {:ok, _} = Holds.undo(@taint, at)
+      assert rpi4_of(a).unpublished_reason == @judge
+    end
+
+    test "re-applies a hold the released row never recorded" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      b = run!("1.4.0", "2026-11-01T12:00:00Z", "b")
+      taint_at = revoke!(rpi4_of(a), @taint)
+      # A later probe revocation of another row skipped the withdrawn one.
+      probe_at = revoke!(rpi4_of(b), @probe)
+
+      assert {:ok, _} = Holds.undo(@taint, taint_at)
+      assert rpi4_of(a).unpublished_reason == @probe
+      assert same_instant?(rpi4_of(a).unpublished_at, probe_at)
+    end
+
+    test "lists a reason's holds by timestamp, with the rows each holds" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      b = run!("1.4.0", "2026-11-01T12:00:00Z", "b")
+      at = revoke!(rpi4_of(a), @taint)
+      _ = revoke!(rpi4_of(b), @probe)
+      _ = run!("1.4.0", "2026-11-02T10:00:00Z", "new")
+
+      assert [{listed, 2}] = Holds.list(@taint)
+      assert NaiveDateTime.compare(listed, at) == :eq
     end
   end
 end

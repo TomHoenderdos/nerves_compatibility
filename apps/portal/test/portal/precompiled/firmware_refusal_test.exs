@@ -190,7 +190,8 @@ defmodule Portal.Precompiled.FirmwareRefusalTest do
     new = run!("1.4.0", "2026-11-02T10:00:00Z", "new-beam", judge: judge)
 
     assert served_rpi4("1.4.0") == []
-    assert rpi4_of(old).unpublished_reason == SystemResult.superseded_by_refusal()
+    # Its own reason (review S5), so an undo of R2's never puts it back.
+    assert rpi4_of(old).unpublished_reason == SystemResult.judge_refusal()
     assert rpi4_of(new).firmware_judge == judge
   end
 

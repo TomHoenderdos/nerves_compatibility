@@ -104,16 +104,23 @@ defmodule PortalWeb.Builder.JobControllerClaimTest do
     assert body["input"]["firmware_inputs"] == false
   end
 
-  test "with NCC_FIRMWARE_JUDGE=0 a firmware lease's input turns the judge off",
+  test "with NCC_FIRMWARE_JUDGE=1 a firmware lease's input turns the judge on, with its budget",
        %{conn: conn} do
     previous = Application.get_env(:portal, Portal.Builder, [])
     on_exit(fn -> Application.put_env(:portal, Portal.Builder, previous) end)
-    Application.put_env(:portal, Portal.Builder, Keyword.put(previous, :firmware_judge, false))
+
+    Application.put_env(
+      :portal,
+      Portal.Builder,
+      Keyword.merge(previous, firmware_judge: true, firmware_judge_budget_sec: 600)
+    )
+
     %{cert_der: der} = enrolled_builder!("c-fw-judge")
     queued!()
 
     body = conn |> with_cert(der) |> post("/builder/v1/jobs/claim", @claim) |> json_response(200)
-    assert body["input"]["firmware_judge"] == false
+    assert body["input"]["firmware_judge"] == true
+    assert body["input"]["firmware_judge_budget_sec"] == 600
   end
 
   test "nothing to do is 204 and a short poll returns quickly", %{conn: conn} do

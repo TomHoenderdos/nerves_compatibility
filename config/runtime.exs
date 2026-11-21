@@ -257,11 +257,20 @@ if portal_available? do
     # `NCC_INPUT.firmware_inputs: false`, local and remote alike, with no
     # image change. Anything else, or unset, keeps it on.
     firmware_inputs: if(System.get_env("NCC_FIRMWARE_INPUTS") == "0", do: false),
-    # `0` turns off the firmware judge (`NccWorker.FirmwareInputs`, stream
-    # S8: every passing target traced for probes, rebar3 plugins and hooks):
-    # firmware builds get `NCC_INPUT.firmware_judge: false`, local and remote
-    # alike, with no image change. Anything else, or unset, keeps it on.
-    firmware_judge: if(System.get_env("NCC_FIRMWARE_JUDGE") == "0", do: false),
+    # `1` turns on the firmware judge (`NccWorker.FirmwareInputs`, stream
+    # S8: every passing target traced for probes, rebar3 plugins and hooks)
+    # for this node's firmware builds, local and remote leases alike
+    # (`NCC_INPUT.firmware_judge: true`). Anything else, or unset, keeps it
+    # off; the holds of earlier refusals stay either way.
+    # NCC_FIRMWARE_JUDGE_BUDGET_SEC (seconds, an integer) is the judge's own
+    # budget per run, sent as `NCC_INPUT.firmware_judge_budget_sec`; unset,
+    # the worker's default (1800).
+    firmware_judge: if(System.get_env("NCC_FIRMWARE_JUDGE") == "1", do: true),
+    firmware_judge_budget_sec:
+      case Integer.parse(System.get_env("NCC_FIRMWARE_JUDGE_BUDGET_SEC", "")) do
+        {n, ""} when n >= 0 -> n
+        _ -> nil
+      end,
     build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),

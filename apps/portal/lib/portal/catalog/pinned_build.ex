@@ -83,6 +83,7 @@ defmodule Portal.Catalog.PinnedBuild do
     :manager,
     :compile_observations,
     :sibling_attempted,
+    :firmware_judge,
     :finished_at
   ]
 
@@ -216,6 +217,12 @@ defmodule Portal.Catalog.PinnedBuild do
 
     attribute(:revoked_reason, :string, public?: true)
     attribute(:unpublished_reason, :string, public?: true)
+    # The row's other holds (`Portal.Precompiled.Holds`), as on
+    # `Portal.Catalog.SystemResult`: served only when it has none.
+    attribute(:other_holds, {:array, :map}, public?: true)
+    # A firmware target's judge verdict (`NccWorker.FirmwareInputs`), as on
+    # `Portal.Catalog.SystemResult`; nil on the toolchain path.
+    attribute(:firmware_judge, :map, public?: true)
 
     create_timestamp(:inserted_at)
     update_timestamp(:updated_at)

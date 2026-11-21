@@ -70,7 +70,7 @@ defmodule Portal.Catalog.Ingestion do
 
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
 
-  alias Portal.Precompiled.{ElfFacts, FirmwareRefusal, PluginWatch, Withheld}
+  alias Portal.Precompiled.{ElfFacts, FirmwareRefusal, Holds, PluginWatch, Withheld}
   alias Portal.Repo
 
   @domain Portal.Catalog
@@ -548,6 +548,7 @@ defmodule Portal.Catalog.Ingestion do
       |> target_build(opts)
       |> gate_declared_absent()
       |> gate_build_root()
+      |> gate_judge()
       |> gate_manifest()
       |> gate_release(result, opts)
       |> gate_pins(result, opts)
@@ -632,7 +633,8 @@ defmodule Portal.Catalog.Ingestion do
       "toolchain_version" => toolchain_version,
       "otp_full" => fact_string(sys["otp_full"]),
       "system_libs" => if(is_map(sys["system_libs"]), do: sys["system_libs"]),
-      "build_root" => sys["build_root"]
+      "build_root" => sys["build_root"],
+      "firmware_judge" => firmware_judge(sys["firmware_judge"])
     }
   end
 
@@ -651,6 +653,19 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp gate_build_root(build), do: build
+
+  # The same for a target the firmware judge refused (review S2): the
+  # worker removed its files and left its status at "pass".
+  defp gate_judge(
+         %{"status" => "pass", "firmware_judge" => %{"status" => "skipped"} = judge} = build
+       ) do
+    skip_variant(
+      build,
+      "firmware judge (#{Enum.join(judge["classes"], ", ")}): #{judge["reason"]}"
+    )
+  end
+
+  defp gate_judge(build), do: build
 
   defp not_built(%{"pure_elixir" => _}, _target),
     do: "pinned target not built: the worker judged the closure pure Elixir"
@@ -2006,6 +2021,7 @@ defmodule Portal.Catalog.Ingestion do
       compile_observations: compile_observations(build["compile_observations"]),
       sibling_attempted: sibling_attempted?(result, opts) or backfill?(opts),
       finished_at: parse_datetime(result["finished_at"]),
+      firmware_judge: build["firmware_judge"],
       # A firmware target's facts (`stage_pinned_target/2`); nil on the
       # toolchain path.
       native: build["native"],
@@ -2023,8 +2039,47 @@ defmodule Portal.Catalog.Ingestion do
       :ok = PluginWatch.mark_unrecorded({:pinned, row.id})
       :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
       :ok = replace_pinned_memberships(row.id, staged)
-      with :ok <- Portal.Deterministic.replace(row, sibling), do: {:ok, row}
+
+      with :ok <- Portal.Deterministic.replace(row, sibling), do: {:ok, hold_pinned(row)}
     end
+  end
+
+  # A pinned firmware target takes the holds a system result of its target
+  # takes at ingest (`Portal.Precompiled.Holds`, review S2), added to any the
+  # row already carries: the upsert never writes `unpublished_at`.
+  defp hold_pinned(%PinnedBuild{target: "nerves_system_" <> _ = target} = row) do
+    verdict = row.firmware_judge && row.firmware_judge["status"]
+    held = Holds.for_targets(row.package_id, row.version, %{target => verdict})[target] || []
+    own = row_holds(row)
+
+    case Holds.newest_first(Enum.uniq(held ++ own)) do
+      ^own ->
+        row
+
+      holds ->
+        {at, reason, others} = Holds.columns(holds)
+
+        Repo.query!(
+          "UPDATE catalog_pinned_builds SET unpublished_at = $2, unpublished_reason = $3, " <>
+            "other_holds = $4, updated_at = now() AT TIME ZONE 'utc' WHERE id = $1",
+          [dump(row.id), at, reason, others]
+        )
+
+        Ash.get!(PinnedBuild, row.id, domain: @domain)
+    end
+  end
+
+  defp hold_pinned(row), do: row
+
+  defp row_holds(%{unpublished_at: nil}), do: []
+
+  defp row_holds(%{unpublished_at: at, unpublished_reason: reason, other_holds: others}) do
+    primary = if reason, do: [{DateTime.to_naive(at), reason}], else: []
+
+    Holds.newest_first(
+      primary ++
+        for(%{"reason" => r, "at" => a} <- others || [], do: {NaiveDateTime.from_iso8601!(a), r})
+    )
   end
 
   # Whether the run tried for the build's deterministic sibling, held or
@@ -2411,61 +2466,40 @@ defmodule Portal.Catalog.Ingestion do
   defp held(_system_pkg, _hold), do: {nil, nil}
 
   # What each system result of this run is stored withdrawn with:
-  # `%{system_pkg => {unpublished_at, unpublished_reason}}`, the rule-2 hold
-  # (`rule2_hold/4`) and the firmware holds (`firmware_holds/3`).
+  # `%{system_pkg => {unpublished_at, unpublished_reason, other_holds}}`, the
+  # `pure_elixir` hold (`held/2`: rule 2's revocation or a declared-absent
+  # refusal) and the firmware holds (`Portal.Precompiled.Holds`): every
+  # earlier refusal or revocation of the version that holds the target, each
+  # target's own judge verdict deciding whether a judge refusal does.
+  # Whatever its status, as the rule-2 hold does; a target the run did not
+  # build is a carried copy, which keeps its own.
   defp holds(package_id, version, rule, systems, result) do
-    held =
+    rule2 =
       case held(
              "pure_elixir",
              rule2_hold(package_id, version, rule, systems) || declared_absent_hold(result)
            ) do
         {nil, nil} -> %{}
-        pair -> %{"pure_elixir" => pair}
+        {at, reason} -> %{"pure_elixir" => {at, reason, nil}}
       end
 
-    Map.merge(firmware_holds(package_id, version, systems), held)
+    verdicts =
+      for {name, sys} <- systems,
+          name not in ["host", "pure_elixir"],
+          into: %{},
+          do: {name, judge_status(sys["firmware_judge"])}
+
+    package_id
+    |> Holds.for_targets(version, verdicts)
+    |> Enum.reject(fn {_target, held} -> held == [] end)
+    |> Map.new(fn {target, held} -> {target, Holds.columns(held)} end)
+    |> Map.merge(rule2)
   end
 
-  # A revocation of a firmware target's build sticks: `mix firmware` is not
-  # traced, so a new run of the same package version would publish that
-  # target again, judged by nobody for what the revocation found (a
-  # compile-time probe, a rebar3 plugin or hook, a closure's toolchain
-  # refusal). When a result of this version and target was withdrawn for any
-  # reason but those a new build is judged by again
-  # (`SystemResult.rejudged_reasons/0`), the new run's result of that target
-  # is stored withdrawn too, with the newest such withdrawal's reason and
-  # timestamp: the revocation's own undo, which matches rows on both, puts
-  # it back with the rest. Whatever its status, as the rule-2 hold does; a
-  # target the run did not build is a carried copy, which keeps its own.
-  @firmware_hold_sql """
-  SELECT DISTINCT ON (s.system_pkg) s.system_pkg, s.unpublished_at, s.unpublished_reason
-  FROM catalog_system_results s
-  JOIN catalog_runs r ON r.id = s.run_id
-  WHERE r.package_id = $1 AND r.version_tested = $2
-    AND s.system_pkg = ANY($3::text[])
-    AND s.unpublished_at IS NOT NULL
-    AND s.unpublished_reason IS NOT NULL
-    AND NOT (s.unpublished_reason = ANY($4::text[]))
-  ORDER BY s.system_pkg, s.unpublished_at DESC, s.unpublished_reason
-  """
-
-  defp firmware_holds(package_id, version, systems) do
-    case systems |> Map.keys() |> Enum.reject(&(&1 in ["host", "pure_elixir"])) do
-      [] ->
-        %{}
-
-      targets ->
-        %{rows: rows} =
-          Repo.query!(@firmware_hold_sql, [
-            Ecto.UUID.dump!(package_id),
-            version,
-            targets,
-            SystemResult.rejudged_reasons()
-          ])
-
-        Map.new(rows, fn [target, at, reason] ->
-          {target, {DateTime.from_naive!(at, "Etc/UTC"), reason}}
-        end)
+  defp judge_status(judge) do
+    case firmware_judge(judge) do
+      %{"status" => status} -> status
+      nil -> nil
     end
   end
 
@@ -2598,14 +2632,14 @@ defmodule Portal.Catalog.Ingestion do
          dependency_scans, log_path, log_tail, failure_category, carried_from_run_id, deps_lock,
          unpublished_at, compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
          toolchain_pkg, toolchain_version, otp_full, published_variants, build_root,
-         rebar3_plugins, firmware_judge, inserted_at, updated_at)
+         rebar3_plugins, firmware_judge, other_holds, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.compile_inputs, s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
              s.unpublished_reason, s.native, s.portable, s.elf_needs, s.toolchain_pkg,
              s.toolchain_version, s.otp_full, s.published_variants, s.build_root,
-             s.rebar3_plugins, s.firmware_judge, now() AT TIME ZONE 'utc',
+             s.rebar3_plugins, s.firmware_judge, s.other_holds, now() AT TIME ZONE 'utc',
              now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
@@ -2671,7 +2705,7 @@ defmodule Portal.Catalog.Ingestion do
          logs
        ) do
     status = Compatibility.Types.parse_status(sys["status"])
-    {held_at, held_reason} = Map.get(hold, system_pkg, {nil, nil})
+    {held_at, held_reason, other_holds} = Map.get(hold, system_pkg, {nil, nil, nil})
     {inputs, compiled_env} = inputs_and_env(sys, {package_name, version})
     {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
 
@@ -2703,6 +2737,7 @@ defmodule Portal.Catalog.Ingestion do
         portability_rule: if(system_pkg == "pure_elixir", do: rule),
         unpublished_at: held_at,
         unpublished_reason: held_reason,
+        other_holds: other_holds,
         toolchain_pkg: toolchain_pkg,
         toolchain_version: toolchain_version,
         otp_full: fact_string(sys["otp_full"]),
@@ -2753,7 +2788,7 @@ defmodule Portal.Catalog.Ingestion do
        when status in @judge_statuses and (is_binary(reason) or is_nil(reason)) and
               is_list(classes) do
     if Enum.all?(classes, &(&1 in @judge_classes)),
-      do: %{"status" => status, "reason" => reason, "classes" => classes}
+      do: %{"status" => status, "reason" => bounded_reason(reason), "classes" => classes}
   end
 
   defp firmware_judge(_judge), do: nil

@@ -122,6 +122,7 @@ defmodule Portal.PinnedFixtures do
     priv = Keyword.get(opts, :priv, [])
     target = Keyword.get(opts, :target, "nerves_system_rpi4")
     build_root = Keyword.get(opts, :build_root)
+    judge = Keyword.get(opts, :judge)
 
     sys =
       %{
@@ -140,11 +141,12 @@ defmodule Portal.PinnedFixtures do
         "error" => Keyword.get(opts, :error),
         "beam_scan" => %{
           "footprint" => %{
-            "file_manifest" => firmware_manifest(build_root, beams, priv)
+            "file_manifest" => firmware_manifest(build_root || judge, beams, priv)
           }
         }
       }
       |> put_build_root(build_root)
+      |> put_judge(judge)
 
     %{
       "scope" => Keyword.get(opts, :scope, "targets"),
@@ -180,6 +182,11 @@ defmodule Portal.PinnedFixtures do
 
   defp put_build_root(sys, nil), do: sys
   defp put_build_root(sys, build_root), do: Map.put(sys, "build_root", build_root)
+
+  # The firmware judge's verdict (`:judge`); a "skipped" one, like R2's, has
+  # withheld the target's files at the source.
+  defp put_judge(sys, nil), do: sys
+  defp put_judge(sys, judge), do: Map.put(sys, "firmware_judge", judge)
 
   def firmware_opts(name, pins, files_dir) do
     name

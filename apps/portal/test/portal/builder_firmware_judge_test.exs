@@ -19,26 +19,61 @@ defmodule Portal.BuilderFirmwareJudgeTest do
     mode: nil
   }
 
-  test "on by default: no firmware_judge key, which the worker reads as on",
-       %{previous: previous} do
-    Application.put_env(:portal, Builder, Keyword.delete(previous, :firmware_judge))
+  # The judge ships off (review S7): a node turns it on with
+  # NCC_FIRMWARE_JUDGE=1, so its verdict rate and cost are measured on one
+  # node before the fleet. An input without the key is off in the worker.
+  test "off by default: no firmware_judge key", %{previous: previous} do
+    Application.put_env(
+      :portal,
+      Builder,
+      previous |> Keyword.delete(:firmware_judge) |> Keyword.delete(:firmware_judge_budget_sec)
+    )
 
-    for mode <- [nil, "toolchain", "argus_only", "warm_nerves"],
-        do: assert(Builder.firmware_judge_input(mode) == nil, inspect(mode))
+    for mode <- [nil, "toolchain", "argus_only", "warm_nerves"] do
+      assert Builder.firmware_judge_input(mode) == nil, inspect(mode)
+      assert Builder.firmware_judge_budget_input(mode) == nil, inspect(mode)
+    end
 
-    refute Map.has_key?(Builder.worker_input(@job), "firmware_judge")
+    input = Builder.worker_input(@job)
+    refute Map.has_key?(input, "firmware_judge")
+    refute Map.has_key?(input, "firmware_judge_budget_sec")
   end
 
-  test "NCC_FIRMWARE_JUDGE=0: a firmware build's input says false", %{previous: previous} do
-    Application.put_env(:portal, Builder, Keyword.put(previous, :firmware_judge, false))
-    assert Builder.firmware_judge_input(nil) == false
+  test "NCC_FIRMWARE_JUDGE=1: a firmware build's input turns it on, with the node's budget",
+       %{previous: previous} do
+    Application.put_env(
+      :portal,
+      Builder,
+      Keyword.merge(previous, firmware_judge: true, firmware_judge_budget_sec: 900)
+    )
 
-    for mode <- ["toolchain", "argus_only", "warm_nerves"],
-        do: assert(Builder.firmware_judge_input(mode) == nil, inspect(mode))
+    assert Builder.firmware_judge_input(nil) == true
+    assert Builder.firmware_judge_budget_input(nil) == 900
+
+    for mode <- ["toolchain", "argus_only", "warm_nerves"] do
+      assert Builder.firmware_judge_input(mode) == nil, inspect(mode)
+      assert Builder.firmware_judge_budget_input(mode) == nil, inspect(mode)
+    end
 
     input =
-      Builder.worker_input(Map.put(@job, :firmware_judge, Builder.firmware_judge_input(nil)))
+      @job
+      |> Map.put(:firmware_judge, Builder.firmware_judge_input(nil))
+      |> Map.put(:firmware_judge_budget_sec, Builder.firmware_judge_budget_input(nil))
+      |> Builder.worker_input()
 
-    assert input["firmware_judge"] == false
+    assert input["firmware_judge"] == true
+    assert input["firmware_judge_budget_sec"] == 900
+  end
+
+  test "on without a budget sends no budget, which the worker reads as its default",
+       %{previous: previous} do
+    Application.put_env(
+      :portal,
+      Builder,
+      previous |> Keyword.put(:firmware_judge, true) |> Keyword.delete(:firmware_judge_budget_sec)
+    )
+
+    assert Builder.firmware_judge_input(nil) == true
+    assert Builder.firmware_judge_budget_input(nil) == nil
   end
 end

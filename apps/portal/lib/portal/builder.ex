@@ -324,18 +324,32 @@ defmodule Portal.Builder do
   def firmware_inputs_input(_mode), do: nil
 
   @doc """
-  The `NCC_INPUT.firmware_judge` of a build of `mode`: `false` for a
-  firmware build (no mode) while `NCC_FIRMWARE_JUDGE=0` (`:firmware_judge`),
-  which turns off the worker's judge of every passing firmware target
+  The `NCC_INPUT.firmware_judge` of a build of `mode`: `true` for a
+  firmware build (no mode) while `NCC_FIRMWARE_JUDGE=1` (`:firmware_judge`),
+  which turns on the worker's judge of every passing firmware target
   (`NccWorker.FirmwareInputs`); else nil, no key, which the worker reads as
-  on. The builder API sends the same for a remote lease.
+  off. The builder API sends the same for a remote lease.
   """
-  @spec firmware_judge_input(String.t() | nil) :: false | nil
+  @spec firmware_judge_input(String.t() | nil) :: true | nil
   def firmware_judge_input(nil) do
-    if config(:firmware_judge, true) == false, do: false
+    if config(:firmware_judge, false) == true, do: true
   end
 
   def firmware_judge_input(_mode), do: nil
+
+  @doc """
+  The `NCC_INPUT.firmware_judge_budget_sec` of a build of `mode`: the
+  judge's own budget (`NCC_FIRMWARE_JUDGE_BUDGET_SEC`,
+  `:firmware_judge_budget_sec`) for a firmware build the judge is on for;
+  else nil, no key, the worker's default.
+  """
+  @spec firmware_judge_budget_input(String.t() | nil) :: non_neg_integer() | nil
+  def firmware_judge_budget_input(mode) do
+    case {firmware_judge_input(mode), config(:firmware_judge_budget_sec, nil)} do
+      {true, n} when is_integer(n) and n >= 0 -> n
+      _ -> nil
+    end
+  end
 
   @doc """
   The memory limit `job`'s container runs with: its own `:memory` when set,
@@ -547,6 +561,7 @@ defmodule Portal.Builder do
       judge: judge_input(mode, args),
       firmware_inputs: firmware_inputs_input(mode),
       firmware_judge: firmware_judge_input(mode),
+      firmware_judge_budget_sec: firmware_judge_budget_input(mode),
       memory: Map.get(args, :memory),
       build_concurrency: Map.get(args, :build_concurrency)
     }
@@ -1177,6 +1192,7 @@ defmodule Portal.Builder do
     |> maybe_put("judge", Map.get(job, :judge))
     |> maybe_put("firmware_inputs", Map.get(job, :firmware_inputs))
     |> maybe_put("firmware_judge", Map.get(job, :firmware_judge))
+    |> maybe_put("firmware_judge_budget_sec", Map.get(job, :firmware_judge_budget_sec))
   end
 
   # Only a firmware build (no mode) builds targets to put a world on.
