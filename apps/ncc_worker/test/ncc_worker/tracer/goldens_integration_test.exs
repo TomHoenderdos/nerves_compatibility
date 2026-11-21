@@ -164,6 +164,16 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     # The real path: on macOS the tmp dir sits behind the /var symlink, and
     # Mix's relative priv links, computed from the unresolved path, would
     # dangle (the worker's /work is a real path).
+    # As the worker runs: the judge fetches declared-absent dependencies.
+    previous = System.get_env("NCC_DECLARED_FETCH")
+    System.put_env("NCC_DECLARED_FETCH", "1")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("NCC_DECLARED_FETCH", previous),
+        else: System.delete_env("NCC_DECLARED_FETCH")
+    end)
+
     root = Path.join(real(System.tmp_dir!()), "ncc-portability-goldens")
     seed = Path.join(root, "hex-cache")
     File.mkdir_p!(Path.join([seed, "packages", "hexpm"]))
@@ -413,6 +423,21 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     end
   end
 
+  # The trace's size against the report's read budget (64 MiB; past it a
+  # build is a transient could-not-judge). Round 2 (R1-E): the toolchain's
+  # own probes are not written, and its code:ensure_loaded/1 is written once
+  # per process, module and window without frames. ash_admin, one of the
+  # largest closures served, was 49.0 MB before that and 16.6 MB after it
+  # (Elixir 1.20.5, OTP 28): its trace must stay under half the budget.
+  @tag package: "ash_admin", version: "1.4.0", variant: "include", trace_size: true
+  test "trace size: ash_admin 1.4.0 stays well under the read budget", ctx do
+    {golden, stats} = build(ctx, "ash_admin", "1.4.0", "include")
+    report(ctx, golden, stats)
+    assert stats["report_over_budget"] == false
+    assert stats["trace_bytes"] < div(64 * 1024 * 1024, 2), inspect(stats["trace_bytes"])
+    assert is_integer(stats["dropped_probes"]) and stats["dropped_probes"] > 0
+  end
+
   # --- the run -----------------------------------------------------------------
 
   defp build(ctx, package, version, variant, judge \\ nil) do
@@ -435,7 +460,7 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
         |> golden(tb, package, version, variant, ctx.tag)
         |> normalise(roots(work))
 
-      {golden, stats(tb, total_ms)}
+      {golden, tb |> stats(total_ms) |> Map.put("trace_bytes", trace_bytes(work))}
     after
       Enum.each(saved, fn
         {k, nil} -> System.delete_env(k)
@@ -517,6 +542,14 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   end
 
   defp decoded_compile_env(_items), do: nil
+
+  defp trace_bytes(work) do
+    work
+    |> Path.join("work/trace/*.jsonl")
+    |> Path.wildcard()
+    |> Enum.map(&File.stat!(&1).size)
+    |> Enum.sum()
+  end
 
   defp stats(tb, total_ms) do
     stats = get_in(tb, ["compile_observations", "trace_stats"]) || %{}

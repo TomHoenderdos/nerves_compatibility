@@ -94,6 +94,7 @@
              wanted = [], unpatterned = false, final_pid, final_nonce, unloaded = [],
              token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
              calls = 0, user = 0, truncated = 0, unjudged = 0, spawned = 0, path_os_reads = 0,
+             dropped_probes = 0, compact = false, ensured_seen = #{},
              max_calls, max_user, max_queue, overflow = false, final = false,
              returns = #{}, values = #{}, value_bytes = 0, max_value_bytes,
              consolidated = none, sweep = off, gc_at = ?GC_GROWTH}).
@@ -651,8 +652,9 @@ probe_spec(child, MFA, Preloaded, _Skip, Depth) ->
 probe_head({erlang, function_exported, 3}, M) -> [M, '_', '_'];
 probe_head(_MFA, M) -> [M].
 
-%% Every module of an installed OTP or Elixir application off every
-%% compile's path (?ON_EVERY_PATH), as #{Module => App}, both binaries:
+%% Every module of an installed OTP or Elixir application, as
+%% #{Module => App}, both binaries (an every-path application's too, round
+%% 2: whether one is loaded now is what other compile-time code did):
 %% Mix compiles a dependency on a code path pruned to the applications its
 %% closure lists, Mix.install does not (`prune_code_paths: false`), so a
 %% probe of one answers differently there (NccWorker.Portability.Probes,
@@ -665,8 +667,7 @@ probe_head(_MFA, M) -> [M].
 %% max_heap_size; a listing that fails fails the tracer's start, never
 %% leaves the set empty. With it, the modules no probe of which is traced
 %% (probe_spec/5): those loaded before the tracer started or by Mix anyway,
-%% and those of an installed application on every compile's path, all but
-%% the ones we loaded.
+%% all but the ones we loaded.
 installed(main, Before, Preloaded) ->
     {Pid, Ref} = spawn_monitor(fun() ->
                                        exit({installed, installed_modules(Before, Preloaded),
@@ -678,20 +679,18 @@ installed(main, Before, Preloaded) ->
     end;
 installed(child, _Before, _Preloaded) -> {#{}, #{}}.
 
+%% Round 2 (R1-A): an every-path application's module not loaded yet is
+%% traced too: whether it is loaded now is what other compile-time code
+%% did.
 skipped(Before, Preloaded) ->
-    Libs = [filename:join(code:root_dir(), "lib") | elixir_lib()],
-    Every = [list_to_atom(filename:basename(Beam, ".beam"))
-             || Lib <- Libs, Beam <- filelib:wildcard("*/ebin/*.beam", Lib),
-                lists:member(app_from_path(filename:join(Lib, Beam)), ?ON_EVERY_PATH)],
     maps:without([binary_to_atom(M) || M <- maps:keys(Preloaded)],
-                 maps:merge(Before, maps:from_keys(Every ++ ?LOADED_BY_MIX, true))).
+                 maps:merge(Before, maps:from_keys(?LOADED_BY_MIX, true))).
 
 installed_modules(Before, Preloaded) ->
     Libs = [filename:join(code:root_dir(), "lib") | elixir_lib()],
     maps:from_list([{atom_to_binary(M), App}
                     || Lib <- Libs, Beam <- filelib:wildcard("*/ebin/*.beam", Lib),
                        App <- [app_from_path(filename:join(Lib, Beam))],
-                       not lists:member(App, ?ON_EVERY_PATH),
                        M <- [list_to_atom(filename:basename(Beam, ".beam"))],
                        not is_map_key(M, Before),
                        not lists:member(M, ?LOADED_BY_MIX),
@@ -1245,10 +1244,69 @@ record({env, #{name := <<?SENTINEL, App0/binary>>}}, {user, _, _, {?PROBE, _, _,
     write(St, Checks#{kind => sentinel, app => App, ts => Ts, pid => pid_bin(Pid)}),
     St#st{final = St#st.final orelse Final};
 record({Channel, Arg} = Class, {user, Kind, First, _} = Extent, {_, M, F, _, _, _, _} = Info, St) ->
-    case path_os_read(Channel, M, F, Arg, Kind, First) of
-        true -> St#st{path_os_reads = St#st.path_os_reads + 1};
-        false -> user_line(Class, Extent, Info, St)
+    case {path_os_read(Channel, M, F, Arg, Kind, First), quiet_probe(Class, Kind, First, M, F)} of
+        {true, _} -> St#st{path_os_reads = St#st.path_os_reads + 1};
+        {false, drop} -> St#st{dropped_probes = St#st.dropped_probes + 1};
+        {false, compact} -> compact_line(Class, Extent, Info, St);
+        {false, write} -> user_line(Class, Extent, Info, St)
     end.
+
+%% Only the first compact code:ensure_loaded/1 of a module per process and
+%% window: `ensured` takes the earliest (NccWorker.Portability.Probes); the
+%% set is emptied at every window boundary.
+compact_line({probe, #{module := Module}} = Class, Extent, {Pid, _, _, _, _, _, _} = Info,
+             #st{ensured_seen = Seen} = St) ->
+    case is_map_key({Pid, Module}, Seen) of
+        true -> St#st{dropped_probes = St#st.dropped_probes + 1};
+        false ->
+            user_line(Class, Extent, Info,
+                      St#st{compact = true, ensured_seen = Seen#{{Pid, Module} => true}})
+    end.
+
+%% A probe the judge ignores whatever else the trace holds
+%% (NccWorker.Portability.Probes), as the toolchain's own lookups are: the
+%% compiler, Elixir and Mix make them by the ten thousand, and a line each
+%% took a trace to five times its size (round 2, R1-E). Never one on a
+%% stack the tracer could not judge. `drop`: the code server's own probe
+%% inside a traced probe, or a probe the toolchain made (not `by_package`)
+%% of a module we did not load and that is no installed application's off
+%% every compile's path. `compact`: such a code:ensure_loaded/1, which the
+%% judge reads for `ensured` (by pid, time and module), written without its
+%% frames. Anything else is written whole.
+quiet_probe({probe, Arg}, Kind, First, M, F) when Kind =/= unjudged ->
+    Mfa = {M, F},
+    case nested_probe(First) of
+        true -> drop;
+        false ->
+            Toolchain = maps:get(by_package, Arg, true) =:= false
+                andalso maps:get(app, Arg, null) =:= null
+                andalso every_path_or_none(maps:get(otp_app, Arg, null)),
+            case {Toolchain, Mfa} of
+                {false, _} -> write;
+                {true, {code, ensure_loaded}} -> compact;
+                {true, _} -> drop
+            end
+    end;
+quiet_probe(_Class, _Kind, _First, _M, _F) -> write.
+
+every_path_or_none(null) -> true;
+every_path_or_none(App) -> lists:member(App, ?ON_EVERY_PATH).
+
+%% A compact line keeps its user frame only when that is a mix.exs (the
+%% judge attributes such an event to the dependency it belongs to).
+mix_exs_frame(#{file := File} = User) when is_binary(File) ->
+    case filename:basename(File) of
+        <<"mix.exs">> -> User;
+        _ -> null
+    end;
+mix_exs_frame(_User) -> null.
+
+%% The code server's own probe inside a traced one (its first frame is a
+%% probe function of `code`), which the judge always ignores.
+nested_probe({code, F, _A, _Location}) ->
+    lists:member(F, [ensure_loaded, is_loaded, which, module_status, get_object_code,
+                     load_file, where_is_file]);
+nested_probe(_First) -> false.
 
 %% The OS family a path function reads to know its separators (os:type/0
 %% under filename:split/1, Path.join/2, ...): the judge ignores such a read
@@ -1270,6 +1328,15 @@ path_frame(First) ->
     catch _:_ -> false
     end.
 
+user_line({Channel, Arg0}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends, Id},
+          #st{compact = true} = St0) ->
+    {Kind, _First, User, _Ends} = frames(Kind0, First0, User0, Ends),
+    {Arg, St1} = written_value(Arg0, St0#st{compact = false}),
+    Line0 = #{kind => event, ts => Ts, pid => pid_bin(Pid), channel => Channel,
+              mfa => ncc_tracer_stack:mfa_bin(M, F, length(Args)),
+              arg => enrich(Channel, Arg), extent => Kind, user => mix_exs_frame(User)},
+    {Line, St} = hold(Pid, M, F, Args, Id, Line0, St1),
+    user_event(Line, Kind =:= unjudged orelse Channel =:= unclassified, St);
 user_line({Channel, Arg0}, {user, Kind0, First0, User0}, {Pid, M, F, Args, Ts, Ends, Id}, St0) ->
     {Kind, First, User, {Caller, Bottom}} = frames(Kind0, First0, User0, Ends),
     {Arg, St1} = written_value(Arg0, St0),
@@ -1483,9 +1550,12 @@ compile_module(_Result) -> null.
 
 request({window_open, App, Ts}, _From, St) ->
     write(St, #{kind => window_open, app => App, ts => Ts}),
-    {ok, St};
+    {ok, St#st{ensured_seen = #{}}};
 request({window_close, App, Ts, Delivered}, _From, St0) ->
-    {Checks, St} = closing_checks(St0, Delivered),
+    {Checks, St1} = closing_checks(St0, Delivered),
+    %% Every trace message of the window is handled by now (closing_checks/2
+    %% waits for their delivery): a later compact line is another window's.
+    St = St1#st{ensured_seen = #{}},
     write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => window_close, app => App,
                                                                 ts => Ts}),
     {ok, St};
@@ -1617,6 +1687,7 @@ finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
     write(St, #{kind => stats, calls => St#st.calls, user_events => St#st.user,
                 truncated => St#st.truncated, unjudged => St#st.unjudged,
                 spawned => St#st.spawned, path_os_reads => St#st.path_os_reads,
+                dropped_probes => St#st.dropped_probes,
                 pending_returns => lists:sum([length(Fs) || Fs <- maps:values(St#st.returns)])}),
     Late = [atom_to_binary(M) || M <- St#st.unloaded, erlang:module_loaded(M)],
     write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => 'end', ts => Ts,

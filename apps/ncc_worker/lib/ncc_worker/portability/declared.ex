@@ -31,7 +31,9 @@ defmodule NccWorker.Portability.Declared do
   tarball in `HEX_HOME`), bounded in count and time. What it downloads is a
   run's miss like any other: the host checks it against Hex.pm before it
   promotes it (`NccWorker.HexCache`). A failed fetch leaves those modules
-  unknown, so their probes refuse.
+  unknown, so their probes refuse. `NCC_DECLARED_FETCH=0` turns the
+  download off (the ncc_worker test helper sets it: fixtures judge from the
+  Hex cache they lay out themselves).
   """
 
   alias NccWorker.Portability.{Context, HexFiles, Rebar}
@@ -105,7 +107,7 @@ defmodule NccWorker.Portability.Declared do
         {:ok, []}
 
       names ->
-        fun = Keyword.get(opts, :fetch, &hex_fetch/2)
+        fun = Keyword.get_lazy(opts, :fetch, &default_fetch/0)
 
         case fun.(names, home: home, env: env) do
           :ok -> {:ok, names}
@@ -117,6 +119,12 @@ defmodule NccWorker.Portability.Declared do
   end
 
   def fetch(_home, _releases, _env, _opts), do: {:ok, []}
+
+  defp default_fetch do
+    if System.get_env("NCC_DECLARED_FETCH") == "0",
+      do: fn _names, _opts -> {:error, :off} end,
+      else: &hex_fetch/2
+  end
 
   @doc false
   # The `mix run` script that fetches `names`, one Hex task per name, each

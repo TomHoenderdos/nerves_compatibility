@@ -460,6 +460,40 @@ defmodule NccWorker.Portability.ProbesTest do
           do: assert(Probes.decide(otp("m", app), c, :outside) == :ignore, app)
     end
 
+    # Round-2 ruling 3 (R1-A): a module of an application on every path
+    # that was not loaded when the trace started can be found the same way
+    # anywhere, but whether it is loaded now is what other compile-time
+    # code in the VM did: `function_exported?(URI, :new, 1)` alone builds
+    # `false`, and `true` after an earlier dependency used URI.
+    test "an every-path module's loaded-now probe refuses unless ensured first", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+
+      pkg =
+        &otp("Elixir.URI", "elixir",
+          mfa: &1,
+          caller: frame("Elixir.Pkg", "f", 0),
+          arg: %{"by_package" => true}
+        )
+
+      assert Probes.decide(pkg.("erlang:function_exported/3"), c, "pkg") ==
+               {:refuse,
+                "compile-time probe of whether a module is loaded: Elixir.URI via erlang:function_exported/3"}
+
+      assert {:refuse, _} = Probes.decide(pkg.("erlang:module_loaded/1"), c, :outside)
+      # Whether it can be found, by the package or the toolchain, anywhere.
+      assert Probes.decide(pkg.("code:ensure_loaded/1"), c, "pkg") == :ignore
+      assert Probes.decide(pkg.("code:which/1"), c, :outside) == :ignore
+
+      toolchain = put_in(pkg.("erlang:function_exported/3"), ["arg", "by_package"], false)
+      assert Probes.decide(toolchain, c, "pkg") == :ignore
+
+      loaded = "code:ensure_loaded/1" |> pkg.() |> at("<0.10.0>", 100)
+      exported = "erlang:function_exported/3" |> pkg.() |> at("<0.10.0>", 200)
+
+      assert Probes.decide(exported, %{c | ensured: Probes.ensured([{"pkg", loaded}])}, "pkg") ==
+               :ignore
+    end
+
     test "is refused outside every window, or for no closure dependency", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => ["mnesia"]})
       assert {:refuse, _} = Probes.decide(otp("mnesia", "mnesia"), c, :outside)

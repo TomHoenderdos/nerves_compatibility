@@ -390,7 +390,7 @@ defmodule NccWorker.Portability.Probes do
   defp installed_probe(event, app, ctx, owner) do
     cond do
       app in @every_path ->
-        :ignore
+        found_or_ensured(event, ctx, owner)
 
       is_binary(Context.mix_exs(ctx, event, owner)) ->
         {:refuse, otp_probe(app, event) <> " in mix.exs"}

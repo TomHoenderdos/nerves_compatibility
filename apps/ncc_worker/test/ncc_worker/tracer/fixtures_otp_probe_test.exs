@@ -71,20 +71,28 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
   # loaded itself (`preloaded`), nor one of an application on every
   # compile's path.
   test "the tracer watches the installed modules off every compile's path" do
-    mods = :ncc_tracer.installed_modules(%{mnesia_lib: true}, %{"mnesia_log" => "mnesia"})
+    mods =
+      :ncc_tracer.installed_modules(%{mnesia_lib: true, lists: true}, %{"mnesia_log" => "mnesia"})
 
     assert mods["mnesia"] == "mnesia"
     assert mods["mnesia_tm"] == "mnesia"
     assert mods["Elixir.EEx"] == "eex"
     refute Map.has_key?(mods, "mnesia_lib")
     refute Map.has_key?(mods, "mnesia_log")
+    refute Map.has_key?(mods, "lists")
+
+    # Round 2 (R1-A): an every-path application's modules too, when not
+    # loaded before the trace.
+    assert mods["Elixir.URI"] == "elixir"
+    assert mods["zip"] == "stdlib"
+    assert mods["Elixir.Logger.Formatter"] == "logger"
 
     # Mix loads these in every compile (`:ncc_tracer.loaded_by_mix/0`).
     for m <- :ncc_tracer.loaded_by_mix(), do: refute(Map.has_key?(mods, Atom.to_string(m)))
 
-    for m <- ~w(lists gen_server compile Elixir.Kernel Elixir.Mix.Project Elixir.IEx
-                Elixir.ExUnit Elixir.Logger.Formatter erlang prim_file ncc_tracer),
-        do: refute(Map.has_key?(mods, m), m)
+    # The tracer's own modules are no installed application's; preloaded
+    # ones (erlang, prim_file) are loaded before any trace starts.
+    refute Map.has_key?(mods, "ncc_tracer")
   end
 
   test "a probe of an OTP application the package does not list is refused", %{tmp_dir: dir} do
@@ -111,13 +119,11 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     firmware = TracerFixtures.judge(proj, "fx_probe", traced, [], target: "rpi4")
     assert %{status: :skip, reason: ^reason} = firmware
 
-    # The event shapes the judge reads (pinned on this toolchain): the
-    # package's probe, and the code server's own module_loaded/1 inside it.
+    # The event shape the judge reads (pinned on this toolchain). The code
+    # server's own module_loaded/1 inside it is not written (round 2).
     mnesia = probes(traced) |> Enum.filter(&(&1["arg"]["module"] == "mnesia"))
     assert [event] = Enum.filter(mnesia, &(&1["mfa"] == "code:ensure_loaded/1"))
-    assert [inner] = Enum.filter(mnesia, &(&1["mfa"] == "erlang:module_loaded/1"))
-    assert inner["caller"]["module"] == "code"
-    assert inner["caller"]["function"] == "ensure_loaded"
+    assert [] = Enum.filter(mnesia, &(&1["mfa"] == "erlang:module_loaded/1"))
     assert event["arg"]["otp_app"] == "mnesia"
     assert event["arg"]["app"] == nil
     assert event["arg"]["checker"] == false
@@ -345,6 +351,73 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
           do: app
 
     assert "mnesia" in apps and "fx_probe" in apps, inspect(apps)
+  end
+
+  # Round-2 ruling 3 (R1-A): a loaded-now probe of a module of an
+  # every-path application that nothing loaded yet. Built alone, `false`;
+  # after another compile used the module, `true`.
+  test "a loaded-now probe of a not yet loaded stdlib module refuses unless ensured",
+       %{tmp_dir: dir} do
+    alone = probe_fixture(Path.join(dir, "a"), [], "function_exported?(:zip, :zip, 2)")
+    traced = TracerFixtures.trace(alone, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert built_value(alone) == "false"
+
+    assert %{status: :skip, reason: reason} = TracerFixtures.judge(alone, "fx_probe", traced)
+
+    assert reason ==
+             "compile-time probe of whether a module is loaded: zip via erlang:function_exported/3"
+
+    ensured =
+      probe_fixture(
+        Path.join(dir, "b"),
+        [],
+        "Code.ensure_loaded?(:zip) and function_exported?(:zip, :zip, 2)"
+      )
+
+    traced = TracerFixtures.trace(ensured, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    verdict = TracerFixtures.judge(ensured, "fx_probe", traced)
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+  end
+
+  # Round-2 ruling 3: the toolchain's own probes are not written (the judge
+  # ignores them), but for code:ensure_loaded/1, which the judge reads for
+  # `ensured`, written without its frames.
+  test "the collector writes no probe the judge would ignore", %{tmp_dir: dir} do
+    body = """
+    defmodule FxProbe do
+      @x %URI{} |> Map.keys() |> length()
+      def x, do: @x
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => body}}
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert %{status: :pass} = TracerFixtures.judge(proj, "fx_probe", traced)
+
+    for %{"channel" => "probe", "arg" => arg} = e <- traced.report.events do
+      cond do
+        arg["by_package"] == true or is_binary(arg["app"]) ->
+          :ok
+
+        e["mfa"] == "code:ensure_loaded/1" ->
+          refute Map.has_key?(e, "first"), inspect(e)
+          assert is_binary(e["pid"]) and is_integer(e["ts"])
+
+        true ->
+          assert is_binary(arg["otp_app"]) and
+                   arg["otp_app"] not in ~w(kernel stdlib compiler erts elixir mix iex ex_unit logger),
+                 inspect(e)
+      end
+    end
+
+    assert is_integer(traced.report.stats["dropped_probes"])
   end
 
   # A package's probe of a module no installed application holds (round-1
