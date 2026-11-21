@@ -48,13 +48,15 @@ defmodule NccWorker.Portability.Declared do
   @type t :: %{
           modules: %{String.t() => [String.t()]},
           apps: %{String.t() => [String.t()]},
-          owners: %{String.t() => [String.t()]}
+          owners: %{String.t() => [String.t()]},
+          packages: %{String.t() => String.t()}
         }
 
   @doc """
   The declared-absent dependencies' modules and applications, each with the
-  members that declare it (`modules`, `apps`), and each module with the
-  declared packages that define it (`owners`). Declared-absent: an
+  members that declare it (`modules`, `apps`), each module with the
+  declared packages that define it (`owners`), and each declared package's
+  application (`packages`). Declared-absent: an
   `optional: true` requirement (round 3, R2-3: a non-optional one the build
   lacks is a `targets:` dependency, which Mix still makes a child of its
   declarer) whose application the lock does not hold.
@@ -87,7 +89,8 @@ defmodule NccWorker.Portability.Declared do
     %{
       modules: Map.new(modules, fn {m, ms} -> {m, Enum.sort(ms)} end),
       apps: apps,
-      owners: Map.new(owners, fn {m, ns} -> {m, Enum.sort(ns)} end)
+      owners: Map.new(owners, fn {m, ns} -> {m, Enum.sort(ns)} end),
+      packages: Map.new(declared, fn {req, _} -> {req.name, req.app} end)
     }
   rescue
     _ -> empty()
@@ -97,7 +100,7 @@ defmodule NccWorker.Portability.Declared do
 
   @doc "The index of a build that declares nothing absent."
   @spec empty() :: t()
-  def empty, do: %{modules: %{}, apps: %{}, owners: %{}}
+  def empty, do: %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
 
   @doc """
   Downloads into `home` (the run's `HEX_HOME`) the declared-absent

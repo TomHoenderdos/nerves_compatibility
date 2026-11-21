@@ -458,10 +458,18 @@ defmodule NccWorker.Portability.Probes do
   # recent downloads that neither the lock nor a declaration names defines
   # it (`Portal.Catalog.ModuleIndex`); client 0.9 checks the record itself.
   defp absent(module, ctx, event) do
+    declared = Map.get(ctx.declared.owners, module, [])
+
     %{
       "kind" => "module_absent",
       "module" => module,
-      "declared" => Map.get(ctx.declared.owners, module, []),
+      "declared" => declared,
+      # Their applications (round 5, R3-9): Mix's app-name clash keeps a
+      # user with another package of the same app off the build.
+      "declared_apps" =>
+        declared
+        |> Enum.map(&Map.get(Map.get(ctx.declared, :packages, %{}), &1, &1))
+        |> Enum.uniq(),
       "via" => via(event)
     }
   end

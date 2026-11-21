@@ -82,7 +82,7 @@ defmodule NccWorker.Portability.DeclaredTest do
   # lacks the dependency.
   test "a non-optional declared dependency is not declared-absent", %{tmp_dir: dir} do
     index = Declared.index(ctx(dir, requirements: [req("fx_opt", false)]))
-    assert index == %{modules: %{}, apps: %{}, owners: %{}}
+    assert index == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
   end
 
   test "a declared dependency the lock holds is not declared-absent", %{tmp_dir: dir} do
@@ -90,13 +90,14 @@ defmodule NccWorker.Portability.DeclaredTest do
     {home, releases} = c.hex
     {_, opt} = TracerFixtures.hex_release(home, "fx_opt", ["lib"])
     index = Declared.index(%{c | hex: {home, Map.put(releases, "fx_opt", opt)}})
-    assert index == %{modules: %{}, apps: %{}, owners: %{}}
+    assert index == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
   end
 
   test "each module names the declared packages that define it", %{tmp_dir: dir} do
     index = Declared.index(ctx(dir))
     assert index.owners["Elixir.FxOpt.Inner"] == ["fx_opt"]
     assert index.owners["fx_opt_erl"] == ["fx_opt"]
+    assert index.packages == %{"fx_opt" => "fx_opt"}
   end
 
   test "a declared dependency whose tarball is not cached holds no known module", %{tmp_dir: dir} do
@@ -109,13 +110,13 @@ defmodule NccWorker.Portability.DeclaredTest do
   test "a declaration from another repository is not read", %{tmp_dir: dir} do
     other = List.keyreplace(req("fx_opt"), "repository", 0, {"repository", "acme"})
     index = Declared.index(ctx(dir, requirements: [other]))
-    assert index == %{modules: %{}, apps: %{}, owners: %{}}
+    assert index == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
   end
 
   test "an unreadable declarer's tarball declares nothing", %{tmp_dir: dir} do
     c = ctx(dir)
     c = %{c | hex: {elem(c.hex, 0), %{}}}
-    assert Declared.index(c) == %{modules: %{}, apps: %{}, owners: %{}}
+    assert Declared.index(c) == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
   end
 end
 

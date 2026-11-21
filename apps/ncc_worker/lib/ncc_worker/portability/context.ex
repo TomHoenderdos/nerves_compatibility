@@ -76,7 +76,7 @@ defmodule NccWorker.Portability.Context do
     foreign_priv: nil,
     holders: %{},
     modules: %{},
-    declared: %{modules: %{}, apps: %{}, owners: %{}}
+    declared: %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
   ]
 
   @type dep :: %{

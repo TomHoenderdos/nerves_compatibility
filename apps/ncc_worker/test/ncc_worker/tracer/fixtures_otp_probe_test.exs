@@ -529,6 +529,7 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
                "kind" => "module_absent",
                "module" => "Elixir.FxOpt.Codec",
                "declared" => ["fx_opt"],
+               "declared_apps" => ["fx_opt"],
                "via" => "Code.ensure_loaded?/1"
              }
            ]

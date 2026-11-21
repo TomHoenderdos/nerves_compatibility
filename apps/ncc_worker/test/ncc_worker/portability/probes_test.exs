@@ -887,7 +887,8 @@ defmodule NccWorker.Portability.ProbesTest do
         |> Map.put(:declared, %{
           modules: %{"Elixir.Jason.Encoder" => ["child"], "Elixir.Poison" => ["other"]},
           apps: %{"jason" => ["child"]},
-          owners: %{"Elixir.Jason.Encoder" => ["jason"], "Elixir.Poison" => ["poison"]}
+          owners: %{"Elixir.Jason.Encoder" => ["jason"], "Elixir.Poison" => ["poison"]},
+          packages: %{"jason" => "jason_app", "poison" => "poison"}
         })
 
       c = put_in(c.deps["pkg"].children, ["child"])
@@ -899,6 +900,7 @@ defmodule NccWorker.Portability.ProbesTest do
         "kind" => "module_absent",
         "module" => "Elixir.Jason.Encoder",
         "declared" => ["jason"],
+        "declared_apps" => ["jason_app"],
         "via" => "Code.ensure_loaded?/1"
       }
 

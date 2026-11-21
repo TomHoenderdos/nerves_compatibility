@@ -3186,7 +3186,11 @@ defmodule NccWorker.Portability do
     items =
       observed
       |> Enum.filter(&(elem(&1, 0) == kind))
-      |> Enum.map(&(&1 |> elem(1) |> Map.take(["kind", "module", "declared", "via"])))
+      |> Enum.map(
+        &(&1
+          |> elem(1)
+          |> Map.take(["kind", "module", "declared", "declared_apps", "via"]))
+      )
       |> Enum.uniq()
       |> Enum.sort()
 
