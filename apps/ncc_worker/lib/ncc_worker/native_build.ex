@@ -107,6 +107,10 @@ defmodule NccWorker.NativeBuild do
   are whole. `deps` must be a path or `nil` and `opts` a keyword list: an
   option list in the `deps` place raises rather than reading no `deps/`
   at all (every dependency non-native).
+
+  `native_side: true` (S3) passes the same to the rule-2 predicate, which
+  then reads a bare `alias Mix` and a `function_exported('Elixir.Mix', ...)`
+  check as no target read (`BuildCache.dep_target_agnostic_rule2?/4`).
   """
   @spec split(String.t(), (String.t() -> binary() | nil), String.t() | nil, keyword()) ::
           {[String.t()], %{String.t() => String.t()}}
@@ -116,21 +120,23 @@ defmodule NccWorker.NativeBuild do
       when (is_binary(deps) or is_nil(deps)) and is_list(opts) do
     deps = deps || Path.join(project_dir, "deps")
     package = Keyword.get(opts, :package)
+    side = Keyword.get(opts, :native_side) == true
 
     case File.ls(deps) do
       {:ok, names} ->
         names
         |> Enum.sort()
-        |> Enum.reduce({[], %{}}, &split_one(deps, tarball_of, package, &1, &2))
+        |> Enum.reduce({[], %{}}, &split_one(deps, tarball_of, {package, side}, &1, &2))
 
       {:error, _reason} ->
         {[], %{}}
     end
   end
 
-  defp split_one(deps, tarball_of, package, name, {native, declassified}) do
+  defp split_one(deps, tarball_of, {package, side}, name, {native, declassified}) do
     manager = computed(build_tools(tarball_of.(name)), Path.join(deps, name))
     rule2_opts = if is_binary(package) and name == package, do: [docs: false], else: []
+    rule2_opts = if side, do: [native_side: true] ++ rule2_opts, else: rule2_opts
 
     cond do
       BuildCache.dep_target_agnostic?(deps, name) ->

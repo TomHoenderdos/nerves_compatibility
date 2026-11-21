@@ -108,7 +108,9 @@ defmodule NccWorker.BuildSelection do
   Options: `tarball:` as for `portable?/4`; `makefile_rule2: true` and
   `manager:` (the trace's manager for the package) let a native build file
   Mix never runs pass (item 1, `NccWorker.NativeBuild`), judged by the
-  `build_tools` in `tarball:`, never by `mix.lock`. `built_priv:` (default
+  `build_tools` in `tarball:`, never by `mix.lock`; with them,
+  `native_side: true` reads the target and native-tool grep finer
+  (`BuildCache.dep_target_agnostic_rule2?/4`). `built_priv:` (default
   `[]`) lists the paths below `priv` that a passing trace says the package's
   own compile wrote and a second traced build wrote the same (byte for byte,
   or a tar archive but for its times, `NccWorker.Portability.TarTimes`)
@@ -153,7 +155,10 @@ defmodule NccWorker.BuildSelection do
 
     if Keyword.get(opts, :makefile_rule2) == true and trace in ["mix", "rebar3"] and
          NativeBuild.manager(Keyword.get(opts, :tarball), Path.join(deps, package)) == trace do
-      BuildCache.dep_target_agnostic_rule2?(deps, package, trace, own: true)
+      BuildCache.dep_target_agnostic_rule2?(deps, package, trace,
+        own: true,
+        native_side: Keyword.get(opts, :native_side) == true
+      )
     else
       BuildCache.dep_target_agnostic?(deps, package)
     end

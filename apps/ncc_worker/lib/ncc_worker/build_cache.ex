@@ -582,28 +582,52 @@ defmodule NccWorker.BuildCache do
   # `MIX_TARGET`) does not count, as it does not under `own: true`. Every
   # other check stays whole: the package's own name in the native-tool grep
   # (zigler), its optional-only tools and a target read anywhere in its code.
+  #
+  # `native_side: true` (S3, `NCC_INPUT.judge.native_side`) reads three
+  # mentions finer. For every dependency: asking whether a Mix function
+  # other than `target` exists (`erlang:function_exported('Elixir.Mix',
+  # module_info, 1)`, tls_certificate_check's `rebar.config.script`) reads
+  # no Mix state, and a bare `alias Mix` binds `Mix` to itself, so a target
+  # read after it still spells `Mix.target` (pfx's Mix task); an alias with
+  # options (`as:`) still counts (`target_read_pattern_side/0`). For the
+  # package under test only: a native tool its `mix.exs` names nowhere but
+  # as dependency tuples, optional or not (cc_precompiler's elixir_make, for
+  # its behaviour), is not its native build, as revision 15 says of an
+  # optional one, since running it takes a `compilers:` entry, an alias or a
+  # task name, each another mention; and an Erlang `.erl`/`.hrl` file holds
+  # no code that runs while the package compiles unless the package has a
+  # parse or core transform (covertool's Mix plugin calling
+  # `'Elixir.Mix':Fun(Arg)` at runtime), as `TargetScan` drops Elixir
+  # function bodies.
   @doc false
   @spec dep_target_agnostic_rule2?(String.t(), String.t(), String.t() | nil, keyword()) ::
           boolean()
   def dep_target_agnostic_rule2?(deps_path, name, manager, opts \\ []) do
     dir = Path.join(deps_path, name)
     own? = Keyword.get(opts, :own) == true
+    side? = Keyword.get(opts, :native_side) == true
+    mix_exs = Path.join(dir, "mix.exs")
 
     tools =
-      if own?,
-        do: (@native_deps -- [name]) -- optional_only_tools(Path.join(dir, "mix.exs")),
-        else: @native_deps
+      cond do
+        own? and side? -> (@native_deps -- [name]) -- dependency_only_tools(mix_exs)
+        own? -> (@native_deps -- [name]) -- optional_only_tools(mix_exs)
+        true -> @native_deps
+      end
 
     scan =
       cond do
+        own? and side? and not transforms?(dir) -> :compile_time_elixir
         own? -> :compile_time
         Keyword.get(opts, :docs) == false -> :code
         true -> :whole
       end
 
+    pattern = if side?, do: :side, else: target_read_pattern_rule2()
+
     File.dir?(dir) and not String.starts_with?(name, "nerves") and
       not native_rule2?(dir, manager, tools) and
-      not reads_target?(dir, target_read_pattern_rule2(), scan)
+      not reads_target?(dir, pattern, scan)
   end
 
   # Judge revision 15, `own: true` only: the native tools the package's own
@@ -616,15 +640,21 @@ defmodule NccWorker.BuildCache do
   # with it in its closure judges it as a dependency, and the trace still
   # refuses the package's own compile running a native tool, as the beam
   # scan refuses a NIF load.
+  defp optional_only_tools(mix_exs), do: only_dep_tools(mix_exs, &optional?/1)
+
+  # `native_side: true`: the same with any dependency tuple, optional or not
+  # (`{:app, requirement}` too).
+  defp dependency_only_tools(mix_exs), do: only_dep_tools(mix_exs, fn _opts -> true end)
+
   # sobelow_skip ["Traversal.FileModule"]
-  defp optional_only_tools(mix_exs) do
+  defp only_dep_tools(mix_exs, counts?) do
     with {:ok, source} <- File.read(mix_exs),
          {:ok, ast} <- Code.string_to_quoted(source, emit_warnings: false) do
-      optional = optional_dep_counts(ast)
+      counted = dep_counts(ast, counts?)
 
       Enum.filter(@native_deps, fn tool ->
         mentions = length(Regex.scan(native_deps_word([tool]), source))
-        mentions > 0 and mentions == Map.get(optional, tool, 0)
+        mentions > 0 and mentions == Map.get(counted, tool, 0)
       end)
     else
       _ -> []
@@ -633,16 +663,20 @@ defmodule NccWorker.BuildCache do
     _ -> []
   end
 
-  # How many dependency tuples name each app with `optional: true` among
-  # their options: `{:app, requirement, opts}` or `{:app, opts}`.
-  defp optional_dep_counts(ast) do
+  # How many dependency tuples name each app with options `counts?` takes:
+  # `{:app, requirement, opts}` or `{:app, opts}`, and `{:app, requirement}`
+  # with options `[]`.
+  defp dep_counts(ast, counts?) do
     {_ast, counts} =
       Macro.prewalk(ast, %{}, fn
         {:{}, _, [app, _req, opts]} = node, acc when is_atom(app) ->
-          {node, count(acc, app, opts)}
+          {node, count(acc, app, opts, counts?)}
 
         {app, opts} = node, acc when is_atom(app) and is_list(opts) ->
-          {node, count(acc, app, opts)}
+          {node, count(acc, app, opts, counts?)}
+
+        {app, req} = node, acc when is_atom(app) and is_binary(req) ->
+          {node, count(acc, app, [], counts?)}
 
         node, acc ->
           {node, acc}
@@ -651,10 +685,28 @@ defmodule NccWorker.BuildCache do
     counts
   end
 
-  defp count(acc, app, opts) do
-    if Keyword.keyword?(opts) and Keyword.get(opts, :optional) == true,
+  defp count(acc, app, opts, counts?) do
+    if Keyword.keyword?(opts) and counts?.(opts),
       do: Map.update(acc, Atom.to_string(app), 1, &(&1 + 1)),
       else: acc
+  end
+
+  defp optional?(opts), do: Keyword.get(opts, :optional) == true
+
+  # Whether any text file of the package names a parse or core transform,
+  # which runs Erlang code while the package compiles. A grep that fails
+  # counts as one.
+  defp transforms?(dir) do
+    excludes = Enum.map(~w(.git _build node_modules), &"--exclude-dir=#{&1}")
+    args = ["-r", "-l", "-I", "-F", "--exclude=*.beam"] ++ excludes
+    args = args ++ ["-e", "parse_transform", "-e", "core_transform", "--", dir]
+
+    case System.cmd("grep", args, stderr_to_stdout: true) do
+      {_, 1} -> false
+      _ -> true
+    end
+  rescue
+    _ -> true
   end
 
   @doc false
@@ -774,6 +826,17 @@ defmodule NccWorker.BuildCache do
     do:
       ~r/Mix['"]?\s*[.:,]\s*\[?\s*:?['"]?target(?!\w)|MIX_TARGET|\b(?:import|alias)\b\s*\(?\s*:?['"]?(?:Elixir\.)?Mix\b(?![.\w])|['"]Elixir\.Mix['"](?!\.)|\b\w+\s*=\s*Mix\b(?![.\w])(?![ \t]+in\b)/
 
+  # `native_side: true`: `target_read_pattern_rule2/0` except that `alias
+  # Mix` counts only with a comma after it (options, `as:` among them), and
+  # matched after `@function_exported` is blanked out of the text.
+  defp target_read_pattern_side,
+    do:
+      ~r/Mix['"]?\s*[.:,]\s*\[?\s*:?['"]?target(?!\w)|MIX_TARGET|\bimport\b\s*\(?\s*:?['"]?(?:Elixir\.)?Mix\b(?![.\w])|\balias\b\s*\(?\s*:?['"]?(?:Elixir\.)?Mix\b(?![.\w])['"]?\s*,|['"]Elixir\.Mix['"](?!\.)|\b\w+\s*=\s*Mix\b(?![.\w])(?![ \t]+in\b)/
+
+  # `erlang:function_exported('Elixir.Mix', F, A)` with a literal function
+  # name other than `target`: whether such a function exists, no Mix state.
+  @function_exported ~r/\berlang\s*:\s*function_exported\s*\(\s*'Elixir\.Mix'\s*,\s*(?!'?target'?\s*,)(?:[a-z]\w*|'[^'\\\n]*')\s*,\s*\d+\s*\)/
+
   # Files over this size are not read and count as a target read. Sources and
   # templates are far smaller; a larger text file is a bundled asset, which
   # `--exclude` keeps out of the listing in the usual layouts.
@@ -826,8 +889,21 @@ defmodule NccWorker.BuildCache do
   defp scanned(:code, file, contents), do: if(TargetScan.doc_file?(file), do: nil, else: contents)
   defp scanned(:compile_time, file, contents), do: TargetScan.scanned(file, contents)
 
+  defp scanned(:compile_time_elixir, file, contents),
+    do: TargetScan.scanned(file, contents, erlang: :runtime)
+
   # `nil`: nothing in the file can run at compile time (`TargetScan`).
   defp scanned_match?(_pattern, nil), do: false
+
+  # `:side` (`native_side: true`): `target_read_pattern_side/0` on the text
+  # with every `@function_exported` call blanked out; a text the blanking
+  # raises on counts as a match.
+  defp scanned_match?(:side, text) do
+    match_or_error?(target_read_pattern_side(), Regex.replace(@function_exported, text, " "))
+  rescue
+    _ -> true
+  end
+
   defp scanned_match?(pattern, text), do: match_or_error?(pattern, text)
 
   # `Regex.match?/2`, failing closed: it reads a regex engine error (a match

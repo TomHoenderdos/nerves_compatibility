@@ -166,6 +166,31 @@ defmodule NccWorker.NativeBuildTest do
     refute BuildCache.dep_target_agnostic_rule2?(deps, "zigler", "mix", docs: false)
   end
 
+  # S3: with `native_side: true` a dependency whose only target mention is a
+  # bare `alias Mix` (pfx) or a `function_exported('Elixir.Mix', ...)`
+  # check (tls_certificate_check) leaves the native list.
+  test "split/4 with native_side reads those mentions finer", %{tmp_dir: root} do
+    alias_mix = "defmodule Mix.Tasks.X do\n  use Mix.Task\n  alias Mix\nend\n"
+
+    exported =
+      "case erlang:function_exported('Elixir.Mix', module_info, 1) of _ -> CONFIG end.\n"
+
+    dep(root, "pfx", %{"mix.exs" => "defmodule P do end", "lib/x.ex" => alias_mix}, [:mix])
+
+    dep(root, "tcc", %{"rebar.config" => "{deps, []}.", "rebar.config.script" => exported}, [
+      :rebar3
+    ])
+
+    dep(root, "reads", %{"mix.exs" => "defmodule R do end", "lib/t.ex" => "@t Mix.target()"}, [
+      :mix
+    ])
+
+    assert NativeBuild.split(root, tarball_of(root)) == {~w(pfx reads tcc), %{}}
+
+    assert NativeBuild.split(root, tarball_of(root), nil, native_side: true) ==
+             {["reads"], %{"pfx" => "mix", "tcc" => "rebar3"}}
+  end
+
   test "under make or no manager, the rule-2 predicate is dep_target_agnostic?/2",
        %{tmp_dir: root} do
     fixtures = %{

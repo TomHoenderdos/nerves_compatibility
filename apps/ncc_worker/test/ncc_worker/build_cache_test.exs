@@ -524,6 +524,186 @@ defmodule NccWorker.BuildCacheTest do
     end
   end
 
+  # S3 (`native_side: true`): rule 2 reads the target and native-tool grep
+  # finer, so tls_certificate_check, pfx, covertool and cc_precompiler are
+  # no longer target-specific for a mention that reads nothing.
+  describe "dep_target_agnostic_rule2?/4 with native_side: true" do
+    setup do
+      deps = Path.join(System.tmp_dir!(), "ncc-deps-side-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(deps) end)
+      {:ok, deps: deps}
+    end
+
+    defp side_pkg(deps, files) do
+      name = "side#{System.unique_integer([:positive])}"
+
+      for {path, contents} <- files do
+        full = Path.join([deps, name, path])
+        File.mkdir_p!(Path.dirname(full))
+        File.write!(full, contents)
+      end
+
+      name
+    end
+
+    defp rule2(deps, name, manager, opts),
+      do: BuildCache.dep_target_agnostic_rule2?(deps, name, manager, opts)
+
+    @side [native_side: true]
+
+    # tls_certificate_check 1.36.0's rebar.config.script.
+    @exported "case erlang:function_exported(rebar3, main, 1)\n" <>
+                "     orelse erlang:function_exported('Elixir.Mix', module_info, 1)\n" <>
+                "of true -> CONFIG; false -> CONFIG end.\n"
+
+    test "asking whether a Mix function exists is no target read", ctx do
+      name =
+        side_pkg(ctx.deps, [{"rebar.config", "{deps, []}."}, {"rebar.config.script", @exported}])
+
+      for opts <- [[own: true], []] do
+        refute rule2(ctx.deps, name, "rebar3", opts), inspect(opts)
+        assert rule2(ctx.deps, name, "rebar3", opts ++ @side), inspect(opts)
+      end
+
+      refute BuildCache.dep_target_agnostic?(ctx.deps, name)
+    end
+
+    test "asking about Mix.target itself, or calling into Mix, still counts", ctx do
+      for script <- [
+            "erlang:function_exported('Elixir.Mix', target, 0).",
+            "erlang:function_exported('Elixir.Mix', 'target', 0).",
+            "erlang:function_exported('Elixir.Mix', F, 0).",
+            "M = 'Elixir.Mix', M:target().",
+            "erlang:function_exported('Elixir.Mix', module_info, 1), 'Elixir.Mix':target()."
+          ] do
+        name =
+          side_pkg(ctx.deps, [{"rebar.config", "{deps, []}."}, {"rebar.config.script", script}])
+
+        refute rule2(ctx.deps, name, "rebar3", [own: true] ++ @side), script
+      end
+    end
+
+    # pfx 0.14.2's `Mix.Tasks.Iana.Specials`.
+    test "a bare alias Mix is no target read; one with options is", ctx do
+      task =
+        "defmodule Mix.Tasks.X do\n  use Mix.Task\n  alias Mix\n\n  def run(_), do: Mix.shell()\nend\n"
+
+      name = side_pkg(ctx.deps, [{"mix.exs", "defmodule X do end"}, {"lib/mix/tasks/x.ex", task}])
+
+      for opts <- [[own: true], []] do
+        refute rule2(ctx.deps, name, "mix", opts), inspect(opts)
+        assert rule2(ctx.deps, name, "mix", opts ++ @side), inspect(opts)
+      end
+
+      for body <- [
+            "defmodule A do\n  alias Mix, as: M\n  @t M.target()\nend\n",
+            "defmodule A do\n  alias(Mix, as: M)\nend\n",
+            "defmodule A do\n  alias :\"Elixir.Mix\", as: M\nend\n",
+            "defmodule A do\n  import Mix\nend\n",
+            "defmodule A do\n  @t Mix.target()\nend\n"
+          ] do
+        name = side_pkg(ctx.deps, [{"mix.exs", "defmodule X do end"}, {"lib/a.ex", body}])
+        refute rule2(ctx.deps, name, "mix", [own: true] ++ @side), body
+      end
+    end
+
+    # covertool 2.0.7's `mix_covertool`: Mix called from an Erlang function
+    # body, which runs only at runtime (no parse transform in the package).
+    @erl_mix "-module(mix_x).\n-export([mix/2]).\nmix(Fun, Arg) -> 'Elixir.Mix':Fun(Arg).\n"
+
+    test "an Erlang function body of the package itself runs at runtime", ctx do
+      name = side_pkg(ctx.deps, [{"rebar.config", "{deps, []}."}, {"src/mix_x.erl", @erl_mix}])
+
+      refute rule2(ctx.deps, name, "rebar3", own: true)
+      assert rule2(ctx.deps, name, "rebar3", [own: true] ++ @side)
+
+      # As a dependency the file is read whole, as before.
+      refute rule2(ctx.deps, name, "rebar3", @side)
+    end
+
+    test "with a parse transform in the package, its Erlang files are read whole", ctx do
+      for extra <- [
+            {"src/other.erl", "-module(other).\n-compile({parse_transform, mix_x}).\n"},
+            {"rebar.config", "{erl_opts, [{core_transform, mix_x}]}."}
+          ] do
+        files = [{"rebar.config", "{deps, []}."}, {"src/mix_x.erl", @erl_mix}, extra]
+        name = side_pkg(ctx.deps, files)
+        refute rule2(ctx.deps, name, "rebar3", [own: true] ++ @side), inspect(extra)
+      end
+
+      # A header, a script and a .app.src are read whole too.
+      for {file, body} <- [
+            {"include/x.hrl", "-define(T, 'Elixir.Mix':target())."},
+            {"rebar.config.script", "'Elixir.Mix':target()."},
+            {"src/x.app.src.script", "'Elixir.Mix':target()."}
+          ] do
+        name = side_pkg(ctx.deps, [{"rebar.config", "{deps, []}."}, {file, body}])
+        expected = Path.extname(file) == ".hrl"
+        assert rule2(ctx.deps, name, "rebar3", [own: true] ++ @side) == expected, file
+      end
+    end
+
+    # cc_precompiler 0.1.11's mix.exs: elixir_make as a required dependency,
+    # used for its `ElixirMake.Precompiler` behaviour, never as a compiler.
+    # (Its own name, a native tool's too, is the own-name rule's: here the
+    # app is another.)
+    @ccp_mix_exs """
+    defmodule CCPrecompiler.MixProject do
+      use Mix.Project
+      def project, do: [app: :ccp, version: "0.1.11", deps: deps()]
+
+      defp deps do
+        [
+          {:elixir_make, "~> 0.7 or ~> 0.8 or ~> 0.9", runtime: false},
+          {:ex_doc, ">= 0.0.0", only: :docs, runtime: false}
+        ]
+      end
+    end
+    """
+
+    test "a native tool its own mix.exs names only as a dependency is not its build", ctx do
+      name = side_pkg(ctx.deps, [{"mix.exs", @ccp_mix_exs}, {"lib/c.ex", ""}])
+
+      refute rule2(ctx.deps, name, "mix", own: true)
+      assert rule2(ctx.deps, name, "mix", [own: true] ++ @side)
+      refute rule2(ctx.deps, name, "mix", @side)
+
+      for {mix_exs, why} <- [
+            {String.replace(
+               @ccp_mix_exs,
+               "deps: deps()",
+               "deps: deps(), compilers: [:elixir_make]"
+             ), "a compiler as well"},
+            {String.replace(@ccp_mix_exs, "use Mix.Project", "use Mix.Project\n  # elixir_make"),
+             "a comment as well"},
+            {String.replace(
+               @ccp_mix_exs,
+               "deps: deps()",
+               ~s|deps: deps(), aliases: [compile: ["compile.elixir_make"]]|
+             ), "an alias"},
+            {@ccp_mix_exs <> "\ndefmodule Broken do", "unparsable"}
+          ] do
+        name = side_pkg(ctx.deps, [{"mix.exs", mix_exs}])
+        refute rule2(ctx.deps, name, "mix", [own: true] ++ @side), why
+      end
+
+      # A two-element tuple names it as a dependency too.
+      two =
+        String.replace(
+          @ccp_mix_exs,
+          ~s|, runtime: false},\n      {:ex_doc|,
+          ~s|},\n      {:ex_doc|
+        )
+
+      name = side_pkg(ctx.deps, [{"mix.exs", two}])
+      assert rule2(ctx.deps, name, "mix", [own: true] ++ @side)
+
+      # A native dir refuses whatever mix.exs says.
+      name = side_pkg(ctx.deps, [{"mix.exs", @ccp_mix_exs}, {"c_src/a.c", ""}])
+      refute rule2(ctx.deps, name, "mix", [own: true] ++ @side)
+    end
+  end
+
   describe "match_or_error?/2" do
     test "an engine error counts as a match" do
       # Catastrophic backtracking: PCRE gives up with a match limit error,

@@ -282,6 +282,33 @@ defmodule NccWorker.BuildSelectionTest do
   end
 
   describe "static_rules/4 (R0)" do
+    # S3: `native_side: true` reaches the package's own rule-2 grep
+    # (`BuildCache.dep_target_agnostic_rule2?/4`): tls_certificate_check's
+    # `rebar.config.script` asking whether Mix is loaded.
+    test "native_side reads the package's own target grep finer, with item 1 on",
+         %{root: root} do
+      source = package(root, "tcc")
+
+      File.write!(
+        Path.join(source, "rebar.config.script"),
+        "case erlang:function_exported('Elixir.Mix', module_info, 1) of _ -> CONFIG end.\n"
+      )
+
+      tarball = lock_managers(root, "tcc", [:rebar3])
+      native = {:skip, "reads the target or ships native code"}
+      on = [makefile_rule2: true, manager: "rebar3", tarball: tarball]
+
+      assert BuildSelection.static_rules(root, "tcc", scan(), on) == native
+      assert BuildSelection.static_rules(root, "tcc", scan(), on ++ [native_side: true]) == :ok
+
+      # Not without item 1: rule 1's grep has no such reading.
+      assert BuildSelection.static_rules(root, "tcc", scan(),
+               native_side: true,
+               manager: "rebar3",
+               tarball: tarball
+             ) == native
+    end
+
     test "item 1: a Makefile Mix never runs passes only with the flag and a matching manager",
          %{root: root} do
       source = package(root, "sample")

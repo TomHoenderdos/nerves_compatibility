@@ -19,6 +19,9 @@ defmodule NccWorker.TargetScan do
       caller matches its target-read pattern on that text.
     * A file that does not parse, is over the bounds, or cannot be printed
       back is looked at whole.
+    * With `erlang: :runtime` (`native_side: true`, the caller having found
+      no parse or core transform in the package), an `.erl` or `.hrl` file
+      is skipped (`nil`): nothing in it runs at compile time.
 
   Erring towards the whole file only costs a precompiled build.
   """
@@ -33,17 +36,30 @@ defmodule NccWorker.TargetScan do
   pattern is matched on, or `nil` when nothing in it can run at compile
   time.
   """
-  @spec scanned(String.t(), binary()) :: binary() | nil
-  def scanned(path, contents) when is_binary(path) and is_binary(contents) do
+  @spec scanned(String.t(), binary(), keyword()) :: binary() | nil
+  def scanned(path, contents, opts \\ []) when is_binary(path) and is_binary(contents) do
     base = Path.basename(path)
 
     cond do
       doc_file?(path) -> nil
       base == "mix.exs" -> contents
       Path.extname(base) in [".ex", ".exs"] -> compile_time_text(contents)
+      erlang_runtime?(base, opts) -> nil
       true -> contents
     end
   end
+
+  # `erlang: :runtime` (`native_side: true`, for a package with no parse or
+  # core transform, which the caller checks): an Erlang source or header
+  # runs nothing while the package compiles. Erlang has no compile-time
+  # evaluation but a transform: an attribute holds terms, a macro expands
+  # where it is used, a function runs when called, and a call made at
+  # compile time from an Elixir module body is the trace's (its `mix_state`
+  # channel refuses a target read wherever it is made). A `.script`, `.src`
+  # or `rebar.config` is evaluated or consulted at build time and stays
+  # whole.
+  defp erlang_runtime?(base, opts),
+    do: Keyword.get(opts, :erlang) == :runtime and Path.extname(base) in [".erl", ".hrl"]
 
   @doc """
   Whether `path` is a doc file (`*.md`, `*.markdown`, `*.txt`, `LICENSE*`),
