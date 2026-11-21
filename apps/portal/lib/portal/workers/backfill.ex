@@ -61,9 +61,13 @@ defmodule Portal.Workers.Backfill do
     #
     # `Portal.Workers.UpdateCheck` also names the release it saw (`version`),
     # so a package that releases twice in a day is queued again for the
-    # second one rather than a day later. A job without a version, any other
-    # caller's, dedupes against every job of its package as before. Nothing
-    # else reads it: the request resolves the package's latest release.
+    # second one rather than a day later. Uniqueness is containment, one
+    # way: a job without a version (any other caller's) conflicts with an
+    # earlier update-check job of its package, but an update-check job is
+    # queued after an earlier versionless one, whose args have no version to
+    # contain it. That is harmless: the request is `create_once/1`'s, and
+    # nothing reads the version, as the request resolves the package's
+    # latest release.
     unique: [keys: [:package, :sweep_id, :version], period: 86_400]
 
   require Logger
