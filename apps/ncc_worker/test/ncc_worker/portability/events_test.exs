@@ -314,10 +314,12 @@ defmodule NccWorker.Portability.EventsTest do
   test "OTP's pubkey_os_cacerts on-load OS read is ignored; the same read elsewhere is an input",
        %{ctx: ctx} do
     assert :ignore = Events.decide(on_load_read(), ctx, "pkg")
+    # The second look at the same frame, taken while the load is pending.
+    assert :ignore = Events.decide(on_load_read(%{"caller_kind" => "user"}), ctx, "pkg")
 
     for overrides <- [
-          %{"caller_kind" => "user"},
           %{"first_kind" => "user"},
+          %{"first_kind" => "none"},
           %{"bottom" => %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0}},
           %{"bottom" => nil},
           %{

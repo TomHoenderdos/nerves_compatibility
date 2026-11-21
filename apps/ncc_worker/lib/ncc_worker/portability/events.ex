@@ -475,12 +475,15 @@ defmodule NccWorker.Portability.Events do
   # runs in a process of its own when public_key's CA module loads (rebar3
   # fetching a plugin from Hex over TLS): `{win32, _} -> load_nif(); _ -> ok`.
   # The value decides only whether OTP loads its Windows NIF and reaches
-  # nothing else. Only that frame, the installed OTP's (`caller_kind`
-  # "toolchain"), calling the read itself on code_server's stack.
+  # nothing else. Only that frame calling the read itself on code_server's
+  # stack, the tracer having found the frame's module to be the installed
+  # OTP's (`first_kind` "toolchain": its md5 and the beam under the OTP
+  # root). `caller_kind`, the same frame looked at again, can come out
+  # "user" while code_server still holds the load pending (no md5 yet), so
+  # it proves nothing either way.
   defp os_identity(%{
          "mfa" => "os:type/0",
          "first_kind" => "toolchain",
-         "caller_kind" => "toolchain",
          "first" => %{"module" => "pubkey_os_cacerts", "function" => "on_load", "arity" => 0},
          "caller" => %{"module" => "pubkey_os_cacerts", "function" => "on_load", "arity" => 0},
          "bottom" => %{"module" => "code_server"}
