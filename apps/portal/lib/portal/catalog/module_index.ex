@@ -39,10 +39,12 @@ defmodule Portal.Catalog.ModuleIndex do
   files) and of the module names in our own passing builds' manifests of the
   package (R3-5b: modules a macro defines). A package already indexed at
   that release is confirmed without a fetch. The index is usable only when
-  its latest run confirmed every candidate (`complete?/0`). Until then (no
-  run yet, a run still going or stopped, a failed fetch or checksum, a
-  tarball over the caps), every recorded declared-absent probe refuses. A
-  newer run supersedes an older one, which stops at its next package.
+  it holds every current candidate at its latest release (`complete?/0`,
+  judged when it is used, round 6, R5-4). Until then (no run yet, a
+  candidate that crossed the threshold since the last run, a release not
+  fetched yet, a failed fetch or checksum, a tarball over the caps), every
+  recorded declared-absent probe refuses. A newer run supersedes an older
+  one, which stops at its next package.
 
   After a complete run the index re-checks every served row that carries a
   record and withholds (revokes, with a tag and an undo) any that now
@@ -69,13 +71,34 @@ defmodule Portal.Catalog.ModuleIndex do
   @spec max_concurrency() :: pos_integer()
   def max_concurrency, do: @max_concurrency
 
-  @doc "Whether the latest run confirmed every candidate: the only state in which `refusal/2` decides by the index."
+  @doc """
+  Whether the index holds, now, a successful entry for every current
+  candidate (`hex_downloads_recent >= min_recent/0` in the catalog as it is
+  now) at the latest release the Hex registry listed at the last run's start
+  (round 6, R5-4): the only state in which `refusal/2` decides by the index.
+  A candidate the last run did not see (one that crossed the threshold
+  since), a release it did not index (a failed fetch, a run still going or
+  stopped before it) or no run at all makes it incomplete. A candidate the
+  registry did not list has no release to index and does not count.
+  """
   @spec complete?() :: boolean()
   def complete? do
-    case latest_run() do
-      %{complete: complete} -> complete
-      nil -> false
-    end
+    %{rows: [[complete]]} =
+      Repo.query!(
+        """
+        SELECT EXISTS (SELECT 1 FROM catalog_module_index_runs)
+           AND NOT EXISTS (
+             SELECT 1 FROM catalog_packages p
+             LEFT JOIN catalog_module_index_candidates c ON c.package = p.name
+             LEFT JOIN catalog_module_index_packages i ON i.package = p.name
+             WHERE coalesce(p.hex_downloads_recent, 0) >= $1
+               AND (c.package IS NULL
+                    OR (c.version IS NOT NULL AND i.version IS DISTINCT FROM c.version)))
+        """,
+        [@min_recent]
+      )
+
+    complete
   end
 
   @doc "The latest run's row, and how many runs there have been."

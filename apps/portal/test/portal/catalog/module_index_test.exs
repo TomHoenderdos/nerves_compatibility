@@ -197,17 +197,57 @@ defmodule Portal.Catalog.ModuleIndexTest do
     assert ModuleIndex.definers("Elixir.Jason") == []
   end
 
-  test "a run that is still going, or was stopped, keeps the index incomplete", %{opts: opts} do
+  test "a package that crosses 1,000 after a complete run makes the index incomplete",
+       %{opts: opts, latest: latest} do
+    Repo.query!("UPDATE catalog_packages SET hex_downloads_recent = 500 WHERE name = 'money'")
     assert %{complete: true} = ModuleIndex.refresh(opts)
     assert ModuleIndex.complete?()
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money"]
 
-    # A new run started and never finished (a deploy killed it).
-    {:ok, _generation} = ModuleIndex.start_run(5)
+    # money crosses 1,000 (HexMetaRefresh): it is a candidate the index does
+    # not hold, so the index decides nothing until a run indexes it.
+    Repo.query!("UPDATE catalog_packages SET hex_downloads_recent = 398436 WHERE name = 'money'")
     refute ModuleIndex.complete?()
     assert ModuleIndex.refusal([money()], []) =~ "module index not complete"
 
-    # The next run completes again.
+    assert %{indexed: 1, complete: true} =
+             ModuleIndex.refresh(Keyword.put(opts, :registry, registry(latest)))
+
+    assert ModuleIndex.refusal([money()], []) =~ "also defined by money"
+  end
+
+  test "a new latest release makes the index incomplete until it is indexed",
+       %{opts: opts, latest: latest} do
     assert %{complete: true} = ModuleIndex.refresh(opts)
+    newer = tarball(%{"lib/money.ex" => "defmodule Money do\nend\n"})
+
+    # A run that read money 2.0.0 from the registry but could not fetch it.
+    failing = Keyword.merge(opts, registry: registry(Map.put(latest, "money", "2.0.0")))
+    assert %{failed: 1, complete: false} = ModuleIndex.refresh(failing)
+    refute ModuleIndex.complete?()
+
+    fetched =
+      Keyword.merge(opts,
+        registry: registry(Map.put(latest, "money", "2.0.0")),
+        tarball: fn
+          "money", "2.0.0" -> {:ok, newer}
+          n, v -> opts[:tarball].(n, v)
+        end,
+        outer_checksum: fn
+          "money", "2.0.0" -> {:ok, sha(newer)}
+          n, v -> opts[:outer_checksum].(n, v)
+        end
+      )
+
+    assert %{indexed: 1, complete: true} = ModuleIndex.refresh(fetched)
+    assert ModuleIndex.complete?()
+  end
+
+  # A run in progress does not make the index incomplete by itself: only
+  # the candidates it has not confirmed at their latest release do.
+  test "a run that started does not by itself make a complete index incomplete", %{opts: opts} do
+    assert %{complete: true} = ModuleIndex.refresh(opts)
+    {:ok, _generation} = ModuleIndex.start_run(4)
     assert ModuleIndex.complete?()
   end
 

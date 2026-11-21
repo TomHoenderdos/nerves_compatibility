@@ -23,14 +23,14 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
     Repo.insert_all("catalog_packages", [
       %{
         name: "money",
-        hex_latest_version: "1.14.0",
+        hex_latest_version: nil,
         hex_downloads_recent: 398_436,
         inserted_at: now,
         updated_at: now
       },
       %{
         name: "ex_money",
-        hex_latest_version: "5.24.2",
+        hex_latest_version: nil,
         hex_downloads_recent: 302_825,
         inserted_at: now,
         updated_at: now
@@ -49,6 +49,14 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
       """
       INSERT INTO catalog_module_index_packages (package, version, modules, refreshed_at, generation, app)
       VALUES ('money', '1.14.0', 1, now(), $1, 'money'), ('ex_money', '5.24.2', 1, now(), $1, 'ex_money')
+      """,
+      [generation]
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO catalog_module_index_candidates (package, version, generation)
+      VALUES ('money', '1.14.0', $1), ('ex_money', '5.24.2', $1)
       """,
       [generation]
     )
