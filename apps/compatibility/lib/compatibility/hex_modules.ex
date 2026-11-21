@@ -9,54 +9,126 @@ defmodule Compatibility.HexModules do
   tarball's `.ex` sources (an implementation is `Protocol.For`), parsed
   without creating atoms, and every `-module` of its `.erl` sources. A
   module a macro defines is not found. Bounded: the tarball at
-  `Compatibility.StaticPriv.max_tarball_bytes/0`, its contents at 64 MiB
-  inflated, 5,000 files and 32 MiB of parsed source. Never raises: anything
-  unreadable defines nothing.
+  `Compatibility.StaticPriv.max_tarball_bytes/0` (or `:max_tarball`), its
+  contents at 64 MiB inflated, 5,000 files and 32 MiB of parsed source.
+  Never raises.
   """
 
   @max_contents_bytes 64 * 1024 * 1024
   @max_source_bytes 32 * 1024 * 1024
   @max_files 5_000
 
-  @doc "The modules the Hex tarball `bytes` defines, as their atom names (`Elixir.Foo`, `foo_erl`)."
+  @doc """
+  The modules the Hex tarball `bytes` defines, as their atom names
+  (`Elixir.Foo`, `foo_erl`); `[]` for anything `read/2` cannot read.
+  """
   @spec modules(binary() | nil) :: [String.t()]
-  def modules(bytes) when is_binary(bytes) do
-    with true <- byte_size(bytes) <= Compatibility.StaticPriv.max_tarball_bytes(),
-         {:ok, [{_name, gz}]} <-
-           :erl_tar.extract({:binary, bytes}, [:memory, {:files, [~c"contents.tar.gz"]}]),
-         {:ok, tar} <- Compatibility.StaticPriv.inflate(gz, @max_contents_bytes),
-         {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory]) do
-      files
-      |> Enum.take(@max_files)
-      |> Enum.reduce({[], 0}, fn {name, body}, {acc, used} ->
-        source(List.to_string(name), body, acc, used)
-      end)
-      |> elem(0)
-      |> Enum.uniq()
-    else
-      _ -> []
+  def modules(bytes) do
+    case read(bytes) do
+      {:ok, %{modules: modules}} -> modules
+      {:error, _why} -> []
+    end
+  end
+
+  @doc """
+  The modules the Hex tarball `bytes` defines and the application its
+  `metadata.config` names, or why they cannot be known in full: a tarball
+  or its contents over the caps, more files or more source than the caps
+  allow, or a `.ex` file under `lib/` that does not parse. A leex or yecc
+  file (`.xrl`, `.yrl`) defines the module of its base name. Options:
+  `:max_tarball` (bytes, default `Compatibility.StaticPriv.max_tarball_bytes/0`).
+  """
+  @spec read(binary() | nil, keyword()) ::
+          {:ok, %{modules: [String.t()], app: String.t() | nil}} | {:error, term()}
+  def read(bytes, opts \\ [])
+
+  def read(bytes, opts) when is_binary(bytes) do
+    max = Keyword.get_lazy(opts, :max_tarball, &Compatibility.StaticPriv.max_tarball_bytes/0)
+
+    with :ok <- if(byte_size(bytes) <= max, do: :ok, else: {:error, :tarball_too_large}),
+         {:ok, outer} <- outer(bytes),
+         {:ok, gz} <- Map.fetch(outer, "contents.tar.gz") |> found(:no_contents),
+         {:ok, tar} <- inflate(gz),
+         {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory]) |> tar_files(),
+         :ok <- if(length(files) <= @max_files, do: :ok, else: {:error, :too_many_files}),
+         {:ok, modules} <- sources(files) do
+      {:ok, %{modules: Enum.uniq(modules), app: app(Map.get(outer, "metadata.config"))}}
     end
   rescue
-    _ -> []
+    e -> {:error, {:unreadable, Exception.message(e)}}
   end
 
-  def modules(_bytes), do: []
+  def read(_bytes, _opts), do: {:error, :not_a_tarball}
 
-  defp source(_name, body, acc, used) when used + byte_size(body) > @max_source_bytes,
-    do: {acc, used}
-
-  defp source(name, body, acc, used) do
-    cond do
-      String.ends_with?(name, ".ex") and String.valid?(body) ->
-        {elixir_modules(body) ++ acc, used + byte_size(body)}
-
-      String.ends_with?(name, ".erl") ->
-        {erlang_modules(body) ++ acc, used + byte_size(body)}
-
-      true ->
-        {acc, used}
+  defp outer(bytes) do
+    case :erl_tar.extract({:binary, bytes}, [:memory]) do
+      {:ok, files} -> {:ok, Map.new(files, fn {name, body} -> {List.to_string(name), body} end)}
+      _ -> {:error, :not_a_tarball}
     end
   end
+
+  defp found({:ok, value}, _why), do: {:ok, value}
+  defp found(:error, why), do: {:error, why}
+
+  defp inflate(gz) do
+    case Compatibility.StaticPriv.inflate(gz, @max_contents_bytes) do
+      {:ok, tar} -> {:ok, tar}
+      _ -> {:error, :contents_too_large}
+    end
+  end
+
+  defp tar_files({:ok, files}), do: {:ok, files}
+  defp tar_files(_error), do: {:error, :contents_unreadable}
+
+  defp sources(files) do
+    Enum.reduce_while(files, {:ok, [], 0}, fn {name, body}, {:ok, acc, used} ->
+      case source(List.to_string(name), body, used) do
+        {:ok, found, used} -> {:cont, {:ok, found ++ acc, used}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, modules, _used} -> {:ok, modules}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp source(name, body, used) do
+    cond do
+      String.ends_with?(name, [".ex", ".erl"]) and used + byte_size(body) > @max_source_bytes ->
+        {:error, :source_too_large}
+
+      String.ends_with?(name, ".ex") ->
+        case elixir_modules(body) do
+          {:ok, modules} ->
+            {:ok, modules, used + byte_size(body)}
+
+          :error ->
+            if String.starts_with?(name, "lib/"),
+              do: {:error, {:unparsed, name}},
+              else: {:ok, [], used}
+        end
+
+      String.ends_with?(name, ".erl") ->
+        {:ok, erlang_modules(body), used + byte_size(body)}
+
+      String.ends_with?(name, [".xrl", ".yrl"]) ->
+        {:ok, [Path.basename(name, Path.extname(name))], used}
+
+      true ->
+        {:ok, [], used}
+    end
+  end
+
+  # `{<<"app">>,<<"name">>}.`, read without creating atoms.
+  defp app(meta) when is_binary(meta) do
+    case Regex.run(~r/\{\s*<<"app">>\s*,\s*<<"([a-z][a-z0-9_]*)">>\s*\}/, meta) do
+      [_, app] -> app
+      _ -> nil
+    end
+  end
+
+  defp app(_meta), do: nil
 
   defp erlang_modules(body) do
     case Regex.run(~r/^-module\(\s*'?([a-z][A-Za-z0-9_@]*)'?\s*\)/m, body) do
@@ -67,17 +139,20 @@ defmodule Compatibility.HexModules do
 
   # No atom is created: every atom of the source comes back as {:atom, name}.
   defp elixir_modules(body) do
-    case Code.string_to_quoted(body,
-           static_atoms_encoder: fn name, _meta -> {:ok, {:atom, name}} end,
-           existing_atoms_only: true,
-           columns: false,
-           emit_warnings: false
-         ) do
-      {:ok, ast} -> ast |> walk(nil, []) |> Enum.uniq()
-      _ -> []
+    with true <- String.valid?(body),
+         {:ok, ast} <-
+           Code.string_to_quoted(body,
+             static_atoms_encoder: fn name, _meta -> {:ok, {:atom, name}} end,
+             existing_atoms_only: true,
+             columns: false,
+             emit_warnings: false
+           ) do
+      {:ok, ast |> walk(nil, []) |> Enum.uniq()}
+    else
+      _ -> :error
     end
   rescue
-    _ -> []
+    _ -> :error
   end
 
   defp walk({{:atom, kind}, _, [name_ast | rest]}, outer, acc)

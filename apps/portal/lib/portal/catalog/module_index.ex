@@ -12,10 +12,11 @@ defmodule Portal.Catalog.ModuleIndex do
   finds the module, and their compile differs (bitcrowd_ecto's `Money`,
   declared from ex_money, also defined by money). So the judge records each
   such probe (`compile_observations.declared_absent`: the module, the
-  declared packages that define it, how it was asked), and ingest refuses
-  the build when this index shows another package with at least
-  `min_recent/0` recent downloads defining the module, unless the lock holds
-  it or the probe's record names it as declared (`refusal/2`).
+  declared packages that define it and their applications, how it was
+  asked), and ingest refuses the build when this index shows another
+  package with at least `min_recent/0` recent downloads defining the module,
+  unless the lock or the record names that package or its application
+  (`refusal/2`).
 
   The index lives here, not in the worker, because:
 
@@ -25,35 +26,87 @@ defmodule Portal.Catalog.ModuleIndex do
     * ingest is the one place every build passes through, local and remote
       alike, so the decision is the same whichever builder ran the build,
       and needs no builder protocol change;
-    * the recorded probes stay on the row, so the same index can re-check
-      served rows when it changes, and client 0.9 can check them itself.
+    * the recorded probes stay on the row, so the index can re-check
+      served rows, and client 0.9 can check them itself.
 
-  The index is the latest release of each package with
-  `hex_downloads_recent >= min_recent/0`, its tarball checked against the
-  registry's outer checksum before its modules are read
-  (`Compatibility.HexModules`), refreshed weekly
-  (`Portal.Workers.ModuleIndexRefresh`). Until the first refresh has
-  indexed anything (`built?/0`), every recorded declared-absent probe
-  refuses, as round 1's rule did: no build passes on an empty index.
+  **Complete or nothing (round 5, R3-1).** A run (`refresh/1`) is a
+  generation of its own. It reads the latest release of every candidate
+  (`hex_downloads_recent >= min_recent/0`), its tarball checked against the
+  registry's outer checksum, and takes the union of the modules its sources
+  define (`Compatibility.HexModules`: literal definitions, leex and yecc
+  files) and of the module names in our own passing builds' manifests of the
+  package (R3-5b: modules a macro defines). A package already indexed at
+  that release is confirmed without a fetch. The index is usable only when
+  its latest run confirmed every candidate (`complete?/0`). Until then (no
+  run yet, a run still going or stopped, a failed fetch or checksum, a
+  tarball over the caps), every recorded declared-absent probe refuses. A
+  newer run supersedes an older one, which stops at its next package.
+
   """
 
   alias Portal.Repo
 
+  require Logger
+
   @min_recent 1_000
   @max_concurrency 4
   @package_timeout_ms 120_000
+  # The index's own tarball cap: a few popular packages ship more than the
+  # 8 MiB a build's tarball check allows (rocksdb, astro), and a package the
+  # index cannot read keeps it incomplete.
+  @max_tarball_bytes 16 * 1024 * 1024
 
   @doc "The recent-download count from which another package defining a probed module refuses."
   @spec min_recent() :: pos_integer()
   def min_recent, do: @min_recent
 
-  @doc "Whether the index has indexed any package."
-  @spec built?() :: boolean()
-  def built? do
-    %{rows: [[built]]} =
-      Repo.query!("SELECT EXISTS (SELECT 1 FROM catalog_module_index_packages)", [])
+  @doc "The most packages `refresh/1` fetches and parses at once."
+  @spec max_concurrency() :: pos_integer()
+  def max_concurrency, do: @max_concurrency
 
-    built
+  @doc "Whether the latest run confirmed every candidate: the only state in which `refusal/2` decides by the index."
+  @spec complete?() :: boolean()
+  def complete? do
+    case latest_run() do
+      %{complete: complete} -> complete
+      nil -> false
+    end
+  end
+
+  @doc "The latest run's row, and how many runs there have been."
+  @spec status() :: map()
+  def status do
+    %{rows: [[runs]]} = Repo.query!("SELECT count(*) FROM catalog_module_index_runs", [])
+    Map.merge(latest_run() || %{}, %{runs: runs})
+  end
+
+  @run_fields [
+    :generation,
+    :started_at,
+    :finished_at,
+    :candidates,
+    :indexed,
+    :unchanged,
+    :failed,
+    :complete,
+    :withheld
+  ]
+
+  defp latest_run do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT generation, started_at, finished_at, candidates, indexed, unchanged, failed,
+               complete, withheld
+        FROM catalog_module_index_runs ORDER BY generation DESC LIMIT 1
+        """,
+        []
+      )
+
+    case rows do
+      [row] -> @run_fields |> Enum.zip(row) |> Map.new()
+      [] -> nil
+    end
   end
 
   @doc "The indexed packages that define `module`, sorted."
@@ -71,44 +124,52 @@ defmodule Portal.Catalog.ModuleIndex do
   @doc """
   The refusal of a build whose judge recorded `items` (its
   `compile_observations.declared_absent`) and whose lock names `locked`
-  (package names), or `nil`. A module item refuses when an indexed package
-  with at least `min_recent/0` recent downloads defines the module and
-  neither the item's `declared` packages nor `locked` name it; any item
-  when the index is not built; a `truncated` item always.
+  (its keys: application names), or `nil`. A module item refuses when an
+  indexed package with at least `min_recent/0` recent downloads defines the
+  module and neither the item's `declared` packages, its `declared_apps`
+  nor `locked` name the package or its application; any item while the
+  index is not complete; a `truncated` item always.
   """
   @spec refusal([map()] | nil, [String.t()]) :: String.t() | nil
   def refusal(items, locked) when is_list(items) and items != [] do
-    built = built?()
-    Enum.find_value(items, &item_refusal(&1, MapSet.new(locked), built))
+    complete = complete?()
+    Enum.find_value(items, &item_refusal(&1, MapSet.new(locked), complete))
   end
 
   def refusal(_items, _locked), do: nil
 
-  defp item_refusal(%{"kind" => "truncated"}, _locked, _built),
+  defp item_refusal(%{"kind" => "truncated"}, _locked, _complete),
     do: Compatibility.Portability.dependency_probe() <> "too many declared-absent probes recorded"
 
-  defp item_refusal(%{"kind" => "module_absent", "module" => module} = item, locked, built)
+  defp item_refusal(%{"kind" => "module_absent", "module" => module} = item, locked, complete)
        when is_binary(module) do
     via = if is_binary(item["via"]), do: item["via"], else: "a probe"
-    declared = MapSet.new(List.wrap(item["declared"]))
+
+    named =
+      [item["declared"], item["declared_apps"]]
+      |> Enum.flat_map(&List.wrap/1)
+      |> MapSet.new()
+      |> MapSet.union(locked)
 
     others =
-      if built,
+      if complete,
         do:
-          Enum.reject(
-            popular_definers(module),
-            &(MapSet.member?(declared, &1) or MapSet.member?(locked, &1))
+          for(
+            {package, app} <- popular_definers(module),
+            not MapSet.member?(named, package),
+            not (is_binary(app) and MapSet.member?(named, app)),
+            do: package
           ),
-        else: :not_built
+        else: :not_complete
 
     case others do
-      :not_built -> reason(module, via, "module index not built")
+      :not_complete -> reason(module, via, "module index not complete")
       [] -> nil
       others -> reason(module, via, "also defined by " <> Enum.join(others, ", "))
     end
   end
 
-  defp item_refusal(_item, _locked, _built),
+  defp item_refusal(_item, _locked, _complete),
     do: Compatibility.Portability.dependency_probe() <> "unreadable declared-absent probe record"
 
   defp reason(module, via, why),
@@ -118,23 +179,22 @@ defmodule Portal.Catalog.ModuleIndex do
     %{rows: rows} =
       Repo.query!(
         """
-        SELECT d.package FROM catalog_module_definers d
+        SELECT d.package, i.app FROM catalog_module_definers d
         JOIN catalog_packages p ON p.name = d.package
+        LEFT JOIN catalog_module_index_packages i ON i.package = d.package
         WHERE d.module = $1 AND coalesce(p.hex_downloads_recent, 0) >= $2
         ORDER BY d.package
         """,
         [module, @min_recent]
       )
 
-    List.flatten(rows)
+    Enum.map(rows, &List.to_tuple/1)
   end
 
   @doc """
-  Reads the latest release of every package with at least `min_recent/0`
-  recent downloads whose indexed release is another one, and replaces its
-  modules. A tarball that cannot be fetched, or does not hash to the
-  registry's outer checksum, leaves the package as it was, to be tried again
-  by the next run.
+  A run: reads the latest release of every candidate the index does not
+  hold at it, confirms the rest, and marks its generation complete when
+  every candidate is confirmed in it.
 
   Safe to start by hand on a host short on memory (round 4):
 
@@ -142,18 +202,18 @@ defmodule Portal.Catalog.ModuleIndex do
       `%{to_fetch, unchanged, below_threshold}`;
     * at most `max_concurrency/0` (4) packages are fetched and parsed at
       once (`:concurrency` may lower it, never raise it), each with its
-      tarball in memory only while it is read (at most
-      `Compatibility.StaticPriv.max_tarball_bytes/0`, parsed under
-      `Compatibility.HexModules`' caps), and killed after 2 minutes;
+      tarball in memory only while it is read (at most 16 MiB), and killed
+      after 2 minutes;
     * each package is stored in a transaction of its own as soon as it is
-      read, most downloaded first, so a run that is stopped or restarted
-      keeps what it stored and the next run fetches only the rest.
+      read, most downloaded first, so a run that is stopped keeps what it
+      stored and the next run fetches only the rest (and confirms the rest
+      without a fetch).
 
   Options: `:tarball` and `:outer_checksum` (`fn name, version -> {:ok,
   value} | {:error, why} end`, default `Portal.HexDeps`), `:limit`,
   `:concurrency`, `:dry_run`.
   """
-  @spec refresh(keyword()) :: %{atom() => non_neg_integer()}
+  @spec refresh(keyword()) :: %{atom() => term()}
   def refresh(opts \\ []) do
     rows = candidates(Keyword.get(opts, :limit, 100_000))
 
@@ -163,33 +223,92 @@ defmodule Portal.Catalog.ModuleIndex do
     if Keyword.get(opts, :dry_run, false) do
       %{to_fetch: length(todo), unchanged: length(unchanged), below_threshold: below_threshold()}
     else
-      fetch_all(todo, length(unchanged), opts)
+      {:ok, generation} = start_run(length(rows))
+      result = run(generation, rows, opts)
+      finish(generation, rows, result, opts)
     end
   end
 
-  @doc "The most packages `refresh/1` fetches and parses at once."
-  @spec max_concurrency() :: pos_integer()
-  def max_concurrency, do: @max_concurrency
+  @doc "Starts a run of `candidates` packages: its generation, which makes the index incomplete until it finishes complete."
+  @spec start_run(non_neg_integer()) :: {:ok, pos_integer()}
+  def start_run(candidates) do
+    %{rows: [[generation]]} =
+      Repo.query!(
+        "INSERT INTO catalog_module_index_runs (started_at, candidates) VALUES (now(), $1) RETURNING generation",
+        [candidates]
+      )
 
-  defp fetch_all(todo, unchanged, opts) do
-    tarball = Keyword.get(opts, :tarball, &Portal.HexDeps.tarball/2)
+    {:ok, generation}
+  end
+
+  defp run(generation, rows, opts) do
+    tarball =
+      Keyword.get(opts, :tarball, &Portal.HexDeps.tarball(&1, &2, max_bytes: @max_tarball_bytes))
+
     checksum = Keyword.get(opts, :outer_checksum, &Portal.HexDeps.outer_checksum/2)
 
     concurrency =
       opts |> Keyword.get(:concurrency, @max_concurrency) |> min(@max_concurrency) |> max(1)
 
-    todo
+    rows
     |> Task.async_stream(
-      fn [name, version, _] -> index_release(name, version, tarball, checksum) end,
+      fn [name, version, indexed] ->
+        cond do
+          superseded?(generation) -> :superseded
+          version == indexed -> confirm(name, version, generation)
+          true -> index_release(name, version, generation, tarball, checksum)
+        end
+      end,
       max_concurrency: concurrency,
       timeout: @package_timeout_ms,
       on_timeout: :kill_task,
       ordered: false
     )
-    |> Enum.reduce(%{indexed: 0, unchanged: unchanged, failed: 0}, fn
-      {:ok, :ok}, acc -> Map.update!(acc, :indexed, &(&1 + 1))
+    |> Enum.reduce(%{indexed: 0, unchanged: 0, failed: 0, superseded: 0}, fn
+      {:ok, :indexed}, acc -> Map.update!(acc, :indexed, &(&1 + 1))
+      {:ok, :unchanged}, acc -> Map.update!(acc, :unchanged, &(&1 + 1))
+      {:ok, :superseded}, acc -> Map.update!(acc, :superseded, &(&1 + 1))
       _other, acc -> Map.update!(acc, :failed, &(&1 + 1))
     end)
+  end
+
+  # Complete when every candidate of the run's start is confirmed in this
+  # generation at the version the run read, and no newer run started.
+  defp finish(generation, rows, result, opts) do
+    names = Enum.map(rows, &hd/1)
+
+    %{rows: [[confirmed]]} =
+      Repo.query!(
+        """
+        SELECT count(*) FROM catalog_module_index_packages i
+        JOIN catalog_packages p ON p.name = i.package
+        WHERE i.package = ANY($1) AND i.generation = $2 AND i.version = p.hex_latest_version
+        """,
+        [names, generation]
+      )
+
+    complete =
+      result.failed == 0 and result.superseded == 0 and confirmed == length(rows) and
+        not superseded?(generation)
+
+    Repo.query!(
+      """
+      UPDATE catalog_module_index_runs
+      SET finished_at = now(), indexed = $2, unchanged = $3, failed = $4, complete = $5
+      WHERE generation = $1
+      """,
+      [generation, result.indexed, result.unchanged, result.failed + result.superseded, complete]
+    )
+
+    _ = opts
+    Map.merge(result, %{generation: generation, complete: complete})
+  end
+
+  defp superseded?(generation) do
+    %{rows: [[latest]]} =
+      Repo.query!("SELECT max(generation) FROM catalog_module_index_runs", [])
+
+    latest != generation
   end
 
   defp candidates(limit) do
@@ -222,46 +341,97 @@ defmodule Portal.Catalog.ModuleIndex do
     n
   end
 
-  defp index_release(name, version, tarball, checksum) do
-    with {:ok, bytes} <- tarball.(name, version),
-         {:ok, sum} <- checksum.(name, version),
-         true <- :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == sum do
-      store(name, version, Compatibility.HexModules.modules(bytes))
-    else
-      _ -> :error
-    end
-  rescue
-    _ -> :error
-  end
-
-  defp store(name, version, modules) do
+  # Indexed already at this release: confirmed in this generation, with the
+  # module names of builds made since added.
+  defp confirm(name, version, generation) do
     {:ok, :ok} =
       Repo.transaction(fn ->
-        Repo.query!("DELETE FROM catalog_module_definers WHERE package = $1", [name])
-
-        modules
-        |> Enum.chunk_every(5_000)
-        |> Enum.each(fn chunk ->
-          Repo.insert_all(
-            "catalog_module_definers",
-            Enum.map(chunk, &%{module: &1, package: name}),
-            on_conflict: :nothing
-          )
-        end)
+        insert_definers(name, manifest_modules(name))
 
         Repo.query!(
-          """
-          INSERT INTO catalog_module_index_packages (package, version, modules, refreshed_at)
-          VALUES ($1, $2, $3, now())
-          ON CONFLICT (package) DO UPDATE
-          SET version = EXCLUDED.version, modules = EXCLUDED.modules, refreshed_at = now()
-          """,
-          [name, version, length(modules)]
+          "UPDATE catalog_module_index_packages SET generation = $3 WHERE package = $1 AND version = $2",
+          [name, version, generation]
         )
 
         :ok
       end)
 
-    :ok
+    :unchanged
+  end
+
+  defp index_release(name, version, generation, tarball, checksum) do
+    with {:ok, bytes} <- tarball.(name, version),
+         {:ok, sum} <- checksum.(name, version),
+         true <- :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == sum,
+         {:ok, %{modules: modules, app: app}} <-
+           Compatibility.HexModules.read(bytes, max_tarball: @max_tarball_bytes) do
+      store(name, version, generation, app, Enum.uniq(modules ++ manifest_modules(name)))
+    else
+      why ->
+        Logger.warning("module index: #{name} #{version} not indexed: #{inspect(why, limit: 5)}")
+        :failed
+    end
+  rescue
+    e ->
+      Logger.warning("module index: #{name} #{version} not indexed: #{Exception.message(e)}")
+      :failed
+  end
+
+  # The module names our passing builds of the package wrote (R3-5b), any
+  # version: a module a macro defines, or a leex/yecc file's.
+  defp manifest_modules(name) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT DISTINCT e->>'path'
+        FROM catalog_toolchain_builds t
+        JOIN catalog_packages p ON p.id = t.package_id
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(t.file_manifest->'ebin') = 'array' THEN t.file_manifest->'ebin'
+               ELSE '[]'::jsonb END) e
+        WHERE p.name = $1 AND t.status = 'pass'
+        """,
+        [name]
+      )
+
+    for [path] <- rows,
+        is_binary(path),
+        String.ends_with?(path, ".beam"),
+        do: Path.basename(path, ".beam")
+  end
+
+  defp store(name, version, generation, app, modules) do
+    {:ok, :ok} =
+      Repo.transaction(fn ->
+        Repo.query!("DELETE FROM catalog_module_definers WHERE package = $1", [name])
+        insert_definers(name, modules)
+
+        Repo.query!(
+          """
+          INSERT INTO catalog_module_index_packages (package, version, modules, refreshed_at, generation, app)
+          VALUES ($1, $2, $3, now(), $4, $5)
+          ON CONFLICT (package) DO UPDATE
+          SET version = EXCLUDED.version, modules = EXCLUDED.modules, refreshed_at = now(),
+              generation = EXCLUDED.generation, app = EXCLUDED.app
+          """,
+          [name, version, length(modules), generation, app]
+        )
+
+        :ok
+      end)
+
+    :indexed
+  end
+
+  defp insert_definers(name, modules) do
+    modules
+    |> Enum.chunk_every(5_000)
+    |> Enum.each(fn chunk ->
+      Repo.insert_all(
+        "catalog_module_definers",
+        Enum.map(chunk, &%{module: &1, package: name}),
+        on_conflict: :nothing
+      )
+    end)
   end
 end

@@ -21,8 +21,20 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
     now = NaiveDateTime.utc_now()
 
     Repo.insert_all("catalog_packages", [
-      %{name: "money", hex_downloads_recent: 398_436, inserted_at: now, updated_at: now},
-      %{name: "ex_money", hex_downloads_recent: 302_825, inserted_at: now, updated_at: now}
+      %{
+        name: "money",
+        hex_latest_version: "1.14.0",
+        hex_downloads_recent: 398_436,
+        inserted_at: now,
+        updated_at: now
+      },
+      %{
+        name: "ex_money",
+        hex_latest_version: "5.24.2",
+        hex_downloads_recent: 302_825,
+        inserted_at: now,
+        updated_at: now
+      }
     ])
 
     Repo.insert_all("catalog_module_definers", [
@@ -30,9 +42,20 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
       %{module: "Elixir.Money", package: "ex_money"}
     ])
 
+    # A complete run (generation) that confirmed both candidates.
+    {:ok, generation} = Portal.Catalog.ModuleIndex.start_run(2)
+
     Repo.query!(
-      "INSERT INTO catalog_module_index_packages VALUES ('money', '1.14.0', 1, now()), ('ex_money', '5.24.2', 1, now())"
+      """
+      INSERT INTO catalog_module_index_packages (package, version, modules, refreshed_at, generation, app)
+      VALUES ('money', '1.14.0', 1, now(), $1, 'money'), ('ex_money', '5.24.2', 1, now(), $1, 'ex_money')
+      """,
+      [generation]
     )
+
+    Repo.query!("UPDATE catalog_module_index_runs SET complete = true WHERE generation = $1", [
+      generation
+    ])
 
     :ok
   end

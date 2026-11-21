@@ -137,8 +137,9 @@ defmodule Portal.HexDeps do
   `{:error, :unknown_release}` for a release the CDN does not serve,
   `{:error, :tarball_too_large}` for one over the cap and
   `{:error, :hex_registry_unavailable}` for anything that says "ask later".
-  Options as for `releases/2`, and `:hex_cache` (the cache root, default the
-  configured one). Never raises.
+  Options as for `releases/2`, `:hex_cache` (the cache root, default the
+  configured one) and `:max_bytes` (the cap, default
+  `Compatibility.StaticPriv.max_tarball_bytes/0`). Never raises.
   """
   @spec tarball(String.t(), String.t(), keyword()) ::
           {:ok, binary()}
@@ -162,7 +163,7 @@ defmodule Portal.HexDeps do
 
   defp fetch_tarball(name, version, opts) do
     client = Keyword.get(opts, :client, Req)
-    max_bytes = Compatibility.StaticPriv.max_tarball_bytes()
+    max_bytes = Keyword.get_lazy(opts, :max_bytes, &Compatibility.StaticPriv.max_tarball_bytes/0)
     file = Compatibility.HexCache.tarball_name(name, version)
 
     request_opts =
