@@ -447,6 +447,19 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert log =~ "Release fast path lost its lock during the run"
     end
 
+    # Re-review H5: after a network cut whose FIN is lost, the server keeps a
+    # dead lock session until TCP keepalive ends it: by default about 2 h on
+    # Linux. The lock's connection asks for about 90 s.
+    test "the lock's connection asks the server for short TCP keepalives" do
+      {:ok, conn} = Postgrex.start_link(ReleaseFastPath.lock_connection_opts())
+
+      assert %{rows: [["60"]]} = Postgrex.query!(conn, "SHOW tcp_keepalives_idle", [])
+      assert %{rows: [["10"]]} = Postgrex.query!(conn, "SHOW tcp_keepalives_interval", [])
+      assert %{rows: [["3"]]} = Postgrex.query!(conn, "SHOW tcp_keepalives_count", [])
+
+      GenServer.stop(conn)
+    end
+
     # Re-review H6: a job that finds the lock busy gives up at the same age
     # as one that carries over.
     test "a job that finds the lock busy gives up carry_over_hours after it was queued" do

@@ -223,10 +223,15 @@ defmodule Portal.Workers.ReleaseFastPath do
   # The pool's connection settings, for one connection of its own.
   @connection_keys ~w(hostname port username password database socket socket_dir ssl ssl_opts
                       socket_options parameters connect_timeout handshake_timeout)a
-  # `lock_connection` in this worker's config is merged over them.
-  defp lock_connection_opts do
+  # `lock_connection` in this worker's config is merged over them. Short
+  # TCP keepalives: a session whose client vanished (a lost FIN) would keep
+  # the lock until keepalive ends it, by default about 2 h on Linux.
+  @keepalive [tcp_keepalives_idle: "60", tcp_keepalives_interval: "10", tcp_keepalives_count: "3"]
+  @doc false
+  def lock_connection_opts do
     Repo.config()
     |> Keyword.take(@connection_keys)
+    |> Keyword.update(:parameters, @keepalive, &Keyword.merge(&1, @keepalive))
     |> Keyword.merge(Keyword.get(config(), :lock_connection, []))
     |> Keyword.put(:pool_size, 1)
   end
