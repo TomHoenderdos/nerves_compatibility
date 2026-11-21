@@ -2464,6 +2464,37 @@ defmodule NccWorker.Portability.JudgeTest do
              "rebar3 build runs provider_hooks"},
             {"default_ns_hook", ~s({pre_hooks, [{{default, compile}, "make"}]}.\n),
              "rebar3 build runs pre_hooks"},
+            # No hook that `bare compile` can reach runs (review S5 R1): rebar3
+            # runs `escriptize` (cuttlefish's provider hook) and its own shell
+            # hooks inside `bare compile`, untraced. Nor do S5's other
+            # exceptions stand: `mkdir -p ebin` (pbkdf2) and a namespaced
+            # command (dbi) refuse as on main.
+            {"prov_escriptize",
+             "{provider_hooks, [{post, [{compile, {default, escriptize}}]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"prov_escriptize_bare", "{provider_hooks, [{post, [{compile, escriptize}]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"escriptize_post_hook",
+             ~s|{escript_main_app, n}.\n{post_hooks, [{escriptize, "sh tools/gen.sh"}]}.\n|,
+             "rebar3 build runs post_hooks"},
+            {"escriptize_pre_hook", ~s|{pre_hooks, [{{default, escriptize}, "x"}]}.\n|,
+             "rebar3 build runs pre_hooks"},
+            {"escriptize_arch_hook", ~s|{post_hooks, [{"linux", escriptize, "x"}]}.\n|,
+             "rebar3 build runs post_hooks"},
+            {"escriptize_provider_hook", "{provider_hooks, [{pre, [{escriptize, edoc}]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"escriptize_override",
+             ~s|{overrides, [{override, x, [{post_hooks, [{escriptize, "x"}]}]}]}.\n|,
+             "rebar3 build runs post_hooks"},
+            {"escriptize_profile",
+             ~s|{profiles, [{prod, [{post_hooks, [{escriptize, "x"}]}]}]}.\n|,
+             "rebar3 build runs post_hooks"},
+            {"mkdir_ebin_hook", ~s|{pre_hooks, [{compile, "mkdir -p ebin"}]}.\n|,
+             "rebar3 build runs pre_hooks"},
+            {"ns_hook", ~s|{pre_hooks, [{{hex, publish}, "./update_vsn_mix.sh"}]}.\n|,
+             "rebar3 build runs pre_hooks"},
+            {"ns_arch_hook", ~s|{post_hooks, [{"linux", {hex, publish}, "x"}]}.\n|,
+             "rebar3 build runs post_hooks"},
             {"mkdir_other", ~s|{pre_hooks, [{compile, "mkdir -p ebin && make"}]}.\n|,
              "rebar3 build runs pre_hooks"},
             {"mkdir_priv", ~s|{pre_hooks, [{compile, "mkdir -p priv"}]}.\n|,
@@ -2563,16 +2594,6 @@ defmodule NccWorker.Portability.JudgeTest do
             {"proper_plugin_exact", ~s|{plugins, [{rebar3_proper, "0.11.1"}]}.\n|},
             {"coverage_plugins", "{plugins, [coveralls, covertool, rebar3_hex]}.\n"},
             {"reviewed_prod", "{profiles, [{prod, [{plugins, [rebar3_ex_doc]}]}]}.\n"},
-            # rebar3's own escriptize after compile (cuttlefish).
-            {"prov_escriptize",
-             "{provider_hooks, [{post, [{compile, {default, escriptize}}]}]}.\n"},
-            {"prov_escriptize_bare", "{provider_hooks, [{post, [{compile, escriptize}]}]}.\n"},
-            # Creating its own ebin dir before rebar3 writes there (pbkdf2):
-            # the command reads nothing and writes no file.
-            {"mkdir_ebin_hook", ~s|{pre_hooks, [{compile, "mkdir -p ebin"}]}.\n|},
-            # A namespaced provider's hook never equals `compile` (dbi).
-            {"ns_hook", ~s|{pre_hooks, [{{hex, publish}, "./update_vsn_mix.sh"}]}.\n|},
-            {"ns_arch_hook", ~s|{post_hooks, [{"linux", {hex, publish}, "x"}]}.\n|},
             # Hooks on a command `rebar3 bare compile` never runs (hackney,
             # yamerl, erlfmt, covertool: `clean`).
             {"clean_hook", ~s({pre_hooks, [{clean, "rm -rf *~ */*~"}]}.\n)},

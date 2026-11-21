@@ -48,13 +48,12 @@ defmodule NccWorker.Portability.Rebar do
   Hex outer checksum (`named_plugins/2` names what must be installed). A
   git source, a `{pkg, Name}` source, or any other plugin still refuses.
 
-  A shell compile hook refuses whether or not the app is natively built
-  (crc32cer's `make nif`): rebar3 runs it untraced, and nothing compares a
-  native app's tree after the compile. Only `mkdir -p ebin` (pbkdf2), which
-  reads nothing and writes no file, is let through, as an entry of the
-  app's own active sections. A hook whose command is a namespaced
-  provider (`{{hex, publish}, Script}`) never runs in `bare compile`; and
-  rebar3's own `escriptize` as a post-compile provider hook is let through.
+  A hook refuses whether or not the app is natively built (crc32cer's
+  `make nif`): rebar3 runs it untraced, and nothing compares a native
+  app's tree after the compile. `escriptize` counts as a compile command
+  (review S5 R1): `rebar_prv_escriptize` runs its own hooks, and a provider
+  hook on `compile` can run it. A hook whose command is namespaced
+  (`{{hex, publish}, Script}`), or any shape not understood, counts.
 
   A dependency's own `rebar.config.script` is not refused for existing.
   Mix evaluates it (`Mix.Rebar.load_config/1`, from
@@ -127,12 +126,11 @@ defmodule NccWorker.Portability.Rebar do
   # The plugins let through by name; the releases that may run are
   # `NccWorker.Portability.RebarPlugins.pins/0`.
   @reviewed_plugins ~w(rebar3_hex rebar3_ex_doc rebar3_lint rebar3_proper coveralls covertool)
-  # Compile hook commands that read nothing and write no file, by their exact
-  # text: pbkdf2 2.0.0 makes its own `ebin` dir, in its source dir, before
-  # rebar3 writes the build's (under `_build`, which Mix gives it).
-  @reviewed_commands ["mkdir -p ebin"]
   # The commands `rebar3 bare compile` runs hooks for (`rebar_prv_compile`).
-  @compile_commands ~w(compile erlc_compile app_compile)
+  # And `escriptize`, the one other provider whose hooks `bare compile` can
+  # reach (review S5 R1): rebar3's `rebar_prv_escriptize` runs its own
+  # hooks, and a provider hook on `compile` can run it.
+  @compile_commands ~w(compile erlc_compile app_compile escriptize)
   # `REBAR_PROFILE=prod` on top of rebar3's default profile.
   @active_profiles ~w(default prod)
   @max_config_bytes 1024 * 1024
@@ -201,7 +199,7 @@ defmodule NccWorker.Portability.Rebar do
     do: {:refuse, "rebar3 build evaluates rebar.config.script"}
 
   def check_sources(%{config: own} = sources, parents, mix_config) do
-    reviewed = %{hooks: Map.get(sources, :reviewed, []), commands: @reviewed_commands}
+    reviewed = Map.get(sources, :reviewed, [])
 
     with {:ok, own_terms} <- parse_own(own),
          {:ok, inherited} <- parent_overrides(parents),
@@ -472,7 +470,7 @@ defmodule NccWorker.Portability.Rebar do
 
   defp nested?(terms, key) do
     any_term?(terms, fn
-      {{:atom, ^key}, value} -> counts?(key, value, %{hooks: [], commands: []})
+      {{:atom, ^key}, value} -> counts?(key, value, [])
       _ -> false
     end)
   end
@@ -493,53 +491,14 @@ defmodule NccWorker.Portability.Rebar do
 
   defp counts?(_key, _value, _reviewed), do: true
 
-  # A compile hook counts unless its command is reviewed
-  # (`@reviewed_commands`, or quic's script, `reviewed_hook?/4`).
-  defp compile_hook?({command, script}, reviewed) do
-    case hook_command(command) do
-      :compile -> not reviewed_command?(script, reviewed.commands)
-      :other -> false
-      :unknown -> true
-    end
-  end
+  defp compile_hook?({{:atom, command}, _script}, _reviewed), do: command in @compile_commands
 
-  defp compile_hook?({arch, command, script}, reviewed) do
-    case hook_command(command) do
-      :compile ->
-        not (reviewed_command?(script, reviewed.commands) or
-               reviewed_hook?(arch, command, script, reviewed.hooks))
-
-      :other ->
-        false
-
-      :unknown ->
-        true
-    end
-  end
+  defp compile_hook?({arch, {:atom, command}, script}, reviewed),
+    do: command in @compile_commands and not reviewed_hook?(arch, command, script, reviewed)
 
   defp compile_hook?(_entry, _reviewed), do: true
 
-  defp reviewed_command?(script, commands) do
-    case regex_text(script) do
-      {:ok, text} -> text in commands
-      :error -> false
-    end
-  end
-
-  # The command a hook entry names, as `rebar_hooks:run_hooks/5` matches it
-  # (`=:=` against the provider's name, the bare atom `compile` for the
-  # compile steps): one of the compile commands, another command, or a shape
-  # it does not know. A namespaced provider's `{Namespace, Name}` never
-  # equals `compile` (dbi's `{{hex, publish}, Script}`); `{default, Name}`
-  # counts as `Name`, fail closed.
-  defp hook_command({:atom, command}),
-    do: if(command in @compile_commands, do: :compile, else: :other)
-
-  defp hook_command({{:atom, "default"}, {:atom, command}}), do: hook_command({:atom, command})
-  defp hook_command({{:atom, _namespace}, {:atom, _command}}), do: :other
-  defp hook_command(_command), do: :unknown
-
-  defp reviewed_hook?(arch, {:atom, "compile"}, script, reviewed) do
+  defp reviewed_hook?(arch, "compile", script, reviewed) do
     with {:ok, arch} <- regex_text(arch),
          {:ok, script} <- regex_text(script) do
       {arch, script} in reviewed
@@ -553,8 +512,8 @@ defmodule NccWorker.Portability.Rebar do
   defp compile_provider_hooks?({{:atom, type}, hooks}) when type in ["pre", "post"] do
     not proper_list?(hooks) or
       Enum.any?(hooks, fn
-        {{:atom, command}, provider} ->
-          command in @compile_commands and not reviewed_provider?(type, command, provider)
+        {{:atom, command}, _provider} ->
+          command in @compile_commands
 
         _entry ->
           true
@@ -562,16 +521,6 @@ defmodule NccWorker.Portability.Rebar do
   end
 
   defp compile_provider_hooks?(_entry), do: true
-
-  # rebar3's own `escriptize` after `compile` (cuttlefish): it reads the
-  # app's `ebin`, writes an escript under `_build/<profile>/bin` and leaves
-  # `ebin` and `priv` alone.
-  defp reviewed_provider?("post", "compile", {:atom, "escriptize"}), do: true
-
-  defp reviewed_provider?("post", "compile", {{:atom, "default"}, {:atom, "escriptize"}}),
-    do: true
-
-  defp reviewed_provider?(_type, _command, _provider), do: false
 
   # A reviewed plugin (`@reviewed_plugins`) from Hex: the bare name, or the
   # name with a version or requirement string.

@@ -729,13 +729,14 @@ of these skips the build:
   `@reviewed_plugins`) runs in the traced child VM instead, and its code's reads, writes and network use are judged like
   any compile code. rebar3 resolves a plugin and its dependencies from its own registry cache and no lock names them, so
   every release it installed under the app's `_build/*/plugins` must be one reviewed to only register providers, pinned
-  by version and Hex outer checksum (`NccWorker.Portability.RebarPlugins.pins/0`, 200 releases): its cached tarball in
+  by version and Hex outer checksum (`Compatibility.RebarPlugins.pins/0`, 205 releases): its cached tarball in
   rebar3's cache (`REBAR_CACHE_DIR` or `$HOME/.cache/rebar3`) hashes to the pin and its dir holds exactly that tarball's
   files plus its own compiled `ebin`. Any other release refuses (`rebar3 build runs plugin <name> <version>, a release not
   reviewed`), a named plugin not installed or a release that cannot be read is "portability could not be judged", and
-  any other plugin, or one from git, still refuses. A shell compile hook refuses even for a natively built app (crc32cer's `make nif`: rebar3 runs it untraced and
-  nothing checks what it wrote); `mkdir -p ebin` (pbkdf2) reads nothing and writes no file and is let through; a hook on a namespaced provider (`{{hex, publish}, Script}`) never runs in `bare compile`; rebar3's own
-  `escriptize` as a post-compile provider hook (cuttlefish) is let through. OTP's `pubkey_os_cacerts:on_load/0` reading
+  any other plugin, or one from git, still refuses. A hook `bare compile` can reach refuses even for a natively built app (crc32cer's `make nif`: rebar3 runs it
+  untraced and nothing checks what it wrote), and `escriptize` counts as such a command: rebar3's
+  `rebar_prv_escriptize` runs its own hooks, and a provider hook on `compile` (cuttlefish's) runs it (review S5 R1).
+  OTP's `pubkey_os_cacerts:on_load/0` reading
   `os:type/0` when rebar3's TLS loads it is ignored;
 - a trace that did not finish.
 
