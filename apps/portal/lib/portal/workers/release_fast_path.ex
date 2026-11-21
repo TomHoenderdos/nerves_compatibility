@@ -49,9 +49,12 @@ defmodule Portal.Workers.ReleaseFastPath do
   for an hour: the remainder carries over to the next hour rather than
   being dropped. A full budget or a held lock is checked before anything
   is read. Each run judges afresh, so a rebuild that ran since is no longer
-  drift, and the release finishes once nothing it moved is left behind; it
-  also finishes once its version is no longer the package's newest stable
-  release, whose own job does the same work. `carry_over_hours/0` after it
+  drift, and the release finishes once nothing it moved is left behind. It
+  also finishes once its version is no longer the package's newest stable,
+  unretired release: when a newer one is out, that release's own job does
+  the work; when it was retired, or no stable release is left, the
+  offer and the judge ignore it too, and the daily drift takes what
+  remains. `carry_over_hours/0` after it
   was queued it gives up and leaves the rest to the daily drift. The job is
   unique per release for longer than that plus the offer window, so a
   release carrying over is never offered a second job.
@@ -209,7 +212,7 @@ defmodule Portal.Workers.ReleaseFastPath do
            release: version
          ) do
       {:ok, %{superseded: newest} = summary} ->
-        Logger.info("Release fast path: #{package} #{version}: superseded by #{newest}")
+        Logger.info("Release fast path: #{package} #{version}: #{gone(package, newest)}")
         {:ok, summary}
 
       {:ok, summary} ->
@@ -219,6 +222,12 @@ defmodule Portal.Workers.ReleaseFastPath do
         other
     end
   end
+
+  # Why a job's release is no longer the one to rebuild for: a newer stable
+  # release (whose own job does the work), or, for a retired one, an older
+  # one (whose dependents are the daily drift's), or none at all.
+  defp gone(package, nil), do: "no stable release of #{package} left on Hex"
+  defp gone(_package, newest), do: "no longer the newest stable release (#{newest})"
 
   defp finish(job, package, version, summary) do
     Logger.info(

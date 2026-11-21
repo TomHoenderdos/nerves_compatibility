@@ -179,7 +179,9 @@ defmodule Portal.Workers.ClosureDrift do
   without `firmware`, and with `capped: true` when it stopped at the cap
   with candidates left. Option `:dry_run` as for `run/1`. With `:release`,
   a version of `dep`, it judges nothing unless that is still `dep`'s newest
-  stable release, and returns `{:ok, %{superseded: newest}}`.
+  stable, unretired release, and returns `{:ok, %{superseded: newest}}`:
+  that newest release, older than `:release` when `:release` was retired,
+  or nil when no stable release of `dep` is left.
   """
   @spec rebuild_dependents(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def rebuild_dependents(dep, opts) when is_binary(dep) do

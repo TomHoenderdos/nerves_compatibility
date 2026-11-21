@@ -175,6 +175,38 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       )
     end
 
+    # The test config logs warnings only; these lines are info.
+    defp info_log(fun) do
+      level = Logger.level()
+      Logger.configure(level: :info)
+
+      try do
+        ExUnit.CaptureLog.capture_log([level: :info], fun)
+      after
+        Logger.configure(level: level)
+      end
+    end
+
+    defp put_certifi_versions(versions, opts \\ []) do
+      {:ok, registry} = Process.get(:hex_answer)
+
+      registry =
+        Enum.map(registry, fn
+          %{name: "certifi"} = e ->
+            %{
+              e
+              | versions: versions,
+                latest_version: List.last(versions),
+                retired: Keyword.get(opts, :retired, [])
+            }
+
+          e ->
+            e
+        end)
+
+      Process.put(:hex_answer, {:ok, registry})
+    end
+
     defp flush_registry_reads do
       receive do
         :asked_registry -> flush_registry_reads()
@@ -407,6 +439,40 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert {:ok, %{superseded: "2.20.0"}} =
                perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
 
+      assert fast_path_builds() == []
+    end
+
+    # Re-review G7: with no stable release left on Hex (all retired, or the
+    # package gone), there is nothing it was superseded by.
+    test "a release with no stable release left ends, and says so" do
+      certifi_release([name()])
+      put_certifi_versions(["2.18.0", "2.19.0"], retired: ["2.18.0", "2.19.0"])
+
+      log =
+        info_log(fn ->
+          assert {:ok, %{superseded: nil}} =
+                   perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+        end)
+
+      assert log =~ "certifi 2.19.0: no stable release of certifi left on Hex"
+      refute log =~ "superseded by"
+      assert fast_path_builds() == []
+    end
+
+    # A retired offered release leaves an older one newest: the job ends, as
+    # the offer and the judge ignore retired releases, and the log says so
+    # rather than naming a newer release.
+    test "a retired release ends, and the log names the newest stable one" do
+      certifi_release([name()])
+      put_certifi_versions(["2.18.0", "2.19.0"], retired: ["2.19.0"])
+
+      log =
+        info_log(fn ->
+          assert {:ok, %{superseded: "2.18.0"}} =
+                   perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+        end)
+
+      assert log =~ "certifi 2.19.0: no longer the newest stable release (2.18.0)"
       assert fast_path_builds() == []
     end
 
