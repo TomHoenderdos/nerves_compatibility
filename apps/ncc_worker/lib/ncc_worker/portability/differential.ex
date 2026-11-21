@@ -58,14 +58,17 @@ defmodule NccWorker.Portability.Differential do
 
   No finite set of values proves a value cannot reach a build. Two
   variants at the ends of the domain catch a value copied into the output
-  and every monotone use of it, and 1 against 240 catches parity, a
-  power-of-two test and divisibility by 2, 3, 4, 5, 6, 8, 10, 12, 15 or 16.
-  The residual: a test against one exact value (`n == 12`); a threshold
-  above 240; a window that holds none of 1, 240 and the builder's count (`n
-  in 9..64` on an 8-CPU builder); divisibility by a k that divides none of
-  them (7, 9, 32 on an 8-CPU builder); a HOME of one exact value or prefix;
-  and a condition that pairs one read's low end with another's high end,
-  since the values move together (low, low; high, high). Two varied reads
+  and every monotone use of it that changes at or below 240, and 1 against
+  240 catches parity, a power-of-two test and divisibility by 2, 3, 4, 5,
+  6, 8, 10, 12, 15 or 16. The residual (review R7) is anything that answers
+  the same at 1, at 240 and at the builder's own count. For example: a test
+  against one exact value (`n == 12`); a threshold above 240; a window that
+  holds none of the three (`n in 9..64` on an 8-CPU builder); divisibility
+  by a k that divides none of them (7, 9, 32 on an 8-CPU builder); a bit
+  test (`Bitwise.band(n, 4) != 0`: false at 1, 8 and 240); `rem(n, 7) == 1`
+  on an 8-CPU builder; primality. Likewise a HOME of one exact value or
+  prefix, and a condition that pairs one read's low end with another's high
+  end, since the values move together (low, low; high, high). Two varied reads
   at one site (a helper or macro several callers reach) are one read, so a
   variant reaching that site from a new caller is not "read more" (review
   R2): the value is varied there anyway, so this is the pairing residual.

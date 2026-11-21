@@ -607,10 +607,13 @@ dispatcher stack, no user frame, `erl_eval` first, and the tracer's `rebar_scrip
 between the read and `Mix.Rebar.eval_script/2`, which `Mix.Dep.Loader.rebar_dep/4` ran), is observed as
 `varied_reads` instead of refused, and `File.exists?("")` (a stat of the empty path, `enoent` on every host) is
 ignored. A plain-arguments read then needs every scripted release of the lock (but a closure dependency Mix builds) to
-be a reviewed one (`NccWorker.Portability.ReviewedScripts`: gproc 0.3.1 to 1.3.0, ts_chatterbox 0.11.0 and 0.16.0,
-tls_certificate_check 1.36.0, setup 2.1.0 and 2.2.1, exometer_core 1.7.1 and 2.0.0, by Hex name, version and the
-sha256 of every script file of the verified tarball), since the trace cannot tell which script read them; one that
-is not, an unverifiable tarball, or none at all, refuses (`... is not a reviewed one`). No script runs a second time.
+be a reviewed one (`NccWorker.Portability.ReviewedScripts`: gproc 0.3.1, 0.5.0, 0.6.1, 0.8.0, 0.9.1, 1.0.0, 1.2.0 and
+1.3.0, ts_chatterbox 0.11.0 and 0.16.0, tls_certificate_check 1.36.0, setup 2.1.0 and 2.2.1, exometer_core 1.7.1 and
+2.0.0, each by Hex name, version and outer checksum, so every byte of the tarball is pinned) whose tree check was
+"ok", since the trace cannot tell which script read them. One that is not, a tarball that cannot be verified, a
+script member that is no regular file in its tarball (a link Mix would follow), a `rebar.config.script` on disk its
+tarball lacks, or no scripted release at all, refuses (`... is not a reviewed one`, `... cannot be verified: ...`).
+No script runs a second time.
 A verdict that would pass with any varied read is settled by two variant builds of the closure, each at a fresh build
 root of a random name made exclusively (of the first's length where one fits, and still empty once the container is
 swept) after a gap of a little over a second: `low` with `ERL_ZFLAGS=+S 1:1`, a short HOME under `/tmp` and no extra
@@ -626,7 +629,8 @@ chunk the same but `CInf`, `Dbgi` and `ExCk`, a build root of the same length re
 `trace_stats.differential` `"same"`; a different app, a variant that refused, read more or ran with another count, or
 a script that is not reviewed refuses with the first read's own refusal followed by what differed (`"differs"`); a
 variant that did not finish is transient (`"not_finished"`). Every verdict judged with the flag carries
-`trace_stats.differential_flag` `"on"`. It bumps no judge revision, like `foreign_priv`: without the flag nothing
+`trace_stats.differential_flag` `"on"` and `trace_stats.schedulers_online`; without the flag neither is there.
+It bumps no judge revision, like `foreign_priv`: without the flag nothing
 here changes, and `compile_observations` carries no `varied_reads` list.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex

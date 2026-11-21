@@ -567,7 +567,12 @@ rebar_script_read(_Stack, _IsToolchain) -> false.
 %% `File.cd!(Dest, fun() -> Mix.Rebar.load_config(".") end)`, whose fun and
 %% load_config/1 tail-call, so File.cd!/2 and then rebar_dep/4 are right
 %% below eval_script/2 (review R1: a mix.exs calling load_config/1 itself
-%% leaves its own or Mix.Project's frames there instead).
+%% leaves its own or Mix.Project's frames there instead). The frames show
+%% that Mix's loader ran, not that the directory is a release of the lock:
+%% a mix.exs that starts a process calling Mix.Dep.Loader.load/3 on a
+%% directory of its own tree, with no user frame left, gives the same shape,
+%% and its script is in no script release the judge checks (review R9,
+%% adversarial; the stack holds arities, not File.cd!'s directory).
 loaded_by_mix([{'Elixir.File', 'cd!', A1, _}, {'Elixir.Mix.Dep.Loader', rebar_dep, A2, _} | _],
               IsToolchain)
   when (A1 =:= 2 orelse (is_list(A1) andalso length(A1) =:= 2)),
