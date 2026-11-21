@@ -1244,16 +1244,18 @@ included. The portal's `NCC_FIRMWARE_INPUTS=0` turns it off with no image change
 get `NCC_INPUT.firmware_inputs: false`; an input without the key (an older portal) is on.
 
 The firmware judge (stream S8) runs the same trace on every such target, whatever its package reads, and keeps the
-verdict as the system's `firmware_judge`: `{"status": "pass" | "skipped" | "unjudged", "reason", "classes"}`. A
-verdict that refused for a compile-time probe, a rebar3 plugin or hook, or a closure dependency's taint by one
-(`NccWorker.FirmwareJudge`, the toolchain judge's own rules) is `skipped`: the target loses
-`beam_scan.footprint.file_manifest`, so nothing of it is published, its status and firmware image kept, and the portal
-withdraws the older runs' builds of that version and target (`Portal.Precompiled.FirmwareRefusal`). Any other refusal,
-no verdict, beams that do not bind, a spent budget or a target built against another closure (optional deps kept,
-variants) is `unjudged` and publishes as before. `compile_inputs` are still recorded only for an env-reading package. A
-target the judge alone traces starts only within `NCC_FIRMWARE_JUDGE_BUDGET_SEC` (default 1800) of the pass's start.
-The portal's `NCC_FIRMWARE_JUDGE=0` sends `NCC_INPUT.firmware_judge: false`, which turns it off, as does
-`NCC_FIRMWARE_JUDGE=0` in the worker's env; an input without the key is on.
+verdict as the system's `firmware_judge`: `{"status": "pass" | "skipped" | "unjudged", "reason", "classes"}`. It
+runs only when `NCC_INPUT.firmware_judge` is `true` (a portal node's `NCC_FIRMWARE_JUDGE=1`); without the key it is
+off. A verdict any of whose refusal texts (its reason, every refusal, every problem uncut, the package's and each
+dependency's rebar3 refusals in `observations.rebar`) is a compile-time probe, a rebar3 plugin or hook, or a closure
+dependency's taint by one (`NccWorker.FirmwareJudge`, the toolchain judge's own rules) is `skipped`: the target loses
+`beam_scan.footprint.file_manifest`, so nothing of it is published, its status and firmware image kept. Any other
+refusal, no verdict, beams that do not bind, a spent budget or a target built against another closure (optional deps
+kept, variants) is `unjudged` and publishes here as before; the portal holds it while an earlier judge refusal of the
+target stands (`Portal.Precompiled.Holds`), and withdraws the target's older builds. `compile_inputs` are still
+recorded only for an env-reading package. A target the judge alone traces starts only within its own budget,
+`NCC_INPUT.firmware_judge_budget_sec` (the portal's `NCC_FIRMWARE_JUDGE_BUDGET_SEC`, default 1800 s), counted from
+the start of the inputs pass. The container sees no env of the host's, so both come through `NCC_INPUT` only.
 
 With `"deterministic": true` in `NCC_INPUT`, each passing target that publishes its own build then gets that build's
 deterministic sibling (`NccWorker.FirmwareDeterministic`), last, once the optional pass, the world, R2 and the compile

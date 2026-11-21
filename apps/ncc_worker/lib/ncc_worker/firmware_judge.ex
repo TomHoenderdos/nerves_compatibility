@@ -26,7 +26,8 @@ defmodule NccWorker.FirmwareJudge do
   @probe [
     "compile-time probe",
     "compile-time call into a module the trace loaded",
-    "compile-time list of the loaded modules"
+    "compile-time list of the loaded modules",
+    "unreadable probe event"
   ]
   @plugins_hooks ["rebar3 build ", "rebar3 plugin"]
 
@@ -66,11 +67,15 @@ defmodule NccWorker.FirmwareJudge do
   end
 
   @doc """
-  Every text of a verdict that may name a refusal: its `reason`, each
-  `observations["refusals"]` reason, each `observations["problems"]` entry
-  (where a could-not-judge verdict names its causes) and each
-  `observations["taint"]` entry, as the R3 refusal names it. Anything that
-  is not a string is left out.
+  Every text of a verdict that may name a refusal: its `reason`, its
+  `refusal_texts` (a target verdict's every refusal, uncut:
+  `NccWorker.Portability.target_inputs/3`), each `observations["refusals"]`
+  reason, each `observations["problems"]` entry (where a could-not-judge
+  verdict names its causes), each `observations["rebar"]` refusal (the
+  package's and each dependency's rebar3 rule, which an earlier reason
+  hides) and each `observations["taint"]` entry, as the R3 refusal names
+  it. Anything that is not a string is left out, and each text is kept
+  once.
   """
   @spec texts(map()) :: [String.t()]
   def texts(verdict) do
@@ -85,7 +90,12 @@ defmodule NccWorker.FirmwareJudge do
           is_binary(app) and is_binary(why),
           do: "#{@taint}#{app} (#{why})"
 
-    Enum.filter([Map.get(verdict, :reason)], &is_binary/1) ++ refusals ++ problems ++ taint
+    uncut = for t <- list(Map.get(verdict, :refusal_texts)), is_binary(t), do: t
+    rebar = for {_app, r} <- map(obs["rebar"]), is_binary(r), do: r
+
+    (Enum.filter([Map.get(verdict, :reason)], &is_binary/1) ++
+       uncut ++ refusals ++ problems ++ rebar ++ taint)
+    |> Enum.uniq()
   end
 
   defp list(value) when is_list(value), do: value

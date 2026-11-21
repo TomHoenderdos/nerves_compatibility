@@ -27,16 +27,23 @@ defmodule NccWorker.CLITest do
     end
   end
 
-  # `firmware_judge: false` is the portal's rollback of the firmware judge
-  # (`NccWorker.FirmwareInputs`); an older portal sends nothing, which is on.
-  test "parse_input/1 reads firmware_judge, and its absence is on" do
-    assert {:ok, input} = CLI.parse_input(~s({"run_id":"r1","firmware_judge":false}))
-    assert %{firmware_judge: false} = input
-    refute NccWorker.FirmwareInputs.judge_enabled?(input)
+  # The firmware judge (`NccWorker.FirmwareInputs`) runs only when the
+  # portal asks (`firmware_judge: true`, NCC_FIRMWARE_JUDGE=1 on its node);
+  # an older portal sends nothing, which is off. Its budget comes the same
+  # way, as the container sees no worker env of the host's (review N1).
+  test "parse_input/1 reads firmware_judge and its budget; absent is off" do
+    assert {:ok, input} =
+             CLI.parse_input(
+               ~s({"run_id":"r1","firmware_judge":true,"firmware_judge_budget_sec":600})
+             )
 
-    for json <- [~s({"run_id":"r1"}), ~s({"run_id":"r1","firmware_judge":true})] do
+    assert %{firmware_judge: true, firmware_judge_budget_sec: 600} = input
+    assert NccWorker.FirmwareInputs.judge_enabled?(input)
+    assert NccWorker.FirmwareInputs.judge_budget(input) == 600
+
+    for json <- [~s({"run_id":"r1"}), ~s({"run_id":"r1","firmware_judge":false})] do
       assert {:ok, input} = CLI.parse_input(json)
-      assert NccWorker.FirmwareInputs.judge_enabled?(input), json
+      refute NccWorker.FirmwareInputs.judge_enabled?(input), json
     end
   end
 

@@ -120,9 +120,11 @@ defmodule NccWorker.Worker do
           # `NCC_FIRMWARE_INPUTS=0` rollback. Absent (an older portal) or
           # anything else is on.
           optional(:firmware_inputs) => boolean(),
-          # `false` turns off the firmware judge (`NccWorker.FirmwareInputs`,
-          # `judge_enabled?/1`); absent is on.
+          # `true` turns on the firmware judge (`NccWorker.FirmwareInputs`,
+          # `judge_enabled?/1`); absent is off. Its own budget in seconds
+          # (`judge_budget/1`), default 1800.
           optional(:firmware_judge) => boolean(),
+          optional(:firmware_judge_budget_sec) => non_neg_integer(),
           # For "toolchain" and a firmware run (no `mode`): exactly `true`
           # also builds the deterministic sibling of the toolchain build
           # (`NccWorker.Deterministic`) or of each passing firmware target's
@@ -1158,6 +1160,7 @@ defmodule NccWorker.Worker do
       firmware_world: input[:firmware_world],
       firmware_inputs: FirmwareInputs.enabled?(input),
       firmware_judge: FirmwareInputs.judge_enabled?(input),
+      firmware_judge_budget_sec: FirmwareInputs.judge_budget(input),
       deterministic: Deterministic.requested?(input),
       releases: releases,
       trees: trees
@@ -1730,7 +1733,8 @@ defmodule NccWorker.Worker do
         work_dir: pass.paths.work_dir,
         log_dir: Path.join(pass.paths.output_dir, "logs"),
         enabled: Map.get(pass, :firmware_inputs, true),
-        judge: Map.get(pass, :firmware_judge, true)
+        judge: Map.get(pass, :firmware_judge, false),
+        judge_budget_sec: Map.get(pass, :firmware_judge_budget_sec)
       },
       opts
     )

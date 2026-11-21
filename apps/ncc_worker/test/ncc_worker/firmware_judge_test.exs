@@ -46,6 +46,11 @@ defmodule NccWorker.FirmwareJudgeTest do
       end
     end
 
+    # Review N5: an unreadable probe event is a probe nobody could judge.
+    test "an unreadable probe event is a probe" do
+      assert FirmwareJudge.classes(["unreadable probe event: \"code:which/1\""]) == ["probe"]
+    end
+
     test "every other refusal is no class, and classes are sorted and unique" do
       assert FirmwareJudge.classes([
                "compile-time host read: os:getenv/1 (HOME)",
@@ -78,6 +83,25 @@ defmodule NccWorker.FirmwareJudgeTest do
                "pkg: compile-time probe of whether a module is loaded: X",
                "closure dependency observed the host: crc32cer (rebar3 build runs pre_hooks)"
              ]
+    end
+
+    # Review S1 and N5: the target verdict's uncut `refusal_texts` and the
+    # rebar3 record count too, so a host read listed first, or a probe past
+    # the problems' cut, hides nothing.
+    test "the uncut refusal texts and every recorded rebar3 refusal" do
+      verdict = %{
+        reason: "compile-time host read: os:getenv/1 (HOME)",
+        refusal_texts: [
+          "compile-time host read: os:getenv/1 (HOME)",
+          "pkg: compile-time probe of whether a module is loaded: X"
+        ],
+        observations: %{"rebar" => %{"pkg" => "rebar3 build runs plugins", "dep" => 7}}
+      }
+
+      texts = FirmwareJudge.texts(verdict)
+      assert "pkg: compile-time probe of whether a module is loaded: X" in texts
+      assert "rebar3 build runs plugins" in texts
+      assert FirmwareJudge.classes(texts) == ["plugins_hooks", "probe"]
     end
 
     test "a verdict without observations has only its reason" do

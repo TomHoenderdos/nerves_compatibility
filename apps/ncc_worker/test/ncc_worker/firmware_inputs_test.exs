@@ -339,12 +339,23 @@ defmodule NccWorker.FirmwareInputsTest do
     end
   end
 
-  # `NCC_INPUT.firmware_judge: false` is the portal's rollback of the judge;
-  # an older portal sends nothing, which is on.
-  test "judge_enabled?/1 is on unless the input or the worker's env turns it off" do
-    assert FirmwareInputs.judge_enabled?(%{})
+  # The judge ships off (review S7): only a portal node with
+  # NCC_FIRMWARE_JUDGE=1 sends `NCC_INPUT.firmware_judge: true`. The
+  # worker's own env cannot reach the container (review N1), so nothing else
+  # turns it on.
+  test "judge_enabled?/1 is on only when the input says true" do
     assert FirmwareInputs.judge_enabled?(%{firmware_judge: true})
+    refute FirmwareInputs.judge_enabled?(%{})
     refute FirmwareInputs.judge_enabled?(%{firmware_judge: false})
+    refute FirmwareInputs.judge_enabled?(%{firmware_judge: "true"})
+  end
+
+  test "judge_budget/1 is the input's, else 1800 s" do
+    assert FirmwareInputs.judge_budget(%{firmware_judge_budget_sec: 600}) == 600
+    assert FirmwareInputs.judge_budget(%{firmware_judge_budget_sec: 0}) == 0
+    assert FirmwareInputs.judge_budget(%{}) == 1800
+    assert FirmwareInputs.judge_budget(%{firmware_judge_budget_sec: -1}) == 1800
+    assert FirmwareInputs.judge_budget(%{firmware_judge_budget_sec: "600"}) == 1800
   end
 
   test "a target whose dirs could not be put back fails the run", %{tmp_dir: tmp_dir} do

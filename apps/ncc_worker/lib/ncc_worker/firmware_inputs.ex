@@ -110,10 +110,12 @@ defmodule NccWorker.FirmwareInputs do
 
   ## The firmware judge (stream S8)
 
-  With `ctx.judge` (`judge_enabled?/1`: on unless `NCC_INPUT.firmware_judge`
-  is `false` or the worker's `NCC_FIRMWARE_JUDGE` is `"0"`) every such
-  target is traced, whatever its package reads, and its verdict is kept as
-  the target's `firmware_judge`: `%{status, reason, classes}`.
+  With `ctx.judge` (`judge_enabled?/1`: only when `NCC_INPUT.firmware_judge`
+  is `true`, a portal node's NCC_FIRMWARE_JUDGE=1) every such target is
+  traced, whatever its package reads, and its verdict is kept as the
+  target's `firmware_judge`: `%{status, reason, classes}`. The classes come
+  from every refusal text of the verdict, not only its first reason
+  (`NccWorker.FirmwareJudge.texts/1`).
 
     * `"pass"`: the trace passed and its beams bind; the files publish.
     * `"skipped"`: the verdict refused for a probe, a rebar3 plugin or hook,
@@ -129,8 +131,12 @@ defmodule NccWorker.FirmwareInputs do
 
   `compile_inputs` are still recorded only for a package whose `lib/` reads
   the environment at module level. A target the judge alone traces starts
-  only within its own budget (NCC_FIRMWARE_JUDGE_BUDGET_SEC, default 1800 s
-  from the pass's start).
+  only within its own budget (`judge_budget/1`: `NCC_INPUT.firmware_judge_budget_sec`,
+  default 1800 s, counted from the start of this pass).
+
+  The portal holds a target the judge refused, every later build of it that
+  is no judge pass (`Portal.Precompiled.Holds`): an unjudged target is
+  published here as before, and held there.
   """
 
   alias Compatibility.CompileInputs
@@ -152,7 +158,8 @@ defmodule NccWorker.FirmwareInputs do
   run's lock snapshot, tree snapshot and start (monotonic seconds);
   `work_dir` and `log_dir` where it writes; `enabled` (default true)
   is `enabled?/1` of the run's input; `judge` (default false) is
-  `judge_enabled?/1` of it, and `judge_budget_sec` the judge's own budget;
+  `judge_enabled?/1` of it, and `judge_budget_sec` the judge's own budget
+  (`judge_budget/1` of it);
   `hex_home` (default this VM's `HEX_HOME`) the Hex cache holding the run's
   tarballs.
   """
@@ -187,7 +194,7 @@ defmodule NccWorker.FirmwareInputs do
           | {:error, {:firmware_inputs_layout_not_restored, String.t()}}
   def put(systems, ctx, opts \\ []) do
     record = Keyword.get(opts, :record, &record/4)
-    judge? = Map.get(ctx, :judge, false) == true and judge_enabled?(%{})
+    judge? = Map.get(ctx, :judge, false) == true
 
     passing =
       for {name, result} <- Enum.sort(systems),
@@ -231,24 +238,26 @@ defmodule NccWorker.FirmwareInputs do
   end
 
   # The judge's own budget for the targets it alone traces (an env-reading
-  # package's are traced for their inputs as before):
-  # `ctx.judge_budget_sec`, else NCC_FIRMWARE_JUDGE_BUDGET_SEC, default
-  # 1800 s from the pass's start.
+  # package's are traced for their inputs as before): `ctx.judge_budget_sec`
+  # (`judge_budget/1` of the run's input), counted from the start of this
+  # pass, `put/3`, not of the run.
   @judge_budget_sec 1800
 
-  defp judge_deadline(ctx) do
-    budget =
-      case Map.fetch(ctx, :judge_budget_sec) do
-        {:ok, n} when is_integer(n) and n >= 0 -> n
-        _ -> env_budget()
-      end
+  defp judge_deadline(ctx),
+    do:
+      System.monotonic_time(:second) +
+        judge_budget(%{firmware_judge_budget_sec: ctx[:judge_budget_sec]})
 
-    System.monotonic_time(:second) + budget
-  end
-
-  defp env_budget do
-    case Integer.parse(System.get_env("NCC_FIRMWARE_JUDGE_BUDGET_SEC", "")) do
-      {n, ""} when n >= 0 -> n
+  @doc """
+  The judge's own budget of a run with `input` (`NCC_INPUT`, atom keys):
+  its `firmware_judge_budget_sec` (the portal's
+  NCC_FIRMWARE_JUDGE_BUDGET_SEC), a non-negative integer, else
+  #{@judge_budget_sec} s.
+  """
+  @spec judge_budget(map()) :: non_neg_integer()
+  def judge_budget(input) when is_map(input) do
+    case Map.get(input, :firmware_judge_budget_sec) do
+      n when is_integer(n) and n >= 0 -> n
       _ -> @judge_budget_sec
     end
   end
@@ -281,13 +290,13 @@ defmodule NccWorker.FirmwareInputs do
 
   @doc """
   Whether a run with `input` judges every passing firmware target
-  (`NccWorker.FirmwareJudge`): unless its `firmware_judge` is `false` (the
-  portal's `NCC_FIRMWARE_JUDGE=0`) or the worker's own `NCC_FIRMWARE_JUDGE`
-  is `"0"`. An input without the key is on.
+  (`NccWorker.FirmwareJudge`): only when its `firmware_judge` is `true`,
+  which a portal node sends while its NCC_FIRMWARE_JUDGE is `1`. An input
+  without the key (an older portal, or the judge off) is off. The
+  container sees no env of the host's, so no worker variable turns it on.
   """
   @spec judge_enabled?(map()) :: boolean()
-  def judge_enabled?(input) when is_map(input),
-    do: Map.get(input, :firmware_judge) != false and System.get_env("NCC_FIRMWARE_JUDGE") != "0"
+  def judge_enabled?(input) when is_map(input), do: Map.get(input, :firmware_judge) == true
 
   defp put_one(systems, name, {:ok, %{compile_inputs: inputs, compile_env: env}}, how)
        when is_list(inputs) do

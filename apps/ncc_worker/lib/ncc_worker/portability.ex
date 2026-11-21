@@ -3105,8 +3105,47 @@ defmodule NccWorker.Portability do
       observations: observations(facts, problems),
       compile_env: if(status == :pass, do: facts.config.items),
       compile_inputs: if(status == :pass, do: facts.inputs),
-      manager: Context.manager(facts.ctx, facts.ctx.package)
+      manager: Context.manager(facts.ctx, facts.ctx.package),
+      refusal_texts: refusal_texts(facts)
     }
+  end
+
+  # Every rebar3 refusal of the closure, the package's and each
+  # dependency's, by app (review S1): a dependency's taint keeps only its
+  # first reason, and the package's rebar3 rule is reached only on an
+  # otherwise clean trace, so an earlier host read hid it.
+  defp rebar_refusals(facts) do
+    for {app, {:refuse, reason}} <-
+          [{facts.ctx.package, facts.package_rebar} | dep_rebar(facts.deps)],
+        is_binary(reason),
+        into: %{},
+        do: {app, reason}
+  end
+
+  # Every refusal text of a target trace, uncut (review S1, N5), for the
+  # firmware judge's classes (`NccWorker.FirmwareJudge`): what `reason` names
+  # is only the first, and `observations["problems"]` is cut.
+  defp refusal_texts(facts) do
+    decided = for {_owner, {:refuse, reason}} <- facts.decided, do: reason
+
+    deps =
+      Enum.flat_map(facts.deps, fn {app, result} ->
+        for text <- [result.taint, refusal_of(result.rebar)],
+            is_binary(text),
+            do: "closure dependency observed the host: #{app} (#{text})"
+      end)
+
+    [
+      facts.manager_mismatch,
+      facts.tree_refusal,
+      facts.package_window,
+      package_r2(facts.package_r2),
+      refusal_of(facts.package_rebar),
+      facts.native_output
+    ]
+    |> Kernel.++(facts.trace_problems ++ problems(facts) ++ decided ++ deps)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
   end
 
   defp any_refusal(decided) do
@@ -3186,6 +3225,7 @@ defmodule NccWorker.Portability do
       "trace_stats" => stats(facts),
       "refusals" => refusals |> Enum.uniq() |> Enum.take(@max_refusals),
       "taint" => for({app, %{taint: t}} when is_binary(t) <- facts.deps, into: %{}, do: {app, t}),
+      "rebar" => rebar_refusals(facts),
       "native_libs" => Enum.take(facts.libs.native, 50),
       "config_unreviewed" => Enum.take(facts.config.unreviewed, 50),
       "nif_check" => if(facts.libs.waived, do: "waived", else: "ok"),

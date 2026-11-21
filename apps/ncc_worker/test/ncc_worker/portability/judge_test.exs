@@ -1993,6 +1993,30 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{status: :skip, reason: @cnj} = rjudge(proj, "pkg", %{})
     end
 
+    # Review S1: a host read listed first must not hide the package's or a
+    # dependency's rebar3 refusal. Each rebar3 refusal is recorded in
+    # `observations["rebar"]`, and a target verdict carries every refusal
+    # text, uncut, for the firmware judge (`NccWorker.FirmwareJudge`).
+    test "a rebar3 refusal behind an earlier host read is recorded", %{proj: proj} do
+      File.write!(
+        Path.join([proj, "deps/pkg/rebar.config"]),
+        ~s({pre_hooks, [{compile, "make"}]}.\n)
+      )
+
+      read = event(35, "inet:gethostname/0", Path.join(proj, "deps/pkg/lib/pkg.ex"), "network")
+      r = %{rebar_report(proj, "pkg", %{}) | events: [read]}
+
+      for opts <- [[], [target: "rpi4"]] do
+        verdict = judge(proj, r, rebar_opts(proj, ["pkg"]) ++ opts)
+        assert verdict.reason =~ "compile-time host read: inet:gethostname/0", inspect(opts)
+        assert verdict.observations["rebar"] == %{"pkg" => "rebar3 build runs pre_hooks"}
+      end
+
+      verdict = judge(proj, r, rebar_opts(proj, ["pkg"]) ++ [target: "rpi4"])
+      assert "rebar3 build runs pre_hooks" in verdict.refusal_texts
+      assert Enum.any?(verdict.refusal_texts, &(&1 =~ "inet:gethostname/0"))
+    end
+
     test "a dependency: plugins and missing coverage taint", %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{plugins, [pc]}.\n")
 
