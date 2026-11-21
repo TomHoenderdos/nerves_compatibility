@@ -841,7 +841,9 @@ What it lists:
 - `versions[v].relocated` — relocated builds: toolchain builds whose own beams hold the deps or
   build path of the compile that made them (a `__DIR__` or `Path.expand/1` literal, an Erlang
   `?FILE`, a path into the build's `priv`), each listed with `relocation`, the record of every
-  such occurrence, which the client rewrites to its project's own paths at install. Read only by
+  such occurrence, which the client rewrites to its project's own paths at install; and builds of
+  a dependent that passed only because a dependency in its closure was relocated, whose record
+  names the same three roots and lists the occurrences in its own beams, often none. Read only by
   clients 0.9.0 and later, after the version's other lists (and its `foreign_priv` object)
   missed; no client up to 0.8.x reads this key, so to them a package whose only builds are here
   shows `MISS not built`. It is an object of the same lists as the version itself, `builds`
@@ -855,8 +857,8 @@ What it lists:
   "relocation": {
     "deps": "/work/proj/deps",
     "build": "/work/proj/_build/host",
-    "second": {"deps": "/home/nerves/.cache/mix/installs/.../ncc-relocate-<n>/.../app/deps",
-               "build": "/home/nerves/.cache/mix/installs/.../ncc-relocate-<n>/.../app/out.d/host-1"},
+    "second": {"deps": "/home/ncc-relocate/.cache/mix/installs/.../ncc-relocate-<n>/.../app/deps",
+               "build": "/home/ncc-relocate/.cache/mix/installs/.../ncc-relocate-<n>/.../app/out.d/host-1"},
     "third": {"deps": "/Users/Ncc-Relocate <n>/Library/Mobile Documents/.../Deps vendored_d",
               "build": "/Users/Ncc-Relocate <n>/Library/Mobile Documents/.../Build-3/Host 4"},
     "files": [
@@ -869,19 +871,31 @@ What it lists:
 
   `deps` and `build` are the first compile's `Mix.Project.deps_path/0` and `build_path/0`, the
   worker's `/work/proj/deps` and `/work/proj/_build/host`; `second` the second compile's, under
-  `/home/nerves/.cache/mix/installs` (`Compatibility.Relocation.second_layout/2`), and `third`
-  the third compile's, under `/Users` (`third_layout/2`), both of run token `<n>`. The portal
-  stores no record whose roots are not these (`pinned_problem/1`), and client 0.9.0 holds every
-  record to the same layout, copied into its own source. Each file is a beam of the entry's
+  `/home/ncc-relocate/.cache/mix/installs` (`Compatibility.Relocation.second_layout/2`; under
+  `/home/` but outside the container's `HOME`, which is one of the roots R2 searches), and
+  `third` the third compile's, under `/Users` (`third_layout/2`), both of run token `<n>`. The
+  portal stores no record whose roots are not these (`pinned_problem/1`), and client 0.9.0 holds
+  every record to the same layout, copied into its own source. The layout is therefore frozen:
+  every released 0.9.x client refuses a record at any other roots, so a portal that changes it
+  must publish such records under a new record version (another key than `relocation`) that a
+  newer client reads, and keep this one as it is. `make test-relocate-e2e` installs a record at
+  these roots with the client, so a drift between the two copies fails there. Each file is a beam
+  of the entry's
   `ebin`, and each occurrence names its chunk (`LitT`, `AtU8`, `Attr`, `Line`), the literal's
   index from 0, the atom's from 1 or the line table's file name's from 0, the path to the value
   inside the term (element indices of tuples and lists, a proper list's tail at its length, a map
   value's index among the map's keys in term order), its kind (`binary`, `charlist`, `atom`) and
   the value as a template, text and slot names (`deps`, `build`) in turn, the text UTF-8 and each
-  value at most 4 KiB. A record over 256 KiB of JSON is refused.
+  value at most 4 KiB; the text after a `build` slot is empty or starts with `/lib/` or
+  `/consolidated/` (Mix's layout under a build path). `files` may be empty: a dependent's build
+  whose own beams need no rewrite. A record over 256 KiB of JSON is refused. Every beam of the
+  entry's `ebin` was compiled from the package's dir under `deps` (`<deps>/<app>/`, `<app>` the
+  entry's `.app` file's name): the portal reads each beam's `CInf` `source` at ingest
+  (`Compatibility.Relocation.compiled_in_problem/3`, without making an atom) and stores a build
+  that fails it as a `fail` with no files.
 
-  The builder (`NccWorker.Portability.Relocate`) builds the package again at two more roots, the
-  third only when the package's own beams hold the path. The three differ in length and depth,
+  The builder (`NccWorker.Portability.Relocate`) builds the package again at two more roots, for
+  every build it held, a dependent's too. The three differ in length and depth,
   case, spaces, project dir name and the order of the deps and build paths, and hold between
   them the words user paths hold: a home's `.cache/mix/installs`, `/Users/`, `Library`,
   `Projects`, `projects`, `src`, `code`, `app`, `nix/store`, a dot-dir, `@` and `~`. It keeps the
@@ -898,17 +912,23 @@ What it lists:
   The residual, what the three roots cannot show: a compile-time test of the path against a
   constant that none of the three roots contains (a prefix such as `/opt/` or `/srv/`, a word no
   root holds), or any test that answers the same at all three roots and differently at the
-  user's path. The client relocates only to paths inside the envelope the three roots span
-  (below), which bounds tests of a path's length, depth and characters, not tests of which words
-  it holds. Today R2 refuses every build whose beams hold the path, so this residual is new
-  exposure, for relocated builds only. `Dbgi` keeps the first build's paths: a tool that compiles
+  user's path. For a dependent's build, that path is its relocated dependency's, and the test
+  sits in the dependency's code or the dependent's. The client relocates only to paths inside the
+  envelope the three roots span (below), which bounds tests of a path's length, depth and
+  characters, not tests of which words it holds. Today R2 refuses every build whose beams hold
+  the path, and R3 every dependent of one, so this residual is new exposure, for these builds
+  only. `Dbgi` keeps the first build's paths: a tool that compiles
   a module again from its debug info (`:cover` on a dependency, the debugger) sees them, as in
   every served build.
 
   Two portal settings, both off by default and both on the admin Maintenance page, so turning
   either on is a setting, not a deploy: `relocate_builds_enabled` sends `judge.relocate` to the
-  worker (`Portal.Builder` then also binds a per-run scratch dir at `/Users` for the third root),
-  and `relocated_enabled` serves what such builds made. The portal stores a relocated build's
+  worker (`Portal.Builder` then also binds per-run scratch dirs at `/home/ncc-relocate` and
+  `/Users`, which both worker images pre-create, for the other two roots), and
+  `relocated_enabled` serves what such builds made. Every toolchain row's
+  `compile_observations.trace_stats.relocate` says how it was judged: `"off"`, `"on"` (nothing
+  held), `"relocated"`, `"dependencies"` or `"refused: <why>"`. With `relocate_builds_enabled` on
+  and `relocated_enabled` off, no row it makes reaches any client. The portal stores a relocated build's
   files in its own `relocated_file_manifest` column, with `file_manifest` nil, and the worker
   writes `toolchain_build.relocated_file_manifest` with `file_manifest` nil: a portal before S4
   reads `file_manifest` alone, so it lists, serves and keeps as an earlier build nothing of a
@@ -926,10 +946,11 @@ What it lists:
   case folding or Unicode normalisation (`relocated_path_spelling`), and each inside the envelope
   of the record's three roots for its slot: its characters among theirs, its length and depth
   between their least and greatest (`relocated_path_envelope`). It refuses (`relocation_refused`)
-  a record whose three roots are not the builder's own layout. After staging and verifying the
-  served files it requires every beam's `CInf` `source` to lie in the package's dir under the
-  record's `deps` path, derives every beam's occurrences of the record's paths itself and
-  requires them to be exactly
+  a record whose three roots are not the builder's own layout, or whose `build` slot is followed by
+  anything but Mix's layout. After staging and verifying the served files it requires every
+  beam's `CInf` `source` to lie in the package's dir under the record's `deps` path, derives every
+  beam's occurrences of the record's paths itself (each `build` slot again followed by Mix's
+  layout) and requires them to be exactly
   the record's (none for a beam it does not name), requires every other file of the entry to hold
   no such path, and rewrites each occurrence to its own paths as its own compile would have
   written it: a changed literal is `term_to_binary(term, [{:minor_version, 2}, :deterministic])`
@@ -940,8 +961,10 @@ What it lists:
   a served beam whose funs' `old_uniq` is not its md5's, two literals, atoms or file names that
   would become one, an atom over 255 code points or, in a short atom table, over 255 bytes, a
   rewrite of atom 1 (the module's name), and any of the record's paths left in any chunk but
-  `CInf`, `Dbgi` and `Docs`. A relocation record in any other list, or on a device, is a malformed
-  entry. The relocated files' hashes go into the install's provenance with the paths they were
+  `CInf`, `Dbgi` and `Docs`; a refusal at install, after the fetch, reports as
+  `relocation_refused` too. A relocation record in any other list, or on a device, is a malformed
+  entry. A record with no files installs the served beams as they are, after the same checks. The
+  relocated files' hashes go into the install's provenance with the paths they were
   relocated to, so a later run keeps the install while those paths are the project's and installs
   it again, relocated anew, once they are not (a moved project).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
