@@ -7,8 +7,12 @@ defmodule Portal.Catalog.CoverageMetrics do
       the served packages over those of every counted package, the share of
       what people install that is served;
     * **coverage of the packages that compile**: served packages over the
-      counted packages less the compile failures. A genuine compile failure
-      fails the user's own compile too, so no build can serve it.
+      counted packages less the compile failures and the Gleam packages. A
+      genuine compile failure fails the user's own compile too, so no build
+      can serve it; and no Elixir before 1.22 compiles a Gleam dependency
+      (Mix's `:gleam` manager, elixir-lang/elixir#14262), so a user has no
+      own compile of one either. Both are counted apart (`compile_failures`,
+      `gleam`); the download-weighted share keeps them.
 
   A package is counted at its newest stable release on Hex, a retired one
   included (`mix hex.retire`: it "is still resolvable and usable"), else its
@@ -36,6 +40,12 @@ defmodule Portal.Catalog.CoverageMetrics do
   2026-11-21), and a host compile a signal killed: both raise the second
   percentage a little.
 
+  A package is Gleam when nothing serves it and a toolchain build of the
+  version is skipped for a Gleam build tool, its own (`"Package uses gleam
+  build tool"`) or a dependency's (`"dependency uses gleam build tool:
+  ..."`), or, with no toolchain build of the version at all, a run of the
+  package was skipped for its own Gleam build tool.
+
   Computing it reads the registry and runs one query per toolchain over the
   whole catalog, so the admin Maintenance page shows a stored copy
   (`store/1`, `latest/0`) that `Portal.Workers.CoverageRefresh` recomputes
@@ -58,6 +68,7 @@ defmodule Portal.Catalog.CoverageMetrics do
           compile_failures: non_neg_integer(),
           compile_failure_downloads: non_neg_integer(),
           nothing_to_compile: non_neg_integer(),
+          gleam: non_neg_integer(),
           download_percent: float(),
           compile_percent: float()
         }
@@ -93,6 +104,14 @@ defmodule Portal.Catalog.CoverageMetrics do
         WHERE t.package_id = p.id AND t.version = l.version AND t.toolchain = $3
           AND t.config_variant = 'default'
       ) AS built,
+      EXISTS (
+        SELECT 1 FROM catalog_toolchain_builds t
+        WHERE t.package_id = p.id AND t.version = l.version AND t.toolchain = $3
+          AND t.config_variant = 'default' AND t.variant = ANY($4::text[])
+          AND t.revoked_at IS NULL AND t.status = 'skipped'
+          AND (t.reason LIKE 'Package uses gleam build tool%'
+               OR t.reason LIKE 'dependency uses gleam build tool: %')
+      ) AS gleam_build,
       (SELECT s.status
        FROM catalog_runs r
        JOIN catalog_system_results s ON s.run_id = r.id AND s.system_pkg = 'host'
@@ -101,17 +120,29 @@ defmodule Portal.Catalog.CoverageMetrics do
        LIMIT 1) AS host
     FROM catalog_packages p
     JOIN latest l ON l.name = p.name
+  ), judged AS (
+    -- The runs are read only for a package with no toolchain build of the
+    -- version, a few thousand, not for every package.
+    SELECT b.*,
+      NOT b.served AND (b.gleam_build OR (NOT b.built AND EXISTS (
+        SELECT 1 FROM catalog_runs r
+        JOIN catalog_system_results s ON s.run_id = r.id
+        WHERE r.package_id = b.id AND r.revoked_at IS NULL
+          AND s.status = 'skipped' AND s.log_tail LIKE 'Package uses gleam build tool%'
+      ))) AS gleam
+    FROM builds b
+    WHERE b.served OR NOT b.no_beams
   ), counted AS (
     SELECT *,
-      NOT served AND (compile_failed OR (NOT built AND host IS NOT DISTINCT FROM 'fail'))
-        AS failure
-    FROM builds
-    WHERE served OR NOT no_beams
+      NOT served AND NOT gleam
+        AND (compile_failed OR (NOT built AND host IS NOT DISTINCT FROM 'fail')) AS failure
+    FROM judged
   )
   SELECT count(*), coalesce(sum(downloads), 0),
     count(*) FILTER (WHERE served), coalesce(sum(downloads) FILTER (WHERE served), 0),
     count(*) FILTER (WHERE failure), coalesce(sum(downloads) FILTER (WHERE failure), 0),
-    (SELECT count(*) FROM builds WHERE NOT served AND no_beams)
+    (SELECT count(*) FROM builds WHERE NOT served AND no_beams),
+    count(*) FILTER (WHERE gleam)
   FROM counted
   """
 
@@ -148,7 +179,7 @@ defmodule Portal.Catalog.CoverageMetrics do
   end
 
   defp row(toolchain, names, versions, variants) do
-    %{rows: [[packages, downloads, served, served_dl, failures, failure_dl, nothing]]} =
+    %{rows: [[packages, downloads, served, served_dl, failures, failure_dl, nothing, gleam]]} =
       Repo.query!(counts_sql(), [names, versions, toolchain, variants],
         timeout: :timer.minutes(5)
       )
@@ -164,8 +195,9 @@ defmodule Portal.Catalog.CoverageMetrics do
       compile_failures: failures,
       compile_failure_downloads: failure_dl,
       nothing_to_compile: nothing,
+      gleam: gleam,
       download_percent: percent(served_dl, downloads),
-      compile_percent: percent(served, packages - failures)
+      compile_percent: percent(served, packages - failures - gleam)
     }
   end
 
@@ -221,7 +253,8 @@ defmodule Portal.Catalog.CoverageMetrics do
   end
 
   @fields ~w(toolchain packages downloads served served_downloads compile_failures
-             compile_failure_downloads nothing_to_compile download_percent compile_percent)a
+             compile_failure_downloads nothing_to_compile gleam download_percent
+             compile_percent)a
 
   # The row holds the metrics as JSON, string keys; only the names
   # `compute/1` writes are read back.

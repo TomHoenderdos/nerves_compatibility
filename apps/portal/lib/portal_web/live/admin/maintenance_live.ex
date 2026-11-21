@@ -1031,6 +1031,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               with nothing to compile are left out. A build whose closure is withheld counts as
               served; a compile failure is a failed toolchain compile (not one a signal killed),
               or, with no toolchain build, a failed host compile in the firmware project.
+              Gleam packages leave the second share too: no Elixir before 1.22 compiles them.
             </p>
             <p
               :if={@coverage_metrics == nil}
@@ -1060,6 +1061,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     <th class="text-right">Of packages that compile</th>
                     <th class="text-right">Compile failures</th>
                     <th class="text-right">Nothing to compile</th>
+                    <th class="text-right">Gleam</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1078,6 +1080,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     </td>
                     <td class="text-right tabular-nums">{row.compile_failures}</td>
                     <td class="text-right tabular-nums">{row.nothing_to_compile}</td>
+                    <td data-column="gleam" class="text-right tabular-nums">{row.gleam}</td>
                   </tr>
                 </tbody>
               </table>

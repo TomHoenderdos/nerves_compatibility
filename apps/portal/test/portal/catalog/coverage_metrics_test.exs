@@ -52,6 +52,29 @@ defmodule Portal.Catalog.CoverageMetricsTest do
     )
   end
 
+  defp forced_skip!(name, version, reason) do
+    run =
+      Ash.create!(
+        Run,
+        %{
+          run_id: "#{name}-#{System.unique_integer([:positive])}",
+          package_id: package!(name).id,
+          version_tested: version,
+          overall_status: :skipped,
+          finished_at: DateTime.utc_now()
+        },
+        action: :create,
+        domain: Portal.Catalog
+      )
+
+    Ash.create!(
+      SystemResult,
+      %{run_id: run.id, system_pkg: "forced@admin@unknown", status: :skipped, log_tail: reason},
+      action: :create,
+      domain: Portal.Catalog
+    )
+  end
+
   # Downloads: served 400 + hidden 100 = 500 of 1,000 counted.
   defp seed! do
     package!("served", 400)
@@ -148,6 +171,43 @@ defmodule Portal.Catalog.CoverageMetricsTest do
 
     assert %{toolchains: [%{packages: 3, compile_failures: 1, compile_percent: +0.0}]} =
              CoverageMetrics.compute(registry)
+  end
+
+  # No Elixir before 1.22 compiles a Gleam dependency (Mix's `:gleam`
+  # manager, elixir-lang/elixir#14262), so a user has no own compile of one
+  # and nothing can be served: such a package leaves the second
+  # denominator, as a compile failure does, and is counted apart.
+  test "a Gleam package is not one that compiles, and is counted apart" do
+    package!("served", 100)
+    build!("served", "1.0.0", status: :pass)
+
+    package!("gleam_own", 300)
+    build!("gleam_own", "1.0.0", status: :skipped, reason: "Package uses gleam build tool")
+
+    package!("gleam_dep", 50)
+
+    build!("gleam_dep", "1.0.0",
+      status: :skipped,
+      reason: "dependency uses gleam build tool: gleam_stdlib"
+    )
+
+    # A full run's forced skip, and no toolchain build of the version.
+    package!("gleam_run", 50)
+    forced_skip!("gleam_run", "1.0.0", "Package uses gleam build tool (gleam)")
+
+    package!("unbuilt", 100)
+
+    registry =
+      for name <- ~w(served gleam_own gleam_dep gleam_run unbuilt), do: entry(name, ["1.0.0"])
+
+    assert %{toolchains: [row]} = CoverageMetrics.compute(registry)
+    assert row.packages == 5
+    assert row.gleam == 3
+    assert row.compile_failures == 0
+    # The downloads keep every package: 100 of 600.
+    assert row.download_percent == 16.7
+    # 1 served of the 2 that can compile.
+    assert row.compile_percent == 50.0
   end
 
   test "an empty registry is all zeros, not an error" do
