@@ -82,17 +82,18 @@ defmodule NccWorker.Portability.ScriptCheck do
     with {:ok, timeout} <- executable("timeout"),
          {:ok, elixir} <- executable("elixir") do
       env = Keyword.get(opts, :env, []) ++ Keyword.get(opts, :extra_env, [])
-
-      Enum.reduce_while(scripts, {:ok, []}, fn {app, bytes}, {:ok, done} ->
-        case check(app, bytes, {timeout, elixir}, env) do
-          :skip -> {:cont, {:ok, done}}
-          :ok -> {:cont, {:ok, done ++ [app]}}
-          other -> {:halt, other}
-        end
-      end)
+      Enum.reduce_while(scripts, {:ok, []}, &checked(&1, &2, {timeout, elixir}, env))
     end
   rescue
     e -> {:error, "script check failed: " <> Exception.message(e)}
+  end
+
+  defp checked({app, bytes}, {:ok, done}, exes, env) do
+    case check(app, bytes, exes, env) do
+      :skip -> {:cont, {:ok, done}}
+      :ok -> {:cont, {:ok, done ++ [app]}}
+      other -> {:halt, other}
+    end
   end
 
   defp executable(name) do

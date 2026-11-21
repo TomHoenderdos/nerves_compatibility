@@ -328,14 +328,15 @@ defmodule NccWorker.Portability.DifferentialBeams do
          {:ok, names_a} <- list(a),
          {:ok, names_b} <- list(b) do
       if names_a == names_b,
-        do:
-          Enum.reduce_while(names_a, :ok, fn name, :ok ->
-            case compare_tree(Path.join(a, name), Path.join(b, name), rel <> "/" <> name, sub) do
-              :ok -> {:cont, :ok}
-              other -> {:halt, other}
-            end
-          end),
+        do: Enum.reduce_while(names_a, :ok, &same_entry(&1, &2, a, b, rel, sub)),
         else: {:differs, "#{rel}: other entries"}
+    end
+  end
+
+  defp same_entry(name, :ok, a, b, rel, sub) do
+    case compare_tree(Path.join(a, name), Path.join(b, name), rel <> "/" <> name, sub) do
+      :ok -> {:cont, :ok}
+      other -> {:halt, other}
     end
   end
 
