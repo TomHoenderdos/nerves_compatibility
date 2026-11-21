@@ -797,6 +797,36 @@ defmodule NccWorker.Portability.ProbesTest do
       end
     end
 
+    # The same for phoenix_live_view's tag engine (1.2.0 and later): its
+    # tokenizer calls `state.tag_handler.classify_type/1` on every tag, and
+    # the compiler of the same template, in the same process, asks
+    # `function_exported?(state.tag_handler, :annotate_caller, 3)` for a
+    # component call (`maybe_anno_caller/5`). A dependent's ~H component
+    # compiles the same either way (phoenix_live_dashboard).
+    test "phoenix_live_view's tag engine site is a reviewed one", %{tmp_dir: dir} do
+      compiler = "Elixir.Phoenix.LiveView.TagEngine.Compiler"
+      engine = "Elixir.Phoenix.LiveView.HTMLEngine"
+
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "phoenix_live_view" => ["kernel"]})
+        |> with_modules(%{compiler => "phoenix_live_view", engine => "phoenix_live_view"})
+
+      c = put_in(c.deps["pkg"].children, ["phoenix_live_view"])
+      release = &{nil, %{"phoenix_live_view" => %{name: "phoenix_live_view", version: &1}}}
+      c = %{c | hex: release.("1.2.15")}
+
+      probe =
+        hex(engine,
+          mfa: "erlang:function_exported/3",
+          caller: frame(compiler, "maybe_anno_caller", 5)
+        )
+
+      assert Probes.decide(probe, c, "pkg") == :ignore
+      # 1.1 has no such probe; a release older than the reviewed one refuses.
+      assert {:refuse, _} = Probes.decide(probe, %{c | hex: release.("1.1.34")}, "pkg")
+    end
+
     # An installed OTP module on the owner's path is the same: listed, it
     # can be found, but whether it is loaded is the earlier compiles' doing.
     test "an on-path OTP module's loaded-now probe refuses unless ensured first",

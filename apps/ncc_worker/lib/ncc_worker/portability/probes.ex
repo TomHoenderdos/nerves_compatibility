@@ -205,8 +205,18 @@ defmodule NccWorker.Portability.Probes do
   # plug's `init_module_plug/4` runs `plug.init(opts)`, then
   # `function_exported?(plug, :call, 2)` (plug 1.5.0 to 1.20.4, read
   # 2026-11-21; Plug.Builder, so Plug.Router and Phoenix's router and
-  # endpoint pipelines).
-  @reviewed_direct_calls [{"Elixir.Plug.Builder", "init_module_plug", 4, "plug", "1.5.0"}]
+  # endpoint pipelines). phoenix_live_view's tag engine compiles a template
+  # in one process: its tokenizer calls `state.tag_handler.classify_type/1`
+  # on every tag, and the compiler's `maybe_anno_caller/5`, which only a
+  # component or slot call reaches, then asks
+  # `function_exported?(state.tag_handler, :annotate_caller, 3)` (the same
+  # body in 1.2.0 to 1.2.15, read 2026-11-21; 1.1 calls annotate_caller/2
+  # without asking). So every dependent's ~H components.
+  @reviewed_direct_calls [
+    {"Elixir.Plug.Builder", "init_module_plug", 4, "plug", "1.5.0"},
+    {"Elixir.Phoenix.LiveView.TagEngine.Compiler", "maybe_anno_caller", 5, "phoenix_live_view",
+     "1.2.0"}
+  ]
   # The stacks the tracer judged (`NccWorker.Portability.Events`).
   @extents ~w(frame dispatcher truncated lineage)
 

@@ -57,10 +57,11 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # The probe rules of fix/otp-app-probe refuse more of them: a closure
   # dependency's probe of a module no dependency of its closure builds or
   # declares (websock_adapter's `cowboy_websocket`: cowboy comes only
-  # through plug_cowboy), and a loaded-now `function_exported?/3` of a
-  # module the probe did not load itself (@probe_reasons). A probe of an
-  # absent declared optional dependency's module passes (round 2, ruling 1:
-  # jason's `Decimal`, mint's `CAStore`, swoosh's `Plug`).
+  # through plug_cowboy; @probe_reasons). A probe of an absent declared
+  # optional dependency's module passes (round 2, ruling 1: jason's
+  # `Decimal`, mint's `CAStore`, swoosh's `Plug`), and so does a loaded-now
+  # probe of an own module or right after a reviewed site's direct call
+  # (ruling 2: LiveView's tag engine asking about its tag handler).
   @expected %{
     {"phoenix", "exclude"} => "refused",
     {"phoenix", "include"} => "pass",
@@ -100,16 +101,16 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
   # What each build the probe rules refuse refuses for first, on this
   # toolchain (Elixir 1.20, OTP 28 and 29: the closure's sources decide it).
-  @html_engine "compile-time probe of whether a module is loaded: " <>
-                 "Elixir.Phoenix.LiveView.HTMLEngine via erlang:function_exported/3"
-
+  # phoenix_live_view's own `function_exported?(HTMLEngine, ...)` probes an
+  # own module, and its tag engine's in a dependent's window is a reviewed
+  # direct-call site (round 2, ruling 2): neither refuses.
   @probe_reasons %{
     {"phoenix", "exclude"} =>
       @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
-    {"phoenix_live_view", "exclude"} => @html_engine,
-    {"phoenix_live_view", "include"} => @html_engine,
-    {"phoenix_live_dashboard", "exclude"} => @html_engine,
-    {"phoenix_live_dashboard", "include"} => @html_engine,
+    {"phoenix_live_view", "exclude"} =>
+      @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
+    {"phoenix_live_dashboard", "exclude"} =>
+      @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
     {"polymorphic_embed", "include"} =>
       @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)"
   }
