@@ -13,7 +13,8 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
           "`config_order` items carry `app`, `path`, `reader`, `default` and `seen`; " <>
           "`platform_define` items carry `regex` and `matched`; `endian` items carry `value`, " <>
           "the build's byte order (`little` or `big`); `os_type` items carry `family` and, " <>
-          "unless only the family can reach the build, `name`: the build's `:os.type/0`.",
+          "unless only the family can reach the build, `name`: the build's `:os.type/0`; " <>
+          "`config_all` items carry `app` and `entries`, the whole config the build compiled with.",
       type: :object,
       properties: %{
         kind: %Schema{
@@ -25,7 +26,8 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
             "config_order",
             "platform_define",
             "endian",
-            "os_type"
+            "os_type",
+            "config_all"
           ]
         },
         regex: %Schema{
@@ -54,6 +56,19 @@ defmodule PortalWeb.ApiSchemas.CompileInputItem do
               "compares with its own."
         },
         app: %Schema{type: :string},
+        entries: %Schema{
+          type: :array,
+          maxItems: 128,
+          description:
+            "For `config_all`: every key the build's config set for `app`, sorted by key, " <>
+              "each value recorded like an `env` item's.",
+          items: %Schema{
+            type: :object,
+            properties: %{key: %Schema{type: :string}, value: %Schema{type: :string}},
+            required: [:key, :value],
+            additionalProperties: false
+          }
+        },
         path: %Schema{type: :array, items: %Schema{type: :string}, minItems: 1, maxItems: 1},
         reader: %Schema{
           type: :string,

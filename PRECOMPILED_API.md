@@ -656,6 +656,14 @@ What it lists:
     files never hold either path (the firmware build-root rule withholds them).
   - `{"kind": "mix_target", "value": <target>}` (judge revision 19 and later, firmware builds
     only): the compile read `Mix.target/0`; `value` is the `MIX_TARGET` it was built for.
+  - `{"kind": "config_all", "app", "entries": [{"key", "value"}]}` (builds since 2026-11-21): the
+    closure read `app`'s whole env at compile time (`Application.get_all_env/1`, tz's
+    `Tz.CompilerRunner`), from a reader that reads its own application, one in its dependency
+    tree or one Mix preloads. `entries` are every key the builder's project config set for `app`
+    when the compile started, sorted by key, each once, each `value` recorded like an `env`
+    item's (`{:ok, value}`) or `"unrecordable"`; at most 128. An empty list is an app the config
+    leaves alone. Listed once per app. A read the snapshot cannot give whole is
+    `config_unrecorded` instead.
 
   A firmware build (`target` a Nerves system) carries `compile_inputs` only when its package's
   own `lib/` reads the environment at module level and the worker's traced compile of the
@@ -1048,14 +1056,19 @@ build fails as the reason it was not used:
       value, cut the same way at the project's own `NERVES_TOOLCHAIN` and `NERVES_SYSTEM`, is
       `value`; else `env_differs`;
     - a `mix_target` item holds when `value` is the target Mix compiles for, else `rule8_target`,
-      with the build's and the project's target as its arguments.
+      with the build's and the project's target as its arguments;
+    - a `config_all` item (clients 0.9.0 and later) holds when `app`'s env in the project, read
+      before any dependency compiles, has exactly the keys of `entries` with the values they
+      decode to: an app not loaded yet holds its config alone; a loaded one is compared only when
+      its `.app` declares no env, else the item differs. Else `config_all_differs`, with `app` as
+      its argument. A client that does not know the kind treats the item as malformed: a miss.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
     being installed, `default` is `:error`, and the device's value for the key equals `seen`.
     On a device, an `env` item recorded unset holds, one recorded set or `set_by: "nerves"` is
     `env_set_at_build`, an `endian` item is `endian_differs`, an `os_type` item
     `os_type_differs` and a `mix_target` item `rule8_target` (the device cannot check the machine
-    its firmware was compiled on, nor its target). A
+    its firmware was compiled on, nor its target), and a `config_all` item `config_all_differs`. A
     client never prints the project's value. A build that carries `compile_inputs` is exempt
     from the source scan's environment-variable rule (`rule8_env`).
 
@@ -1159,6 +1172,7 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
 `config_unrecorded`, `config_order_differs`, `rebar3_global_config`,
 `erl_compiler_options`, `platform_define_differs`, `endian_differs`, `os_type_differs`,
+`config_all_differs`,
 `triple_differs`, `nif_version_newer`, `origin_unverified`, `deterministic_not_built`, and the
 foreign priv codes of client 0.8.0: `foreign_priv_target_compiles` ("writes into {0}'s priv; {0}
 compiles from source in this run"), `foreign_priv_target_missing` ("writes into {0}'s priv; {0} is

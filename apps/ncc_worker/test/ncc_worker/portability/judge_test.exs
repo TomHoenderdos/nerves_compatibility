@@ -3052,6 +3052,35 @@ defmodule NccWorker.Portability.JudgeTest do
       assert Compatibility.Portability.withdrawal_judge_revision() == 3
     end
 
+    test "get_all_env of its own app or one in its tree passes with one config_all input each",
+         %{proj: proj} do
+      all = fn ts, app ->
+        ts
+        |> event("application:get_all_env/1", "lib/x.ex", "config")
+        |> Map.merge(%{
+          "arg" => %{"app" => app, "app_name" => app, "all" => true},
+          "first_kind" => "user"
+        })
+      end
+
+      snap = %{@snap | entries: %{{"dep", "mode"} => enc({:ok, :fast})}}
+
+      assert %{status: :pass, compile_inputs: inputs} =
+               judge(
+                 proj,
+                 traced(proj, [all.(35, "pkg"), all.(35, "dep"), all.(15, "dep")], snap)
+               )
+
+      assert inputs == [
+               %{
+                 "kind" => "config_all",
+                 "app" => "dep",
+                 "entries" => [%{"key" => "mode", "value" => enc({:ok, :fast})}]
+               },
+               %{"kind" => "config_all", "app" => "pkg", "entries" => []}
+             ]
+    end
+
     test "get_all_env in the package's window refuses it; in a dependency's it taints",
          %{proj: proj} do
       all = fn ts ->

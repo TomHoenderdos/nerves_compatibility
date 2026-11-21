@@ -146,6 +146,43 @@ defmodule Compatibility.CompileInputsTest do
     end
   end
 
+  @config_all %{
+    "kind" => "config_all",
+    "app" => "tz",
+    "entries" => [
+      %{"key" => "data_dir", "value" => "g2gCdwJva20AAAAEL3RtcA"},
+      %{"key" => "http_client", "value" => "unrecordable"}
+    ]
+  }
+
+  test "a config_all item is accepted in its exact shape, empty too, and needs a check" do
+    empty = %{@config_all | "entries" => []}
+    assert CompileInputs.validate([@config_all, empty]) == {:ok, [@config_all, empty]}
+    assert CompileInputs.needs_check?([empty])
+  end
+
+  test "a malformed config_all item is malformed" do
+    [a, b] = @config_all["entries"]
+
+    for bad <- [
+          Map.put(@config_all, "extra", 1),
+          Map.delete(@config_all, "entries"),
+          %{@config_all | "app" => ""},
+          %{@config_all | "app" => "a=b"},
+          %{@config_all | "app" => :tz},
+          %{@config_all | "entries" => %{"data_dir" => a["value"]}},
+          %{@config_all | "entries" => [b, a]},
+          %{@config_all | "entries" => [a, a]},
+          %{@config_all | "entries" => [Map.put(a, "extra", 1)]},
+          %{@config_all | "entries" => [%{a | "key" => ""}]},
+          %{@config_all | "entries" => [%{a | "value" => rec(fn -> :ok end)}]},
+          %{@config_all | "entries" => [%{a | "value" => nil}]},
+          %{@config_all | "entries" => for(i <- 1..129, do: %{a | "key" => "k#{1000 + i}"})}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad, limit: 5)
+    end
+  end
+
   @define %{"kind" => "platform_define", "regex" => "R14", "matched" => false}
 
   test "a platform_define item is accepted in its exact shape and needs a check" do

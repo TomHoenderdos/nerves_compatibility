@@ -566,7 +566,7 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     end
   end
 
-  test "get_all_env refuses from package code, cannot be judged from the toolchain's; get_env/1 is ignored" do
+  test "get_all_env refuses from package code outside its tree, cannot be judged from the toolchain's; get_env/1 is ignored" do
     all = fn kind ->
       %{
         read("phoenix", nil, kind: kind, mfa: "application:get_all_env/1")
@@ -593,6 +593,104 @@ defmodule NccWorker.Portability.ConfigReadsTest do
     }
 
     assert %{items: [], refusals: []} = judge([obs("pkg", one)], snap(%{}))
+  end
+
+  describe "a read of an application's whole env (get_all_env/1)" do
+    defp all(app, opts \\ []) do
+      %{
+        read(app, nil, Keyword.put(opts, :mfa, "application:get_all_env/1"))
+        | "arg" => %{"app" => app, "app_name" => app, "all" => true}
+      }
+    end
+
+    defp config_all(app, entries),
+      do: %{"kind" => "config_all", "app" => app, "entries" => entries}
+
+    test "of the reader's own app, one in its tree or one Mix preloads, is one input" do
+      decided = [
+        obs("pkg", all("pkg")),
+        obs("pkg", all("dep")),
+        obs("dep", all("dep")),
+        obs("pkg", all("logger"))
+      ]
+
+      entries = %{
+        {"dep", "b"} => enc({:ok, 2}),
+        {"dep", "a"} => enc({:ok, 1}),
+        {"logger", "level"} => enc({:ok, :info}),
+        {"other", "x"} => enc({:ok, :x})
+      }
+
+      result = judge(decided, snap(entries))
+      assert %{refusals: [], problems: [], items: [], unreviewed: []} = result
+
+      assert result.inputs == [
+               config_all("dep", [
+                 %{"key" => "a", "value" => enc({:ok, 1})},
+                 %{"key" => "b", "value" => enc({:ok, 2})}
+               ]),
+               config_all("logger", [%{"key" => "level", "value" => enc({:ok, :info})}]),
+               config_all("pkg", [])
+             ]
+
+      assert {:ok, _} = Compatibility.CompileInputs.validate(result.inputs)
+    end
+
+    test "keeps the keyed reads of the same app as items" do
+      decided = [obs("pkg", all("pkg")), obs("pkg", read("pkg", "k"))]
+      result = judge(decided, snap(%{{"pkg", "k"} => enc({:ok, 1})}))
+
+      assert result.items == [%{app: "pkg", path: ["k"], value: enc({:ok, 1})}]
+
+      assert result.inputs == [
+               config_all("pkg", [%{"key" => "k", "value" => enc({:ok, 1})}])
+             ]
+    end
+
+    test "an oversize value matches nothing; a truncated snapshot or too many keys records none" do
+      oversize = judge([obs("pkg", all("pkg"))], snap(%{{"pkg", "big"} => :oversize}))
+
+      assert oversize.inputs == [
+               config_all("pkg", [%{"key" => "big", "value" => "unrecordable"}])
+             ]
+
+      truncated = judge([obs("pkg", all("pkg"))], snap(%{}, true))
+      assert truncated.inputs == [%{"kind" => "config_unrecorded"}]
+      assert truncated.refusals == []
+
+      many = Map.new(1..129, &{{"pkg", "k#{1000 + &1}"}, enc({:ok, &1})})
+
+      assert judge([obs("pkg", all("pkg"))], snap(many)).inputs == [
+               %{"kind" => "config_unrecorded"}
+             ]
+    end
+
+    test "without a snapshot cannot be judged" do
+      assert %{problems: ["no config snapshot"], inputs: []} =
+               judge([obs("pkg", all("pkg"))], nil)
+    end
+
+    test "of an app outside the reader's tree, or outside every window, still refuses" do
+      for {owner, app} <- [{"dep", "pkg"}, {:outside, "pkg"}, {"pkg", "phoenix"}] do
+        result = judge([obs(owner, all(app))], snap(%{}))
+        assert [{^owner, {:refuse, reason}}] = result.refusals
+        assert reason =~ "application:get_all_env/1 (#{app}) has no key to match on"
+        assert result.inputs == []
+      end
+    end
+
+    test "a reader out of its tree refuses that reader alone" do
+      result = judge([obs("pkg", all("dep")), obs("dep", all("pkg"))], snap(%{}))
+      assert [{"dep", {:refuse, _}}] = result.refusals
+      assert result.inputs == [config_all("dep", [])]
+    end
+
+    test "of a non-atom application refuses" do
+      item = %{all("fx") | "arg" => %{"app" => "fx", "app_name" => nil, "all" => true}}
+
+      assert %{refusals: [{"pkg", {:refuse, _}}], inputs: []} =
+               judge([obs("pkg", item)], snap(%{}))
+    end
   end
 
   test "a non-atom application or key refuses" do

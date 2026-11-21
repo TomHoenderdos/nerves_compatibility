@@ -1135,8 +1135,10 @@ keys), dropped when reviewed as not changing it, and refused when reviewed as re
 version and socket option reads: `compile-time config read: ...`); a toolchain read not yet reviewed makes the build "portability
 could not be judged" and is listed in `compile_observations.config_unreviewed`. A read of Hex's config (`:hex`, any key:
 the builder's API and mirror URLs, repos, proxies and keys) is never recorded and makes the build "portability could not
-be judged" too. `get_all_env` from package code, a read naming a non-atom key, and a compile-time Elixir version read
-that differs between patches of the minor (`compile-time Elixir patch dependence: ...`) are refusals, except the
+be judged" too. `get_all_env/1` from package code of the reader's own application, one in its dependency tree or one
+Mix preloads (tz's `Tz.CompilerRunner`) is one `config_all` compile input: every key the snapshot holds for that
+application, which a client compares as a whole map. `get_all_env` of any other application, `get_all_env/0`, a read
+naming a non-atom key, and a compile-time Elixir version read that differs between patches of the minor (`compile-time Elixir patch dependence: ...`) are refusals, except the
 reviewed `System.version/0` reads of toolshed 0.5.0, toml 0.7.0, dialyxir 1.4.9, benchee 1.5.1, timex 3.1.25, moar
 5.0.1 and wallaby 0.31.0 (`NccWorker.Portability.ElixirVersion`, `@reviewed_reads`: each release by its outer
 checksum, its tree verified, every read at a reviewed site). A trace pass that does not name its config reads at all

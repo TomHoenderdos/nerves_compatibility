@@ -44,8 +44,13 @@ defmodule NccWorker.Portability.ConfigReads do
       In a window where it did, the warning can come back to the package
       (`Code.with_diagnostics/2`, `Kernel.ParallelCompiler`'s results), so
       the read cannot be judged;
-    * `application:get_all_env/0,1` from package code refuses (there is no
-      key to match on); from the toolchain's own code it cannot be judged;
+    * `application:get_all_env/1` from package code is recorded as one
+      `config_all` input of the whole application (below) when the reader
+      reads its own application, one in its dependency tree or one Mix
+      preloads, and refuses otherwise (there is no key to match on, and the
+      `.app` defaults it returns depend on the consumer's compile order);
+      `application:get_all_env/0` from package code refuses; either from
+      the toolchain's own code cannot be judged;
     * `application:get_env/1` (the caller's own application, which no
       compile process has) is ignored;
     * a read naming a non-atom application or key refuses;
@@ -109,6 +114,15 @@ defmodule NccWorker.Portability.ConfigReads do
   record `config_unrecorded` instead, and so does one whose application,
   key or reader is a name no item may carry
   (`Compatibility.CompileInputs.name?/1`).
+
+  A whole-env read records its application's every key in the snapshot as
+  one `config_all` input (`Compatibility.CompileInputs`), sorted by key, each
+  value as an item's: the project's config for that application, which the
+  client compares as a whole map with its own. Its readers see the `.app`
+  defaults on top of that alike in both VMs, as for an unset key above, and
+  the client's lookup holds no `.app` either. A truncated snapshot, or more
+  keys than an input carries, records `config_unrecorded` instead; no
+  snapshot at all cannot be judged.
 
   The items never enter the published `.app`: `merge/2` adds them to the
   build's `compile_env` list only.
@@ -336,7 +350,16 @@ defmodule NccWorker.Portability.ConfigReads do
   def judge(decided, elixir, snapshot, trees, nested, defaults \\ nil)
       when is_map(trees) and is_map(nested) do
     toolchain = {elixir, reviewed(elixir)}
-    acc = %{keys: %{}, returns: %{}, refusals: [], problems: [], unreviewed: [], dropped: 0}
+
+    acc = %{
+      keys: %{},
+      returns: %{},
+      alls: %{},
+      refusals: [],
+      problems: [],
+      unreviewed: [],
+      dropped: 0
+    }
 
     decided
     |> Enum.reduce(acc, fn
@@ -431,6 +454,11 @@ defmodule NccWorker.Portability.ConfigReads do
     %{flag(acc, owner, item) | problems: [why | acc.problems]}
   end
 
+  # A whole-env read, kept with its reader and item: whether it is
+  # recorded or refused depends on the reader's tree (`finish/4`).
+  defp add(acc, owner, item, {:record_all, app}),
+    do: %{acc | alls: Map.update(acc.alls, app, [{owner, item}], &[{owner, item} | &1])}
+
   defp add(acc, _owner, _item, :drop), do: %{acc | dropped: acc.dropped + 1}
   defp add(acc, _owner, _item, :ignore), do: acc
 
@@ -451,10 +479,14 @@ defmodule NccWorker.Portability.ConfigReads do
 
   defp classify(%{"mfa" => "application:get_env/1"}, _toolchain), do: :ignore
 
-  defp classify(%{"mfa" => "application:get_all_env/" <> _} = item, _toolchain) do
-    if toolchain?(item),
-      do: {:unreviewed, "#{item["mfa"]} (#{get_in(item, ["arg", "app"])})"},
-      else: {:refuse, reason(item, "has no key to match on")}
+  defp classify(%{"mfa" => "application:get_all_env/" <> arity} = item, _toolchain) do
+    app = get_in(item, ["arg", "app_name"])
+
+    cond do
+      toolchain?(item) -> {:unreviewed, "#{item["mfa"]} (#{get_in(item, ["arg", "app"])})"}
+      arity == "1" and is_binary(app) -> {:record_all, app}
+      true -> {:refuse, reason(item, "has no key to match on")}
+    end
   end
 
   defp classify(
@@ -514,15 +546,56 @@ defmodule NccWorker.Portability.ConfigReads do
     {items, problems, inputs} =
       items(Enum.sort(acc.keys), snapshot, trees, acc.returns, defaults)
 
+    {all_inputs, all_refusals, all_problems} = alls(Enum.sort(acc.alls), snapshot, trees)
+
     %{
       items: items,
-      refusals: Enum.reverse(acc.refusals),
-      problems: Enum.uniq(Enum.reverse(acc.problems) ++ problems),
+      refusals: Enum.reverse(acc.refusals) ++ all_refusals,
+      problems: Enum.uniq(Enum.reverse(acc.problems) ++ problems ++ all_problems),
       unreviewed: Enum.reverse(acc.unreviewed),
       dropped: acc.dropped,
-      inputs: inputs
+      inputs: Enum.uniq(inputs ++ all_inputs)
     }
   end
+
+  # The whole-env reads, by application: a reader for whom the app's `.app`
+  # is loaded alike in both VMs gets the app's `config_all` input; any other
+  # refuses, as a read with no key to match on.
+  defp alls(alls, snapshot, trees) do
+    Enum.reduce(alls, {[], [], []}, fn {app, readers}, {inputs, refusals, problems} ->
+      {alike, other} =
+        readers |> Enum.reverse() |> Enum.split_with(&loaded_alike?(app, elem(&1, 0), trees))
+
+      refused =
+        for {owner, item} <- other, do: {owner, {:refuse, reason(item, "has no key to match on")}}
+
+      case {alike, config_all(app, snapshot)} do
+        {[], _input} -> {inputs, refusals ++ refused, problems}
+        {_alike, {:ok, input}} -> {inputs ++ [input], refusals ++ refused, problems}
+        {_alike, {:problem, why}} -> {inputs, refusals ++ refused, problems ++ [why]}
+      end
+    end)
+  end
+
+  # Every key the snapshot holds for `app`, as one input.
+  defp config_all(app, %{entries: entries, truncated: false}) when is_map(entries) do
+    keys =
+      for {{^app, key}, value} <- entries do
+        value = if value == :oversize, do: CompileInputs.unrecordable(), else: recordable(value)
+        %{"key" => key, "value" => value}
+      end
+
+    if length(keys) > CompileInputs.max_config_all_entries(),
+      do: {:ok, @unrecorded},
+      else:
+        {:ok,
+         %{"kind" => "config_all", "app" => app, "entries" => Enum.sort_by(keys, & &1["key"])}}
+  end
+
+  defp config_all(_app, %{entries: entries, truncated: true}) when is_map(entries),
+    do: {:ok, @unrecorded}
+
+  defp config_all(_app, _snapshot), do: {:problem, "no config snapshot"}
 
   defp items([], _snapshot, _trees, _returns, _defaults), do: {[], [], []}
 

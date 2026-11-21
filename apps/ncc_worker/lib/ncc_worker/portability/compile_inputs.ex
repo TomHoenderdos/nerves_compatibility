@@ -213,10 +213,11 @@ defmodule NccWorker.Portability.CompileInputs do
     others ++ orders
   end
 
-  # A config_order or platform_define input the shared shape rejects (a
-  # name no item may carry, an over-long regex) would make the portal
+  # A config_order, platform_define or config_all input the shared shape
+  # rejects (a name no item may carry, an over-long regex) would make the portal
   # reject the whole list: it is not recorded instead.
-  defp carriable(%{"kind" => kind} = input) when kind in ["config_order", "platform_define"] do
+  defp carriable(%{"kind" => kind} = input)
+       when kind in ["config_order", "platform_define", "config_all"] do
     case CompileInputs.validate([input]) do
       {:ok, _} -> input
       :error -> @unrecorded

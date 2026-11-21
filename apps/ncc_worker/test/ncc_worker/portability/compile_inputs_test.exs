@@ -232,6 +232,23 @@ defmodule NccWorker.Portability.CompileInputsTest do
     assert Compatibility.CompileInputs.validate(items) == {:ok, items}
   end
 
+  test "a config_all input with a name it cannot carry becomes config_unrecorded" do
+    good = %{
+      "kind" => "config_all",
+      "app" => "tz",
+      "entries" => [%{"key" => "k", "value" => rec(:x)}]
+    }
+
+    bad = [
+      %{good | "app" => "a=b"},
+      %{good | "entries" => [%{"key" => "a=b", "value" => rec(:x)}]}
+    ]
+
+    items = CompileInputs.build([], [good | bad])
+    assert Enum.sort_by(items, & &1["kind"]) == [good, %{"kind" => "config_unrecorded"}]
+    assert Compatibility.CompileInputs.validate(items) == {:ok, items}
+  end
+
   # The circuits shape: mix.exs reads CROSS, then sets BACKEND; lib reads BACKEND.
   test "a read of a value the build wrote is set by the build, its inputs recorded" do
     mix = "/p/deps/pkg/mix.exs"

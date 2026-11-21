@@ -50,6 +50,13 @@ defmodule Compatibility.CompileInputs do
     * `%{"kind" => "mix_target", "value"}`: a firmware build's compile read
       `Mix.target/0`; `value` is the target it was built for. A client
       compares its own. Judge revision 19 and later.
+    * `%{"kind" => "config_all", "app", "entries" => [%{"key", "value"}]}`:
+      the closure read `app`'s whole env at compile time
+      (`application:get_all_env/1`); `entries` are every key the project's
+      config sets for `app`, sorted by key and each once, each value a
+      recorded value, at most 128 of them. An empty list is an app the
+      config leaves alone. A client compares its own config for `app`,
+      the whole map: the same keys with the same values, nothing more.
 
   An env item's `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
   of `:error` or `{:ok, binary}`) or `"unrecordable"`, which matches nothing.
@@ -70,6 +77,7 @@ defmodule Compatibility.CompileInputs do
   # The share of `@max_items` the worker gives `config_order` items, next to
   # 128 `env` items and 32 of every other kind.
   @max_config_order_items 96
+  @max_config_all_entries 128
 
   @doc "The value of an item whose value was not recorded: it matches nothing."
   @spec unrecordable() :: String.t()
@@ -161,7 +169,30 @@ defmodule Compatibility.CompileInputs do
        when is_boolean(matched),
        do: map_size(item) == 3 and regex?(regex)
 
+  defp item?(%{"kind" => "config_all", "app" => app, "entries" => entries} = item),
+    do: map_size(item) == 3 and name?(app) and entries?(entries)
+
   defp item?(_item), do: false
+
+  # A `config_all` item's entries: a list of `%{"key", "value"}`, each key a
+  # name, each value a recorded one, strictly sorted by key (so each once).
+  defp entries?(entries) when is_list(entries) and length(entries) <= @max_config_all_entries do
+    keys = for %{"key" => key} <- entries, do: key
+
+    Enum.all?(entries, &entry?/1) and length(keys) == length(entries) and
+      keys == Enum.sort(Enum.uniq(keys))
+  end
+
+  defp entries?(_entries), do: false
+
+  defp entry?(%{"key" => key, "value" => value} = entry),
+    do: map_size(entry) == 2 and name?(key) and value?(value)
+
+  defp entry?(_entry), do: false
+
+  @doc "The most entries a `config_all` item may carry."
+  @spec max_config_all_entries() :: pos_integer()
+  def max_config_all_entries, do: @max_config_all_entries
 
   @doc "The `:os.type/0` families an `os_type` item may carry."
   @spec os_families() :: [String.t()]

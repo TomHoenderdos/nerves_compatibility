@@ -707,9 +707,10 @@ defmodule NccWorker.Tracer.FixturesConfigTest do
     assert hd(app_items) in merged
   end
 
-  test "get_all_env at compile time refuses", ctx do
-    assert %{status: :skip, reason: "compile-time config read: application:get_all_env/1" <> _} =
-             verdict(ctx, "fx_cfg_all")
+  test "get_all_env of its own app at compile time records the app's config as one input", ctx do
+    v = passes(ctx, "fx_cfg_all")
+    assert %{"kind" => "config_all", "app" => "fx_cfg_all", "entries" => []} in v.compile_inputs
+    assert {:ok, _} = Compatibility.CompileInputs.validate(v.compile_inputs)
   end
 
   test "Logger's compile-time reads are recorded with the value a client looks up", ctx do
