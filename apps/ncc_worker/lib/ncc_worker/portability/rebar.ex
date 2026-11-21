@@ -48,11 +48,11 @@ defmodule NccWorker.Portability.Rebar do
   Hex outer checksum (`named_plugins/2` names what must be installed). A
   git source, a `{pkg, Name}` source, or any other plugin still refuses.
 
-  A shell compile hook of a natively built app (`sources`' `native?:`, the
-  judge's native list) is part of its native build, which the native rules
-  judge (crc32cer's `make nif`): it does not refuse here, as an entry of the
-  app's own active sections only; nor does `mkdir -p ebin` (pbkdf2), which
-  reads nothing and writes no file. A hook whose command is a namespaced
+  A shell compile hook refuses whether or not the app is natively built
+  (crc32cer's `make nif`): rebar3 runs it untraced, and nothing compares a
+  native app's tree after the compile. Only `mkdir -p ebin` (pbkdf2), which
+  reads nothing and writes no file, is let through, as an entry of the
+  app's own active sections. A hook whose command is a namespaced
   provider (`{{hex, publish}, Script}`) never runs in `bare compile`; and
   rebar3's own `escriptize` as a post-compile provider hook is let through.
 
@@ -149,8 +149,7 @@ defmodule NccWorker.Portability.Rebar do
           required(:config) => binary() | nil | :unreadable,
           required(:script?) => boolean(),
           optional(:mix_config) => String.t() | {:unjudged, String.t()},
-          optional(:reviewed) => [{String.t(), String.t()}],
-          optional(:native?) => boolean()
+          optional(:reviewed) => [{String.t(), String.t()}]
         }
 
   # Reviewed rebar3 compile hooks, by app: the `{Arch, compile, Script}`
@@ -202,11 +201,7 @@ defmodule NccWorker.Portability.Rebar do
     do: {:refuse, "rebar3 build evaluates rebar.config.script"}
 
   def check_sources(%{config: own} = sources, parents, mix_config) do
-    reviewed = %{
-      hooks: Map.get(sources, :reviewed, []),
-      native?: sources[:native?] == true,
-      commands: @reviewed_commands
-    }
+    reviewed = %{hooks: Map.get(sources, :reviewed, []), commands: @reviewed_commands}
 
     with {:ok, own_terms} <- parse_own(own),
          {:ok, inherited} <- parent_overrides(parents),
@@ -477,7 +472,7 @@ defmodule NccWorker.Portability.Rebar do
 
   defp nested?(terms, key) do
     any_term?(terms, fn
-      {{:atom, ^key}, value} -> counts?(key, value, %{hooks: [], native?: false, commands: []})
+      {{:atom, ^key}, value} -> counts?(key, value, %{hooks: [], commands: []})
       _ -> false
     end)
   end
@@ -498,13 +493,11 @@ defmodule NccWorker.Portability.Rebar do
 
   defp counts?(_key, _value, _reviewed), do: true
 
-  # A shell hook of a natively built app is part of that native build (its
-  # `make`), which the native rules judge: it does not count here. Nor does
-  # a reviewed command (`@reviewed_commands`). Any other compile hook
-  # counts unless reviewed.
+  # A compile hook counts unless its command is reviewed
+  # (`@reviewed_commands`, or quic's script, `reviewed_hook?/4`).
   defp compile_hook?({command, script}, reviewed) do
     case hook_command(command) do
-      :compile -> not (reviewed.native? or reviewed_command?(script, reviewed.commands))
+      :compile -> not reviewed_command?(script, reviewed.commands)
       :other -> false
       :unknown -> true
     end
@@ -513,7 +506,7 @@ defmodule NccWorker.Portability.Rebar do
   defp compile_hook?({arch, command, script}, reviewed) do
     case hook_command(command) do
       :compile ->
-        not (reviewed.native? or reviewed_command?(script, reviewed.commands) or
+        not (reviewed_command?(script, reviewed.commands) or
                reviewed_hook?(arch, command, script, reviewed.hooks))
 
       :other ->

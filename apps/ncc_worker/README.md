@@ -733,8 +733,8 @@ of these skips the build:
   rebar3's cache (`REBAR_CACHE_DIR` or `$HOME/.cache/rebar3`) hashes to the pin and its dir holds exactly that tarball's
   files plus its own compiled `ebin`. Any other release refuses (`rebar3 build runs plugin <name> <version>, a release not
   reviewed`), a named plugin not installed or a release that cannot be read is "portability could not be judged", and
-  any other plugin, or one from git, still refuses. A shell compile hook of a natively built app is its native build, judged by the native rules (crc32cer's
-  `make nif`); `mkdir -p ebin` (pbkdf2) reads nothing and writes no file and is let through; a hook on a namespaced provider (`{{hex, publish}, Script}`) never runs in `bare compile`; rebar3's own
+  any other plugin, or one from git, still refuses. A shell compile hook refuses even for a natively built app (crc32cer's `make nif`: rebar3 runs it untraced and
+  nothing checks what it wrote); `mkdir -p ebin` (pbkdf2) reads nothing and writes no file and is let through; a hook on a namespaced provider (`{{hex, publish}, Script}`) never runs in `bare compile`; rebar3's own
   `escriptize` as a post-compile provider hook (cuttlefish) is let through. OTP's `pubkey_os_cacerts:on_load/0` reading
   `os:type/0` when rebar3's TLS loads it is ignored;
 - a trace that did not finish.

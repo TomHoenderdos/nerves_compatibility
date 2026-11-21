@@ -2240,9 +2240,7 @@ defmodule NccWorker.Portability do
   # The static rules on the app's rebar.config from its verified Hex
   # tarball and its rebar3 parents' (their overrides), then the
   # mix.rebar.config rebar3 read. A script on disk counts as one in the
-  # tarball: judged by that mix.rebar.config and the trace (`Rebar`). An app
-  # on the native list has its shell compile hooks judged as its native
-  # build (`native?:`).
+  # tarball: judged by that mix.rebar.config and the trace (`Rebar`).
   defp static_rebar(ctx, report, app, dest) do
     parents = Context.rebar3_parents(ctx, app)
 
@@ -2250,10 +2248,7 @@ defmodule NccWorker.Portability do
          {:ok, inherited} <- parent_sources(ctx, parents) do
       own = %{own | script?: own.script? or disk_script?(dest)}
 
-      own =
-        own
-        |> Map.put(:reviewed, reviewed_hooks(ctx, report, app))
-        |> Map.put(:native?, match?(%{native?: true}, Map.get(ctx.deps, app)))
+      own = Map.put(own, :reviewed, reviewed_hooks(ctx, report, app))
 
       mix_config = mix_rebar_config(ctx, app)
 

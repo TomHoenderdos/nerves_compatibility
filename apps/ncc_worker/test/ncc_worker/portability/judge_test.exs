@@ -2011,25 +2011,42 @@ defmodule NccWorker.Portability.JudgeTest do
                rjudge(proj, "dep", %{"dep" => sentinel_lost})
     end
 
-    # crc32cer's `make nif`: the hook is the native build the native rules
-    # judge; for a dependency off the native list it still taints.
-    test "a natively built dependency's compile hook is its native build, not a refusal",
+    # Review S5 B1: N is natively built (c_src) and its compile hook runs
+    # `make`, which rewrites a header N ships from the host; P includes it.
+    # rebar3 runs the hook untraced and N's tree is not checked after the
+    # compile, so the hook refuses N and taints P.
+    test "a natively built dependency's shell compile hook taints its dependents",
          %{proj: proj} do
+      File.mkdir_p!(Path.join(proj, "deps/dep/c_src"))
+      File.mkdir_p!(Path.join(proj, "deps/dep/include"))
+      File.write!(Path.join(proj, "deps/dep/include/n_config.hrl"), "-define(WORD, 64).\n")
+
       File.write!(
         Path.join([proj, "deps/dep/rebar.config"]),
-        ~s|{pre_hooks, [{"(linux\|darwin)", compile, "make nif"}]}.\n|
+        ~s'{pre_hooks, [{"(linux|darwin)", compile, "make -C c_src"}]}.\n'
       )
 
+      header =
+        35
+        |> event("file:read_file/1", "lib/x.ex", "file_read")
+        |> Map.put("arg", %{"path" => Path.join(proj, "deps/dep/include/n_config.hrl")})
+
       r = rebar_report(proj, "dep", %{"dep" => child([])})
-      opts = rebar_opts(proj, ["dep"])
+      r = %{r | events: [header | r.events]}
 
-      assert %{reason: "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"} =
-               judge(proj, r, opts)
+      # N's verified tarball lists the header, so P's read of it is readable.
+      home = Path.join(Path.dirname(proj), "hex-#{System.unique_integer([:positive])}")
 
-      assert %{status: :pass, observations: %{"taint" => taint}} =
-               Portability.judge(proj, "pkg", r, ["dep"], Keyword.put(opts, :built_check, false))
+      {"dep", release} =
+        NccWorker.TracerFixtures.hex_release(home, "dep", ["src", "include", "c_src"], %{
+          "rebar.config" => File.read!(Path.join(proj, "deps/dep/rebar.config")),
+          "include/n_config.hrl" => "-define(WORD, 64).\n"
+        })
 
-      assert taint == %{}
+      opts = [releases: %{"dep" => release}, hex_home: home, built_check: false]
+
+      assert %{status: :skip, reason: reason} = Portability.judge(proj, "pkg", r, ["dep"], opts)
+      assert reason == "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"
     end
 
     # rebar3 installs a dependency's plugins under its own `_build` and
@@ -2559,28 +2576,21 @@ defmodule NccWorker.Portability.JudgeTest do
         assert :ok = Rebar.check(write(dir, name, %{"rebar.config" => config})), name
       end
 
-      # A natively built app's shell compile hooks are its native build
-      # (crc32cer's `make nif`): the native rules judge them, not these.
-      # In overrides, or for an app that is not natively built, they count.
-      native = fn config, native? ->
-        Rebar.check_sources(%{config: config, script?: false, native?: native?}, [], nil)
+      # A natively built app's shell compile hooks refuse like any other's:
+      # rebar3 runs them untraced, and nothing checks what they wrote
+      # (crc32cer's `make nif`). Nothing in `sources` lets them through.
+      native = fn config ->
+        Rebar.check_sources(%{config: config, script?: false, native?: true}, [], nil)
       end
 
-      crc = ~s|{pre_hooks, [{"(linux\|darwin\|solaris\|freebsd)", compile, "make nif"}]}.\n|
-      assert :ok = native.(crc, true)
-      assert :ok = native.(~s({post_hooks, [{compile, "make -C c_src"}]}.\n), true)
-      assert {:refuse, "rebar3 build runs pre_hooks"} = native.(crc, false)
+      crc = ~s'{pre_hooks, [{"(linux|darwin|solaris|freebsd)", compile, "make nif"}]}.\n'
+      assert {:refuse, "rebar3 build runs pre_hooks"} = native.(crc)
 
-      assert {:refuse, "rebar3 build runs pre_hooks"} =
-               native.(~s({overrides, [{add, [{pre_hooks, [{compile, "make"}]}]}]}.\n), true)
-
-      assert {:refuse, "rebar3 build runs pre_hooks"} =
-               native.(~s({pre_hooks, [{compile}]}.\n), true)
+      assert {:refuse, "rebar3 build runs post_hooks"} =
+               native.(~s({post_hooks, [{compile, "make -C c_src"}]}.\n))
 
       assert {:refuse, "rebar3 build runs provider_hooks"} =
-               native.("{provider_hooks, [{pre, [{compile, {pc, compile}}]}]}.\n", true)
-
-      assert {:refuse, "rebar3 build runs plugins"} = native.("{plugins, [pc]}.\n", true)
+               native.("{provider_hooks, [{pre, [{compile, {pc, compile}}]}]}.\n")
 
       # No atom is created from the config.
       atom = "ncc_rebar_never_an_atom_#{System.unique_integer([:positive])}"
