@@ -35,7 +35,8 @@ defmodule Portal.Reports.Payload do
                   deterministic_not_built foreign_priv_target_compiles
                   foreign_priv_target_missing foreign_priv_target_linked
                   foreign_priv_conflict foreign_priv_rule_unknown foreign_priv_device
-                  relocated_paths relocated_otp relocation_refused)
+                  relocated_paths relocated_otp relocation_refused
+                  relocated_path_spelling relocated_path_ascii relocated_path_envelope)
 
   @top ~w(format client built_at elixir otp os target system system_version lines lock contact)
   @os_keys ~w(family arch)
