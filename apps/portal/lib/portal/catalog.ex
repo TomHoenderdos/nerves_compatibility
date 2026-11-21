@@ -1173,7 +1173,10 @@ defmodule Portal.Catalog do
   # those packages again. So do the packages with a counted relocation
   # record (`relocated_pkgs`, a row's or an earlier build's) while
   # `relocated_enabled` is on, in a suffix of theirs
-  # (`Portal.Precompiled.Relocated`). Those four settings are the only ones a
+  # (`Portal.Precompiled.Relocated`); the CASE keeps its scan of earlier
+  # builds to the rows that have some (about 1,800 of 67,000 on production,
+  # 2026-11-21: 150-250 ms, a sequential scan the query makes anyway). Those
+  # four settings are the only ones a
   # manifest depends on, so a package with a host-native, deterministic,
   # foreign priv or relocated row (or kino), whatever the settings, also
   # carries the settings
@@ -1286,9 +1289,10 @@ defmodule Portal.Catalog do
   ), relocated_pkgs AS (
     SELECT t.package_id FROM catalog_toolchain_builds t
     WHERE t.relocation_run_id = t.run_id
-       OR (cardinality(t.earlier_builds) > 0
-           AND EXISTS (SELECT 1 FROM unnest(t.earlier_builds) AS e
-                       WHERE e->>'relocation_run_id' = e->>'run_id'))
+       OR CASE WHEN cardinality(t.earlier_builds) > 0
+               THEN EXISTS (SELECT 1 FROM unnest(t.earlier_builds) AS e
+                            WHERE e->>'relocation_run_id' = e->>'run_id')
+               ELSE false END
   ), setting_bound AS (
     SELECT package_id FROM catalog_host_native_builds
     UNION
