@@ -55,6 +55,25 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
         ),
       "fx_top" =>
         lib("fx_top", "defmodule FxTop do\n  def h, do: FxMid.h()\nend\n", %{deps: ["fx_mid"]}),
+      # membrane_core's shape: a macro module whose quoted code keeps its
+      # location (a path R2 allows), and a task module that bakes its dir.
+      "fx_macro" =>
+        lib("fx_macro", """
+        defmodule FxMacro do
+          defmacro __using__(_opts) do
+            quote location: :keep do
+              def hello, do: :hello
+            end
+          end
+        end
+
+        defmodule FxMacro.Task do
+          @dir __DIR__
+          def dir, do: @dir
+        end
+        """),
+      "fx_user" =>
+        lib("fx_user", "defmodule FxUser do\n  use FxMacro\nend\n", %{deps: ["fx_macro"]}),
       # The path inside a binary the code builds: the string table.
       "fx_strt" =>
         lib(
@@ -63,7 +82,7 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
         )
     }
 
-    top = ~w(fx_fine fx_quiet fx_hash fx_top fx_strt)
+    top = ~w(fx_fine fx_quiet fx_hash fx_top fx_strt fx_user)
     proj = TracerFixtures.project(Path.join(root, "p"), top, deps)
     deps_from_env!(proj)
 
@@ -147,6 +166,12 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
     assert %{status: :pass, reason: nil} = v, log(ctx, "fx_quiet")
     assert stat(v) == "dependencies"
     refute Map.has_key?(v, :relocation)
+  end
+
+  test "a dependent that expands a macro of a module R2 allows passes as it is", ctx do
+    v = ctx.verdicts["fx_user"]
+    assert %{status: :pass, reason: nil} = v, log(ctx, "fx_user")
+    assert stat(v) == "dependencies"
   end
 
   test "a package whose compile calls the holder stays refused", ctx do

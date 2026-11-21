@@ -150,34 +150,33 @@ defmodule NccWorker.Portability.Relocate do
 
   defp baked?(_result), do: false
 
-  # The app's holder modules: R2 on every root but the project dir finds
-  # nothing, and every beam's occurrences of the slots are reachable.
+  # The app's holder modules, the ones R2 refuses: R2 on every root but the
+  # project dir finds nothing, and every beam's occurrences of the slots are
+  # reachable. A module whose only path is in a shape R2 allows (a `keep`
+  # or `file:` source path a macro hands its caller) is no holder: it is
+  # what every dependency's beams may hand on today.
   # sobelow_skip ["Traversal.FileModule"]
   defp holders(ctx, app, slots) do
+    closure_file? = &Context.closure_file?(ctx, &1)
+    opts = [closure_dir?: &Context.closure_dir?(ctx, &1)]
+
     with ebin when is_binary(ebin) <- Context.ebin(ctx, app),
          {:ok, others} <- other_roots(ctx, slots),
          clean when clean == :ok or elem(clean, 0) == :observe <-
-           BuildRoot.check(ebin, others, &Context.closure_file?(ctx, &1),
-             closure_dir?: &Context.closure_dir?(ctx, &1)
-           ),
-         {:ok, beams} <- File.ls(ebin) do
-      beams
-      |> Enum.filter(&(Path.extname(&1) == ".beam"))
-      |> Enum.sort()
-      |> Enum.reduce_while({:ok, []}, fn name, {:ok, acc} ->
-        case beam_occurrences(Path.join(ebin, name), slots) do
-          {:ok, []} -> {:cont, {:ok, acc}}
-          {:ok, _} -> {:cont, {:ok, [Path.basename(name, ".beam") | acc]}}
-          _ -> {:halt, :error}
-        end
-      end)
-      |> then(fn
-        {:ok, [_ | _] = modules} -> {:ok, Enum.reverse(modules)}
-        _ -> :error
-      end)
+           BuildRoot.check(ebin, others, closure_file?, opts),
+         {:ok, beams} <- File.ls(ebin),
+         true <- Enum.all?(beams, &reachable?(ebin, &1, slots)),
+         {:ok, [_ | _] = modules} <-
+           BuildRoot.refusing_modules(ebin, Context.roots(ctx), closure_file?, opts) do
+      {:ok, modules}
     else
       _ -> :error
     end
+  end
+
+  defp reachable?(ebin, name, slots) do
+    Path.extname(name) != ".beam" or
+      match?({:ok, _}, beam_occurrences(Path.join(ebin, name), slots))
   end
 
   # Every root R2 searches but the project dir. One that holds a slot (a

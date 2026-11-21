@@ -71,7 +71,7 @@ defmodule NccWorker.Portability.Context do
     hook_scripts: %{},
     drivers: %{},
     foreign_priv: nil,
-    holder_apps: MapSet.new()
+    holders: %{}
   ]
 
   @type dep :: %{
@@ -149,7 +149,7 @@ defmodule NccWorker.Portability.Context do
       hook_scripts: trees(Keyword.get(opts, :hook_scripts)),
       deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")),
       drivers: drivers(report.sentinels),
-      holder_apps: holder_apps(Keyword.get(opts, :holders))
+      holders: holders(Keyword.get(opts, :holders))
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
@@ -158,23 +158,34 @@ defmodule NccWorker.Portability.Context do
   defp trees(trees) when is_map(trees), do: trees
   defp trees(_trees), do: %{}
 
-  defp holder_apps(holders) when is_list(holders),
-    do: MapSet.new(holders, fn {app, _module} -> to_string(app) end)
+  # `%{app => MapSet of "<Module>.beam"}`.
+  defp holders(holders) when is_list(holders) do
+    Enum.reduce(holders, %{}, fn {app, module}, acc ->
+      Map.update(
+        acc,
+        to_string(app),
+        MapSet.new(["#{module}.beam"]),
+        &MapSet.put(&1, "#{module}.beam")
+      )
+    end)
+  end
 
-  defp holder_apps(_holders), do: MapSet.new()
+  defp holders(_holders), do: %{}
 
   @doc """
-  S4: the closure dependency whose `ebin` `real` lies under when that
-  dependency has holder modules in a relocation's second build (`holders:`
-  of `build/5`, `NccWorker.Portability.Relocate`), else `nil`. Reading one
-  of its beams hands over the path its literals hold, as a call into it
-  does (`NccWorker.Portability.Events`, `holder_calls`).
+  S4: the closure dependency whose holder module's beam `real` is, in a
+  relocation's second build (`holders:` of `build/5`,
+  `NccWorker.Portability.Relocate`), else `nil`. Reading it hands over the
+  path its literals hold, as a call into it does
+  (`NccWorker.Portability.Events`, `holder_calls`).
   """
   @spec holder_ebin_app(t(), String.t() | nil) :: String.t() | nil
-  def holder_ebin_app(%__MODULE__{holder_apps: apps} = ctx, real) when is_binary(real) do
-    Enum.find(Enum.sort(apps), fn app ->
+  def holder_ebin_app(%__MODULE__{holders: holders} = ctx, real) when is_binary(real) do
+    holders
+    |> Enum.sort()
+    |> Enum.find_value(fn {app, beams} ->
       ebin = ebin(ctx, app)
-      is_binary(ebin) and under?(real, ebin)
+      if is_binary(ebin) and Path.dirname(real) == ebin and Path.basename(real) in beams, do: app
     end)
   end
 

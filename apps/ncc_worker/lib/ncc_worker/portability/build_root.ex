@@ -93,6 +93,62 @@ defmodule NccWorker.Portability.BuildRoot do
          do: {:ok, by_module |> Enum.map(&elem(&1, 0)) |> Enum.sort()}
   end
 
+  @doc """
+  S4 (`NccWorker.Portability.Relocate`): the beams of `ebin` (by file name,
+  `"Elixir.Foo"`) that `check/4` refuses on their own, sorted: the modules
+  whose beams hold a root outside every allowed shape. A template root is
+  judged across the `ebin` (`build_root_recompile_dir`): a module whose only
+  root is one counts when that cross-check refuses. Errors as `check/4`'s.
+  """
+  @spec refusing_modules(String.t(), [String.t()], (String.t() -> boolean()), keyword()) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def refusing_modules(ebin, roots, closure_file?, opts \\ []) do
+    roots = needles(roots)
+    dir? = Keyword.get(opts, :closure_dir?, fn _ -> false end)
+
+    with :ok <- ebin_dir(ebin) do
+      ebin
+      |> files("*.beam")
+      |> Enum.reduce_while({:ok, [], []}, fn path, {:ok, refusing, observed} ->
+        name = Path.basename(path, ".beam")
+
+        case check_beam(path, roots, closure_file?, dir?) do
+          {:ok, []} -> {:cont, {:ok, refusing, observed}}
+          {:ok, list} -> {:cont, {:ok, refusing, [{name, list} | observed]}}
+          {:refuse, _} -> {:cont, {:ok, [name | refusing], observed}}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+      |> recompile_refusals(ebin)
+    end
+  end
+
+  defp recompile_refusals({:ok, refusing, observed}, ebin) do
+    holders =
+      for {name, list} <- observed,
+          dirs = for({:recompile_dir, dir} <- list, do: dir),
+          dirs != [],
+          into: %{},
+          do: {name, dirs}
+
+    code =
+      if holders == %{},
+        do: %{},
+        else: ebin |> files("*.beam") |> Map.new(&{Path.basename(&1, ".beam"), disasm(&1)})
+
+    refs =
+      for {name, _} <- holders, {:ok, {module, _}} <- [code[name]], into: MapSet.new() do
+        {module, :__mix_recompile__?, 0}
+      end
+
+    unattributed =
+      for {name, dirs} <- holders, not attributed?(name, dirs, code, refs), do: name
+
+    {:ok, Enum.sort(Enum.uniq(refusing ++ unattributed))}
+  end
+
+  defp recompile_refusals(error, _ebin), do: error
+
   # Every beam's bare source paths (and template roots, `{:recompile_dir,
   # path}`) as `{module, paths}` (beams without any left out), once the
   # `.app` is clean too and every template root is attributed.
