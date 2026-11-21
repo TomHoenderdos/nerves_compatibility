@@ -1170,9 +1170,13 @@ defmodule Portal.Catalog do
   # while `foreign_priv_enabled` is on, in a suffix of their own: the setting
   # decides whether their `foreign_priv` objects and kino's own builds are
   # listed (`Portal.Precompiled.ForeignPriv`), so its flip renders exactly
-  # those packages again. Those three settings are the only ones a manifest
-  # depends on, so a package with a host-native, deterministic or foreign
-  # priv row (or kino), whatever the settings, also carries the settings
+  # those packages again. So do the packages with a counted relocation
+  # record (`relocated_pkgs`, a row's or an earlier build's) while
+  # `relocated_enabled` is on, in a suffix of theirs
+  # (`Portal.Precompiled.Relocated`). Those four settings are the only ones a
+  # manifest depends on, so a package with a host-native, deterministic,
+  # foreign priv or relocated row (or kino), whatever the settings, also
+  # carries the settings
   # rows' `publication_changes`, which a trigger counts up on every change
   # to any of them: by the gated suffixes alone, a setting turned on and off
   # again would read as no change. Not their `xmin`: the enqueue path writes
@@ -1207,10 +1211,12 @@ defmodule Portal.Catalog do
     GROUP BY r.package_id
   ), toolchain AS (
     SELECT t.package_id,
-           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s', t.id, t.xmin, t.updated_at,
-                                 t.status, t.revoked_at, md5(t.compile_inputs::text),
+           md5(string_agg(format('%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s', t.id, t.xmin,
+                                 t.updated_at, t.status, t.revoked_at,
+                                 md5(t.compile_inputs::text),
                                  md5(to_jsonb(t.foreign_priv)::text), t.foreign_priv_rule,
-                                 t.foreign_priv_run_id),
+                                 t.foreign_priv_run_id, md5(t.relocation::text),
+                                 t.relocation_run_id),
                           ',' ORDER BY t.id)) AS fp
     FROM catalog_toolchain_builds t
     WHERE t.variant IN #{ToolchainBuild.variants_sql()}
@@ -1277,12 +1283,19 @@ defmodule Portal.Catalog do
     UNION SELECT pb.package_id FROM catalog_pinned_builds pb WHERE pb.foreign_priv_run_id = pb.run_id
     UNION SELECT d.package_id FROM catalog_deterministic_builds d WHERE d.foreign_priv_run_id = d.run_id
     UNION SELECT p.id FROM catalog_packages p WHERE p.name = '#{Compatibility.ForeignPriv.target()}'
+  ), relocated_pkgs AS (
+    SELECT t.package_id FROM catalog_toolchain_builds t
+    WHERE t.relocation_run_id = t.run_id
+       OR EXISTS (SELECT 1 FROM unnest(t.earlier_builds) AS e
+                  WHERE e->>'relocation_run_id' = e->>'run_id')
   ), setting_bound AS (
     SELECT package_id FROM catalog_host_native_builds
     UNION
     SELECT package_id FROM catalog_deterministic_builds
     UNION
     SELECT package_id FROM foreign_pkgs
+    UNION
+    SELECT package_id FROM relocated_pkgs
   ), setting_changes AS (
     SELECT string_agg(format('%s/%s', st.id, st.publication_changes), ',' ORDER BY st.id) AS c
     FROM settings st
@@ -1300,7 +1313,10 @@ defmodule Portal.Catalog do
                 ELSE '|settings:' || coalesce(sc.c, '') END ||
            CASE WHEN fpk.package_id IS NOT NULL
                  AND EXISTS (SELECT 1 FROM settings st WHERE st.foreign_priv_enabled)
-                THEN '|foreign' ELSE '' END
+                THEN '|foreign' ELSE '' END ||
+           CASE WHEN rpk.package_id IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM settings st WHERE st.relocated_enabled)
+                THEN '|relocated' ELSE '' END
   FROM catalog_packages p
   CROSS JOIN setting_changes sc
   LEFT JOIN runs ON runs.package_id = p.id
@@ -1316,6 +1332,7 @@ defmodule Portal.Catalog do
   LEFT JOIN pinned_files pf ON pf.package_id = p.id
   LEFT JOIN setting_bound sb ON sb.package_id = p.id
   LEFT JOIN foreign_pkgs fpk ON fpk.package_id = p.id
+  LEFT JOIN (SELECT DISTINCT package_id FROM relocated_pkgs) rpk ON rpk.package_id = p.id
   WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL OR hn.package_id IS NOT NULL
      OR pn.package_id IS NOT NULL
   """
@@ -1330,8 +1347,8 @@ defmodule Portal.Catalog do
   fingerprint differ. The withheld package list (`Portal.Precompiled.Withheld`)
   is part of every fingerprint, so a change to it renders every package again.
   The settings a manifest depends on (`host_native_enabled`,
-  `deterministic_builds_enabled`, `foreign_priv_enabled`) are in it through a
-  count of their changes.
+  `deterministic_builds_enabled`, `foreign_priv_enabled`,
+  `relocated_enabled`) are in it through a count of their changes.
   """
   @spec precompiled_fingerprints() :: %{String.t() => String.t()}
   def precompiled_fingerprints do
@@ -1548,7 +1565,16 @@ defmodule Portal.Catalog do
       "jsonb_build_array(jsonb_build_object('sha256', #{sha})))"
   end
 
-  @served_toolchain_file_clause "(#{in_own_manifest.("t", "m.sha256")} OR #{in_foreign_priv.("t", "m.sha256")})"
+  # A relocated build's own files (its record the mark of the row's own run,
+  # `Portal.Precompiled.Relocated.counted/1`) are served only while the
+  # `relocated_enabled` setting is on: with it off the build is listed
+  # nowhere, so none of its files is served either.
+  relocated_files_served = fn table ->
+    "(NOT coalesce(#{table}.relocation_run_id = #{table}.run_id, false) " <>
+      "OR EXISTS (SELECT 1 FROM settings st WHERE st.relocated_enabled))"
+  end
+
+  @served_toolchain_file_clause "((#{in_own_manifest.("t", "m.sha256")} AND #{relocated_files_served.("t")}) OR #{in_foreign_priv.("t", "m.sha256")})"
 
   # Whether the host-native build `h` lists `sha` in its own file manifest.
   @served_host_native_file_clause in_own_manifest.("h", "m.sha256")

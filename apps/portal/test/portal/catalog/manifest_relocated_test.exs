@@ -178,6 +178,56 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
     assert row.deps_lock in Enum.map(entries, & &1["build"]["deps"])
   end
 
+  describe "files route and fingerprints" do
+    test "a relocated build's files are served while the setting is on and the mark is the row's",
+         %{name: name, row: row} do
+      [%{"sha256" => sha}] = row.file_manifest["ebin"]
+      off!()
+      refute Catalog.published_sha256?(sha)
+      refute name in Catalog.packages_with_precompiled_files()
+      on!()
+      assert Catalog.published_sha256?(sha)
+      assert name in Catalog.packages_with_precompiled_files()
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET revoked_at = now() WHERE id = $1",
+        [Ecto.UUID.dump!(row.id)]
+      )
+
+      refute Catalog.published_sha256?(sha)
+    end
+
+    test "the setting turned on and off again changes the relocated package's fingerprint only",
+         %{name: name} do
+      off!()
+      before = Catalog.precompiled_fingerprints()
+      on!()
+      off!()
+      now = Catalog.precompiled_fingerprints()
+      changed = for {n, fp} <- now, before[n] != fp, do: n
+      assert name in changed
+      refute "jason" in changed
+    end
+
+    test "flipping the setting on changes the relocated package's fingerprint", %{name: name} do
+      off!()
+      before = Catalog.precompiled_fingerprints()[name]
+      on!()
+      refute Catalog.precompiled_fingerprints()[name] == before
+    end
+
+    test "a row's relocation columns are in its fingerprint", %{name: name, row: row} do
+      before = Catalog.precompiled_fingerprints()[name]
+
+      Portal.Repo.query!(
+        "UPDATE catalog_toolchain_builds SET relocation = jsonb_set(relocation, '{deps}', '\"/w/deps\"') WHERE id = $1",
+        [Ecto.UUID.dump!(row.id)]
+      )
+
+      refute Catalog.precompiled_fingerprints()[name] == before
+    end
+  end
+
   defp restore_withheld(nil), do: Application.delete_env(:portal, Portal.Precompiled.Withheld)
   defp restore_withheld(old), do: Application.put_env(:portal, Portal.Precompiled.Withheld, old)
 end
