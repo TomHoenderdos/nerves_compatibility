@@ -235,25 +235,31 @@ defmodule Portal.Precompiled.PluginWatch do
 
   @doc """
   Records the plugin releases a firmware target of run `run_id` ran (its
-  system result's `rebar3_plugins`, `NccWorker.FirmwarePlugins`; stream
-  S8), as `record/3` does. `mix firmware` ran them without the worker's pin
-  check, so a record any release of which is not a reviewed one with the
-  reviewed checksum (`Compatibility.RebarPlugins.pins/0`), or cannot be read,
-  records the withholding mark: every firmware result of the run is
-  withheld whatever the watch holds. A target with no record records
-  nothing (an older worker: served as before).
+  `rebar3_plugins` as the worker wrote it, `NccWorker.FirmwarePlugins`;
+  stream S8), as `record/3` does. `mix firmware` ran them without the
+  worker's pin check, so a record any release of which is not a reviewed
+  one with the reviewed checksum (`Compatibility.RebarPlugins.pins/0`), that
+  cannot be read, that is not a list, or that holds more than
+  `max_releases/0` releases records the withholding mark (review R3): every
+  firmware result of the run is withheld whatever the watch holds. A target
+  with no record (`nil`: an older worker, or no key) records nothing and is
+  served as before.
   """
-  @spec record_firmware(Ecto.UUID.t(), String.t() | nil, [map()] | nil) :: :ok
-  def record_firmware(package_id, run_id, record) when is_list(record) do
-    plugins = if Enum.all?(record, &pinned?/1), do: record, else: [:not_pinned]
+  @spec record_firmware(Ecto.UUID.t(), String.t() | nil, term()) :: :ok
+  def record_firmware(_package_id, _run_id, nil), do: :ok
+
+  def record_firmware(package_id, run_id, record) do
+    plugins =
+      if is_list(record) and Enum.all?(record, &pinned?/1), do: record, else: [:not_pinned]
+
     record(package_id, run_id, %{"rebar3_plugins" => plugins})
   end
 
-  def record_firmware(_package_id, _run_id, _record), do: :ok
-
-  defp pinned?(%{"name" => name, "version" => version, "sha256" => sha})
-       when is_binary(name) and is_binary(version) and is_binary(sha),
-       do: get_in(RebarPlugins.pins(), [name, version]) == sha
+  # The worker's entry shape whole (`NccWorker.FirmwarePlugins`), as ingest
+  # keeps it, and the reviewed release with its reviewed checksum.
+  defp pinned?(%{"name" => name, "version" => version, "sha256" => sha, "owners" => owners})
+       when is_binary(name) and is_binary(version) and is_binary(sha) and is_list(owners),
+       do: Enum.all?(owners, &is_binary/1) and get_in(RebarPlugins.pins(), [name, version]) == sha
 
   defp pinned?(_release), do: false
 

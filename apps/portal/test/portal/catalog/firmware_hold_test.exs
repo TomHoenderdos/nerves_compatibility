@@ -592,6 +592,29 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       end
     end
 
+    # Review R3, the reviewer's T11: ingest stores no record for these (all
+    # or nothing), and the watch must not read that as "no plugin": it marks
+    # the run withheld, as S5 marks a toolchain build's (review S5 R3).
+    test "a record over the bound, malformed, or not a list fails closed" do
+      many = for i <- 1..65, do: plugin("rebar3_x#{i}", "1.0.#{i}", String.duplicate("a", 64))
+
+      for {record, version} <- [
+            {many, "1.6.0"},
+            {[%{pinned_hex() | "sha256" => "not hex"}], "1.6.1"},
+            {[Map.delete(pinned_hex(), "owners")], "1.6.2"},
+            {%{"rebar3_hex" => "7.0.8"}, "1.6.3"},
+            {"rebar3_hex", "1.6.4"}
+          ] do
+        run =
+          run!(version, "2026-11-01T10:00:00Z", "m-" <> version,
+            rpi4: %{"rebar3_plugins" => record}
+          )
+
+        assert rpi4_of(run).rebar3_plugins == nil, inspect(record, limit: 3)
+        refute served_rpi4?(version), inspect(record, limit: 3)
+      end
+    end
+
     test "a target that ran no plugin is served" do
       _ = run!("1.4.0", "2026-11-01T10:00:00Z", "a", rpi4: %{"rebar3_plugins" => []})
       assert served_rpi4?("1.4.0")

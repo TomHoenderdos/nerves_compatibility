@@ -2760,8 +2760,10 @@ defmodule Portal.Catalog.Ingestion do
 
     case result do
       {:ok, system_result} ->
-        :ok =
-          PluginWatch.record_firmware(run.package_id, run.run_id, system_result.rebar3_plugins)
+        # The record as the worker wrote it, not the stored one, which is nil
+        # for a malformed or too long record (review R3): the watch fails
+        # those closed.
+        :ok = PluginWatch.record_firmware(run.package_id, run.run_id, sys["rebar3_plugins"])
 
         staged_blobs = Map.get(staged, system_pkg, [])
         sibling = Map.get(siblings, system_pkg)
