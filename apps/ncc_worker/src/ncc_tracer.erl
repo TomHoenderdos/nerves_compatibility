@@ -5,7 +5,7 @@
 %% (rebar3). Writes one JSON object per line; NccWorker.Tracer.Report reads them.
 -export([start_main/0, start_child/0, window_open/2, window_close/2, closure/3, built/3,
          config_env/2, sweep/2,
-         native_patterns/3, consolidated/2, finish/2, fire/1, ebin_dir/0, flush/0,
+         native_patterns/3, holders/2, consolidated/2, finish/2, fire/1, ebin_dir/0, flush/0,
          collector/0]).
 %% Exported for the tests: stage-1 classification that never crashes.
 -export([safe_extent/4, maps_libs/1, built_fields/2, loaded_by_mix/0, object_verdict/4,
@@ -81,7 +81,8 @@
 %% values: each recorded value's ETF => its value_id; value_bytes: the bytes
 %% of value lines written, at most max_value_bytes.
 %% gc_at: the heap size, in words, past which collected/1 collects.
--record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, sources = #{},
+-record(st, {fd, file, session, initial = #{}, procs = #{}, native = #{}, holders = #{},
+             holders_wanted = #{}, sources = #{},
              spawning = #{}, parents = #{}, set_depth = ?DEPTH, depth = ?DEPTH, lowered = false,
              wanted = [], unpatterned = false, final_pid, final_nonce, unloaded = [],
              token, watcher, wref, tampered = false, libs = unavailable, libs_written = false,
@@ -146,6 +147,14 @@ config_env(Token, {Entries, Truncated}) when is_list(Entries), is_boolean(Trunca
 config_env(Token, _Error) -> call(Token, config_env_error).
 
 native_patterns(Token, App, Ebin) -> call(Token, {native, bin(App), to_list(Ebin)}).
+
+%% Relocatable builds (S4): the modules of each closure dependency whose
+%% beams hold the build's deps or build path, `[{App, Module}]`, named by the
+%% worker for a relocation's second build. Sent once, before anything
+%% compiles; the collector sets call patterns on an app's holders when its
+%% window has closed (holder_patterns/3), as native_patterns/3 does for a
+%% natively built dependency.
+holders(Token, Holders) -> call(Token, {holders, Holders}).
 
 %% The project's protocol consolidation dir (Mix.Project.consolidation_path/1),
 %% named by the driver once the project compile is done (host mode), before
@@ -1088,9 +1097,11 @@ classified_channel(M, F, Args, St) ->
 %% a call to such a module (`__info__(:macros)` and friends): that returns
 %% compile metadata, not a value the native build produced.
 native_channel(M, F, St) ->
-    case is_map_key(M, St#st.native) andalso not lists:member(F, ?INTROSPECTION) of
-        true -> {native_closure, #{module => atom_to_binary(M)}};
-        false -> unknown
+    Introspection = lists:member(F, ?INTROSPECTION),
+    case {is_map_key(M, St#st.native), is_map_key(M, St#st.holders)} of
+        {true, _} when not Introspection -> {native_closure, #{module => atom_to_binary(M)}};
+        {_, true} when not Introspection -> {root_holder, #{module => atom_to_binary(M)}};
+        _ -> unknown
     end.
 
 record(_Class, toolchain, _Info, St) -> St;
@@ -1361,7 +1372,7 @@ request({closure, Packages, Deps}, _From, St) ->
 request({built, App, Dir}, _From, St) ->
     Fields = built_fields(ncc_tracer_digest, Dir),
     write(St, Fields#{kind => built, app => App, ts => now_ns()}),
-    {ok, St};
+    {ok, holder_patterns(App, Dir, St)};
 request({sweep, _App}, _From, #st{sweep = off} = St) -> {ok, St};
 request({sweep, App}, _From, #st{sweep = {on, Expected}} = St) ->
     Result = try ncc_tracer_sweep:sweep(Expected)
@@ -1373,6 +1384,11 @@ request({sweep, App}, _From, #st{sweep = {on, Expected}} = St) ->
         _ -> {{error, sweep_failed}, St}
     end;
 request({native, App, Ebin}, _From, St) -> {ok, native(App, Ebin, St)};
+request({holders, Holders}, _From, St) ->
+    Wanted = lists:foldl(fun({App, M}, Acc) ->
+                                 maps:update_with(bin(App), fun(Ms) -> [M | Ms] end, [M], Acc)
+                         end, #{}, Holders),
+    {ok, St#st{holders_wanted = Wanted}};
 request({consolidated, Dir}, _From, St) -> {ok, St#st{consolidated = Dir}};
 request({config_env, Entries, Truncated}, _From, St) ->
     write(St, #{kind => config_env, entries => Entries, truncated => Truncated, ts => now_ns()}),
@@ -1441,6 +1457,30 @@ native(App, Ebin, #st{session = Session, set_depth = Depth} = St) ->
     write(St, #{kind => quiet_close, app => App, ts => now_ns(), delivered => Delivered =:= ok}),
     St#st{native = maps:merge(St#st.native, maps:from_keys(Mods, App)),
           wanted = St#st.wanted ++ Wanted}.
+
+%% S4: call patterns on the holder modules the worker named for App, once
+%% its window has closed, so a later window's call into one is an event
+%% (channel root_holder). A holder that is not in App's ebin or does not
+%% load cannot be patterned: the trace then fails its pattern check
+%% (`unpatterned`), never a judgeable trace that missed its calls.
+holder_patterns(App, Dir, #st{holders_wanted = Wanted} = St) when is_map_key(App, Wanted) ->
+    #st{session = Session, set_depth = Depth} = St,
+    Ebin = filename:join(to_list(Dir), "ebin"),
+    write(St, #{kind => quiet_open, app => App, ts => now_ns()}),
+    _ = case lists:member(Ebin, code:get_path()) of
+            true -> true;
+            false -> code:add_pathz(Ebin)
+        end,
+    Mods = maps:get(App, Wanted),
+    Present = beam_modules(Ebin),
+    Loaded = [M || M <- Mods, lists:member(M, Present), code:ensure_loaded(M) =:= {module, M}],
+    Patterns = [wanted(Session, {M, '_', '_'}, match_spec(M, main, Depth)) || M <- Loaded],
+    Delivered = delivered(),
+    write(St, #{kind => quiet_close, app => App, ts => now_ns(), delivered => Delivered =:= ok}),
+    St#st{holders = maps:merge(St#st.holders, maps:from_keys(Loaded, App)),
+          wanted = St#st.wanted ++ Patterns,
+          unpatterned = St#st.unpatterned orelse length(Loaded) =/= length(Mods)};
+holder_patterns(_App, _Dir, St) -> St.
 
 beam_modules(Ebin) ->
     [list_to_atom(filename:basename(F, ".beam")) || F <- filelib:wildcard("*.beam", Ebin)].

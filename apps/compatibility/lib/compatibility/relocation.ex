@@ -152,6 +152,21 @@ defmodule Compatibility.Relocation do
 
   def relocate(_beam, _occurrences, _from, _to), do: {:refuse, "no occurrences"}
 
+  @doc """
+  The occurrences of `slots` in `beam` (see the moduledoc), unproven: what
+  `prove/4` starts from, and how the worker finds a build's holder modules
+  before its second build. `{:refuse, why}` where a slot sits where no
+  rewrite reaches it.
+  """
+  @spec occurrences(binary(), slots()) :: {:ok, [occurrence()]} | {:refuse, String.t()}
+  def occurrences(beam, slots) do
+    with :ok <- valid_slots(slots),
+         {:ok, chunks} <- chunks(beam),
+         do: scan(chunks, slots)
+  rescue
+    _ -> {:refuse, "unreadable beam"}
+  end
+
   @doc "A template's value at `slots`."
   @spec render([String.t()], slots()) :: String.t()
   def render(parts, slots), do: render(parts, slots, [])

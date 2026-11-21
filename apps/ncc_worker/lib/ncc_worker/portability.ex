@@ -148,6 +148,7 @@ defmodule NccWorker.Portability do
     PrivRepro,
     Probes,
     Rebar,
+    Relocate,
     Trees
   }
 
@@ -186,7 +187,8 @@ defmodule NccWorker.Portability do
     "priv_probes" => 50,
     "own_priv_reads" => 50,
     "own_tree_copies" => 50,
-    "foreign_priv" => 50
+    "foreign_priv" => 50,
+    "holder_calls" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -416,6 +418,7 @@ defmodule NccWorker.Portability do
     project_dir
     |> guarded_run(package, opts)
     |> PrivRepro.settle(project_dir, package, opts, &run/3, &build_digest/1)
+    |> Relocate.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> put_stat("wall_ms", System.monotonic_time(:millisecond) - started)
     |> put_transient()
   end
@@ -551,8 +554,18 @@ defmodule NccWorker.Portability do
         declassified: declassified,
         trees: trees,
         hook_scripts: hooks,
-        deps_path: deps
-      ] ++ Keyword.take(opts, [:target, :roots, :host_native, :foreign_priv, :native_side])
+        deps_path: deps,
+        build_path: build_path(project_dir, env)
+      ] ++
+        Keyword.take(opts, [
+          :target,
+          :roots,
+          :host_native,
+          :foreign_priv,
+          :native_side,
+          :relocate,
+          :holders
+        ])
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
@@ -732,6 +745,15 @@ defmodule NccWorker.Portability do
     end
   end
 
+  # The build path the compile writes (`MIX_BUILD_PATH`), `nil` when the env
+  # names none: Mix's own default then depends on the env and target.
+  defp build_path(project_dir, env) do
+    case env_value(env, "MIX_BUILD_PATH") do
+      nil -> nil
+      path -> Path.expand(path, project_dir)
+    end
+  end
+
   # The locked apps the build dir the compile writes already holds an ebin of.
   # sobelow_skip ["Traversal.FileModule"]
   defp compiled_apps(project_dir, env, releases) do
@@ -810,7 +832,17 @@ defmodule NccWorker.Portability do
       extra_env: Keyword.get(opts, :extra_env, []),
       run_started_at: Keyword.get(opts, :run_started_at),
       mode: Keyword.get(opts, :mode, :judge)
-    ] ++ Keyword.take(opts, [:reap, :cmd, :wrapper, :argv, :late_env, :sweep, :window_sweep])
+    ] ++
+      Keyword.take(opts, [
+        :reap,
+        :cmd,
+        :wrapper,
+        :argv,
+        :late_env,
+        :sweep,
+        :window_sweep,
+        :holders
+      ])
   end
 
   defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
@@ -1006,6 +1038,8 @@ defmodule NccWorker.Portability do
       tree_refusal: tree_refusal(ctx, scope),
       native_output: if(target(opts), do: native_output(ctx, scope)),
       host_native: host_native,
+      relocate: Relocate.enabled(opts),
+      slots: Relocate.slots(ctx, opts),
       foreign: %{
         stat: ForeignPriv.stat(opts, gate),
         gate: gate,
@@ -2554,6 +2588,7 @@ defmodule NccWorker.Portability do
           fn -> window_problem(report, app) end,
           fn -> first_refusal(decided, app) end,
           fn -> native_call(decided, app) end,
+          fn -> holder_call(decided, app) end,
           fn -> refusal_of(r2) end,
           fn -> unless match?({:error, _}, r2), do: rebar_taint(rebar) end,
           fn -> if side?, do: side_problem(ctx, libs, app) end
@@ -2820,6 +2855,20 @@ defmodule NccWorker.Portability do
     end)
   end
 
+  # S4: a call into a holder module made in this dependency's window
+  # (`Events`' `holder_calls`, a relocation's second build only) taints it:
+  # whatever it made of the path it was handed is no literal the rewrite
+  # reaches.
+  defp holder_call(decided, owner) do
+    Enum.find_value(decided, fn
+      {^owner, {:observe, "holder_calls", item}} ->
+        "calls a build-path holder at compile time: " <> to_string(item["mfa"])
+
+      _ ->
+        nil
+    end)
+  end
+
   # For a dependency, a rebar3 coverage error is host taint (spec R3: its
   # rebar3 sentinel missing), unless R2 could not read its ebin, which makes
   # the whole verdict could-not-judge instead.
@@ -2869,7 +2918,23 @@ defmodule NccWorker.Portability do
       }
       |> ForeignPriv.put_verdict(facts.foreign, status, facts.ctx.package)
 
-    if status == :pass, do: PrivRepro.hold(verdict, own_priv(facts)), else: verdict
+    if status == :pass,
+      do: PrivRepro.hold(verdict, own_priv(facts)),
+      else: Relocate.hold(verdict, facts, &verdict_of(relocation_facts(facts, &1)))
+  end
+
+  # S4 (`Relocate.hold/3`): `facts` as they would be had R2 not refused
+  # `apps`, the package or closure dependencies whose only refusal is a
+  # baked deps or build path, with relocation off, for `verdict_of/1`.
+  defp relocation_facts(facts, apps) do
+    package_r2 = if facts.ctx.package in apps, do: nil, else: facts.package_r2
+
+    deps =
+      Enum.map(facts.deps, fn {app, result} ->
+        if app in apps, do: {app, %{result | taint: nil, r2: nil}}, else: {app, result}
+      end)
+
+    %{facts | package_r2: package_r2, deps: deps, relocate: false}
   end
 
   # Judge revision 21: what the package's own compile did in its own build
@@ -3021,7 +3086,7 @@ defmodule NccWorker.Portability do
       for {owner, {:refuse, reason}} <- facts.decided,
           do: %{"owner" => owner_name(owner), "reason" => reason}
 
-    facts.foreign
+    facts
     |> caps()
     |> Map.new(fn {kind, cap} -> {kind, collect(observed ++ r2_observed(facts), kind, cap)} end)
     |> Map.merge(%{
@@ -3057,9 +3122,12 @@ defmodule NccWorker.Portability do
   end
 
   # Without the job's flag the observations are exactly as before it (plan
-  # ruling 3): no `foreign_priv` list, not even an empty one.
-  defp caps(%{flag: true}), do: @caps
-  defp caps(_foreign), do: Map.delete(@caps, "foreign_priv")
+  # ruling 3): no `foreign_priv` list, not even an empty one. Nor a
+  # `holder_calls` one without relocation (S4).
+  defp caps(facts) do
+    caps = if facts.foreign.flag, do: @caps, else: Map.delete(@caps, "foreign_priv")
+    if facts.relocate, do: caps, else: Map.delete(caps, "holder_calls")
+  end
 
   defp kino_own_call?({"foreign_priv", %{"owner" => owner}}, %{target: owner}), do: true
   defp kino_own_call?(_observed, _gate), do: false

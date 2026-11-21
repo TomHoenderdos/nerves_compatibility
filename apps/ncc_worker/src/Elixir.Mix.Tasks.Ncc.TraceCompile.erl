@@ -34,8 +34,11 @@ run(_Args) ->
     ok = set_argv(Input),
     Packages = names("NCC_TRACE_PACKAGE"),
     Native = names("NCC_TRACE_NATIVE"),
+    Holders = holders("NCC_TRACE_HOLDERS"),
     case ncc_tracer:start_main() of
-        {ok, Token} -> traced(Token, Packages, Native, mode(), maps:get(late_env, Input, []));
+        {ok, Token} ->
+            _ = ncc_tracer:holders(Token, Holders),
+            traced(Token, Packages, Native, mode(), maps:get(late_env, Input, []));
         {error, _Why} -> erlang:exit({shutdown, 1})
     end.
 
@@ -288,3 +291,12 @@ with_build_lock(Config, Fun) ->
     end.
 
 names(Var) -> [list_to_atom(Name) || Name <- string:lexemes(os:getenv(Var, ""), ",")].
+
+%% `app:Module,app:Module`, read before any package code runs: a relocation's
+%% second build names the modules whose calls its later windows record
+%% (ncc_tracer:holders/2).
+holders(Var) ->
+    [begin
+         [App, Mod] = string:split(Pair, ":"),
+         {list_to_atom(App), list_to_atom(Mod)}
+     end || Pair <- string:lexemes(os:getenv(Var, ""), ",")].

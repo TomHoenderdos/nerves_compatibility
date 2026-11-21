@@ -70,7 +70,8 @@ defmodule NccWorker.Portability.Context do
     trees: %{},
     hook_scripts: %{},
     drivers: %{},
-    foreign_priv: nil
+    foreign_priv: nil,
+    holder_apps: MapSet.new()
   ]
 
   @type dep :: %{
@@ -147,7 +148,8 @@ defmodule NccWorker.Portability.Context do
       trees: trees(Keyword.get(opts, :trees)),
       hook_scripts: trees(Keyword.get(opts, :hook_scripts)),
       deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")),
-      drivers: drivers(report.sentinels)
+      drivers: drivers(report.sentinels),
+      holder_apps: holder_apps(Keyword.get(opts, :holders))
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
@@ -155,6 +157,28 @@ defmodule NccWorker.Portability.Context do
 
   defp trees(trees) when is_map(trees), do: trees
   defp trees(_trees), do: %{}
+
+  defp holder_apps(holders) when is_list(holders),
+    do: MapSet.new(holders, fn {app, _module} -> to_string(app) end)
+
+  defp holder_apps(_holders), do: MapSet.new()
+
+  @doc """
+  S4: the closure dependency whose `ebin` `real` lies under when that
+  dependency has holder modules in a relocation's second build (`holders:`
+  of `build/5`, `NccWorker.Portability.Relocate`), else `nil`. Reading one
+  of its beams hands over the path its literals hold, as a call into it
+  does (`NccWorker.Portability.Events`, `holder_calls`).
+  """
+  @spec holder_ebin_app(t(), String.t() | nil) :: String.t() | nil
+  def holder_ebin_app(%__MODULE__{holder_apps: apps} = ctx, real) when is_binary(real) do
+    Enum.find(Enum.sort(apps), fn app ->
+      ebin = ebin(ctx, app)
+      is_binary(ebin) and under?(real, ebin)
+    end)
+  end
+
+  def holder_ebin_app(_ctx, _real), do: nil
 
   # The process each window's sentinel fired in: the driver's, which
   # compiles every dependency in turn (`Mix.Tasks.Deps.Compile.compile_single/3`),

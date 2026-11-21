@@ -357,11 +357,16 @@ defmodule NccWorker.Tracer do
       {"NCC_TRACE_DIR", trace_dir},
       {"NCC_TRACE_PACKAGE", Enum.join(packages, ",")},
       {"NCC_TRACE_NATIVE", opts |> Keyword.get(:native, []) |> Enum.join(",")},
+      {"NCC_TRACE_HOLDERS", opts |> Keyword.get(:holders, []) |> holders_env()},
       {"NCC_TRACE_MODE", Atom.to_string(mode)},
       {"NCC_TRACE_SWEEP", Keyword.get_lazy(opts, :window_sweep, &window_sweep/0)},
       {"MIX_OS_DEPS_COMPILE_PARTITION_COUNT", nil}
     ]
   end
+
+  # `holders:` (S4, a relocation's second build): `[{app, module}]`, the
+  # modules whose calls later windows record (`:ncc_tracer.holders/2`).
+  defp holders_env(holders), do: Enum.map_join(holders, ",", fn {app, mod} -> "#{app}:#{mod}" end)
 
   @doc "The driver's exit status when a sweep at a window boundary failed."
   @spec window_sweep_exit() :: pos_integer()

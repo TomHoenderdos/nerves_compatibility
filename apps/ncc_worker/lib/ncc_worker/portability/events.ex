@@ -127,7 +127,9 @@ defmodule NccWorker.Portability.Events do
     * A call into a natively built dependency refuses in the package's
       window and outside every window, and is observed in another
       dependency's window, where it is observed (`native_calls`) and the
-      judge taints that dependency for it (R3).
+      judge taints that dependency for it (R3). So is a call into a holder
+      module of a relocation's second build (`root_holder`, observed as
+      `holder_calls`, `NccWorker.Portability.Relocate`).
     * A host read whose first user frame is in a closure dependency's
       `mix.exs` goes to R4 (`MixExsSlice`): allowed ones are observed as
       `mix_exs_allowed`. Integrity, writes, links, `set_cwd`, native
@@ -364,6 +366,7 @@ defmodule NccWorker.Portability.Events do
   defp channel("file_read", event, ctx, owner), do: file_read(event, ctx, owner)
   defp channel("file_write", event, ctx, owner), do: file_write(event, ctx, owner)
   defp channel("native_closure", event, ctx, owner), do: native_closure(event, ctx, owner)
+  defp channel("root_holder", event, ctx, owner), do: root_holder(event, ctx, owner)
 
   # Marks its window (`Context.nested`); refuses nothing by itself.
   defp channel("nested_compile", _event, _ctx, _owner), do: :ignore
@@ -551,9 +554,14 @@ defmodule NccWorker.Portability.Events do
   defp readable(e, ctx, path, owner) do
     real = Context.resolve(ctx, path, owner)
 
+    holder = Context.holder_ebin_app(ctx, real)
+
     cond do
       Context.missing_under_priv?(ctx, real) ->
         {:refuse, host_read(e, path)}
+
+      holder != nil and holder != owner ->
+        root_holder(e, ctx, owner)
 
       Context.readable?(ctx, real) or absent_in_mix_exs?(e, ctx, owner, real) ->
         tree_read(e, ctx, real)
@@ -861,6 +869,17 @@ defmodule NccWorker.Portability.Events do
     if is_binary(owner) and owner != ctx.package,
       do: {:observe, "native_calls", summary(event)},
       else: {:refuse, "calls natively built dependency at compile time: " <> event["mfa"]}
+  end
+
+  # S4: a call into a holder module, a module whose beams hold its build's
+  # deps or build path (patterned only in a relocation's second build,
+  # `NccWorker.Portability.Relocate`). Observed (`holder_calls`) in another
+  # dependency's window, where the judge taints that dependency for it; a
+  # refusal in the package's window and outside every window.
+  defp root_holder(event, ctx, owner) do
+    if is_binary(owner) and owner != ctx.package,
+      do: {:observe, "holder_calls", summary(event)},
+      else: {:refuse, "calls a build-path holder at compile time: " <> event["mfa"]}
   end
 
   defp in_mix_exs(event, ctx, owner, slices, refusal) do
