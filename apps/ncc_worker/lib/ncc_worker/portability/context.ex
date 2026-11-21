@@ -78,7 +78,8 @@ defmodule NccWorker.Portability.Context do
     foreign_priv: nil,
     holders: %{},
     modules: %{},
-    declared: %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
+    declared: %{modules: %{}, apps: %{}, owners: %{}, packages: %{}},
+    differential: false
   ]
 
   @type dep :: %{
@@ -112,7 +113,8 @@ defmodule NccWorker.Portability.Context do
           drivers: %{String.t() => String.t()},
           foreign_priv: map() | nil,
           modules: %{String.t() => String.t()},
-          declared: NccWorker.Portability.Declared.t()
+          declared: NccWorker.Portability.Declared.t(),
+          differential: boolean()
         }
 
   @max_hops 40

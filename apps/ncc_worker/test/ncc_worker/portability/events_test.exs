@@ -2158,4 +2158,115 @@ defmodule NccWorker.Portability.EventsTest do
       end
     end
   end
+
+  describe "differential builds' varied reads" do
+    # With the job's `differential` flag (`Context.differential`), a read
+    # whose value a variant build changes is observed, carrying the refusal
+    # it would be, for `NccWorker.Portability.Differential` to settle.
+    # Without the flag nothing changes.
+    defp differential(ctx), do: %{ctx | differential: true}
+
+    defp plain_args(owner_extent) do
+      ev("env", "init:get_plain_arguments/0", %{},
+        extent: owner_extent,
+        first: {"erl_eval", "do_apply", 7},
+        user: nil
+      )
+    end
+
+    test "the scheduler count anywhere is observed as a varied read", %{ctx: ctx} do
+      for key <- ~w(schedulers_online schedulers) do
+        event = ev("os_identity", "erlang:system_info/1", %{"key" => key})
+
+        assert {:refuse, reason} = Events.decide(event, ctx, "pkg")
+        assert reason =~ "compile-time host read: erlang:system_info/1 (#{key})"
+
+        assert {:observe, "varied_reads", item} = Events.decide(event, differential(ctx), "pkg")
+        assert item["read"] == "schedulers"
+        assert item["refusal"] =~ "compile-time host read: erlang:system_info/1 (#{key})"
+        assert item["mfa"] == "erlang:system_info/1"
+      end
+
+      for key <- ~w(logical_processors nif_version wordsize) do
+        assert {:refuse, _} =
+                 Events.decide(
+                   ev("os_identity", "erlang:system_info/1", %{"key" => key}),
+                   differential(ctx),
+                   "pkg"
+                 )
+      end
+    end
+
+    test "HOME is a varied read; any other init argument is not", %{ctx: ctx} do
+      home = ev("env", "init:get_argument/1", %{"name" => "home"})
+
+      assert {:observe, "varied_reads", %{"read" => "home"}} =
+               Events.decide(home, differential(ctx), "pkg")
+
+      assert {:observe, "varied_reads", %{"read" => "home"}} =
+               Events.decide(home, differential(ctx), :outside)
+
+      for name <- ~w(root progname pa) do
+        assert {:refuse, "compile-time host read: init:get_argument/1" <> _} =
+                 Events.decide(
+                   ev("env", "init:get_argument/1", %{"name" => name}),
+                   differential(ctx),
+                   "pkg"
+                 )
+      end
+
+      assert {:refuse, _} =
+               Events.decide(ev("env", "init:get_arguments/0", %{}), differential(ctx), "pkg")
+    end
+
+    test "the plain arguments are varied only outside every window", %{ctx: ctx} do
+      assert {:refuse, "compile-time host read: init:get_plain_arguments/0" <> _} =
+               Events.decide(plain_args("dispatcher"), ctx, :outside)
+
+      assert {:observe, "varied_reads", %{"read" => "plain_args", "refusal" => refusal}} =
+               Events.decide(plain_args("dispatcher"), differential(ctx), :outside)
+
+      assert refusal =~ "init:get_plain_arguments/0"
+
+      # A compile can test them against a literal no variant guesses.
+      assert {:refuse, _} = Events.decide(plain_args("dispatcher"), differential(ctx), "pkg")
+
+      assert {:refuse, _} =
+               Events.decide(
+                 ev("env", "init:get_plain_arguments/0", %{}),
+                 differential(ctx),
+                 "pkg"
+               )
+    end
+
+    test "a read in a dependency's mix.exs stays R4's", %{ctx: ctx, pkg: pkg} do
+      event =
+        in_mix_exs(ev("os_identity", "erlang:system_info/1", %{"key" => "schedulers"}), pkg, 4)
+
+      assert {:observe, "mix_exs_allowed", _} = Events.decide(event, ctx, "pkg")
+      assert Events.decide(event, differential(ctx), "pkg") == Events.decide(event, ctx, "pkg")
+
+      File.write!(Path.join(pkg, "mix.exs"), String.duplicate("#", 300 * 1024))
+
+      assert {:refuse, "compile-time host read in mix.exs: " <> _} =
+               Events.decide(event, differential(ctx), "pkg")
+    end
+
+    test "the empty path names no file on any host", %{ctx: ctx} do
+      for mfa <- ~w(file:read_file_info/1 file:read_file_info/2 file:read_link_info/2
+                    prim_file:read_file_info/1) do
+        event = ev("file_read", mfa, %{"path" => ""})
+        assert {:refuse, "compile-time host read: " <> _} = Events.decide(event, ctx, "pkg")
+        assert :ignore = Events.decide(event, differential(ctx), "pkg")
+      end
+
+      # Its bytes are no stat: only the stat-type reads.
+      assert {:refuse, _} =
+               Events.decide(
+                 ev("file_read", "file:read_file/1", %{"path" => ""}),
+                 differential(ctx),
+                 "pkg"
+               )
+    end
+  end
 end

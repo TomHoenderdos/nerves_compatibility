@@ -229,6 +229,14 @@ defmodule NccWorker.Portability.Events do
   # the OTP major. Exact atom keys only: `term_bin` renders a tuple key
   # (`{allocator, ...}`) as something never in this list.
   @same_within_major ~w(machine smp_support threads heap_type)
+  # The `system_info` keys a differential build's `+S` changes.
+  @varied_schedulers ~w(schedulers_online schedulers)
+  @host_read_prefix "compile-time host read: "
+  # A stat of the empty path is `enoent` on every host.
+  @empty_path_stats ~w(file:read_file_info/1 file:read_file_info/2 file:read_link_info/1
+                       file:read_link_info/2 prim_file:read_file_info/1
+                       prim_file:read_file_info/2 prim_file:read_link_info/1
+                       prim_file:read_link_info/2)
   # Elixir's type checker sizing its pool of verification processes: the
   # frame (shared with the tracer, which sets a canary on its module) and
   # the bottom frame of the process `:proc_lib.start_link/3` starts for it.
@@ -328,7 +336,39 @@ defmodule NccWorker.Portability.Events do
       other ->
         other
     end
+    |> varied(event, ctx, owner)
   end
+
+  # Differential builds (the job's `differential` flag,
+  # `NccWorker.Portability.Differential`): a host read refusal of a value a
+  # variant build changes is observed as `varied_reads` instead, carrying
+  # the refusal it would be, for the variants to settle. A dependency's
+  # `mix.exs` read stays R4's (its refusal says "in mix.exs"). The scheduler
+  # count and HOME anywhere; the plain arguments only outside every window,
+  # where Mix evaluates a rebar3 dependency's `rebar.config.script` (a
+  # compile can test them against a literal no variant guesses).
+  defp varied({:refuse, @host_read_prefix <> _ = reason} = refusal, event, ctx, owner) do
+    case ctx.differential && varied_read(event, owner) do
+      read when is_binary(read) ->
+        {:observe, "varied_reads",
+         Map.merge(summary(event), %{"read" => read, "refusal" => reason})}
+
+      _ ->
+        refusal
+    end
+  end
+
+  defp varied(decision, _event, _ctx, _owner), do: decision
+
+  defp varied_read(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => key}}, _owner)
+       when key in @varied_schedulers,
+       do: "schedulers"
+
+  defp varied_read(%{"mfa" => "init:get_argument/1", "arg" => %{"name" => "home"}}, _owner),
+    do: "home"
+
+  defp varied_read(%{"mfa" => "init:get_plain_arguments/0"}, :outside), do: "plain_args"
+  defp varied_read(_event, _owner), do: nil
 
   defp channel("os_identity", event, _ctx, _owner) do
     if epp_predef?(event), do: :ignore, else: os_identity(event)
@@ -580,6 +620,14 @@ defmodule NccWorker.Portability.Events do
   # never flagged, and the beam read that follows is still judged as a read.
   defp file_read(%{"mfa" => "prim_file:read_link/1", "arg" => %{"code_loading" => true}}, _, _),
     do: :ignore
+
+  # Differential builds: `File.exists?("")` (ex_cldr's
+  # `Cldr.Config.production_data_location/0` with its variable unset) asks
+  # the empty path, which names no file on any host: `enoent`, whatever the
+  # cwd. Only a stat; the variable read before it stays a compile input.
+  defp file_read(%{"mfa" => mfa, "arg" => %{"path" => ""}}, %{differential: true}, _owner)
+       when mfa in @empty_path_stats,
+       do: :ignore
 
   defp file_read(%{"arg" => %{"cwd" => true}} = e, ctx, owner) do
     case Context.cwd(ctx, owner) do
