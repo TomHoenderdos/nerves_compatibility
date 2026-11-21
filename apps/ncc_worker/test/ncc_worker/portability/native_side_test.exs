@@ -476,6 +476,35 @@ defmodule NccWorker.Portability.NativeSideTest do
                "not on the native list)"
   end
 
+  # Review M2: `make` runs untraced, so with anything set apart it could
+  # drop a module into the package's own ebin before the package compiles,
+  # as a firmware target's trace guards (`native_output/2`).
+  test "with a native side set apart, a beam in the package's ebin from elsewhere refuses",
+       ctx do
+    own = "NativeSidePkg#{System.unique_integer([:positive])}"
+    write_beam(ctx.proj, "pkg", "defmodule #{own} do\nend\n")
+    assert %{status: :pass} = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ @on)
+
+    elsewhere = Path.join(ctx.proj, "_build/host/lib/dep/obj/planted.ex")
+    File.mkdir_p!(Path.dirname(elsewhere))
+    File.write!(elsewhere, "")
+    module = "NativeSidePlanted#{System.unique_integer([:positive])}"
+    write_beam(ctx.proj, "pkg", "defmodule #{module} do\nend\n", elsewhere)
+
+    assert %{status: :skip, reason: reason} =
+             judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ @on)
+
+    assert reason ==
+             "native build not set apart: beam not compiled from the package's own sources: " <>
+               "Elixir.#{module}.beam"
+
+    # Nothing set apart (no tool ran, or the option is off): as before.
+    assert %{status: :pass} = judge(ctx.proj, report(ctx.proj, []), ctx.opts ++ @on)
+
+    assert %{status: :skip, reason: "closure dependency observed the host: dep (" <> _} =
+             judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts)
+  end
+
   test "a firmware target's trace is unchanged by the option", ctx do
     plain = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ [target: "rpi4"])
     on = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ [target: "rpi4"] ++ @on)

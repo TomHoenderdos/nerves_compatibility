@@ -2642,6 +2642,23 @@ defmodule NccWorker.Portability do
     end
   end
 
+  # Review M2. With a closure dependency's native side set apart, its
+  # `make` ran untraced and might have put a module in the package's own
+  # ebin before the package compiled (the package's built digest is taken
+  # at its window's close, so it would include it). Every beam there must
+  # have compiled from a file in the package's own source dir, as a firmware
+  # target's trace asks (`native_output/2`). Nothing set apart: nothing to
+  # check.
+  defp side_output(%{deps: deps, ctx: ctx}) do
+    if Enum.any?(deps, fn {_app, result} -> Map.get(result, :side) == true end) do
+      case foreign_beam(ctx) do
+        "beam not compiled from the package's own sources: " <> _ = why -> side_refusal(why)
+        nil -> nil
+        _no_build -> side_refusal("no build of the package to check its beams' sources")
+      end
+    end
+  end
+
   # sobelow_skip ["Traversal.FileModule"]
   defp literal_checksum?(path) do
     case File.read(path) do
@@ -2704,7 +2721,8 @@ defmodule NccWorker.Portability do
           fn -> if facts.package_window, do: Reasons.could_not_judge() end,
           fn -> package_r2(facts.package_r2) end,
           fn -> package_rebar(facts.package_rebar) end,
-          fn -> closure(facts.deps) end
+          fn -> closure(facts.deps) end,
+          fn -> side_output(facts) end
         ],
         & &1.()
       )
