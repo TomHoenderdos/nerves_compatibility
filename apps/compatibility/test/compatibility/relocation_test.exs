@@ -232,13 +232,34 @@ defmodule Compatibility.RelocationTest do
         [%{"path" => hd(ebin), "occurrences" => [%{@occ | "parts" => parts}]}]
       end
 
-      for tail <- ["", "/lib/fx/priv", "/consolidated/Elixir.P.beam"] do
+      for tail <- [
+            "",
+            "/lib/fx/priv",
+            "/lib/fx/ebin",
+            "/lib/fx/include/a.hrl",
+            "/lib/fx/.mix/compile.lock",
+            "/consolidated/Elixir.P.beam"
+          ] do
         assert Relocation.record_problem(%{@record | "files" => file.(["", "build", tail])}, ebin) ==
                  nil,
                tail
       end
 
-      for tail <- ["_x/lib/fx/priv", "/x/lib/fx/priv", "/lib", "/libx/a", "/consolidated"] do
+      # The client re-review's R9: under `lib`, only an app's own dir and
+      # Mix's layout in it; `/lib/x/lib/fx/priv` is a build root moved
+      # down one app.
+      for tail <- [
+            "_x/lib/fx/priv",
+            "/x/lib/fx/priv",
+            "/lib",
+            "/libx/a",
+            "/consolidated",
+            "/lib/x/lib/fx/priv",
+            "/lib/fx",
+            "/lib/fx/src/a.ex",
+            "/lib/../priv",
+            "/lib//priv"
+          ] do
         assert Relocation.record_problem(%{@record | "files" => file.(["", "build", tail])}, ebin) =~
                  "a build path followed by",
                tail
@@ -248,6 +269,11 @@ defmodule Compatibility.RelocationTest do
                %{@record | "files" => file.(["", "build", "", "deps", "/x"])},
                ebin
              ) == nil
+
+      # With the build's closure apps named, the app must be one of them.
+      priv = %{@record | "files" => file.(["", "build", "/lib/fx/priv"])}
+      assert Relocation.record_problem(priv, ebin, ["fx", "decimal"]) == nil
+      assert Relocation.record_problem(priv, ebin, ["decimal"]) =~ "a build path followed by"
     end
 
     test "every malformed shape is named" do

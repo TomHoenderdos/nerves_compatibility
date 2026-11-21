@@ -250,6 +250,29 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert length(memberships(tb)) == 3
   end
 
+  # A build slot followed by an app of the closure, the package's own or
+  # one in its lock, and Mix's layout in it, is taken.
+  test "a build path under an app of the build's closure is taken" do
+    name = unique_name()
+    beam = reloc_beam(name)
+    priv = blob("priv-#{name}")
+
+    for app <- [name, "decimal"] do
+      record =
+        put_in(record(name), ["files", Access.at(0), "occurrences", Access.at(0), "parts"], [
+          "",
+          "build",
+          "/lib/#{app}/priv"
+        ])
+
+      assert {:ok, %ToolchainBuild{status: :pass}} =
+               Ingestion.ingest_toolchain(
+                 relocated_result(name, beam, priv, record),
+                 opts(name, files_dir_with([beam, priv, reloc_app(name)]))
+               )
+    end
+  end
+
   # The umbrella re-review's Q1: a dependent that passed because a
   # dependency was held carries the record with no file to rewrite, and is
   # stored as a relocated build: its files under relocated_file_manifest,
@@ -382,11 +405,29 @@ defmodule Portal.Catalog.IngestionToolchainTest do
         "_x/lib/fx/priv"
       ])
 
+    # The client re-review's R9: under `lib`, only an app of the build's
+    # closure (its lock and its own `.app`), and Mix's layout in it.
+    deeper =
+      put_in(tail, ["files", Access.at(0), "occurrences", Access.at(0), "parts"], [
+        "",
+        "build",
+        "/lib/x/lib/fx/priv"
+      ])
+
+    stranger =
+      put_in(tail, ["files", Access.at(0), "occurrences", Access.at(0), "parts"], [
+        "",
+        "build",
+        "/lib/not_in_closure/priv"
+      ])
+
     for {bad, why} <- [
           {other, "not a file of the build"},
           {unpinned, "worker"},
           {big, "256 KiB"},
-          {tail, "a build path followed by"}
+          {tail, "a build path followed by"},
+          {deeper, "a build path followed by"},
+          {stranger, "a build path followed by"}
         ] do
       assert {:ok, %ToolchainBuild{} = tb} =
                Ingestion.ingest_toolchain(

@@ -886,8 +886,9 @@ What it lists:
   inside the term (element indices of tuples and lists, a proper list's tail at its length, a map
   value's index among the map's keys in term order), its kind (`binary`, `charlist`, `atom`) and
   the value as a template, text and slot names (`deps`, `build`) in turn, the text UTF-8 and each
-  value at most 4 KiB; the text after a `build` slot is empty or starts with `/lib/` or
-  `/consolidated/` (Mix's layout under a build path). `files` may be empty: a dependent's build
+  value at most 4 KiB; the text after a `build` slot is Mix's own layout under a build path:
+  empty, `/consolidated/...`, or `/lib/<app>/` and then `ebin`, `priv`, `include` or `.mix`,
+  `<app>` an app of the build's closure (its lock's keys or its own `.app`). `files` may be empty: a dependent's build
   whose own beams need no rewrite. A record over 256 KiB of JSON is refused. Every beam of the
   entry's `ebin` was compiled from the package's dir under `deps` (`<deps>/<app>/`, `<app>` the
   entry's `.app` file's name): the portal reads each beam's `CInf` `source` at ingest
@@ -950,7 +951,7 @@ What it lists:
   of the record's three roots for its slot: its characters among theirs, its length and depth
   between their least and greatest (`relocated_path_envelope`). It refuses (`relocation_refused`)
   a record whose three roots are not the builder's own layout, or whose `build` slot is followed by
-  anything but Mix's layout. After staging and verifying the served files it requires every
+  anything but Mix's layout under a closure app. After staging and verifying the served files it requires every
   beam's `CInf` `source` to lie in the package's dir under the record's `deps` path, derives every
   beam's occurrences of the record's paths itself (each `build` slot again followed by Mix's
   layout) and requires them to be exactly

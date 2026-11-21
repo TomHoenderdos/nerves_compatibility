@@ -495,7 +495,8 @@ defmodule NccWorker.Portability.Relocate do
   # and the client's envelope holds it. Every beam of the package's own ebin
   # must have been compiled from its dir under the first build's deps path
   # (`Relocation.compiled_in_problem/3`), and the record must be one the
-  # portal and the client take (`Relocation.record_problem/2`).
+  # portal and the client take (`Relocation.record_problem/3`, the closure's
+  # apps the only ones a build path may be followed by).
   defp pass(held, {second, at_second}, {third, at_third}) do
     own = Map.get(at_second, held.package, %{})
     relocated? = held.package in held.apps
@@ -513,7 +514,12 @@ defmodule NccWorker.Portability.Relocate do
 
     with {:ok, ebin} <- own_ebin(held),
          nil <- pass_problem(held, own, at_third, relocated?, ebin),
-         nil <- Relocation.record_problem(record, Enum.map(Map.keys(ebin), &("ebin/" <> &1))) do
+         nil <-
+           Relocation.record_problem(
+             record,
+             Enum.map(Map.keys(ebin), &("ebin/" <> &1)),
+             Enum.uniq([held.package | Map.keys(held.dirs)])
+           ) do
       held.passed
       |> Map.put(:relocation, record)
       |> put_stat("relocate", if(relocated?, do: "relocated", else: "dependencies"))

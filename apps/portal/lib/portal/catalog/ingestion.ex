@@ -965,7 +965,8 @@ defmodule Portal.Catalog.Ingestion do
       (build["foreign_priv"] || []) != [] ->
         "beside foreign priv files"
 
-      problem = Compatibility.Relocation.record_problem(record, ebin_paths(build)) ->
+      problem =
+          Compatibility.Relocation.record_problem(record, ebin_paths(build), closure_apps(build)) ->
         problem
 
       problem = Compatibility.Relocation.pinned_problem(record) ->
@@ -1001,6 +1002,24 @@ defmodule Portal.Catalog.Ingestion do
     do: for(%{"path" => path} when is_binary(path) <- entries, do: path)
 
   defp ebin_paths(_build), do: []
+
+  # The build's closure apps, as Mix names their dirs under a build path:
+  # its lock's keys and its own `.app` file's name (the client re-review's
+  # R9).
+  defp closure_apps(build) do
+    own =
+      for "ebin/" <> name <- ebin_paths(build),
+          Path.extname(name) == ".app",
+          do: Path.basename(name, ".app")
+
+    locked =
+      case build["deps_lock"] do
+        %{} = lock -> Map.keys(lock)
+        _ -> []
+      end
+
+    Enum.uniq(own ++ locked)
+  end
 
   defp relocated?(%{"status" => "pass", "relocation" => %{}}), do: true
   defp relocated?(_build), do: false

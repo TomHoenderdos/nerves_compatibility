@@ -333,13 +333,21 @@ defmodule Compatibility.Relocation do
   each with at least one occurrence of a known chunk, a non-negative index,
   a term path of non-negative integers, a known kind and a template of text
   and slot names with at least one slot, every `build` slot in it followed
-  by nothing, `/lib/` or `/consolidated/` (Mix's layout under a build path,
-  the client re-review's R5). Reads the record alone, never a beam: the
-  portal checks it at ingest on its own node, which makes no atom.
+  by Mix's own layout under a build path (the client re-review's R5 and
+  R9): nothing, `/consolidated/...`, or `/lib/<app>/` and then `ebin`,
+  `priv`, `include` or `.mix`, `<app>` one of `apps` (the build's closure
+  apps) when given. Reads the record alone, never a beam: the portal
+  checks it at ingest on its own node, which makes no atom.
   """
-  @spec record_problem(term(), [String.t()]) :: String.t() | nil
-  def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin_paths)
-      when is_list(files) and is_list(ebin_paths) do
+  @spec record_problem(term(), [String.t()], [String.t()] | nil) :: String.t() | nil
+  def record_problem(record, ebin_paths, apps \\ nil)
+
+  def record_problem(
+        %{"deps" => deps, "build" => build, "files" => files} = record,
+        ebin_paths,
+        apps
+      )
+      when is_list(files) and is_list(ebin_paths) and (is_list(apps) or is_nil(apps)) do
     cond do
       record |> Map.keys() |> Enum.sort() != @record_keys ->
         "unknown keys"
@@ -358,11 +366,11 @@ defmodule Compatibility.Relocation do
         "a file twice"
 
       true ->
-        Enum.find_value(files, &file_problem(&1, ebin_paths))
+        Enum.find_value(files, &file_problem(&1, ebin_paths, apps))
     end
   end
 
-  def record_problem(_record, _ebin_paths), do: "not a relocation record"
+  def record_problem(_record, _ebin_paths, _apps), do: "not a relocation record"
 
   defp roots_problem(first, second, third) do
     roots = [first, second, third]
@@ -390,7 +398,11 @@ defmodule Compatibility.Relocation do
   defp file_path(%{"path" => path}), do: path
   defp file_path(file), do: file
 
-  defp file_problem(%{"path" => "ebin/" <> name = path, "occurrences" => [_ | _] = occs}, ebin) do
+  defp file_problem(
+         %{"path" => "ebin/" <> name = path, "occurrences" => [_ | _] = occs},
+         ebin,
+         apps
+       ) do
     cond do
       Path.basename(name) != name or Path.extname(name) != ".beam" ->
         "not a beam: #{inspect(path)}"
@@ -404,7 +416,7 @@ defmodule Compatibility.Relocation do
       not Enum.all?(occs, &occurrence?/1) ->
         "a malformed occurrence in #{inspect(path)}"
 
-      tail = Enum.find_value(occs, &build_tail/1) ->
+      tail = Enum.find_value(occs, &build_tail(&1, apps)) ->
         "a build path followed by #{inspect(tail, limit: 3, printable_limit: 40)} in #{inspect(path)}"
 
       true ->
@@ -412,23 +424,37 @@ defmodule Compatibility.Relocation do
     end
   end
 
-  defp file_problem(file, _ebin), do: "a malformed file entry #{inspect(file, limit: 3)}"
+  defp file_problem(file, _ebin, _apps), do: "a malformed file entry #{inspect(file, limit: 3)}"
 
   # The text after a `build` slot that is not Mix's layout under a build
-  # path (nothing, `lib/`, `consolidated/`), or nil.
-  defp build_tail(%{"parts" => parts}) do
+  # path, or nil.
+  defp build_tail(%{"parts" => parts}, apps) do
     parts
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.find_value(fn
-      ["build", tail] -> if not mix_layout?(tail), do: tail
+      ["build", tail] -> if not mix_layout?(tail, apps), do: tail
       _ -> nil
     end)
   end
 
-  defp mix_layout?(tail),
-    do:
-      tail == "" or String.starts_with?(tail, "/lib/") or
-        String.starts_with?(tail, "/consolidated/")
+  @app_dirs ~w(ebin priv include .mix)
+
+  # Nothing, `/consolidated/...`, or `/lib/<app>/<dir>` and below, `<dir>`
+  # one of an app's own dirs and `<app>` one of `apps` when given.
+  defp mix_layout?("", _apps), do: true
+  defp mix_layout?("/consolidated/" <> _, _apps), do: true
+
+  defp mix_layout?("/lib/" <> rest, apps) do
+    case String.split(rest, "/", parts: 3) do
+      [app, dir | _] when dir in @app_dirs and app not in ["", ".", ".."] ->
+        apps == nil or app in apps
+
+      _ ->
+        false
+    end
+  end
+
+  defp mix_layout?(_tail, _apps), do: false
 
   defp occurrence?(
          %{"chunk" => chunk, "index" => i, "term" => term, "kind" => kind, "parts" => parts} = occ
