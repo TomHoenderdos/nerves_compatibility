@@ -730,7 +730,7 @@ of these skips the build:
   writes and network use are judged like any compile code; any other plugin, or one from git, still refuses, since
   rebar3 resolves a plugin and its dependencies from its own registry cache and no lock or trace pins what its
   `init/1` does. A shell compile hook of a natively built app is its native build, judged by the native rules (crc32cer's
-  `make nif`); a hook on a namespaced provider (`{{hex, publish}, Script}`) never runs in `bare compile`; rebar3's own
+  `make nif`); `mkdir -p ebin` (pbkdf2) reads nothing and writes no file and is let through; a hook on a namespaced provider (`{{hex, publish}, Script}`) never runs in `bare compile`; rebar3's own
   `escriptize` as a post-compile provider hook (cuttlefish) is let through. OTP's `pubkey_os_cacerts:on_load/0` reading
   `os:type/0` when rebar3's TLS loads it is ignored;
 - a trace that did not finish.

@@ -2409,6 +2409,13 @@ defmodule NccWorker.Portability.JudgeTest do
              "rebar3 build runs provider_hooks"},
             {"default_ns_hook", ~s({pre_hooks, [{{default, compile}, "make"}]}.\n),
              "rebar3 build runs pre_hooks"},
+            {"mkdir_other", ~s|{pre_hooks, [{compile, "mkdir -p ebin && make"}]}.\n|,
+             "rebar3 build runs pre_hooks"},
+            {"mkdir_priv", ~s|{pre_hooks, [{compile, "mkdir -p priv"}]}.\n|,
+             "rebar3 build runs pre_hooks"},
+            {"mkdir_override",
+             ~s|{overrides, [{override, x, [{pre_hooks, [{compile, "mkdir -p ebin"}]}]}]}.\n|,
+             "rebar3 build runs pre_hooks"},
             {"hex_git", ~s|{plugins, [{rebar3_hex, {git, "https://x/y.git", {tag, "1"}}}]}.\n|,
              "rebar3 build runs plugins"},
             {"hex_pkg", "{plugins, [{rebar3_hex, {pkg, evil}}]}.\n", "rebar3 build runs plugins"},
@@ -2505,6 +2512,9 @@ defmodule NccWorker.Portability.JudgeTest do
             {"prov_escriptize",
              "{provider_hooks, [{post, [{compile, {default, escriptize}}]}]}.\n"},
             {"prov_escriptize_bare", "{provider_hooks, [{post, [{compile, escriptize}]}]}.\n"},
+            # Creating its own ebin dir before rebar3 writes there (pbkdf2):
+            # the command reads nothing and writes no file.
+            {"mkdir_ebin_hook", ~s|{pre_hooks, [{compile, "mkdir -p ebin"}]}.\n|},
             # A namespaced provider's hook never equals `compile` (dbi).
             {"ns_hook", ~s|{pre_hooks, [{{hex, publish}, "./update_vsn_mix.sh"}]}.\n|},
             {"ns_arch_hook", ~s|{post_hooks, [{"linux", {hex, publish}, "x"}]}.\n|},
