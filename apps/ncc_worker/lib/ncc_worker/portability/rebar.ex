@@ -891,18 +891,17 @@ defmodule NccWorker.Portability.Rebar do
   # wrote when it returned (the tracer hashes the beam then), so anything
   # that wrote over it later, a hook or any other writer, taints.
   defp changed_beam(beams, compiled, ebin) do
-    Enum.find_value(beams, fn module ->
-      case compiled[module] do
-        sha when is_binary(sha) ->
-          if beam_sha(ebin, module) == sha,
-            do: nil,
-            else: {:error, "rebar3 beam #{module} changed after its traced compile"}
-
-        _ ->
-          {:error, "rebar3 compile of #{module} recorded no beam hash"}
-      end
-    end)
+    Enum.find_value(beams, &beam_changed(&1, compiled[&1], ebin))
   end
+
+  defp beam_changed(module, sha, ebin) when is_binary(sha) do
+    if beam_sha(ebin, module) == sha,
+      do: nil,
+      else: {:error, "rebar3 beam #{module} changed after its traced compile"}
+  end
+
+  defp beam_changed(module, _sha, _ebin),
+    do: {:error, "rebar3 compile of #{module} recorded no beam hash"}
 
   @max_beam_bytes 64 * 1024 * 1024
 
