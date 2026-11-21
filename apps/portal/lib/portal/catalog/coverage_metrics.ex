@@ -178,6 +178,9 @@ defmodule Portal.Catalog.CoverageMetrics do
     }
   end
 
+  # `counts_sql/0` is a module constant with a literal clause put in;
+  # every value is a bound parameter.
+  # sobelow_skip ["SQL.Query"]
   defp row(toolchain, names, versions, variants) do
     %{rows: [[packages, downloads, served, served_dl, failures, failure_dl, nothing, gleam]]} =
       Repo.query!(counts_sql(), [names, versions, toolchain, variants],

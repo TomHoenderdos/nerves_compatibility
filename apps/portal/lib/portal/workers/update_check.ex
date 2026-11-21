@@ -306,6 +306,9 @@ defmodule Portal.Workers.UpdateCheck do
   # the backlog has nothing left to build of it (`nomination_done/4`). Counts
   # the rows it changed. A prerelease is never nominated: prerelease churn
   # would queue builds, and some prereleases are not to be published.
+  # The statement is built from literals only (`nomination_done/4` takes
+  # column names and placeholders); every value is a bound parameter.
+  # sobelow_skip ["SQL.Query"]
   defp nominate(patch_only) do
     toolchains = toolchains()
     builder_version = Portal.Toolchains.builder_version()
@@ -338,7 +341,9 @@ defmodule Portal.Workers.UpdateCheck do
   # retries after a day; or a revoked row) and, when that `with` build wants
   # its `without` one (it added an optional dependency; the backlog's rule),
   # a verdict of that one too. Clearing it any sooner leaves a version with
-  # no run of its own no way into the backlog.
+  # no run of its own no way into the backlog. Literals and bound
+  # parameters only, as in `nominate/1`.
+  # sobelow_skip ["SQL.Query"]
   defp clear_stale do
     Portal.Repo.query!(
       """
