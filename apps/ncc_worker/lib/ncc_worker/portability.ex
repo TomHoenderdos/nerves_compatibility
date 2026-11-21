@@ -3070,8 +3070,11 @@ defmodule NccWorker.Portability do
   # What `Differential.hold/2` needs: the varied reads (`Events`'
   # `varied_reads`, by owner), the package's build dir, the tree snapshot
   # it was judged on and, when a read was of the plain arguments, the
-  # verified tarballs of the closure's rebar3 dependencies that hold a
-  # `rebar.config.script`.
+  # verified tarballs that hold a `rebar.config.script` of every locked
+  # release Mix may have evaluated one of: the closure's rebar3
+  # dependencies, and every locked release outside the closure line, whose
+  # manager the trace does not name (Mix evaluates every dependency's
+  # script when it loads the project, outside every window).
   defp varied(%{ctx: ctx, decided: decided, scope: scope}) do
     reads =
       for {owner, {:observe, "varied_reads", item}} <- decided,
@@ -3088,9 +3091,9 @@ defmodule NccWorker.Portability do
     }
   end
 
-  defp scripted(%Context{hex: {home, releases}} = ctx, scope) do
-    for app <- Enum.sort(scope),
-        Context.manager(ctx, app) == "rebar3",
+  defp scripted(%Context{hex: {home, releases}} = ctx, _scope) do
+    for app <- releases |> Map.keys() |> Enum.sort(),
+        not Context.dep?(ctx, app) or Context.manager(ctx, app) == "rebar3",
         bytes = Context.release_tarball(home, releases, app),
         is_binary(bytes),
         match?({:ok, %{script?: true}}, Rebar.tarball_sources(bytes)),

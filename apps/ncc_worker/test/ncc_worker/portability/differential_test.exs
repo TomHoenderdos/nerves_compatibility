@@ -270,6 +270,13 @@ defmodule NccWorker.Portability.DifferentialTest do
     assert "script check: eval failed" in v.observations["problems"]
   end
 
+  test "a script check refusal names the plain-arguments read, whatever came first", ctx do
+    held = held(ctx, [@sched, @plain], [{"gproc", "tarball"}])
+    check = fn _, _ -> {:differs, "gproc", "erl_opts differs with \"test\""} end
+    v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end, script_check: check)
+    assert String.starts_with?(v.reason, @plain["refusal"] <> "; gproc's rebar.config.script")
+  end
+
   test "plain arguments with no rebar.config.script to settle them refuse", ctx do
     held = held(ctx, [@plain], [])
     v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end)

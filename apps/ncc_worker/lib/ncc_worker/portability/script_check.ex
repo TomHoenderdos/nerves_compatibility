@@ -36,6 +36,8 @@ defmodule NccWorker.Portability.ScriptCheck do
   @max_out_bytes 1024 * 1024
   @timeout_sec 60
   @trace_args ~w(-pa x -S mix ncc.trace_compile)
+  # Mix task words a Mix user's command line holds that rebar3 scripts test
+  # their arguments against, as rebar3 command names.
   @words ~w(compile test deps.compile deps.get release docs run xref dialyzer eunit ct
             escript.build phx.server prod --force)
   # A whole Erlang string literal, escapes included, so one with an escape
@@ -70,6 +72,10 @@ defmodule NccWorker.Portability.ScriptCheck do
   """
 
   @type result :: {:ok, [String.t()]} | {:differs, String.t(), String.t()} | {:error, String.t()}
+
+  @doc "The command words a Mix user's line holds (`Differential`'s `high` variant too)."
+  @spec words() :: [String.t()]
+  def words, do: @words
 
   @doc """
   Checks each `{app, tarball}` (the verified Hex tarball's bytes) whose

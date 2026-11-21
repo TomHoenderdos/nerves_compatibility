@@ -30,7 +30,7 @@ defmodule NccWorker.Portability.Differential do
       dir, and with the varied values at either end of their domain: `low`
       with `+S 1:1`, a short HOME and no extra plain arguments, `high` with
       `+S 256:256`, a long HOME and the Mix and rebar3 command words a Mix
-      user's command line can hold (`@words`). Each must pass the judge, its
+      user's command line can hold (`ScriptCheck.words/0`). Each must pass the judge, its
       own varied reads held as the first's were;
     * the package's app in each must be the first build's
       (`NccWorker.Portability.DifferentialBeams.compare_app/3`), and the
@@ -59,13 +59,11 @@ defmodule NccWorker.Portability.Differential do
   @hold_problem "varied host reads wait for differential builds"
   @together "varied host reads and own priv writes are not settled together"
   @max_reads 50
-  # Mix task words a Mix user's command line holds that rebar3 scripts test
-  # their arguments against, as rebar3 command names.
-  @words ~w(compile test deps.compile deps.get release docs run xref dialyzer eunit ct
-            escript.build phx.server prod --force)
+  # The reads a pass records in `observations["differential"]`.
+  @max_recorded 20
   @variants [
     low: %{schedulers: 1, home: "h", plain_args: []},
-    high: %{schedulers: 256, home: "home-of-a-much-longer-name", plain_args: @words}
+    high: %{schedulers: 256, home: "home-of-a-much-longer-name", plain_args: ScriptCheck.words()}
   ]
 
   @doc "The problem a held verdict carries until `settle/6` decides it."
@@ -142,7 +140,8 @@ defmodule NccWorker.Portability.Differential do
          :ok <- unchanged(before, digest.(held.build)) do
       pass(verdict, held)
     else
-      {:refuse, why} -> refuse(verdict, held, why)
+      {:refuse, why} -> refuse(verdict, held, why, nil)
+      {:refuse, why, read} -> refuse(verdict, held, why, read)
       {:unjudged, why, transient?} -> could_not_judge(verdict, why, transient?)
     end
   end
@@ -154,7 +153,7 @@ defmodule NccWorker.Portability.Differential do
         :ok
 
       held.scripts == [] ->
-        {:refuse, nil}
+        {:refuse, nil, "plain_args"}
 
       true ->
         check = Keyword.get(opts, :script_check, &ScriptCheck.run/2)
@@ -164,7 +163,7 @@ defmodule NccWorker.Portability.Differential do
             :ok
 
           {:differs, app, why} ->
-            {:refuse, "#{app}'s rebar.config.script gives another config: #{why}"}
+            {:refuse, "#{app}'s rebar.config.script gives another config: #{why}", "plain_args"}
 
           {:error, why} ->
             {:unjudged, "script check: #{why}", false}
@@ -189,9 +188,10 @@ defmodule NccWorker.Portability.Differential do
     # relative paths, which a link above the dir (macOS's `/var`) breaks.
     base = Keyword.get_lazy(opts, :differential_root, &System.tmp_dir!/0)
     base = Context.realpath(base) || base
-    dir = Path.join(base, "ncc-dv#{System.unique_integer([:positive])}#{name}")
+    n = System.unique_integer([:positive])
+    dir = Path.join(base, "ncc-dv#{n}#{name}")
     first_root = first_root(held.build)
-    root = variant_root(dir, first_root)
+    root = variant_root(base, "v#{n}#{name}", first_root)
 
     try do
       # So a clock read to the second differs between the builds.
@@ -202,16 +202,21 @@ defmodule NccWorker.Portability.Differential do
       judged(built, name, fn -> compared(held.build, app, {first_root, root}, name) end)
     after
       File.rm_rf(dir)
+      File.rm_rf(root)
     end
   end
 
   defp first_root(build), do: build |> Path.dirname() |> Path.dirname()
 
-  # A root under `dir` of exactly `first`'s byte length when one fits,
-  # else `dir/build`.
-  defp variant_root(dir, first) do
-    pad = byte_size(first) - byte_size(dir) - 1
-    if pad >= 1, do: Path.join(dir, String.duplicate("b", pad)), else: Path.join(dir, "build")
+  # A root directly under `base`, named from `stem`, of exactly `first`'s
+  # byte length when one fits (the worker's `/work/proj/_build/host` under
+  # `/tmp` does), else `base/<stem>-build`, which no other path names.
+  defp variant_root(base, stem, first) do
+    pad = byte_size(first) - byte_size(base) - 1 - byte_size(stem)
+
+    if pad >= 1,
+      do: Path.join(base, stem <> String.duplicate("b", pad)),
+      else: Path.join(base, stem <> "-build")
   end
 
   # The first build's opts with the variant's values: its build root (the
@@ -335,7 +340,7 @@ defmodule NccWorker.Portability.Differential do
 
   defp pass(verdict, held) do
     record = %{
-      "reads" => held.reads,
+      "reads" => Enum.take(held.reads, @max_recorded),
       "variants" => Enum.map(@variants, fn {name, _} -> Atom.to_string(name) end),
       "scripts" => for({app, _} <- held.scripts, do: app)
     }
@@ -359,10 +364,11 @@ defmodule NccWorker.Portability.Differential do
       else: verdict
   end
 
-  # The first read's own refusal, then what the differential found.
-  defp refuse(verdict, held, why) do
-    read = hd(held.reads)["refusal"]
-    reason = if why, do: read <> "; " <> why, else: read
+  # The first read's own refusal (of `kind` when the script check found
+  # it), then what the differential found.
+  defp refuse(verdict, held, why, kind) do
+    first = Enum.find(held.reads, hd(held.reads), &(kind == nil or &1["read"] == kind))
+    reason = if why, do: first["refusal"] <> "; " <> why, else: first["refusal"]
 
     %{verdict | status: :skip, reason: reason}
     |> Map.delete(:differential)
