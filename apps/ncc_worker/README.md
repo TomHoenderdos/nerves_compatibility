@@ -536,17 +536,21 @@ today's byte for byte.
 `"judge": {"native_side": true}` in `NCC_INPUT` (portal `NCC_JUDGE_NATIVE_SIDE=1`) sets a natively built closure
 dependency's native side apart from its beams on the toolchain judge, for the toolchain compile, a pinned toolchain
 compile and the deterministic sibling. In a closure dependency's window, never the package's, the reviewed native
-build tool's own activity (elixir_make's compiler and cc_precompiler, its precompiler: their host reads, `make`, the
-download, their cache dir and `priv`) is a `native_build` observation instead of a refusal or a compile input, as a
-firmware target's trace already treats it; an integrity call and an env or application-env write from their frame
-still refuse, and a package fun they run is the dependency's own code. Such a dependency is clean only when its beams
-are shown to be its sources' alone: Mix built it, no closure NIF was mapped by its window's close, its source tree is
-exactly its verified tarball's after the compile, every beam in its ebin was compiled from that tree and every
-checksum file the tool evaluates is a literal map; else its taint is `native build not set apart: <why>` (or the
-native library load), which withdraws nothing. A dependent's reads of its beams then follow revision 15's rule (a
+build tool's own activity (elixir_make's compiler and cc_precompiler, its precompiler, each only as the Hex package of
+its own name in a reviewed version, elixir_make 0.7.8 to 0.10.1 and cc_precompiler 0.1.10 to 0.1.11, no pre-release:
+their host reads, `make`, the download, their cache dir and `priv`) is a `native_build` observation instead of a
+refusal or a compile input, as a firmware target's trace already treats it; an integrity call and an env or
+application-env write from their frame still refuse, and a package fun they run is the dependency's own code. Such a
+dependency is clean only when its beams are shown to be its sources' alone: it is on the native list (its build dir
+unreadable to a dependent), Mix built it, no closure NIF was mapped by its window's close, its source tree is exactly
+its verified tarball's after the compile, every beam in its ebin was compiled from that tree, every checksum file the
+tool evaluates is a literal map, and no native build file in its tree (a Makefile, a CMake list, a make include) names
+`erlc`, `elixirc` or a `.beam`; else its taint is `native build not set apart: <why>` (or the native library load),
+which withdraws nothing. With anything set apart, every beam in the package's own ebin must have compiled from the
+package's own sources too, as in a firmware target's trace. A dependent's reads of its beams then follow revision 15's rule (a
 library of OTP's own mapped in its window, a download's `crypto`, allowed); a read of any other file in its ebin, a
-call into it and a read of its `priv` refuse as before. The same flag reads rule 2's target and native-tool grep finer
-(`NccWorker.BuildCache.dep_target_agnostic_rule2?/4`): `erlang:function_exported('Elixir.Mix', F, A)` for an `F`
+call into it and a read of its `priv` refuse as before. The same flag, together with `NCC_JUDGE_MAKEFILE_RULE2=1` (rule 2's path is taken only then), reads rule 2's target
+and native-tool grep finer (`NccWorker.BuildCache.dep_target_agnostic_rule2?/4`): `erlang:function_exported('Elixir.Mix', F, A)` for an `F`
 other than `target` and a bare `alias Mix` are no target reads, and for the package under test an Erlang `.erl`/`.hrl`
 file runs nothing at compile time unless the package names a parse or core transform, and a native tool its `mix.exs`
 names only as dependency tuples is not its native build. It bumps no judge revision:
