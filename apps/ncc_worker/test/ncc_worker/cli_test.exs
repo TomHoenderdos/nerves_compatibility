@@ -123,4 +123,9 @@ defmodule NccWorker.CLITest do
     json = ~s({"run_id":"r","mode":"toolchain","judge":{"native_side":true}})
     assert {:ok, %{judge: %{native_side: true}}} = CLI.parse_input(json)
   end
+
+  test "parse_input/1 reads judge.relocate" do
+    assert {:ok, %{judge: %{relocate: true}}} =
+             CLI.parse_input(~s({"run_id":"r","mode":"toolchain","judge":{"relocate":true}}))
+  end
 end

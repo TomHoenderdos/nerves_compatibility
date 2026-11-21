@@ -556,6 +556,19 @@ file runs nothing at compile time unless the package names a parse or core trans
 names only as dependency tuples is not its native build. It bumps no judge revision:
 `compile_observations.trace_stats.native_side` records `"on"` or `"off"` on every toolchain verdict.
 
+`"judge": {"relocate": true}` turns on relocatable builds (S4, `NccWorker.Portability.Relocate`) for the toolchain
+compile; any other value leaves them off. A verdict refused only by R2's baked path (the package's own, or a closure
+dependency's taint that is its own R2 refusal) is held when every occurrence is of the build's deps or build path and
+`Compatibility.Relocation` can reach it. The project is then copied to a fresh temp dir with other names for both
+(`<root>/second/proj/vendored`, `.../out/host`) and traced again, with call patterns on each holder module (a module
+whose beams hold the path) once its window has closed. A later window calling a holder or reading its `ebin` is
+tainted (`holder_calls`), and refuses in the package's own window. Every held app's `ebin` must prove: relocated to the
+second build's paths, each beam is the second build's chunk for chunk but `CInf`, `Dbgi` and `Docs`. A pass that held
+the package carries `toolchain_build.relocation` (the build's `deps` and `build` paths and, per beam to rewrite, every
+occurrence). One that held only dependencies is a plain pass. `trace_stats.relocate` says `"relocated"`,
+`"dependencies"` or `"refused: <why>"`, and in the last case the verdict is the first build's refusal, unchanged. No
+judge revision: without the flag every verdict is today's, byte for byte.
+
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
 `contents.tar.gz` members, byte for byte, apart from the root files Hex writes (`.hex`, `hex_metadata.config`) and a

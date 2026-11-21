@@ -127,6 +127,7 @@ defmodule NccWorker.HostTrace do
             :makefile_rule2,
             :native_side,
             :foreign_priv,
+            :relocate,
             :trees,
             :target,
             :host_native

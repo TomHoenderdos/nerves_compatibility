@@ -163,6 +163,12 @@ defmodule NccWorker.Worker do
   # `_build/host/lib/<pkg>` for "pass" only, entries shaped like a beam scan's
   # `footprint.file_manifest`, and those files are archived by SHA256.
   @type toolchain_build :: %{
+          # Relocatable builds (S4, `NccWorker.Portability.Relocate`): only on
+          # a "pass" whose own beams bake the deps or build path, judged with
+          # `judge.relocate`: the build's `deps` and `build` paths and, per
+          # beam to rewrite, `%{"path" => "ebin/<file>", "occurrences" =>
+          # [...]}` (`Compatibility.Relocation`). Absent otherwise.
+          optional(:relocation) => map(),
           status: String.t(),
           reason: String.t() | nil,
           elixir: String.t(),
@@ -2199,7 +2205,8 @@ defmodule NccWorker.Worker do
         log_tail_bytes: log_tail_bytes,
         makefile_rule2: rule2,
         foreign_priv: foreign_priv?(input),
-        native_side: side
+        native_side: side,
+        relocate: relocate?(input)
       ] ++ opts
 
     with {:ok, compiled} <-
@@ -2465,6 +2472,11 @@ defmodule NccWorker.Worker do
   # portal sends exactly `true` (`Portal.Builder.judge_input/1`).
   defp native_side?(%{judge: %{native_side: true}}), do: true
   defp native_side?(_input), do: false
+
+  # NCC_INPUT.judge.relocate (S4, `NccWorker.Portability.Relocate`): off
+  # unless the portal sends exactly `true`.
+  defp relocate?(%{judge: %{relocate: true}}), do: true
+  defp relocate?(_input), do: false
 
   @doc false
   # The toolchain run's one compile (`NccWorker.HostTrace`). With "exclude"
@@ -3073,6 +3085,7 @@ defmodule NccWorker.Worker do
             foreign_priv: Map.get(portability, :foreign_priv),
             foreign_priv_rule: Map.get(portability, :foreign_priv_rule)
         }
+        |> put_present(:relocation, Map.get(portability, :relocation))
 
       {:skip, reason} ->
         %{build | status: "skipped", reason: reason}
@@ -3160,7 +3173,7 @@ defmodule NccWorker.Worker do
     verdict
     |> Map.merge(%{status: :skip, reason: PortabilityReasons.could_not_judge()})
     |> Map.put(:observations, Map.put(observations, "problems", problems))
-    |> Map.drop([:compile_env, :compile_inputs, :foreign_priv, :foreign_priv_rule])
+    |> Map.drop([:compile_env, :compile_inputs, :foreign_priv, :foreign_priv_rule, :relocation])
   end
 
   # The host compile's own wall time (its `deps.get` included) next to the

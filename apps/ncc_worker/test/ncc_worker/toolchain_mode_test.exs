@@ -1730,6 +1730,53 @@ defmodule NccWorker.ToolchainModeTest do
              Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused)
   end
 
+  test "NCC_INPUT.judge.relocate reaches the compile only when true, with no revision bump",
+       %{tmp_dir: dir} do
+    for {judge, want} <- [{%{relocate: true}, true}, {%{relocate: "yes"}, false}, {nil, false}] do
+      parent = self()
+      sub = Path.join(dir, "reloc#{System.unique_integer([:positive])}")
+      {proj, input, paths} = toolchain_run(sub)
+
+      host_trace = fn _project_dir, _package, _paths, opts ->
+        send(parent, {:flag, Keyword.get(opts, :relocate)})
+        passing_host_trace()
+      end
+
+      input = if judge, do: Map.put(input, :judge, judge), else: input
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+      assert_received {:flag, ^want}
+      assert result.toolchain_build.judge_revision == 29
+    end
+  end
+
+  test "a pass carries the verdict's relocation; anything else has none", %{tmp_dir: work_dir} do
+    {project, _built} = project(work_dir, "circular_buffer-1.0.0")
+
+    record = %{
+      "deps" => "/work/proj/deps",
+      "build" => "/work/proj/_build/host",
+      "files" => [%{"path" => "ebin/Elixir.Sample.beam", "occurrences" => []}]
+    }
+
+    verdict = Map.put(@traced_pass, :relocation, record)
+
+    assert %{status: "pass", relocation: ^record} =
+             Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
+
+    refute Map.has_key?(
+             Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass),
+             :relocation
+           )
+
+    refute Map.has_key?(
+             Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused),
+             :relocation
+           )
+  end
+
   test "the archiver copies a foreign file only when it hashes to its entry", %{tmp_dir: work_dir} do
     {project, _built} = project(work_dir, "circular_buffer-1.0.0")
     other = "priv/assets/Other/aaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz"
