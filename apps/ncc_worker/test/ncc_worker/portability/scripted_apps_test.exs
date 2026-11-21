@@ -1,6 +1,8 @@
 defmodule NccWorker.Portability.ScriptedAppsTest do
-  # `NccWorker.Portability.scripted_apps/2`: the verified tarballs the
-  # script check evaluates, when a varied read was of the plain arguments.
+  # `NccWorker.Portability.script_releases/1`: the locked releases whose
+  # rebar.config.script Mix may have evaluated, and whether each is a
+  # reviewed one (`ReviewedScripts`), when a varied read was of the plain
+  # arguments.
   use ExUnit.Case, async: true
 
   alias NccWorker.Portability
@@ -9,38 +11,44 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
 
   @moduletag :tmp_dir
 
-  @script "CONFIG.\n"
+  @gproc Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0")
 
-  defp release(home, app, script?) do
-    contents = %{"rebar.config" => "{erl_opts, []}.\n"}
-    contents = if script?, do: Map.put(contents, "rebar.config.script", @script), else: contents
-    TracerFixtures.hex_release(home, app, Map.keys(contents), contents)
+  defp gproc_files do
+    for path <- ~w(rebar.config.script priv/check_edown.script priv/remove_deps.script
+                   src/gproc.app.src.script),
+        into: %{"rebar.config" => "{erl_opts, []}.\n"},
+        do: {path, File.read!(Path.join(@gproc, path))}
   end
 
-  test "closure dependencies Mix does not build, and compiled ones outside it", %{tmp_dir: dir} do
+  defp release(home, app, files, meta \\ []) do
+    files = Map.put_new(files, "rebar.config", "{erl_opts, []}.\n")
+    TracerFixtures.hex_release(home, app, Map.keys(files), files, meta)
+  end
+
+  test "every release Mix may have scripted, reviewed or not, or unverified", %{tmp_dir: dir} do
     home = Path.join(dir, "hex")
-    lib = Path.join(dir, "_build/host/lib")
+    script = %{"rebar.config.script" => "CONFIG.\n"}
 
     releases =
       Map.new([
-        release(home, "r3_dep", true),
+        release(home, "gproc", gproc_files(), [{"version", "1.2.0"}]),
+        release(home, "r3_dep", script),
         # Review L1: a closure dependency whose manager the closure line
-        # leaves unknown is checked too.
-        release(home, "unknown_dep", true),
-        release(home, "mix_dep", true),
-        release(home, "plain_dep", false),
-        release(home, "outside_built", true),
-        release(home, "outside_unbuilt", true)
+        # leaves unknown is counted too.
+        release(home, "unknown_dep", script),
+        release(home, "mix_dep", script),
+        release(home, "plain_dep", %{}),
+        release(home, "outside", script)
       ])
+      # A release whose tarball is not in the cache cannot be told.
+      |> Map.put("gone", %{name: "gone", version: "1.0.0", checksum: String.duplicate("0", 64)})
 
-    File.mkdir_p!(Path.join(lib, "outside_built"))
-    File.write!(Path.join(lib, "outside_built/mix.rebar.config"), "{erl_opts,[]}.\n")
-
-    dep = fn manager -> %{manager: manager, build: Path.join(lib, "x"), children: []} end
+    dep = fn manager -> %{manager: manager, build: Path.join(dir, "x"), children: []} end
 
     ctx = %Context{
       hex: {home, releases},
       deps: %{
+        "gproc" => dep.("rebar3"),
         "r3_dep" => dep.("rebar3"),
         "unknown_dep" => dep.(nil),
         "mix_dep" => dep.("mix"),
@@ -48,7 +56,12 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
       }
     }
 
-    assert Portability.scripted_apps(ctx, lib) |> Enum.map(&elem(&1, 0)) ==
-             ["outside_built", "r3_dep", "unknown_dep"]
+    assert Portability.script_releases(ctx) == [
+             %{app: "gone", release: nil, status: :unverified},
+             %{app: "gproc", release: "gproc 1.2.0", status: :reviewed},
+             %{app: "outside", release: "outside 0.1.0", status: :unreviewed},
+             %{app: "r3_dep", release: "r3_dep 0.1.0", status: :unreviewed},
+             %{app: "unknown_dep", release: "unknown_dep 0.1.0", status: :unreviewed}
+           ]
   end
 end

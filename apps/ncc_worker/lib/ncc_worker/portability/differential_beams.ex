@@ -36,7 +36,7 @@ defmodule NccWorker.Portability.DifferentialBeams do
   that cannot be read is `{:error, why}`, never a match.
   """
 
-  alias NccWorker.Portability.Etf
+  alias NccWorker.Portability.{Context, Etf}
 
   @skipped ~w(CInf Dbgi ExCk)
   # `{vsn, [_]}`'s tuple head is followed by one of these atom encodings,
@@ -310,7 +310,12 @@ defmodule NccWorker.Portability.DifferentialBeams do
     end
   end
 
-  defp target(link, target), do: Path.expand(target, Path.dirname(link))
+  # The target's real path when it resolves (a link above it, macOS's `/var`
+  # for `/private/var`, names the same dir), else the expanded text.
+  defp target(link, target) do
+    path = Path.expand(target, Path.dirname(link))
+    Context.realpath(path) || path
+  end
 
   defp same_file(a, b, sa, sb, rel, sub) do
     with :ok <- same_mode(sa, sb, rel),

@@ -242,6 +242,18 @@ defmodule NccWorker.Portability.DifferentialBeamsTest do
 
     assert DifferentialBeams.compare_app(first, deep, nil) == :ok
 
+    # The same dir named through a link above it (macOS's `/var` is
+    # `/private/var`): Mix links each build's `priv` by a path relative to
+    # that build's own root.
+    real = Path.join(ctx.dir, "real/deps/pkg/priv")
+    File.mkdir_p!(real)
+    File.ln_s!(Path.join(ctx.dir, "real"), Path.join(ctx.dir, "alias"))
+    linked = app(Path.join(ctx.b, "y"), beams)
+    File.ln_s!(Path.join(ctx.dir, "alias/deps/pkg/priv"), Path.join(linked, "priv"))
+    first_real = app(Path.join(ctx.a, "y"), beams)
+    File.ln_s!(real, Path.join(first_real, "priv"))
+    assert DifferentialBeams.compare_app(first_real, linked, nil) == :ok
+
     File.rm!(Path.join(variant, "priv"))
     File.ln_s!(Path.join(ctx.dir, "deps/other/priv"), Path.join(variant, "priv"))
 

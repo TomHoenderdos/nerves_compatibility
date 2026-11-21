@@ -410,68 +410,50 @@ defmodule NccWorker.Portability.DifferentialTest do
            ]
   end
 
-  test "plain arguments need the script check, which runs first", ctx do
-    scripts = [{"gproc", "tarball"}]
+  # Review N1, N2 (coordinator ruling): a plain-arguments read takes the
+  # route only when every scripted release of the lock is a reviewed one
+  # (`ReviewedScripts`); no script runs a second time.
+  @reviewed %{app: "gproc", release: "gproc 1.2.0", status: :reviewed}
+
+  test "plain arguments read by reviewed scripts alone pass with the variants", ctx do
+    scripts = [
+      @reviewed,
+      %{app: "chatterbox", release: "ts_chatterbox 0.16.0", status: :reviewed}
+    ]
+
     held = held(ctx, [@plain], scripts)
-
-    check = fn [{"gproc", "tarball"}], opts ->
-      assert opts[:env]
-      # Review B2: evaluated in the run's project, anchored on the first
-      # build's mix.rebar.config files under its build root.
-      assert opts[:project_dir] == Path.join(ctx.dir, "proj")
-      assert opts[:build_root] == ctx.root
-      # Ruling 5: one wall budget for the whole check, at most 5 minutes.
-      assert opts[:budget_ms] in 10_000..300_000
-      send(self(), :script_check)
-      {:ok, ["gproc"]}
-    end
-
     same = %{"pkg.app" => "{application,pkg,[]}.\n", "x.beam" => "same"}
-    v = settle(held, ctx, variant(same, held_variant(%{reads: [@plain]})), script_check: check)
-    assert_received :script_check
-    assert v.status == :pass
-    assert v.observations["differential"]["scripts"] == ["gproc"]
+    v = settle(held, ctx, variant(same, held_variant(%{reads: [@plain]})))
 
-    check = fn _, _ -> {:differs, "gproc", "erl_opts differs with \"test\""} end
-    v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end, script_check: check)
-
-    assert v.reason ==
-             @plain["refusal"] <>
-               "; gproc's rebar.config.script gives another config: erl_opts differs with \"test\""
-
-    check = fn _, _ -> {:error, "eval failed"} end
-    v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end, script_check: check)
-    assert v.reason == Reasons.could_not_judge()
-    assert "script check: eval failed" in v.observations["problems"]
+    assert v.status == :pass, inspect(v.reason)
+    assert v.observations["differential"]["scripts"] == ["gproc 1.2.0", "ts_chatterbox 0.16.0"]
   end
 
-  test "a script check refusal names the plain-arguments read, whatever came first", ctx do
-    held = held(ctx, [@sched, @plain], [{"gproc", "tarball"}])
-    check = fn _, _ -> {:differs, "gproc", "erl_opts differs with \"test\""} end
-    v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end, script_check: check)
-    assert String.starts_with?(v.reason, @plain["refusal"] <> "; gproc's rebar.config.script")
+  test "one script that is not a reviewed one refuses, naming it, before any variant", ctx do
+    no_run = fn _, _, _ -> flunk("no variant build") end
+
+    for {entry, why} <- [
+          {%{app: "fx", release: "fx 0.1.0", status: :unreviewed},
+           "fx 0.1.0's rebar.config.script is not a reviewed one"},
+          {%{app: "fx", release: nil, status: :unverified},
+           "fx has no verified tarball to tell its scripts by"}
+        ] do
+      v = settle(held(ctx, [@plain], [@reviewed, entry]), ctx, no_run)
+      assert v.reason == @plain["refusal"] <> "; " <> why
+      assert v.observations["trace_stats"]["differential"] == "differs"
+    end
   end
 
-  test "no time left in the run for the script check is transient", ctx do
-    held = held(ctx, [@plain], [{"gproc", "tarball"}])
-    no_check = fn _, _ -> flunk("no script check") end
-    late = System.monotonic_time(:second) - NccWorker.Tracer.run_ceiling_sec() + 20
-
-    v =
-      settle(held, ctx, fn _, _, _ -> flunk("no variant build") end,
-        script_check: no_check,
-        run_started_at: late
-      )
-
-    assert v.reason == Reasons.could_not_judge()
-    assert v.observations["trace_stats"]["differential"] == "not_finished"
-    assert Enum.any?(v.observations["problems"], &(&1 =~ "no time left for the script check"))
+  test "a script refusal names the plain-arguments read, whatever came first", ctx do
+    held = held(ctx, [@sched, @plain], [%{app: "fx", release: "fx 0.1.0", status: :unreviewed}])
+    v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end)
+    assert String.starts_with?(v.reason, @plain["refusal"] <> "; fx 0.1.0's rebar.config.script")
   end
 
-  test "plain arguments with no rebar.config.script to settle them refuse", ctx do
+  test "plain arguments with no rebar.config.script to have read them refuse", ctx do
     held = held(ctx, [@plain], [])
     v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end)
-    assert v.reason == @plain["refusal"]
+    assert v.reason == @plain["refusal"] <> "; no rebar.config.script of the lock read them"
     assert v.observations["trace_stats"]["differential"] == "differs"
   end
 

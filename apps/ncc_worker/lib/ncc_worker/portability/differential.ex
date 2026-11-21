@@ -18,13 +18,13 @@ defmodule NccWorker.Portability.Differential do
       (`differential`), and what its compile read, so a caller that judges
       a trace alone never publishes it. A verdict `PrivRepro` holds as well
       is could-not-judge for good: the two are not settled together;
-    * `settle/6` (`NccWorker.Portability.run/3`) first runs the script
-      check when a read was of the plain arguments
-      (`NccWorker.Portability.ScriptCheck`, one wall budget: in Mix VMs in
-      the run's project, every scripted dependency's config reproduces the
-      first build's `mix.rebar.config` and stays the same under the
-      arguments its own literals and a Mix user's words name, but for
-      `deps`); with no such dependency the read refuses;
+    * `settle/6` (`NccWorker.Portability.run/3`) first holds a read of
+      the plain arguments to the reviewed scripts: every scripted release
+      of the lock must be one (`NccWorker.Portability.ReviewedScripts`, by
+      Hex name, version and the sha256 of every script file; review N1,
+      N2), since the trace cannot tell which script read them. One that is
+      not, an unverifiable tarball, or none at all, refuses. No script runs
+      a second time;
     * then two variant builds, each the traced judge compile of the
       package's closure at a fresh build root of a random name (made
       exclusively, of the first build root's length where one fits, so a
@@ -35,8 +35,9 @@ defmodule NccWorker.Portability.Differential do
       than `/home/nerves`) and no extra plain arguments, `high` with
       `+S 240:240` (even, no power of two, divisible by 2, 3, 4, 5, 6, 8,
       10, 12, 15 and 16: parity, a power-of-two test and those
-      divisibilities answer otherwise than for 1), a long HOME and the command words a Mix user's line can hold
-      (`ScriptCheck.words/0`). Each must pass the judge, its own varied
+      divisibilities answer otherwise than for 1), a long HOME and the
+      command words a Mix user's line can hold (`@words`, after the task;
+      no proof of anything). Each must pass the judge, its own varied
       reads held as the first's were, and read nothing the first build did
       not (review B1: a compile input, config item, varied read, or env or
       config read, by what it names, never its value);
@@ -71,17 +72,20 @@ defmodule NccWorker.Portability.Differential do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.Portability.{Context, DifferentialBeams, ForeignPriv, ScriptCheck}
-  alias NccWorker.Tracer
+  alias NccWorker.Portability.{Context, DifferentialBeams, ForeignPriv}
 
   @gap_ms 1_100
-  @script_budget_ms 5 * 60 * 1000
-  @min_script_budget_ms 10_000
   @hold_problem "varied host reads wait for differential builds"
   @together "varied host reads and own priv writes are not settled together"
   @max_reads 50
   # The reads a pass records in `observations["differential"]`.
   @max_recorded 20
+  # Mix task words a Mix user's command line holds, as rebar3 command names,
+  # and what `iex -S mix` puts there, after the task in the `high` variant.
+  # No proof of anything: the reviewed scripts are (`ReviewedScripts`).
+  @words ~w(compile test deps.compile deps.get release docs run xref dialyzer eunit ct
+            escript.build phx.server prod --force iex +iex --no-halt)
+
   # 1 is the smallest count; 240 = 2^4 x 3 x 5 is even, no power of two, and
   # divisible by 2, 3, 4, 5, 6, 8, 10, 12, 15 and 16, so parity, a
   # power-of-two test and those divisibilities answer for 240 what they do
@@ -90,7 +94,7 @@ defmodule NccWorker.Portability.Differential do
   # `high` a long one.
   @variants [
     low: %{schedulers: 1, home: :short, plain_args: []},
-    high: %{schedulers: 240, home: "home-of-a-much-longer-name", plain_args: ScriptCheck.words()}
+    high: %{schedulers: 240, home: "home-of-a-much-longer-name", plain_args: @words}
   ]
   @short_root "/tmp"
 
@@ -101,8 +105,9 @@ defmodule NccWorker.Portability.Differential do
   @doc """
   Holds a passing `verdict` that has varied reads (see the moduledoc).
   `varied` holds the reads (`reads:`), the package's build dir (`build:`),
-  the tree snapshot it was judged on (`trees:`) and the scripted rebar3
-  dependencies' verified tarballs (`scripts:`, `[{app, bytes}]`).
+  the tree snapshot it was judged on (`trees:`) and the lock's scripted
+  releases (`scripts:`, `[%{app, release, status}]`, status `:reviewed`,
+  `:unreviewed` or `:unverified`: `NccWorker.Portability.script_releases/1`).
   """
   @spec hold(map(), map()) :: map()
   def hold(verdict, %{reads: []}), do: verdict
@@ -146,8 +151,8 @@ defmodule NccWorker.Portability.Differential do
   and every verdict of a variant build itself (`differential: :variant`) or
   of `PrivRepro`'s second build (`priv_repro: false`), is returned as it
   is. `run` is `NccWorker.Portability.run/3`; `digest` hashes a build dir.
-  `opts` are `run/3`'s, plus `differential_gap_ms:`, `differential_root:`
-  and `script_check:` (tests).
+  `opts` are `run/3`'s, plus `differential_gap_ms:`, `differential_root:`,
+  `differential_short_root:` and `differential_name:` (tests).
   """
   @spec settle(map(), String.t(), String.t(), keyword(), fun(), fun()) :: map()
   def settle(%{differential: held} = verdict, project_dir, package, opts, run, digest)
@@ -164,7 +169,7 @@ defmodule NccWorker.Portability.Differential do
   defp decide(verdict, held, project_dir, package, opts, run, digest) do
     before = digest.(held.build)
 
-    with :ok <- scripts(held, project_dir, opts),
+    with :ok <- scripts(held),
          :ok <- variants(held, project_dir, package, opts, run),
          :ok <- unchanged(before, digest.(held.build)) do
       pass(verdict, held)
@@ -175,58 +180,32 @@ defmodule NccWorker.Portability.Differential do
     end
   end
 
-  # The script check, when a read was of the plain arguments.
-  defp scripts(held, project_dir, opts) do
+  # Review N1, N2 (coordinator ruling): a plain-arguments read takes the
+  # route only when every scripted release of the lock is a reviewed one
+  # (`ReviewedScripts`, by Hex name, version and script sha256); the trace
+  # cannot tell which script read them, so one other refuses the read. No
+  # script runs here.
+  defp scripts(held) do
     cond do
       not Enum.any?(held.reads, &(&1["read"] == "plain_args")) ->
         :ok
 
       held.scripts == [] ->
-        {:refuse, nil, "plain_args"}
+        {:refuse, "no rebar.config.script of the lock read them", "plain_args"}
+
+      entry = Enum.find(held.scripts, &(&1.status != :reviewed)) ->
+        {:refuse, not_reviewed(entry), "plain_args"}
 
       true ->
-        run_script_check(held, project_dir, opts, script_budget_ms(opts))
-    end
-  end
-
-  # One wall budget for the whole script check (coordinator ruling 5): at
-  # most `@script_budget_ms`, and a third of what is left of the run, so the
-  # two variants keep the rest. Too little is transient: a later run has
-  # the time.
-  defp script_budget_ms(opts) do
-    cap = Keyword.get(opts, :script_budget_ms, @script_budget_ms)
-
-    case Keyword.get(opts, :run_started_at) do
-      started when is_integer(started) ->
-        left = Tracer.run_ceiling_sec() - (System.monotonic_time(:second) - started)
-        min(cap, div(max(left, 0) * 1000, 3))
-
-      _ ->
-        cap
-    end
-  end
-
-  defp run_script_check(_held, _project_dir, _opts, budget) when budget < @min_script_budget_ms,
-    do: {:unjudged, "no time left for the script check", true}
-
-  defp run_script_check(held, project_dir, opts, budget) do
-    check = Keyword.get(opts, :script_check, &ScriptCheck.run/2)
-
-    check_opts =
-      Keyword.take(opts, [:env, :extra_env]) ++
-        [project_dir: project_dir, build_root: first_root(held.build), budget_ms: budget]
-
-    case check.(held.scripts, check_opts) do
-      {:ok, _apps} ->
         :ok
-
-      {:differs, app, why} ->
-        {:refuse, "#{app}'s rebar.config.script gives another config: #{why}", "plain_args"}
-
-      {:error, why} ->
-        {:unjudged, "script check: #{why}", false}
     end
   end
+
+  defp not_reviewed(%{status: :unverified, app: app}),
+    do: "#{app} has no verified tarball to tell its scripts by"
+
+  defp not_reviewed(%{release: release}),
+    do: "#{release}'s rebar.config.script is not a reviewed one"
 
   defp variants(held, project_dir, package, opts, run) do
     Enum.reduce_while(@variants, :ok, fn {name, values}, :ok ->
@@ -631,7 +610,7 @@ defmodule NccWorker.Portability.Differential do
     record = %{
       "reads" => Enum.take(held.reads, @max_recorded),
       "variants" => Enum.map(@variants, fn {name, _} -> Atom.to_string(name) end),
-      "scripts" => for({app, _} <- held.scripts, do: app)
+      "scripts" => for(%{release: release} <- held.scripts, do: release)
     }
 
     %{verdict | status: :pass, reason: nil, compile_env: held.compile_env}

@@ -125,10 +125,42 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   end.
   """
 
+  # Review N1: the shape of a Mix user's plain arguments, which no builder
+  # VM has: `mix compile` gives `[<install>/bin/mix, "compile"]`.
+  @position_script """
+  case init:get_plain_arguments() of
+      [_, "compile" | _] -> [{erl_opts, [{d, 'MIXC'}]} | CONFIG];
+      _ -> CONFIG
+  end.
+  """
+
+  # Review N2: an effect on the Mix VM under a literal (`mix test --cover`).
+  @cover_script """
+  case lists:member("--cover", init:get_plain_arguments()) of
+      true -> 'Elixir.Code':put_compiler_option(docs, false);
+      false -> ok
+  end,
+  CONFIG.
+  """
+
+  # gproc 1.2.0's script files, vendored unchanged from its Hex tarball: a
+  # reviewed release (`ReviewedScripts`).
+  @gproc Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0")
+  defp gproc_files do
+    for path <- ~w(rebar.config.script priv/check_edown.script priv/remove_deps.script
+                   src/gproc.app.src.script),
+        into: %{},
+        do: {path, File.read!(Path.join(@gproc, path))}
+  end
+
   setup_all do
+    # The real path: on macOS `/var` is a link to `/private/var`, and Mix
+    # links a build's `priv` by a path relative to the one it was given, so
+    # a first build under `/var/...` gets a dangling `priv` link (a variant
+    # under the real temp dir would not).
     root =
       Path.join(
-        System.tmp_dir!(),
+        NccWorker.Portability.Context.realpath(System.tmp_dir!()),
         "ncc-fixtures-differential-#{System.pid()}-#{System.unique_integer([:positive])}"
       )
 
@@ -155,9 +187,16 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     # Each rebar3 script in a project of its own: a read outside every
     # window counts against everything in it.
     scripts =
-      for {name, script} <- [{"doc", @doc_script}, {"test", @test_script}], into: %{} do
-        {name, script_run(root, name, script)}
+      for {name, script} <- [
+            {"doc", @doc_script},
+            {"test", @test_script},
+            {"pos", @position_script},
+            {"cover", @cover_script}
+          ],
+          into: %{} do
+        {name, script_run(root, name, %{"rebar.config.script" => script})}
       end
+      |> Map.put("gproc", script_run(root, "gproc", gproc_files(), "gproc", "1.2.0"))
 
     %{
       verdicts: verdicts,
@@ -192,8 +231,10 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     )
   end
 
-  defp script_run(root, name, script) do
-    app = "fx_dv_r3_#{name}"
+  # A project of one rebar3 dependency, `app` (default `fx_dv_r3_<name>`),
+  # whose tarball holds `files` beside its config and module.
+  defp script_run(root, name, files, app \\ nil, version \\ "0.1.0") do
+    app = app || "fx_dv_r3_#{name}"
     dir = Path.join(root, "r3-#{name}")
     src = "-module(#{app}).\n-export([x/0]).\nx() -> ok.\n"
     config = "{erl_opts, []}.\n"
@@ -202,7 +243,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
       app => %{
         manager: :rebar3,
         rebar_config: config,
-        files: %{"src/#{app}.erl" => src, "rebar.config.script" => script}
+        files: Map.put(files, "src/#{app}.erl", src)
       }
     }
 
@@ -218,13 +259,13 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
       TracerFixtures.hex_release(
         hex_home,
         app,
-        ["src", "rebar.config", "rebar.config.script"],
-        %{
+        ["src", "priv", "rebar.config" | Map.keys(files)],
+        Map.merge(files, %{
           "rebar.config" => config,
-          "rebar.config.script" => script,
           "src/#{app}.erl" => src,
           "src/#{app}.app.src" => app_src
-        }
+        }),
+        [{"version", version}]
       )
 
     run(dir, proj, app, releases: Map.new([release]), hex_home: hex_home)
@@ -332,21 +373,28 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
            )
   end
 
-  test "a script whose arguments change only deps publishes after the script check", ctx do
-    v = ctx.scripts["doc"]
+  # Review N1, N2 (coordinator ruling): only reviewed scripts. gproc
+  # 1.2.0's own scripts, as Hex ships them, pass after the two variants.
+  test "gproc 1.2.0's reviewed scripts reading the plain arguments publish", ctx do
+    v = ctx.scripts["gproc"]
     assert %{status: :pass} = v, log(v)
-    assert v.observations["differential"]["scripts"] == ["fx_dv_r3_doc"]
+    assert v.observations["differential"]["scripts"] == ["gproc 1.2.0"]
 
     assert [%{"read" => "plain_args", "owner" => "outside", "arg" => %{"rebar_script" => true}}] =
              v.observations["differential"]["reads"]
   end
 
-  test "a script whose config a Mix user's command line changes refuses", ctx do
-    v = ctx.scripts["test"]
-    assert v.status == :skip, log(v)
-    assert v.reason =~ ~r/\Acompile-time host read: init:get_plain_arguments\/0/
+  # Every other script refuses, the reviewer's two false hits among them:
+  # nothing evaluates it a second time.
+  test "a script that is not a reviewed one refuses, whatever it does", ctx do
+    for name <- ~w(doc test pos cover) do
+      v = ctx.scripts[name]
+      assert v.status == :skip, "#{name}: " <> log(v)
 
-    assert v.reason =~
-             "; fx_dv_r3_test's rebar.config.script gives another config: erl_opts differs with"
+      assert v.reason ==
+               "compile-time host read: init:get_plain_arguments/0 (dispatcher stack, first frame erl_eval); " <>
+                 "fx_dv_r3_#{name} 0.1.0's rebar.config.script is not a reviewed one",
+             name
+    end
   end
 end
