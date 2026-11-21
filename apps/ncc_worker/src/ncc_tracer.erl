@@ -2170,6 +2170,9 @@ start_line(Role, App, Depth) ->
       %% The OS type a compile-time os:type/0 read returns here, as
       %% [Family, Name]: the judge records it as a compile input too.
       os_type => os_type_bin(),
+      %% The scheduler count this VM runs with: a differential build's
+      %% variant shows by it that its `+S` took (NccWorker.Portability.Differential).
+      schedulers_online => erlang:system_info(schedulers_online),
       roots => [ncc_tracer_channels:chars(R) || R <- get(roots)],
       otp_root => ncc_tracer_channels:chars(code:root_dir()), elixir_root => elixir_root(),
       home => env_bin("HOME"), mix_home => ncc_tracer_channels:chars(mix_home()),

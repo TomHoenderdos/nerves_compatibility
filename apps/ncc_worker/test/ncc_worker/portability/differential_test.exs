@@ -78,12 +78,28 @@ defmodule NccWorker.Portability.DifferentialTest do
         File.write!(file, bytes)
       end
 
+      # The count the variant's VM ran with, as the tracer's start line
+      # records it: the one asked for, unless the test says otherwise.
+      [_, asked] = Regex.run(~r/\+S (\d+):/, env_of(opts, "ERL_ZFLAGS"))
+
       case verdict do
         :held -> held_variant()
         other -> other
       end
+      |> put_count(String.to_integer(asked))
     end
   end
+
+  defp env_of(opts, name), do: opts[:env] |> List.keyfind(name, 0) |> elem(1)
+
+  defp put_count(%{observations: %{"trace_stats" => %{"schedulers_online" => _}}} = v, _n), do: v
+
+  defp put_count(%{observations: obs} = v, n) do
+    stats = Map.put(obs["trace_stats"] || %{}, "schedulers_online", n)
+    %{v | observations: Map.put(obs, "trace_stats", stats)}
+  end
+
+  defp put_count(v, _n), do: v
 
   # A variant held for its own varied reads, as `Differential.hold/2` holds
   # one: what it read (`merge`) is the first build's unless a test says so.
@@ -166,6 +182,10 @@ defmodule NccWorker.Portability.DifferentialTest do
 
     env = fn opts, name -> opts[:env] |> List.keyfind(name, 0) |> elem(1) end
     assert env.(low_opts, "ERL_ZFLAGS") =~ "+S 1:1"
+    # Review R3: no busy-waiting schedulers in either variant.
+    for opts <- [low_opts, high_opts],
+        do: assert(env.(opts, "ERL_ZFLAGS") =~ "+sbwt none +sbwtdcpu none +sbwtdio none")
+
     # Even, divisible by 2, 3, 4, 5, 6, 8, 10, 12, 15 and 16, no power of
     # two: parity, a power-of-two test and those divisibilities differ from
     # `low`'s 1 (review B4, N3).
@@ -296,6 +316,24 @@ defmodule NccWorker.Portability.DifferentialTest do
     v = settle(held, ctx, variant(%{}, held_variant(%{env_reads: reads ++ [extra]})))
     assert v.reason == Reasons.could_not_judge()
     assert Enum.any?(v.observations["problems"], &(&1 =~ "env reads over their cap"))
+  end
+
+  # Review R3: a variant must have run with the count it asked for (the
+  # tracer's start line, `trace_stats["schedulers_online"]`), else it
+  # proves nothing and the build refuses.
+  test "a variant that ran with another scheduler count than asked refuses", ctx do
+    same = %{"pkg.app" => "{application,pkg,[]}.\n", "x.beam" => "same"}
+    wrong = held_variant() |> put_in([:observations, "trace_stats", "schedulers_online"], 8)
+    v = settle(held(ctx), ctx, variant(same, wrong))
+
+    assert v.status == :skip
+
+    assert v.reason ==
+             @sched["refusal"] <> "; a differential build (low) ran with 8 schedulers, not 1"
+
+    none = held_variant() |> put_in([:observations, "trace_stats", "schedulers_online"], nil)
+    v = settle(held(ctx), ctx, variant(same, none))
+    assert v.reason =~ "; a differential build (low) ran with nil schedulers, not 1"
   end
 
   test "a variant that refuses refuses, naming the read and its reason", ctx do

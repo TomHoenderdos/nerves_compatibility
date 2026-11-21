@@ -293,6 +293,8 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
 
   test "a power-of-two test of the count refuses on a power-of-two builder", ctx do
     v = ctx.pow2
+    # Review R3: the tracer's start line records the count the VM ran with.
+    assert v.observations["trace_stats"]["schedulers_online"] == 8
     assert v.status == :skip, log(v)
     assert v.reason =~ ~r/\Acompile-time host read: erlang:system_info\/1 \(schedulers_online\)/
     assert v.reason =~ "; a differential build differs: ebin/Elixir.FxDvPow2.beam: "

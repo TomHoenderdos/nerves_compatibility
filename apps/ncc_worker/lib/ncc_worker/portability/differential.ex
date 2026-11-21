@@ -267,7 +267,8 @@ defmodule NccWorker.Portability.Differential do
           app = Path.join([root, "lib", Path.basename(held.build)])
 
           judged(built, name, fn ->
-            with :ok <- read_no_more(held, built, name),
+            with :ok <- ran_with(built, name, values.schedulers),
+                 :ok <- read_no_more(held, built, name),
                  do: compared(held.build, app, {first_root, root}, name)
           end)
         end)
@@ -400,9 +401,28 @@ defmodule NccWorker.Portability.Differential do
     end
   end
 
+  # `ERL_ZFLAGS` comes last on the command line, so its `+S` wins over the
+  # builder's `ERL_FLAGS` (measured); every VM the compile starts reads it.
+  # No busy-waiting schedulers (review R3): with 240 of them on a few vCPUs a
+  # spinning scheduler costs CPU and nothing else.
   defp zflags(env, n) do
-    flags = Enum.join(Enum.reject([value(env, "ERL_ZFLAGS"), "+S #{n}:#{n}"], &is_nil/1), " ")
+    own = "+S #{n}:#{n} +sbwt none +sbwtdcpu none +sbwtdio none"
+    flags = Enum.join(Enum.reject([value(env, "ERL_ZFLAGS"), own], &is_nil/1), " ")
     List.keystore(env, "ERL_ZFLAGS", 0, {"ERL_ZFLAGS", flags})
+  end
+
+  # Review R3: the count the variant's Mix VM ran with, as the tracer's start
+  # line records it (`trace_stats["schedulers_online"]`), must be the one
+  # asked for, else the variant varied nothing and the build refuses.
+  defp ran_with(built, name, asked) do
+    case get_in(built, [:observations, "trace_stats", "schedulers_online"]) do
+      ^asked ->
+        :ok
+
+      other ->
+        {:refuse,
+         "a differential build (#{name}) ran with #{inspect(other)} schedulers, not #{asked}"}
+    end
   end
 
   defp value(env, name) do

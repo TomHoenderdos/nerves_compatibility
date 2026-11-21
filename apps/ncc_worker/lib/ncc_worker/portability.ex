@@ -3465,10 +3465,16 @@ defmodule NccWorker.Portability do
       "children" => map_size(report.children),
       "rebar3_untraced_last" => gaps,
       "config_items" => length(facts.config.items),
-      "config_dropped" => facts.config.dropped
+      "config_dropped" => facts.config.dropped,
+      "schedulers_online" => schedulers_online(report.start)
     })
     |> put_foreign_stat(facts)
   end
+
+  # The Mix VM's scheduler count, from the tracer's start line; nil without
+  # one (`Differential` holds a variant to it).
+  defp schedulers_online(%{"schedulers_online" => n}) when is_integer(n) and n > 0, do: n
+  defp schedulers_online(_start), do: nil
 
   defp put_foreign_stat(stats, %{foreign: %{stat: nil}}), do: stats
 
