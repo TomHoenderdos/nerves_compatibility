@@ -207,9 +207,11 @@ defmodule Compatibility.RelocationTest do
       "kind" => "binary",
       "parts" => ["", "deps", "/x"]
     }
+    @second Relocation.second_layout("/tmp/ncc-relocate-1")
     @record %{
       "deps" => "/work/proj/deps",
       "build" => "/work/proj/_build/host",
+      "second" => Map.take(@second, ["deps", "build"]),
       "files" => [%{"path" => "ebin/Elixir.A.beam", "occurrences" => [@occ]}]
     }
 
@@ -237,10 +239,183 @@ defmodule Compatibility.RelocationTest do
             %{@record | "files" => [file.(%{@occ | "parts" => ["", "home", "/x"]})]},
             %{@record | "files" => [file.(%{@occ | "parts" => ["/x"]})]},
             %{@record | "files" => [file.(%{@occ | "parts" => ["", "deps"]})]},
-            Map.put(@record, "extra", 1)
+            Map.put(@record, "extra", 1),
+            Map.delete(@record, "second"),
+            %{@record | "second" => %{"deps" => "/x/deps"}},
+            %{@record | "second" => %{@record["second"] | "deps" => "/x/d\u00e9ps"}},
+            %{@record | "deps" => "/work/proj/de\tps"},
+            %{@record | "files" => [file.(%{@occ | "parts" => ["\xff", "deps", ""]})]}
           ] do
         assert is_binary(Relocation.record_problem(record, ebin)), inspect(record)
       end
+    end
+  end
+
+  describe "the second root and the record's limits" do
+    test "the second root differs from the first in every property a user path can have" do
+      first = %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
+      second = Relocation.second_layout("/tmp/ncc-relocate-123")
+
+      for slot <- ["deps", "build"] do
+        a = first[slot]
+        b = second[slot]
+        assert byte_size(b) >= 220, slot
+        assert length(Path.split(b)) >= 12, slot
+        assert b =~ " " and b =~ "." and b =~ "-" and b =~ ~r/[A-Z]/ and b =~ ~r/[0-9]/, slot
+        refute a =~ ~r/[ .\-A-Z0-9]/, slot
+        assert String.contains?(a, "_") != String.contains?(b, "_"), slot
+        assert b =~ ~r/\A[\x20-\x7e]+\z/, slot
+
+        assert MapSet.subset?(
+                 MapSet.new(~c"abcdefghijklmnopqrstuvwxyz"),
+                 MapSet.new(String.to_charlist(b))
+               ),
+               slot
+      end
+
+      assert first["build"] < first["deps"]
+      assert second["deps"] < second["build"]
+      refute Path.basename(Path.dirname(second["deps"])) == "proj"
+      assert second["project"] == Path.dirname(second["deps"])
+    end
+
+    test "pinned_problem/1 holds a record to the worker's layout" do
+      second = Map.take(Relocation.second_layout("/tmp/ncc-relocate-42"), ["deps", "build"])
+
+      record = %{
+        "deps" => "/work/proj/deps",
+        "build" => "/work/proj/_build/host",
+        "second" => second
+      }
+
+      assert Relocation.pinned_problem(record) == nil
+
+      for bad <- [
+            %{record | "deps" => "/w/proj/deps"},
+            %{record | "build" => "/work/proj/_build/dev"},
+            %{
+              record
+              | "second" =>
+                  Map.take(Relocation.second_layout("/var/tmp/ncc-relocate-1"), ["deps", "build"])
+            },
+            %{record | "second" => %{second | "build" => second["deps"] <> "x"}},
+            %{
+              record
+              | "second" =>
+                  Map.take(Relocation.second_layout("/tmp/ncc-relocate-x"), ["deps", "build"])
+            }
+          ] do
+        assert is_binary(Relocation.pinned_problem(bad)), inspect(bad)
+      end
+    end
+
+    test "a record over 256 KiB of JSON is refused" do
+      second = Map.take(Relocation.second_layout("/tmp/ncc-relocate-1"), ["deps", "build"])
+
+      occ = fn i ->
+        %{
+          "chunk" => "LitT",
+          "index" => i,
+          "term" => [],
+          "kind" => "binary",
+          "parts" => ["", "deps", String.duplicate("x", 3000)]
+        }
+      end
+
+      record = %{
+        "deps" => "/work/proj/deps",
+        "build" => "/work/proj/_build/host",
+        "second" => second,
+        "files" => [%{"path" => "ebin/Elixir.A.beam", "occurrences" => Enum.map(0..99, occ)}]
+      }
+
+      assert Relocation.record_problem(record, ["ebin/Elixir.A.beam"]) =~ "over 256 KiB"
+    end
+
+    test "a leaf that is not UTF-8, or over 4 KiB, is not provable", ctx do
+      [{ra, a}, {rb, b}, _] =
+        three(ctx, &compile_ex(&1, BadLeaf, "@d <<255>> <> __DIR__\ndef d, do: @d"))
+
+      assert {:refuse, "a path in text that is not UTF-8"} =
+               Relocation.prove(a, slots(ra), b, slots(rb))
+
+      [{ra, a}, {rb, b}, _] =
+        three(
+          ctx,
+          &compile_ex(&1, BigLeaf, "@d String.duplicate(\"x\", 5000) <> __DIR__\ndef d, do: @d")
+        )
+
+      assert {:refuse, "a path in text over 4 KiB"} = Relocation.prove(a, slots(ra), b, slots(rb))
+    end
+  end
+
+  # The umbrella review's B1: the two builder roots must differ in what a
+  # compile can derive from a path, or the proof cannot see a derived value
+  # that is equal at both but not at the user's path. Each probe derives one
+  # such value; at the worker's two roots each must refuse.
+  describe "derived values at the worker's two roots" do
+    defp at_worker_roots(ctx, name, body) do
+      first = Path.join(ctx.tmp_dir, "work/proj")
+      second = Relocation.second_layout(Path.join(ctx.tmp_dir, "ncc-relocate-7"))
+
+      compile_at = fn deps ->
+        root = Path.dirname(deps)
+        module = Module.concat([RelocationTest, name])
+        dir = Path.join(deps, "fx")
+        File.mkdir_p!(dir)
+        source = "defmodule #{inspect(module)} do\n#{body}\nend\n"
+
+        [{^module, beam}] =
+          File.cd!(dir, fn -> Code.compile_string(source, Path.join(dir, "lib/fx.ex")) end)
+
+        :code.delete(module)
+        :code.purge(module)
+        _ = root
+        beam
+      end
+
+      a = compile_at.(Path.join(first, "deps"))
+      b = compile_at.(second["deps"])
+      {Relocation.prove(a, slots(first), b, Map.take(second, ["deps", "build"])), first}
+    end
+
+    test "shell quoting of a path with a space refuses", ctx do
+      body = """
+      @dir __DIR__
+      @quoted if String.contains?(@dir, " "), do: "'" <> @dir <> "'", else: @dir
+      def dir, do: @dir
+      def quoted, do: @quoted
+      """
+
+      assert {{:refuse, _}, _} = at_worker_roots(ctx, Quoted, body)
+    end
+
+    test "a length limit between the two roots refuses", ctx do
+      limit = byte_size(Path.join(ctx.tmp_dir, "work/proj/deps/fx/lib")) + 5
+
+      body = """
+      @short byte_size(__DIR__) < #{limit}
+      @dir __DIR__
+      def dir, do: @dir
+      def short?, do: @short
+      """
+
+      assert {{:refuse, _}, _} = at_worker_roots(ctx, Short, body)
+    end
+
+    test "the project dir's name refuses", ctx do
+      body = """
+      @dir __DIR__
+      @project @dir |> Path.split() |> Enum.reverse() |> Enum.at(3)
+      def dir, do: @dir
+      def project, do: @project
+      """
+
+      assert {{:refuse, _}, _} = at_worker_roots(ctx, Project, body)
+    end
+
+    test "a plain __DIR__ literal proves at the two roots", ctx do
+      assert {{:ok, [_]}, _} = at_worker_roots(ctx, Plain, "@dir __DIR__\ndef dir, do: @dir")
     end
   end
 end

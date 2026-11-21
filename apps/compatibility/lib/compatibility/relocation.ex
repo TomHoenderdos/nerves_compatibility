@@ -196,14 +196,103 @@ defmodule Compatibility.Relocation do
     _ -> {:refuse, "unreadable beam"}
   end
 
-  @record_keys ["build", "deps", "files"]
+  @record_keys ["build", "deps", "files", "second"]
   @kinds ["binary", "charlist", "atom"]
   @max_files 10_000
+  @max_record_bytes 256 * 1024
+  @max_leaf_bytes 4096
+
+  # The worker's first build: its host compile in `<work dir>/proj`, the
+  # work dir `/work` in the container (`Compatibility.Builder.Argv`).
+  @first %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
+
+  # The second build's root under its base, `<tmp>/ncc-relocate-<n>`: unlike
+  # the first build's root in every property a user's path can have that
+  # the client accepts (printable ASCII). It is long and deep where the
+  # first is short and shallow, it holds a space, upper case, a dot, a dash
+  # and digits where the first holds none, its deps path holds an
+  # underscore where the first's holds none and its build path none where
+  # the first's holds one, its project dir has another name, and its deps
+  # path sorts before its build path where the first's sorts after. Every
+  # lower case letter is in it, so the two roots together span every
+  # letter, digit and the space, dot, dash and underscore.
+  @second_dirs [
+    "Second Root.d",
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "0123456789",
+    "abcdefghijklmnopqrstuvwxyz",
+    "Long Relocation.Path-0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz",
+    "x",
+    "Y",
+    "z-0",
+    "The Relocated.Project-2"
+  ]
+  @second_deps "Deps vendored_d"
+  @second_build "Out.Build-3/Host 4"
+  @second_base ~r"\A/tmp/ncc-relocate-[0-9]{1,20}\z"
+
+  @doc """
+  The worker's second build under `base`: `"project"`, the dir its project
+  is copied to, and its `"deps"` and `"build"` paths (see the moduledoc).
+  """
+  @spec second_layout(String.t()) :: %{String.t() => String.t()}
+  def second_layout(base) do
+    project = Path.join([base | @second_dirs])
+
+    %{
+      "project" => project,
+      "deps" => Path.join(project, @second_deps),
+      "build" => Path.join(project, @second_build)
+    }
+  end
+
+  @doc """
+  Why a record's two roots are not the worker's own layout, or nil: its
+  `deps` and `build` the first build's (`/work/proj/deps`,
+  `/work/proj/_build/host`), and its `second` the second build's under
+  `/tmp/ncc-relocate-<n>` (`second_layout/1`). The portal holds every
+  record it stores to this.
+  """
+  @spec pinned_problem(term()) :: String.t() | nil
+  def pinned_problem(%{"deps" => deps, "build" => build, "second" => %{} = second}) do
+    base = second |> Map.get("deps", "") |> to_string() |> second_base()
+
+    cond do
+      %{"deps" => deps, "build" => build} != @first ->
+        "the first build's paths are not the worker's"
+
+      base == nil ->
+        "the second build's paths are not the worker's"
+
+      Map.take(second_layout(base), ["deps", "build"]) != second ->
+        "the second build's paths are not the worker's"
+
+      true ->
+        nil
+    end
+  end
+
+  def pinned_problem(_record), do: "not a relocation record"
+
+  # The base of a second build's deps path, when it has the layout's shape.
+  defp second_base(deps) do
+    suffix = "/" <> Path.join(@second_dirs ++ [@second_deps])
+
+    with true <- String.ends_with?(deps, suffix),
+         base = binary_part(deps, 0, byte_size(deps) - byte_size(suffix)),
+         true <- Regex.match?(@second_base, base) do
+      base
+    else
+      _ -> nil
+    end
+  end
 
   @doc """
   Why a worker's `relocation` record (`NccWorker.Portability.Relocate`) is
   not one a client can apply, or nil: the build's `deps` and `build` paths
-  (absolute, distinct, neither inside the other), and `files`, a non-empty
+  (absolute, distinct, neither inside the other), `second`, the second
+  build's (the same), every one of the four printable ASCII, the record at
+  most 256 KiB as JSON, and `files`, a non-empty
   list of distinct `%{"path" => "ebin/<name>.beam", "occurrences" => [...]}`,
   each path one of `ebin_paths` (the build's own `ebin` files), each with
   at least one occurrence of a known chunk, a non-negative index, a term
@@ -214,16 +303,45 @@ defmodule Compatibility.Relocation do
   @spec record_problem(term(), [String.t()]) :: String.t() | nil
   def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin_paths)
       when is_list(files) and is_list(ebin_paths) do
+    first = %{"deps" => deps, "build" => build}
+    second = record["second"]
+
     cond do
-      record |> Map.keys() |> Enum.sort() != @record_keys -> "unknown keys"
-      match?({:refuse, _}, valid_slots(%{"deps" => deps, "build" => build})) -> "bad paths"
-      files == [] or length(files) > @max_files -> "no files, or too many"
-      length(Enum.uniq_by(files, &file_path/1)) != length(files) -> "a file twice"
-      true -> Enum.find_value(files, &file_problem(&1, ebin_paths))
+      record |> Map.keys() |> Enum.sort() != @record_keys ->
+        "unknown keys"
+
+      match?({:refuse, _}, valid_slots(first)) ->
+        "bad paths"
+
+      match?({:refuse, _}, valid_slots(second)) ->
+        "bad second paths"
+
+      not Enum.all?(Map.values(first) ++ Map.values(second), &printable?/1) ->
+        "a path not printable ASCII"
+
+      files == [] or length(files) > @max_files ->
+        "no files, or too many"
+
+      record_bytes(record) > @max_record_bytes ->
+        "a record over 256 KiB"
+
+      length(Enum.uniq_by(files, &file_path/1)) != length(files) ->
+        "a file twice"
+
+      true ->
+        Enum.find_value(files, &file_problem(&1, ebin_paths))
     end
   end
 
   def record_problem(_record, _ebin_paths), do: "not a relocation record"
+
+  defp printable?(path), do: is_binary(path) and path =~ ~r/\A[\x20-\x7e]+\z/
+
+  defp record_bytes(record) do
+    record |> JSON.encode!() |> byte_size()
+  rescue
+    _ -> @max_record_bytes + 1
+  end
 
   defp file_path(%{"path" => path}), do: path
   defp file_path(file), do: file
@@ -439,7 +557,8 @@ defmodule Compatibility.Relocation do
 
   defp term_occurrences(etf, slots, needles, chunk, index) do
     with {:ok, term} <- decode(etf),
-         {:ok, [_ | _] = leaves} <- leaves(term, [], needles) do
+         {:ok, [_ | _] = leaves} <- leaves(term, [], needles),
+         nil <- Enum.find_value(leaves, fn {_path, _kind, value} -> leaf_problem(value) end) do
       {:ok,
        for {path, kind, value} <- leaves do
          %{
@@ -453,6 +572,16 @@ defmodule Compatibility.Relocation do
     else
       {:ok, []} -> {:refuse, "a path in #{chunk} #{index} the rewrite cannot reach"}
       {:refuse, _} = refuse -> refuse
+    end
+  end
+
+  # A value that holds a path is recorded as text around slots, so it must
+  # be UTF-8 (the record is JSON) and small (it goes into every manifest).
+  defp leaf_problem(value) do
+    cond do
+      not String.valid?(value) -> {:refuse, "a path in text that is not UTF-8"}
+      byte_size(value) > @max_leaf_bytes -> {:refuse, "a path in text over 4 KiB"}
+      true -> nil
     end
   end
 
@@ -629,9 +758,11 @@ defmodule Compatibility.Relocation do
   end
 
   defp named_atom({name, i}, named, slots) do
-    if i == 1 or MapSet.member?(named, i),
-      do: {:refuse, "a path in a module or function name"},
-      else: {:ok, [atom_occurrence(i, name, slots)]}
+    cond do
+      i == 1 or MapSet.member?(named, i) -> {:refuse, "a path in a module or function name"}
+      problem = leaf_problem(name) -> problem
+      true -> {:ok, [atom_occurrence(i, name, slots)]}
+    end
   end
 
   defp atom_occurrence(i, name, slots),
@@ -736,9 +867,12 @@ defmodule Compatibility.Relocation do
 
   defp line_occurrences(data, slots, needles) do
     if contains?(data, needles) do
-      with {:ok, {_head, _items, names}} <- line_table(data) do
+      with {:ok, {_head, _items, names}} <- line_table(data),
+           found =
+             for({name, j} <- Enum.with_index(names), contains?(name, needles), do: {name, j}),
+           nil <- Enum.find_value(found, fn {name, _} -> leaf_problem(name) end) do
         {:ok,
-         for {name, j} <- Enum.with_index(names), contains?(name, needles) do
+         for {name, j} <- found do
            %{
              "chunk" => "Line",
              "index" => j,
