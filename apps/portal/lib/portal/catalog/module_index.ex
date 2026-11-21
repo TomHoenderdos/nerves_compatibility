@@ -26,8 +26,9 @@ defmodule Portal.Catalog.ModuleIndex do
     * ingest is the one place every build passes through, local and remote
       alike, so the decision is the same whichever builder ran the build,
       and needs no builder protocol change;
-    * the recorded probes stay on the row, so the index can re-check
-      served rows, and client 0.9 can check them itself.
+    * the recorded probes stay on the row, so the index re-checks served
+      rows after each complete run (`recheck/1`), and client 0.9 can check
+      them itself.
 
   **Complete or nothing (round 5, R3-1).** A run (`refresh/1`) is a
   generation of its own. It reads the latest release of every candidate
@@ -42,6 +43,9 @@ defmodule Portal.Catalog.ModuleIndex do
   tarball over the caps), every recorded declared-absent probe refuses. A
   newer run supersedes an older one, which stops at its next package.
 
+  After a complete run the index re-checks every served row that carries a
+  record and withholds (revokes, with a tag and an undo) any that now
+  collides (`recheck/1`, R3-5a).
   """
 
   alias Portal.Repo
@@ -194,7 +198,8 @@ defmodule Portal.Catalog.ModuleIndex do
   @doc """
   A run: reads the latest release of every candidate the index does not
   hold at it, confirms the rest, and marks its generation complete when
-  every candidate is confirmed in it.
+  every candidate is confirmed in it. A complete run then re-checks the
+  served rows (`recheck/1`, unless `recheck: false`).
 
   Safe to start by hand on a host short on memory (round 4):
 
@@ -211,7 +216,7 @@ defmodule Portal.Catalog.ModuleIndex do
 
   Options: `:tarball` and `:outer_checksum` (`fn name, version -> {:ok,
   value} | {:error, why} end`, default `Portal.HexDeps`), `:limit`,
-  `:concurrency`, `:dry_run`.
+  `:concurrency`, `:dry_run`, `:recheck`.
   """
   @spec refresh(keyword()) :: %{atom() => term()}
   def refresh(opts \\ []) do
@@ -300,8 +305,12 @@ defmodule Portal.Catalog.ModuleIndex do
       [generation, result.indexed, result.unchanged, result.failed + result.superseded, complete]
     )
 
-    _ = opts
-    Map.merge(result, %{generation: generation, complete: complete})
+    withheld =
+      if complete and Keyword.get(opts, :recheck, true),
+        do: recheck(generation: generation).withheld,
+        else: nil
+
+    Map.merge(result, %{generation: generation, complete: complete, withheld: withheld})
   end
 
   defp superseded?(generation) do
@@ -433,5 +442,152 @@ defmodule Portal.Catalog.ModuleIndex do
         on_conflict: :nothing
       )
     end)
+  end
+
+  # --- recheck (R3-5a) ---------------------------------------------------------
+
+  @recheck_kinds [
+    {"toolchain_build", "catalog_toolchain_builds", "t.revoked_at IS NULL AND t.status = 'pass'",
+     "revoked_at", "revoked_reason"},
+    {"pinned_build", "catalog_pinned_builds", "t.revoked_at IS NULL AND t.status = 'pass'",
+     "revoked_at", "revoked_reason"},
+    {"host_native_build", "catalog_host_native_builds",
+     "t.revoked_at IS NULL AND t.status = 'pass'", "revoked_at", nil}
+  ]
+
+  @doc """
+  Re-checks every served toolchain, pinned and host-native build whose
+  judge recorded declared-absent probes against the index as it is now,
+  and withholds (revokes) each one that now collides, tagged with the
+  generation (`withheld_reason/1`) and listed in
+  `catalog_module_index_withheld` for `undo_recheck/1`. Only on a complete
+  index. `dry_run: true` counts without writing. Returns `%{withheld,
+  checked, by_kind}`.
+  """
+  @spec recheck(keyword()) :: %{atom() => term()}
+  def recheck(opts \\ []) do
+    generation = Keyword.get_lazy(opts, :generation, fn -> latest_run()[:generation] end)
+    dry_run = Keyword.get(opts, :dry_run, false)
+
+    if complete?() do
+      found =
+        for {kind, table, served, _at, _reason} <- @recheck_kinds,
+            [id, items, lock] <- served_with_records(table, served),
+            refusal = refusal(items, lock_keys(lock)),
+            refusal != nil,
+            do: {kind, Ecto.UUID.load!(id), refusal}
+
+      checked = count_with_records()
+      unless dry_run, do: withhold(found, generation)
+
+      Repo.query!("UPDATE catalog_module_index_runs SET withheld = $2 WHERE generation = $1", [
+        generation,
+        if(dry_run, do: nil, else: length(found))
+      ])
+
+      %{
+        withheld: length(found),
+        checked: checked,
+        by_kind: Enum.frequencies_by(found, &elem(&1, 0))
+      }
+    else
+      %{withheld: 0, checked: 0, by_kind: %{}, skipped: :not_complete}
+    end
+  end
+
+  @doc "The revocation reason a recheck of `generation` writes."
+  @spec withheld_reason(pos_integer()) :: String.t()
+  def withheld_reason(generation),
+    do: "declared-absent probe collides (module index generation #{generation})"
+
+  defp served_with_records(table, served) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM #{table} t
+        WHERE #{served} AND jsonb_typeof(t.compile_observations->'declared_absent') = 'array'
+          AND jsonb_array_length(t.compile_observations->'declared_absent') > 0
+        """,
+        [],
+        timeout: 600_000
+      )
+
+    rows
+  end
+
+  defp count_with_records do
+    Enum.sum(
+      for {_kind, table, served, _at, _reason} <- @recheck_kinds,
+          do: length(served_with_records(table, served))
+    )
+  end
+
+  defp lock_keys(%{} = lock), do: Map.keys(lock)
+  defp lock_keys(_lock), do: []
+
+  defp withhold(found, generation) do
+    reason = withheld_reason(generation)
+
+    {:ok, :ok} =
+      Repo.transaction(fn ->
+        for {kind, id, refusal} <- found do
+          {^kind, table, _served, at, reason_col} = List.keyfind(@recheck_kinds, kind, 0)
+          set = if reason_col, do: "#{at} = now(), #{reason_col} = $2", else: "#{at} = now()"
+
+          Repo.query!(
+            "UPDATE #{table} SET #{set}, updated_at = now() WHERE id = $1 AND #{at} IS NULL",
+            if(reason_col, do: [Ecto.UUID.dump!(id), reason], else: [Ecto.UUID.dump!(id)])
+          )
+
+          Repo.query!(
+            """
+            INSERT INTO catalog_module_index_withheld (generation, kind, row_id, withheld_at, reason)
+            VALUES ($1, $2, $3, now(), $4) ON CONFLICT DO NOTHING
+            """,
+            [generation, kind, Ecto.UUID.dump!(id), refusal]
+          )
+        end
+
+        :ok
+      end)
+
+    if found != [],
+      do:
+        Logger.warning(
+          "module index: recheck of generation #{generation} withheld #{length(found)} rows"
+        )
+  end
+
+  @doc """
+  Undoes a recheck's withholding: the rows `catalog_module_index_withheld`
+  lists for `generation` that are still revoked by it are served again.
+  Returns how many per kind.
+  """
+  @spec undo_recheck(pos_integer()) :: %{String.t() => non_neg_integer()}
+  def undo_recheck(generation) do
+    reason = withheld_reason(generation)
+
+    {:ok, counts} =
+      Repo.transaction(fn ->
+        for {kind, table, _served, at, reason_col} <- @recheck_kinds, into: %{} do
+          match = if reason_col, do: "AND t.#{reason_col} = $2", else: "AND $2::text IS NOT NULL"
+          clear = if reason_col, do: "#{at} = NULL, #{reason_col} = NULL", else: "#{at} = NULL"
+
+          %{num_rows: n} =
+            Repo.query!(
+              """
+              UPDATE #{table} t SET #{clear}, updated_at = now()
+              FROM catalog_module_index_withheld w
+              WHERE w.generation = $1 AND w.kind = $3 AND w.row_id = t.id
+                AND t.#{at} IS NOT NULL #{match}
+              """,
+              [generation, reason, kind]
+            )
+
+          {kind, n}
+        end
+      end)
+
+    counts
   end
 end
