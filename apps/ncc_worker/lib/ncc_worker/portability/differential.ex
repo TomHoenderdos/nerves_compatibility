@@ -428,22 +428,21 @@ defmodule NccWorker.Portability.Differential do
   # Never added with the builder's value (coordinator ruling). A first
   # build whose observed list reached its cap cannot tell.
   defp read_no_more(held, built, name) do
-    with {:ok, theirs} <- variant_reads(built) do
-      case more(held, theirs) do
-        {:extra, what} ->
-          {:refuse, "a differential build (#{name}) read what the first did not: #{what}"}
-
-        {:capped, kind} ->
-          {:unjudged, "#{kind} over their cap: a differential build (#{name}) cannot be compared",
-           false}
-
-        :ok ->
-          :ok
-      end
-    else
+    case variant_reads(built) do
+      {:ok, theirs} -> read_no_more(more(held, theirs), name)
       :error -> {:unjudged, "differential build (#{name}) recorded no compile inputs", false}
     end
   end
+
+  defp read_no_more({:extra, what}, name),
+    do: {:refuse, "a differential build (#{name}) read what the first did not: #{what}"}
+
+  defp read_no_more({:capped, kind}, name),
+    do:
+      {:unjudged, "#{kind} over their cap: a differential build (#{name}) cannot be compared",
+       false}
+
+  defp read_no_more(:ok, _name), do: :ok
 
   # What a variant read: its pass's inputs, or the ones its own hold kept.
   defp variant_reads(%{status: :pass} = built),
@@ -487,40 +486,70 @@ defmodule NccWorker.Portability.Differential do
     Map.take(arg, ["app", "key", "all"])
   end
 
+  # The first thing a variant read that the first build did not, in this
+  # order: a compile input, a config item, a varied read, an env read, a
+  # config read (the last two `:capped` when the first's list was full).
   defp more(held, theirs) do
-    first_inputs = MapSet.new(held.compile_inputs || [], &identity/1)
-    first_env = MapSet.new(held.compile_env || [], &identity/1)
-    first_reads = MapSet.new(held.reads, &read_identity/1)
-    first = held.observed
+    Enum.find_value(
+      [
+        fn -> extra_input(held, theirs) end,
+        fn -> extra_config_item(held, theirs) end,
+        fn -> extra_varied(held, theirs) end,
+        fn ->
+          extra_observed(
+            theirs.observed.env,
+            held.observed.env,
+            held.observed.env_capped,
+            "env reads",
+            &"env read #{elem(&1, 0) || "(all)"}"
+          )
+        end,
+        fn ->
+          extra_observed(
+            theirs.observed.config,
+            held.observed.config,
+            held.observed.config_capped,
+            "config reads",
+            &"config read #{&1["app"]} #{&1["key"]}"
+          )
+        end
+      ],
+      :ok,
+      & &1.()
+    )
+  end
 
-    cond do
-      item = Enum.find(theirs.inputs, &(identity(&1) not in first_inputs)) ->
-        {:extra, describe_input(item)}
+  defp extra_input(held, theirs) do
+    first = MapSet.new(held.compile_inputs || [], &identity/1)
+    item = Enum.find(theirs.inputs, &(identity(&1) not in first))
+    if item, do: {:extra, describe_input(item)}
+  end
 
-      item = Enum.find(theirs.env, &(identity(&1) not in first_env)) ->
+  defp extra_config_item(held, theirs) do
+    first = MapSet.new(held.compile_env || [], &identity/1)
+
+    case Enum.find(theirs.env, &(identity(&1) not in first)) do
+      nil ->
+        nil
+
+      item ->
         {:extra, "config #{item[:app] || item["app"]} #{inspect(item[:path] || item["path"])}"}
-
-      read = Enum.find(theirs.reads, &(read_identity(&1) not in first_reads)) ->
-        {:extra, "#{read["read"]} in #{read["owner"]}"}
-
-      extra?(theirs.observed.env, first.env) and first.env_capped ->
-        {:capped, "env reads"}
-
-      name = Enum.find(theirs.observed.env, &(&1 not in first.env)) ->
-        {:extra, "env read #{elem(name, 0) || "(all)"}"}
-
-      extra?(theirs.observed.config, first.config) and first.config_capped ->
-        {:capped, "config reads"}
-
-      key = Enum.find(theirs.observed.config, &(&1 not in first.config)) ->
-        {:extra, "config read #{key["app"]} #{key["key"]}"}
-
-      true ->
-        :ok
     end
   end
 
-  defp extra?(theirs, first), do: not MapSet.subset?(theirs, first)
+  defp extra_varied(held, theirs) do
+    first = MapSet.new(held.reads, &read_identity/1)
+    read = Enum.find(theirs.reads, &(read_identity(&1) not in first))
+    if read, do: {:extra, "#{read["read"]} in #{read["owner"]}"}
+  end
+
+  defp extra_observed(theirs, first, capped?, kind, describe) do
+    case Enum.find(theirs, &(&1 not in first)) do
+      nil -> nil
+      _extra when capped? -> {:capped, kind}
+      extra -> {:extra, describe.(extra)}
+    end
+  end
 
   defp identity(item) when is_map(item), do: Map.drop(item, @value_keys)
   defp identity(item), do: item

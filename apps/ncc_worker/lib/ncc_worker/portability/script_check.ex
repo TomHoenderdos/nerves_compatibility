@@ -197,20 +197,25 @@ defmodule NccWorker.Portability.ScriptCheck do
 
     with {:ok, first} <- eval(paths, exes, opts, []),
          :ok <- anchored(apps, anchors, first) do
-      Enum.reduce_while(runs, {:ok, apps}, fn {what, words}, ok ->
-        case eval(paths, exes, opts, words) do
-          {:ok, other} ->
-            case same_keys(apps, first, other) do
-              :ok -> {:cont, ok}
-              {:differs, app, key} -> {:halt, {:differs, app, "#{key} differs with #{what}"}}
-            end
-
-          {:error, why} ->
-            {:halt, {:error, "#{why} (#{what})"}}
-        end
-      end)
+      Enum.reduce_while(runs, {:ok, apps}, &next_run(&1, &2, apps, first, paths, exes, opts))
     end
   end
+
+  defp next_run({what, words}, ok, apps, first, paths, exes, opts) do
+    case compare_run(apps, first, eval(paths, exes, opts, words), what) do
+      :ok -> {:cont, ok}
+      other -> {:halt, other}
+    end
+  end
+
+  defp compare_run(apps, first, {:ok, other}, what) do
+    case same_keys(apps, first, other) do
+      :ok -> :ok
+      {:differs, app, key} -> {:differs, app, "#{key} differs with #{what}"}
+    end
+  end
+
+  defp compare_run(_apps, _first, {:error, why}, what), do: {:error, "#{why} (#{what})"}
 
   # The evaluation with no words must give each app exactly its first
   # build's `mix.rebar.config`.
