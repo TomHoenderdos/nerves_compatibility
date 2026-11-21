@@ -347,7 +347,7 @@ defmodule Compatibility.Relocation do
         ebin_paths,
         apps
       )
-      when is_list(files) and is_list(ebin_paths) and (is_list(apps) or is_nil(apps)) do
+      when is_list(files) and is_list(ebin_paths) do
     cond do
       record |> Map.keys() |> Enum.sort() != @record_keys ->
         "unknown keys"
