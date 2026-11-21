@@ -148,4 +148,9 @@ defmodule NccWorker.CLITest do
     assert {:ok, %{judge: %{relocate: true}}} =
              CLI.parse_input(~s({"run_id":"r","mode":"toolchain","judge":{"relocate":true}}))
   end
+
+  test "parse_input/1 reads judge.differential" do
+    json = ~s({"run_id":"r","mode":"toolchain","judge":{"differential":true}})
+    assert {:ok, %{judge: %{differential: true}}} = CLI.parse_input(json)
+  end
 end

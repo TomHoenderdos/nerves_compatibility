@@ -1700,6 +1700,32 @@ defmodule NccWorker.ToolchainModeTest do
     end
   end
 
+  test "NCC_INPUT.judge.differential reaches the compile only when true, with no revision bump",
+       %{tmp_dir: dir} do
+    for {judge, want} <- [
+          {%{differential: true}, true},
+          {%{differential: "yes"}, false},
+          {nil, false}
+        ] do
+      parent = self()
+      sub = Path.join(dir, "case#{System.unique_integer([:positive])}")
+      {proj, input, paths} = toolchain_run(sub)
+
+      host_trace = fn _project_dir, _package, _paths, opts ->
+        send(parent, {:flag, Keyword.get(opts, :differential)})
+        passing_host_trace()
+      end
+
+      input = if judge, do: Map.put(input, :judge, judge), else: input
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+      assert_received {:flag, ^want}
+      assert result.toolchain_build.judge_revision == 29
+    end
+  end
+
   @foreign_rel "priv/assets/Sample/uxwh53kfq2wszgf23hqwgkuiza.tar.gz"
 
   defp foreign_entry(rel, bytes),
