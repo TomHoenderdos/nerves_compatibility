@@ -442,6 +442,18 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert fast_path_builds() == []
     end
 
+    # Re-review G8: a prerelease is no newer stable release.
+    test "a newer prerelease leaves the job running" do
+      dependent = name()
+      certifi_release([dependent])
+      put_certifi_versions(["2.18.0", "2.19.0", "2.20.0-rc.0"])
+
+      assert {:ok, %{enqueued: 1}} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
+      assert [%{args: %{"package" => ^dependent}}] = fast_path_builds()
+    end
+
     # Re-review G7: with no stable release left on Hex (all retired, or the
     # package gone), there is nothing it was superseded by.
     test "a release with no stable release left ends, and says so" do
