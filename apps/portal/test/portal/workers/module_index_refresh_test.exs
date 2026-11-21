@@ -17,9 +17,9 @@ defmodule Portal.Workers.ModuleIndexRefreshTest do
     assert {:ok, %Oban.Job{conflict?: true}} = Oban.insert(ModuleIndexRefresh.new(%{}))
   end
 
-  test "it is on the weekly crontab, after the metadata refresh" do
+  test "it is on the daily crontab" do
     plugins = Application.fetch_env!(:portal, Oban)[:plugins]
     {_, cron} = Enum.find(plugins, &match?({Oban.Plugins.Cron, _}, &1))
-    assert {"17 6 * * 1", ModuleIndexRefresh} in cron[:crontab]
+    assert {"17 6 * * *", ModuleIndexRefresh} in cron[:crontab]
   end
 end
