@@ -510,6 +510,28 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       assert same_instant?(rpi4_of(a).unpublished_at, probe_at)
     end
 
+    # The R2 undo (`FirmwareBuildPathWithdrawal.undo/1`) releases only its
+    # own withdrawal too: a row another hold keeps stays out.
+    test "the build path withdrawal's undo keeps a row's other holds" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      at = ~N[2026-11-15 17:23:55.529839]
+
+      Repo.query!(
+        "UPDATE catalog_system_results SET unpublished_at = $2, unpublished_reason = $3, " <>
+          "other_holds = $4 WHERE id = $1",
+        [
+          Ecto.UUID.dump!(rpi4_of(a).id),
+          at,
+          SystemResult.baked_build_path(),
+          [%{"reason" => @taint, "at" => "2026-11-21T10:00:00.000000"}]
+        ]
+      )
+
+      assert {:restored, 0} = Portal.Precompiled.FirmwareBuildPathWithdrawal.undo(at)
+      assert rpi4_of(a).unpublished_reason == @taint
+      assert rpi4_of(a).other_holds in [nil, []]
+    end
+
     test "lists a reason's holds by timestamp, with the rows each holds" do
       a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
       b = run!("1.4.0", "2026-11-01T12:00:00Z", "b")

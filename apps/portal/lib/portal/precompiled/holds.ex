@@ -266,8 +266,14 @@ defmodule Portal.Precompiled.Holds do
 
   defp sql(template, table) when table in @tables, do: String.replace(template, "$TABLE", table)
 
-  # Each row the undo served again, held anew by what applies to it now.
-  defp reapply(touched) do
+  @doc """
+  Holds anew each of `touched` (`{table, id}`, a system result or pinned
+  build) that is served: what applies to it now (`for_targets/3`), also a
+  revocation it never recorded because it was withdrawn when that ran. For
+  every undo that puts firmware builds back.
+  """
+  @spec reapply([{String.t(), term()}]) :: :ok
+  def reapply(touched) do
     touched
     |> served()
     |> Enum.group_by(fn row -> {row.package_id, row.version} end)

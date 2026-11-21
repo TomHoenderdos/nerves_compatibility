@@ -76,7 +76,7 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   alias Compatibility.Portability
   alias Portal.ArtifactStore
   alias Portal.Catalog.{SystemResult, ToolchainBuild}
-  alias Portal.Precompiled.FirmwareRefusal
+  alias Portal.Precompiled.{FirmwareRefusal, Holds}
   alias Portal.Repo
 
   @default_limit 100
@@ -156,11 +156,24 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
 
   # Returns each restored result's id and its package version, which
   # `undo/1` hands to `FirmwareRefusal` before it counts what serves again.
+  # A result that carries other holds (`Portal.Precompiled.Holds`) keeps
+  # them: the newest becomes its withdrawal, and it stays out.
   @undo_sql """
+  WITH hit AS (
+    SELECT s.id,
+           (SELECT h FROM unnest(s.other_holds) h
+            ORDER BY (h->>'at')::timestamp DESC, h->>'reason' DESC LIMIT 1) AS nxt
+    FROM catalog_system_results s
+    WHERE s.unpublished_reason = $1 AND s.unpublished_at = $2
+  )
   UPDATE catalog_system_results s
-  SET unpublished_at = NULL, unpublished_reason = NULL, updated_at = now() AT TIME ZONE 'utc'
-  FROM catalog_runs r
-  WHERE r.id = s.run_id AND s.unpublished_reason = $1 AND s.unpublished_at = $2
+  SET unpublished_at = (hit.nxt->>'at')::timestamp,
+      unpublished_reason = hit.nxt->>'reason',
+      other_holds = CASE WHEN hit.nxt IS NULL THEN NULL
+                         ELSE nullif(array_remove(s.other_holds, hit.nxt), '{}') END,
+      updated_at = now() AT TIME ZONE 'utc'
+  FROM hit, catalog_runs r
+  WHERE s.id = hit.id AND r.id = s.run_id
   RETURNING s.id, r.package_id, r.version_tested
   """
 
@@ -236,6 +249,10 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
   `unpublished_reason` and exactly that `unpublished_at`). Returns how many
   serve again.
 
+  A result that carries other holds keeps them and stays withdrawn, and each
+  result put back first gets the holds that apply to it now
+  (`Portal.Precompiled.Holds.reapply/1`).
+
   A result withdrawn here was no candidate for `Portal.Precompiled.FirmwareRefusal`,
   so a newer refusal of its version and target may have left it alone; in the
   same transaction its versions go through that rule again, and a result it
@@ -248,6 +265,8 @@ defmodule Portal.Precompiled.FirmwareBuildPathWithdrawal do
     {:ok, {restored, served}} =
       Repo.transaction(fn ->
         %{rows: rows} = Repo.query!(@undo_sql, [SystemResult.baked_build_path(), withdrawn_at])
+
+        :ok = Holds.reapply(Enum.map(rows, fn [id | _] -> {"catalog_system_results", id} end))
 
         rows
         |> Enum.map(fn [_id, package_id, version] -> {package_id, version} end)
