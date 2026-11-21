@@ -18,7 +18,9 @@ defmodule Portal.Catalog.Coverage do
   a build of the version.
 
   A world build (`Compatibility.Worlds`) counts in neither column: it serves
-  only clients that read `builds_closure`.
+  only clients that read `builds_closure`. Nor does a relocated pass (S4,
+  `Portal.Precompiled.Relocated`): it serves only a client of 0.9.0 or
+  later, and only while the `relocated_enabled` setting is on.
 
   A covered version also counts in the second column when a covering build
   carries the package's optional dependencies, since a fresh lock that adds
@@ -39,6 +41,8 @@ defmodule Portal.Catalog.Coverage do
       skipped builds of the version: a skip is the toolchain build judging
       the package not portable, so by design there is no host build
     * `:no_build_for_version` - builds of other versions only
+    * `:relocated` - the version's only passing builds are relocated, served
+      to a client of 0.9.0 or later alone
     * `:failed` - the version was built and nothing is served for it:
       `fail` or `error`, by any recipe
     * `:no_optional_deps_build` - covered, but without its optional
@@ -57,11 +61,18 @@ defmodule Portal.Catalog.Coverage do
   @default_top_n 100
 
   @reasons Map.new(
-             [:no_host_build, :no_build_for_version, :failed, :no_optional_deps_build],
+             [
+               :no_host_build,
+               :no_build_for_version,
+               :relocated,
+               :failed,
+               :no_optional_deps_build
+             ],
              &{Atom.to_string(&1), &1}
            )
 
-  @type reason :: :no_host_build | :no_build_for_version | :failed | :no_optional_deps_build
+  @type reason ::
+          :no_host_build | :no_build_for_version | :relocated | :failed | :no_optional_deps_build
   @type gap :: %{
           package: String.t(),
           version: String.t() | nil,
@@ -243,7 +254,16 @@ defmodule Portal.Catalog.Coverage do
     )
     # Not `file_manifest`: a build's file list is the largest thing on the
     # row and nothing here reads it.
-    |> Ash.Query.select([:id, :package_id, :version, :toolchain, :status, :deps_lock])
+    |> Ash.Query.select([
+      :id,
+      :package_id,
+      :version,
+      :toolchain,
+      :status,
+      :deps_lock,
+      :run_id,
+      :relocation_run_id
+    ])
     |> Ash.read!(domain: Portal.Catalog)
     |> Enum.group_by(& &1.toolchain)
     |> Map.new(fn {toolchain, builds} -> {toolchain, Enum.group_by(builds, & &1.package_id)} end)
@@ -292,13 +312,25 @@ defmodule Portal.Catalog.Coverage do
     cond do
       of_version == [] -> :no_build_for_version
       Enum.all?(of_version, &(&1.status == :skipped)) -> :no_host_build
-      true -> passing_verdict(Enum.filter(of_version, &(&1.status == :pass)), complete?)
+      true -> of_version |> Enum.filter(&(&1.status == :pass)) |> passing_verdict(complete?)
     end
   end
 
   defp passing_verdict([], _complete?), do: :failed
 
-  defp passing_verdict(passing, complete?),
+  defp passing_verdict(passing, complete?) do
+    case Enum.reject(passing, &relocated?/1) do
+      [] -> :relocated
+      plain -> served_verdict(plain, complete?)
+    end
+  end
+
+  # `Portal.Precompiled.Relocated.counted/1`'s mark: the record is the row's
+  # own run's. The record itself is not read: it can be large.
+  defp relocated?(%{relocation_run_id: run_id, run_id: run_id}) when is_binary(run_id), do: true
+  defp relocated?(_build), do: false
+
+  defp served_verdict(passing, complete?),
     do: if(Enum.any?(passing, complete?), do: :covered, else: :without)
 
   # The default `optional_deps_complete?`: per package whose latest version

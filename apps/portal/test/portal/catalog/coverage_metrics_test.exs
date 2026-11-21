@@ -210,6 +210,40 @@ defmodule Portal.Catalog.CoverageMetricsTest do
     assert row.compile_percent == 50.0
   end
 
+  # S4: a relocated pass serves only a client of 0.9.0 or later, and only
+  # while the `relocated_enabled` setting is on, so it is counted apart and
+  # not as served.
+  test "a relocated pass is counted apart, not as served" do
+    package!("plain", 100)
+    build!("plain", "1.0.0", status: :pass)
+
+    package!("moved", 300)
+
+    Portal.PrecompiledFixtures.ingest_toolchain_build("moved", "1.0.0",
+      relocation: Portal.Test.RelocationFixtures.record("moved")
+    )
+
+    package!("unbuilt", 600)
+
+    registry = for name <- ~w(plain moved unbuilt), do: entry(name, ["1.0.0"])
+
+    assert %{toolchains: [row]} = CoverageMetrics.compute(registry)
+    assert row.packages == 3
+    assert row.served == 1
+    assert row.served_downloads == 100
+    assert row.relocated == 1
+    assert row.relocated_downloads == 300
+    assert row.download_percent == 10.0
+    assert row.compile_failures == 0
+    # 1 served of the 3 that compile.
+    assert row.compile_percent == 33.3
+
+    assert {:ok, _} = CoverageMetrics.store(%{toolchains: [row]})
+
+    assert %{metrics: %{toolchains: [%{relocated: 1, relocated_downloads: 300}]}} =
+             CoverageMetrics.latest()
+  end
+
   test "an empty registry is all zeros, not an error" do
     assert %{toolchains: [%{packages: 0, download_percent: +0.0, compile_percent: +0.0}]} =
              CoverageMetrics.compute([])

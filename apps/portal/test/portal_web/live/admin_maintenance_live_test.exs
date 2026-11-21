@@ -846,6 +846,7 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
       assert has_element?(view, row <> ~s( [data-column="download_percent"]), "75.0%")
       assert has_element?(view, row <> ~s( [data-column="compile_percent"]), "50.0%")
       assert has_element?(view, row <> ~s( [data-column="gleam"]), "0")
+      assert has_element?(view, row <> ~s( [data-column="relocated"]), "0")
       assert has_element?(view, "#coverage-metrics-computed-at")
     end
 

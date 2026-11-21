@@ -71,6 +71,8 @@ defmodule Portal.Catalog.CoverageTest do
         status: status,
         variant: Keyword.get(opts, :variant, :with),
         deps_lock: Keyword.get(opts, :deps_lock, %{}),
+        run_id: Keyword.get(opts, :run_id),
+        relocation: Keyword.get(opts, :relocation),
         finished_at: DateTime.utc_now()
       })
       |> Ash.create!(domain: Catalog)
@@ -219,6 +221,40 @@ defmodule Portal.Catalog.CoverageTest do
 
       build!("phoenix", "1.8.16", :pass)
       assert %{covered: 1, covered_with_optional: 1} = report() |> toolchain("1.19/28")
+    end
+
+    # S4: a relocated pass serves only a client of 0.9.0 or later, and only
+    # while the `relocated_enabled` setting is on, so it is not covered for
+    # every client: a gap of its own.
+    test "a relocated pass is a relocated gap, not covered" do
+      package!("fine", 1_000, ["1.0.0"])
+
+      build!("fine", "1.0.0", :pass,
+        run_id: "r1",
+        relocation: Portal.Test.RelocationFixtures.record("fine")
+      )
+
+      row = report() |> toolchain("1.19/28")
+      assert %{covered: 0, covered_with_optional: 0} = row
+      assert %{version: "1.0.0", reason: :relocated} = gap(row, "fine")
+
+      # A plain pass of the version covers, whatever else is there.
+      build!("fine", "1.0.0", :pass, builder_version: 1)
+      assert %{covered: 1, gaps: []} = report() |> toolchain("1.19/28")
+    end
+
+    test "a relocated gap reads back from the stored report" do
+      package!("fine", 1_000, ["1.0.0"])
+
+      build!("fine", "1.0.0", :pass,
+        run_id: "r1",
+        relocation: Portal.Test.RelocationFixtures.record("fine")
+      )
+
+      assert {:ok, _} = report() |> Coverage.store()
+
+      assert %{reason: :relocated} =
+               Coverage.latest().report |> toolchain("1.19/28") |> gap("fine")
     end
 
     # A package that is not covered at all is not counted again in the second

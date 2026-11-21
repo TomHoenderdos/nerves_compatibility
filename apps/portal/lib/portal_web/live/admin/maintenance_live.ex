@@ -386,6 +386,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
 
   defp gap_reason(:no_host_build), do: "No build of any version"
   defp gap_reason(:no_build_for_version), do: "No build of this version"
+  defp gap_reason(:relocated), do: "Relocated build only (client 0.9+)"
   defp gap_reason(:failed), do: "Build failed"
   defp gap_reason(:no_optional_deps_build), do: "Built without optional deps"
 
@@ -1135,6 +1136,8 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               served; a compile failure is a failed toolchain compile (not one a signal killed),
               or, with no toolchain build, a failed host compile in the firmware project.
               Gleam packages leave the second share too: no Elixir before 1.22 compiles them.
+              A relocated pass is counted apart and in neither share: it serves only a client
+              of 0.9.0 or later, and only while relocated builds are served.
             </p>
             <p
               :if={@coverage_metrics == nil}
@@ -1160,6 +1163,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     <th>Toolchain</th>
                     <th class="text-right">Packages</th>
                     <th class="text-right">Served</th>
+                    <th class="text-right">Relocated</th>
                     <th class="text-right">Download-weighted</th>
                     <th class="text-right">Of packages that compile</th>
                     <th class="text-right">Compile failures</th>
@@ -1175,6 +1179,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     <td class="font-mono">{row.toolchain}</td>
                     <td class="text-right tabular-nums">{row.packages}</td>
                     <td class="text-right tabular-nums">{row.served}</td>
+                    <td data-column="relocated" class="text-right tabular-nums">
+                      {row.relocated}
+                    </td>
                     <td data-column="download_percent" class="text-right tabular-nums">
                       {format_percent(row.download_percent)}
                     </td>
