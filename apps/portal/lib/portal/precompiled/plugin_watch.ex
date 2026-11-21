@@ -59,6 +59,22 @@ defmodule Portal.Precompiled.PluginWatch do
   # hourly, so six missed runs.
   @max_age_hours 6
 
+  # The SQL of `stale_sql/0` and of the record row predicate, literal and
+  # fixed at compile time.
+  @stale_sql "NOT EXISTS (SELECT 1 FROM rebar3_plugin_watch_state st " <>
+               "WHERE st.key = 'refreshed' AND st.checked_at > " <>
+               "(now() AT TIME ZONE 'utc') - interval '#{@max_age_hours} hours')"
+
+  # Whether the record row aliased `bp` withholds its run: the mark, a
+  # watched package, or any plugin while the watch is stale (review S5 R4).
+  @withholds "(bp.package = '*' OR #{@stale_sql} OR EXISTS (SELECT 1 FROM " <>
+               "rebar3_plugin_watch pw WHERE pw.package = bp.package))"
+
+  @withheld_runs_sql "SELECT DISTINCT bp.run_id FROM rebar3_plugin_runs bp " <>
+                       "WHERE bp.run_id = ANY($1::text[]) AND " <> @withholds
+
+  @stale_query "SELECT " <> @stale_sql
+
   @name ~r/\A[a-z][a-z0-9_]{0,63}\z/
   @version ~r/\A[0-9A-Za-z][0-9A-Za-z.+-]{0,63}\z/
   @sha ~r/\A[0-9a-f]{64}\z/
@@ -211,7 +227,7 @@ defmodule Portal.Precompiled.PluginWatch do
     entry = "w.package || ':' || array_to_string(w.unreviewed, ',')"
 
     "SELECT bp.package_id, coalesce(string_agg(DISTINCT #{entry}, ';' ORDER BY #{entry}), '') " <>
-      "|| CASE WHEN #{stale_sql()} THEN '|stale' ELSE '' END AS watch " <>
+      "|| CASE WHEN #{@stale_sql} THEN '|stale' ELSE '' END AS watch " <>
       "FROM rebar3_plugin_runs bp LEFT JOIN rebar3_plugin_watch w ON w.package = bp.package " <>
       "GROUP BY bp.package_id"
   end
@@ -224,12 +240,7 @@ defmodule Portal.Precompiled.PluginWatch do
         MapSet.new()
 
       ids ->
-        %{rows: rows} =
-          Portal.Repo.query!(
-            "SELECT DISTINCT bp.run_id FROM rebar3_plugin_runs bp " <>
-              "WHERE bp.run_id = ANY($1::text[]) AND #{withholds("bp")}",
-            [ids]
-          )
+        %{rows: rows} = Portal.Repo.query!(@withheld_runs_sql, [ids])
 
         MapSet.new(rows, &hd/1)
     end
@@ -243,14 +254,7 @@ defmodule Portal.Precompiled.PluginWatch do
   @spec served_clause(String.t()) :: String.t()
   def served_clause(run_id) do
     "NOT EXISTS (SELECT 1 FROM rebar3_plugin_runs bp " <>
-      "WHERE bp.run_id = #{run_id} AND #{withholds("bp")})"
-  end
-
-  # Whether the record row aliased `bp` withholds its run: the mark, a
-  # watched package, or any plugin while the watch is stale (review S5 R4).
-  defp withholds(bp) do
-    "(#{bp}.package = '*' OR #{stale_sql()} OR EXISTS (SELECT 1 FROM rebar3_plugin_watch pw " <>
-      "WHERE pw.package = #{bp}.package))"
+      "WHERE bp.run_id = #{run_id} AND #{@withholds})"
   end
 
   @doc """
@@ -258,15 +262,12 @@ defmodule Portal.Precompiled.PluginWatch do
   `max_age_hours/0` hours, or none ever. Literal SQL only.
   """
   @spec stale_sql() :: String.t()
-  def stale_sql do
-    "NOT EXISTS (SELECT 1 FROM rebar3_plugin_watch_state st WHERE st.key = 'refreshed' " <>
-      "AND st.checked_at > (now() AT TIME ZONE 'utc') - interval '#{@max_age_hours} hours')"
-  end
+  def stale_sql, do: @stale_sql
 
   @doc "Whether the watch is stale (`stale_sql/0`): every build that ran a plugin is withheld."
   @spec stale?() :: boolean()
   def stale? do
-    %{rows: [[stale]]} = Portal.Repo.query!("SELECT #{stale_sql()}", [])
+    %{rows: [[stale]]} = Portal.Repo.query!(@stale_query, [])
     stale
   end
 end
