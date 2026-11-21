@@ -25,13 +25,14 @@ defmodule NccWorker.Portability.Declared do
   The residual risk is a module name two packages define: a user with the
   other one, undeclared, would find the module. Never raises.
 
-  `fetch/4` runs before the judge (`NccWorker.Portability.run/3`): it
-  downloads the latest release of every declared-absent dependency the run's
-  Hex cache lacks, with Hex itself (`mix hex.package fetch`, which keeps the
-  tarball in `HEX_HOME`), bounded in count and time. What it downloads is a
-  run's miss like any other: the host checks it against Hex.pm before it
-  promotes it (`NccWorker.HexCache`). A failed fetch leaves those modules
-  unknown, so their probes refuse. `NCC_DECLARED_FETCH=0` turns the
+  `fetch/4` runs before the judge (`NccWorker.Portability.run/3`), only
+  when a probe this index decides was traced: it downloads the latest
+  release of every declared-absent dependency the run's Hex cache lacks,
+  with Hex itself (`mix hex.package fetch`, which checks it against the
+  signed registry), bounded in count and in time by the BEAM. What it
+  downloads is a run's miss like any other: the host checks it against
+  Hex.pm before it promotes it (`NccWorker.HexCache`). A failed, partial or
+  killed fetch leaves those modules unknown, so their probes refuse. `NCC_DECLARED_FETCH=0` turns the
   download off (the ncc_worker test helper sets it: fixtures judge from the
   Hex cache they lay out themselves).
   """
@@ -106,42 +107,53 @@ defmodule NccWorker.Portability.Declared do
   Downloads into `home` (the run's `HEX_HOME`) the declared-absent
   dependencies of the locked `releases` (`%{app => %{name, version,
   checksum}}`, each read from its verified tarball) that `home` holds no
-  tarball of. Returns `{:ok, names}` (fetched or tried) or the fetch's
-  error. `fetch:` replaces the download (tests).
+  tarball of. Returns `{:ok, %{fetched: ["name-version"], failed: [name]}}`
+  or the fetch's error. `relevant: false` (no probe `index/1` decides was
+  traced, round 3, R2-5) fetches nothing. `fetch:` replaces the download
+  (tests).
+
+  The download (`hex_fetch/2`) runs `mix hex.package fetch` per package
+  with a `HEX_HOME` of its own, so nothing it writes reaches the run's cache
+  by itself, under a hard deadline the BEAM keeps (`run_bounded/5`, which
+  kills the OS process). Only a package the script reports fetched, with
+  the tarball it names, is copied into `home` (`collect/4`): Hex verified it
+  against the signed registry first. A checksum error, a crash or a kill
+  leaves the package unknown, so a probe of its modules refuses.
   """
   @spec fetch(String.t() | nil, map(), list(), keyword()) ::
-          {:ok, [String.t()]} | {:error, term()}
+          {:ok, %{fetched: [String.t()], failed: [String.t()]}} | {:error, term()}
   def fetch(home, releases, env, opts \\ [])
 
   def fetch(home, releases, env, opts) when is_binary(home) and is_map(releases) do
     locked = MapSet.new(Map.keys(releases))
 
     names =
-      for {app, _release} <- releases,
-          req <- requirements(Context.release_tarball(home, releases, app)),
-          req.optional,
-          not MapSet.member?(locked, req.app),
-          not cached?(home, req.name),
-          uniq: true,
-          do: req.name
+      if Keyword.get(opts, :relevant, true),
+        do:
+          for(
+            {app, _release} <- releases,
+            req <- requirements(Context.release_tarball(home, releases, app)),
+            req.optional,
+            not MapSet.member?(locked, req.app),
+            not cached?(home, req.name),
+            uniq: true,
+            do: req.name
+          ),
+        else: []
 
     case names |> Enum.sort() |> Enum.take(@max_fetch) do
       [] ->
-        {:ok, []}
+        {:ok, %{fetched: [], failed: []}}
 
       names ->
         fun = Keyword.get_lazy(opts, :fetch, &default_fetch/0)
-
-        case fun.(names, home: home, env: env) do
-          :ok -> {:ok, names}
-          {:error, _why} = error -> error
-        end
+        fun.(names, home: home, env: env)
     end
   rescue
     e -> {:error, Exception.message(e)}
   end
 
-  def fetch(_home, _releases, _env, _opts), do: {:ok, []}
+  def fetch(_home, _releases, _env, _opts), do: {:ok, %{fetched: [], failed: []}}
 
   defp default_fetch do
     if System.get_env("NCC_DECLARED_FETCH") == "0",
@@ -150,18 +162,27 @@ defmodule NccWorker.Portability.Declared do
   end
 
   @doc false
-  # The `mix run` script that fetches `names`, one Hex task per name, each
-  # failure caught. Names match `@name`, so no quoting can break out.
+  # The `mix run` script that fetches `names`, one Hex task per name into
+  # its own dir under `out`, and reports each: `NCC_FETCH ok <name> <file>`
+  # or `NCC_FETCH error <name> <kind>`. Names match `@name`, so no quoting
+  # can break out.
   @spec fetch_script([String.t()], String.t()) :: String.t()
   def fetch_script(names, out) do
     true = Enum.all?(names, &Regex.match?(@name, &1))
 
     """
     for n <- #{inspect(names)} do
+      dir = Path.join(#{inspect(out)}, n)
+
       try do
-        Mix.Task.rerun("hex.package", ["fetch", n, "--output", #{inspect(out)}])
+        Mix.Task.rerun("hex.package", ["fetch", n, "--output", dir])
+
+        case Path.wildcard(Path.join(dir, n <> "-*.tar")) do
+          [file] -> IO.puts("NCC_FETCH ok " <> n <> " " <> Path.basename(file))
+          _ -> IO.puts("NCC_FETCH error " <> n <> " no_file")
+        end
       catch
-        _, _ -> :error
+        kind, _ -> IO.puts("NCC_FETCH error " <> n <> " " <> to_string(kind))
       end
     end
     """
@@ -175,28 +196,130 @@ defmodule NccWorker.Portability.Declared do
     end
   end
 
-  # `mix hex.package fetch` keeps each tarball in HEX_HOME's cache as well
-  # as at `--output`, a scratch dir beside the run's HEX_HOME. Under
-  # timeout(1) where there is one.
-  # sobelow_skip ["CI.System", "Traversal.FileModule"]
+  # sobelow_skip ["Traversal.FileModule"]
   defp hex_fetch(names, opts) do
     home = Keyword.fetch!(opts, :home)
-    out = Path.join(Path.dirname(home), "declared-fetch")
+    scratch = Path.join(Path.dirname(home), "declared-fetch")
+    File.rm_rf!(scratch)
+    out = Path.join(scratch, "out")
     File.mkdir_p!(out)
-    script = fetch_script(names, out)
-    env = Keyword.get(opts, :env, []) ++ [{"HEX_HOME", home}]
-    mix = ["mix", "run", "--no-mix-exs", "-e", script]
+    env = Keyword.get(opts, :env, []) ++ [{"HEX_HOME", Path.join(scratch, "hex-home")}]
 
-    {command, args} =
-      case System.find_executable("timeout") do
-        nil -> {"mix", tl(mix)}
-        t -> {t, ["--kill-after=10", "#{@fetch_timeout_sec}" | mix]}
-      end
+    case System.find_executable("mix") do
+      nil ->
+        {:error, :no_mix}
 
-    {_output, code} = System.cmd(command, args, cd: out, env: env, stderr_to_stdout: true)
-    if code == 0, do: :ok, else: {:error, {:exit, code}}
+      mix ->
+        args = ["run", "--no-mix-exs", "-e", fetch_script(names, out)]
+
+        case run_bounded(mix, args, env, scratch, @fetch_timeout_sec * 1000) do
+          {:ok, output} -> {:ok, collect(output, names, out, home)}
+          {:error, :timeout, output} -> {:error, {:timeout, collect(output, names, out, home)}}
+          {:error, why} -> {:error, why}
+        end
+    end
   rescue
     e -> {:error, Exception.message(e)}
+  end
+
+  @doc false
+  # The names `output` reports fetched, each with a tarball named
+  # `<name>-<version>.tar` in its own dir under `out`, copied into `home`'s
+  # Hex cache; every other requested name failed.
+  # sobelow_skip ["Traversal.FileModule"]
+  @spec collect(String.t(), [String.t()], String.t(), String.t()) :: %{
+          fetched: [String.t()],
+          failed: [String.t()]
+        }
+  def collect(output, names, out, home) do
+    reported =
+      for line <- String.split(output, "\n"),
+          [_, n, file] <- [Regex.run(~r/\ANCC_FETCH ok ([a-z][a-z0-9_]*) (\S+)\z/, line)],
+          n in names,
+          [_, ^n, version] <- [Regex.run(@tarball, file)],
+          into: %{},
+          do: {n, {file, version}}
+
+    dest = Path.join([home, "packages", "hexpm"])
+    File.mkdir_p!(dest)
+
+    fetched =
+      for n <- Enum.sort(names),
+          {file, version} <- List.wrap(Map.get(reported, n)),
+          src = Path.join([out, n, file]),
+          File.regular?(src),
+          :ok == File.cp(src, Path.join(dest, file)),
+          do: "#{n}-#{version}"
+
+    got = MapSet.new(fetched, &(&1 |> String.split("-", parts: 2) |> hd()))
+    %{fetched: fetched, failed: names |> Enum.sort() |> Enum.reject(&MapSet.member?(got, &1))}
+  end
+
+  @doc false
+  # Runs `cmd` with `args` and `env` in `cd`, its output in one binary, for
+  # at most `timeout_ms`: past it the OS process is killed
+  # (`NccWorker.OsKill`) and `{:error, :timeout, output_so_far}` returned.
+  # The deadline is the BEAM's own, not timeout(1)'s.
+  @spec run_bounded(
+          String.t(),
+          [String.t()],
+          [{String.t(), String.t()}],
+          String.t(),
+          pos_integer()
+        ) ::
+          {:ok, String.t()} | {:error, :timeout, String.t()} | {:error, term()}
+  def run_bounded(cmd, args, env, cd, timeout_ms) do
+    port =
+      Port.open({:spawn_executable, String.to_charlist(cmd)}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        :hide,
+        args: args,
+        cd: String.to_charlist(cd),
+        env: Enum.map(env, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
+      ])
+
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    collect_port(port, deadline, [])
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp collect_port(port, deadline, acc) do
+    left = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {^port, {:data, data}} ->
+        collect_port(port, deadline, [acc | data])
+
+      {^port, {:exit_status, 0}} ->
+        {:ok, IO.iodata_to_binary(acc)}
+
+      {^port, {:exit_status, code}} ->
+        {:error, {:exit, code, IO.iodata_to_binary(acc)}}
+    after
+      left ->
+        kill_port(port)
+        {:error, :timeout, IO.iodata_to_binary(acc)}
+    end
+  end
+
+  defp kill_port(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, pid} -> NccWorker.OsKill.kill([Integer.to_string(pid)])
+      _ -> :ok
+    end
+
+    Port.close(port)
+  catch
+    _, _ -> :ok
+  after
+    receive do
+      {^port, _} -> :ok
+    after
+      0 -> :ok
+    end
   end
 
   @doc "The `hexpm` requirements a Hex tarball's `metadata.config` declares."

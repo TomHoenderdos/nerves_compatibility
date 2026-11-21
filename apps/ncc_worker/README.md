@@ -626,11 +626,15 @@ checker's undefined-module hint. `:code.load_file/1` is a module path probe; `:c
 `compile-time probe of a dependency outside the closure: <module> via <function>` unless a dependency of the prober's
 closure builds it: under Mix.install every installed dependency's `ebin` is on the code path (jose 1.11.12 compiles
 `JOSE.Poison` only `if Code.ensure_loaded?(Poison)`). It does not when a member of the prober's closure declares the
-module's package (or the probed application) as a dependency the build lacks: the client serves a build only to a
-project whose package closure is the build's, and Mix makes a present optional dependency a child of its declarer.
-The judge learns those packages' modules from their tarballs in the run's Hex cache, fetching the missing ones with
-`mix hex.package fetch` after the trace (at most 64, 120 s; `NCC_DECLARED_FETCH=0` turns the fetch off, and an
-unfetched package owns no known module, so its probe refuses; `trace_stats.declared_fetch`). The package's own probe
+module's package (or the probed application) as an optional dependency the lock lacks: the client serves a build only
+to a project whose package closure is the build's, and Mix makes a present optional dependency a child of its
+declarer. A non-optional one the build lacks (a `targets:` dependency, which Hex metadata does not record) still
+refuses. The judge learns those packages' modules from their tarballs in the run's Hex cache. When such a probe was
+traced, it fetches the missing ones with `mix hex.package fetch` after the trace, in a `HEX_HOME` of the fetch's own:
+at most 64 packages, 120 s kept by the BEAM, which kills the fetch past it. Only a package the fetch reports fetched
+goes into the run's cache; a checksum error, a crash or a kill leaves it unknown, and an unknown package owns no known
+module, so its probe refuses (`NCC_DECLARED_FETCH=0` turns the fetch off; `trace_stats.declared_fetch` names what was
+fetched and what failed). The package's own probe
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path
 application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier
 dependency used URI), refuses as `compile-time probe of whether a module is loaded: ` unless the same process

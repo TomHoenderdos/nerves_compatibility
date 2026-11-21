@@ -554,10 +554,15 @@ defmodule NccWorker.Portability do
         Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
       end)
 
+    # Read once here: the fetch below runs only when a probe `Declared`
+    # decides was traced (round 3, R2-5).
+    read = read_report(traced, trace_dir)
+
     # After the traced compile, so nothing it fetches is seen by it: the
     # modules of the dependencies the closure declares and lacks
     # (`Declared`, round-2 ruling 1).
-    {fetch_ms, fetched} = timed(fn -> Declared.fetch(home, releases, env) end)
+    {fetch_ms, fetched} =
+      timed(fn -> Declared.fetch(home, releases, env, relevant: declared_relevant?(read)) end)
 
     ctx_opts =
       [
@@ -580,7 +585,7 @@ defmodule NccWorker.Portability do
         ])
 
     project_dir
-    |> verdict(package, traced, trace_dir, native, ctx_opts)
+    |> verdict(package, traced, read, native, ctx_opts)
     |> unsplit(split_problem)
     |> unsplit(tree_problem)
     |> put_stat("judge_compile", judge_compile(traced))
@@ -591,8 +596,18 @@ defmodule NccWorker.Portability do
     |> put_stat("makefile_rule2", makefile_rule2?(opts))
   end
 
-  defp declared_fetch({:ok, names}, ms), do: %{"fetched" => length(names), "ms" => ms}
+  defp declared_fetch({:ok, %{fetched: fetched, failed: failed}}, ms),
+    do: %{"fetched" => fetched, "failed" => failed, "ms" => ms}
+
   defp declared_fetch({:error, why}, ms), do: %{"error" => inspect(why, limit: 5), "ms" => ms}
+
+  defp read_report({:ok, 0}, trace_dir), do: timed(fn -> Report.read(trace_dir) end)
+  defp read_report(_traced, _trace_dir), do: nil
+
+  defp declared_relevant?({_ms, report}),
+    do: Enum.any?(all_events(report), &Probes.declared_relevant?/1)
+
+  defp declared_relevant?(nil), do: false
 
   # Item 1 (behind `makefile_rule2: true`): the native list without the
   # dependencies whose native build file Mix never runs, which the judge
@@ -861,9 +876,7 @@ defmodule NccWorker.Portability do
       ])
   end
 
-  defp verdict(project_dir, package, {:ok, 0}, trace_dir, native, ctx_opts) do
-    {report_ms, report} = timed(fn -> Report.read(trace_dir) end)
-
+  defp verdict(project_dir, package, {:ok, 0}, {report_ms, report}, native, ctx_opts) do
     {judge_ms, verdict} =
       timed(fn ->
         judge(project_dir, package, report, native, ctx_opts ++ [built_check: true])

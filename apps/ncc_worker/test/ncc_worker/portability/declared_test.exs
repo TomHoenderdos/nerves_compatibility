@@ -152,17 +152,65 @@ defmodule NccWorker.Portability.DeclaredFetchTest do
 
     fetch = fn names, opts ->
       send(me, {:fetch, names, opts[:home]})
-      :ok
+      {:ok, %{fetched: ["jason-1.4.5"], failed: []}}
     end
 
     releases = %{"pkg" => pkg, "telemetry" => tel}
-    assert Declared.fetch(home, releases, [], fetch: fetch) == {:ok, ["jason"]}
+
+    assert Declared.fetch(home, releases, [], fetch: fetch) ==
+             {:ok, %{fetched: ["jason-1.4.5"], failed: []}}
+
     assert_received {:fetch, ["jason"], ^home}
+
+    # No probe the index decides was traced (round 3, R2-5): no fetch.
+    assert Declared.fetch(home, releases, [], fetch: fetch, relevant: false) ==
+             {:ok, %{fetched: [], failed: []}}
+
+    refute_received {:fetch, _, _}
 
     # Nothing missing: no fetch.
     TracerFixtures.hex_release(home, "jason", ["lib"])
-    assert Declared.fetch(home, releases, [], fetch: fetch) == {:ok, []}
+    assert Declared.fetch(home, releases, [], fetch: fetch) == {:ok, %{fetched: [], failed: []}}
     refute_received {:fetch, _, _}
+  end
+
+  # Round 3, R2-5: only a package the script reported fetched, with the
+  # tarball it named, goes into the run's Hex cache. A checksum error, a
+  # crash or a kill mid-way leaves that package unknown, which refuses.
+  test "only the packages the fetch reported go into the cache", %{tmp_dir: dir} do
+    home = Path.join(dir, "hex")
+    out = Path.join(dir, "out")
+    File.mkdir_p!(Path.join(home, "packages/hexpm"))
+
+    for {n, v} <- [{"jason", "1.4.5"}, {"decimal", "2.0.0"}, {"poison", "6.0.0"}] do
+      File.mkdir_p!(Path.join(out, n))
+      File.write!(Path.join([out, n, "#{n}-#{v}.tar"]), "tar")
+    end
+
+    output = """
+    Downloading...
+    NCC_FETCH ok jason jason-1.4.5.tar
+    NCC_FETCH error decimal Mix.Error
+    NCC_FETCH ok poison ../jason/jason-1.4.5.tar
+    NCC_FETCH ok other other-1.0.0.tar
+    """
+
+    assert Declared.collect(output, ["jason", "decimal", "poison"], out, home) ==
+             %{fetched: ["jason-1.4.5"], failed: ["decimal", "poison"]}
+
+    assert File.ls!(Path.join(home, "packages/hexpm")) == ["jason-1.4.5.tar"]
+  end
+
+  test "the bounded run kills a command past its deadline", %{tmp_dir: dir} do
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, :timeout, _output} =
+             Declared.run_bounded(System.find_executable("sleep"), ["30"], [], dir, 300)
+
+    assert System.monotonic_time(:millisecond) - started < 5_000
+
+    assert {:ok, "hi\n"} =
+             Declared.run_bounded(System.find_executable("echo"), ["hi"], [], dir, 5_000)
   end
 
   test "a failed fetch is no error: those modules stay unknown", %{tmp_dir: dir} do
