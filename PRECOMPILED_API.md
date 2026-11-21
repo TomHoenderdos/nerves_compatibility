@@ -844,17 +844,19 @@ What it lists:
   such occurrence, which the client rewrites to its project's own paths at install. Read only by
   clients 0.9.0 and later, after the version's other lists (and its `foreign_priv` object)
   missed; no client up to 0.8.x reads this key, so to them a package whose only builds are here
-  shows `MISS not built`, and they never install a byte copy that holds another machine's path.
-  It is an object of the same lists as the version itself, `builds` (always present),
-  `builds_with_inputs` and `builds_closure`, split, picked (newest per key) and matched by the
-  same rules, and it is never in format 1, in a version's other lists, in `deterministic` (a
-  relocated build has no sibling) or in `foreign_priv`. An entry is its toolchain build's usual
-  entry, its `ebin` files the served bytes and their `sha256`, plus `relocation`:
+  shows `MISS not built`. It is an object of the same lists as the version itself, `builds`
+  (always present), `builds_with_inputs` and `builds_closure`, split, picked (newest per key) and
+  matched by the same rules, and it is never in format 1, in a version's other lists, in
+  `deterministic` (a relocated build has no sibling) or in `foreign_priv`. An entry is its
+  toolchain build's usual entry, its `ebin` files the served bytes and their `sha256`, plus
+  `relocation`:
 
   ```json
   "relocation": {
     "deps": "/work/proj/deps",
     "build": "/work/proj/_build/host",
+    "second": {"deps": "/tmp/ncc-relocate-<n>/Second Root.d/.../Deps vendored_d",
+               "build": "/tmp/ncc-relocate-<n>/Second Root.d/.../Out.Build-3/Host 4"},
     "files": [
       {"path": "ebin/Elixir.Fine.beam",
        "occurrences": [{"chunk": "LitT", "index": 3, "term": [], "kind": "binary",
@@ -863,39 +865,69 @@ What it lists:
   }
   ```
 
-  `deps` and `build` are the compile's `Mix.Project.deps_path/0` and `build_path/0`. Each file is
-  a beam of the entry's `ebin`, and each occurrence names its chunk (`LitT`, `AtU8`, `Attr`,
-  `Line`), the literal's index from 0, the atom's from 1 or the line table's file name's from 0,
-  the path to the value inside the term (element indices of tuples and lists, a proper list's
-  tail at its length, a map value's index among the map's keys in term order), its kind
-  (`binary`, `charlist`, `atom`) and the value as a template, text and slot names (`deps`,
-  `build`) in turn. The builder (`NccWorker.Portability.Relocate`) built the package a second time
-  at another root, with other names and lengths for both paths, and kept the build only when its
-  beams relocated to the second build's paths are the second build's chunk for chunk but `CInf`,
-  `Dbgi` and `Docs` (`Compatibility.Relocation.prove/4`); a path in a built binary, a hashed or
-  measured one, one in a map key, a protocol that holds one and anything else the rewrite would
-  not reproduce refuse. The portal checks the record's shape against the build's own `ebin` at
-  ingest and stores none it refuses. Listed only while the portal's `relocated_enabled` setting is
-  on, and only when every file the entry lists is held; absent otherwise, so a version without
-  relocated builds renders the bytes it always did. The files of a relocated build are served
-  only while the setting is on, and its own package's name on the withheld list withholds it
-  whatever it records.
+  `deps` and `build` are the first compile's `Mix.Project.deps_path/0` and `build_path/0`, the
+  worker's `/work/proj/deps` and `/work/proj/_build/host`; `second` the second compile's, under
+  `/tmp/ncc-relocate-<n>` (`Compatibility.Relocation.second_layout/1`). The portal stores no
+  record whose roots are not these (`pinned_problem/1`). Each file is a beam of the entry's
+  `ebin`, and each occurrence names its chunk (`LitT`, `AtU8`, `Attr`, `Line`), the literal's
+  index from 0, the atom's from 1 or the line table's file name's from 0, the path to the value
+  inside the term (element indices of tuples and lists, a proper list's tail at its length, a map
+  value's index among the map's keys in term order), its kind (`binary`, `charlist`, `atom`) and
+  the value as a template, text and slot names (`deps`, `build`) in turn, the text UTF-8 and each
+  value at most 4 KiB. A record over 256 KiB of JSON is refused.
 
-  A client takes one only on a unix host whose file names are UTF-8, on OTP 28 or later, when its
-  project's deps path and build path are absolute, normalised and real all the way down (no
-  symlink in either), and, for a `charlist` occurrence, both are ASCII (`relocated_paths`,
-  `relocated_otp`). After staging and verifying the served files it rewrites each recorded
-  occurrence from the record's paths to its own, as its own compile would have written it: a
-  changed literal is `term_to_binary(term, [{:minor_version, 2}, :deterministic])` in its own VM,
-  an atom or line-table file name is rewritten in place, the module's md5 is taken again over the
-  essential chunks (`AtU8`, `Code`, `StrT`, `ImpT`, `ExpT`, `FunT` with every `old_uniq` zeroed,
-  `LitT`, `Meta`), every fun's `old_uniq` is its first 27 bits and a default `vsn` (the old md5)
-  becomes the new one. It refuses (`relocation_refused`) a recorded value the served beam does not
-  hold, two literals, atoms or file names that would become one, an atom over 255 characters and
-  any of the record's paths left in a rewritten chunk. The relocated files' hashes go into the
-  install's provenance with the paths they were relocated to, so a later run keeps the install
-  while those paths are the project's and installs it again, relocated anew, once they are not (a
-  moved project).
+  The builder (`NccWorker.Portability.Relocate`) builds the package a second time at a root unlike
+  the first in every property a path the client accepts can have: long and deep where the first
+  is short and shallow, with a space, upper case, a dot, a dash and digits where the first has
+  none, an underscore in the deps path where the first has none and none in the build path where
+  the first has one, another project dir name, and the deps path sorted before the build path
+  where the first sorts it after. It keeps the build only when each held app's beams, and the
+  package's own whether it was held or not, relocated to the second build's paths are the second
+  build's chunk for chunk but `CInf`, `Dbgi` and `Docs` (`Compatibility.Relocation.prove/4`); a
+  path in a built binary, a hashed, measured or sliced one, one in a map key, a protocol that
+  holds one, a value a dependent took from a held app (its md5 too) and anything else the rewrite
+  would not reproduce refuse. A dependent's call into a held module, its read of that module's
+  beam, md5, attributes or compile info, taints it. The residual is a value the compile derived
+  from the path that is equal at both roots and at the client's path: the client relocates only to
+  paths inside the envelope the two roots span (below), so a test of a path's length, depth or
+  characters that both roots pass, the path inside the envelope passes too, but a predicate both
+  roots share by chance and the client's path does not (one letter in both roots that the
+  client's path lacks) is not seen. Today R2 refuses every build whose beams hold the path, so
+  this residual is new exposure, for relocated builds only. `Dbgi` keeps the first build's
+  paths: a tool that compiles a module again from its debug info (`:cover` on a dependency, the
+  debugger) sees them, as in every served build.
+
+  The portal stores a relocated build's files in its own `relocated_file_manifest` column, with
+  `file_manifest` nil, and the worker writes `toolchain_build.relocated_file_manifest` with
+  `file_manifest` nil: a portal before S4 reads `file_manifest` alone, so it lists, serves and
+  keeps as an earlier build nothing of a relocated build. Listed only while the portal's
+  `relocated_enabled` setting is on, and only when every file the entry lists is held; absent
+  otherwise, so a version without relocated builds renders the bytes it always did. The files of
+  a relocated build are served only while the setting is on, and its own package's name on the
+  withheld list withholds it whatever it records.
+
+  A client takes one only on OTP 28 or later (`relocated_otp`), on a unix host whose file names
+  are UTF-8, when its project's deps path and build path are absolute, normalised and real all
+  the way down, no symlink in either (`relocated_paths`), printable ASCII
+  (`relocated_path_ascii`), every component spelled exactly as its parent dir lists it, with no
+  case folding or Unicode normalisation (`relocated_path_spelling`), and each inside the envelope
+  of the record's two roots for its slot: its characters among theirs, its length and depth
+  between theirs (`relocated_path_envelope`). After staging and verifying the served files it
+  derives every beam's occurrences of the record's paths itself and requires them to be exactly
+  the record's (none for a beam it does not name), requires every other file of the entry to hold
+  no such path, and rewrites each occurrence to its own paths as its own compile would have
+  written it: a changed literal is `term_to_binary(term, [{:minor_version, 2}, :deterministic])`
+  in its own VM, an atom or line-table file name is rewritten in place, the module's md5 is
+  `beam_lib:md5/1` of the rewritten beam (the running OTP's chunk list; OTP 29 adds `Recs` and
+  `DbgB`), every fun's `old_uniq` is its first 27 bits and a default `vsn` (the old md5) becomes
+  the new one. It refuses (`relocation_refused`) a record that does not match the served beams,
+  a served beam whose funs' `old_uniq` is not its md5's, two literals, atoms or file names that
+  would become one, an atom over 255 code points or, in a short atom table, over 255 bytes, a
+  rewrite of atom 1 (the module's name), and any of the record's paths left in any chunk but
+  `CInf`, `Dbgi` and `Docs`. A relocation record in any other list, or on a device, is a malformed
+  entry. The relocated files' hashes go into the install's provenance with the paths they were
+  relocated to, so a later run keeps the install while those paths are the project's and installs
+  it again, relocated anew, once they are not (a moved project).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
   build with and one without the package's optional dependencies differ in
@@ -1093,7 +1125,11 @@ sources"), `foreign_priv_conflict` ("writes {0}'s priv/assets/{1}, which {2} als
 know") and `foreign_priv_device` ("writes into {0}'s priv at compile time; not installed on a
 device"), and the relocation codes of client 0.9.0: `relocated_paths` ("relocated build: this
 project's paths are not its own real paths"), `relocated_otp` ("relocated build: needs OTP 28 or
-later") and `relocation_refused` ("relocated build: the rewrite refused"). Another code is stored as `unknown`.
+later"), `relocation_refused` ("relocated build: the rewrite refused"), `relocated_path_spelling`
+("relocated build: this project's {0} path is not spelled as on disk"), `relocated_path_ascii`
+("relocated build: this project's {0} path is not printable ASCII") and `relocated_path_envelope`
+("relocated build: this project's {0} path is outside the paths it was proven at"). Another code
+is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300
