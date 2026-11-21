@@ -47,7 +47,7 @@ defmodule NccWorker.Portability.Differential do
       variant.
 
   Then the verdict is the pass it held, with `observations["differential"]`
-  (the reads, the variants, the scripts checked) and
+  (the reads, the variants, the reviewed script releases) and
   `trace_stats["differential"]` `"same"`. A different app, a variant that
   refused or read more, or a script whose config differs refuses: the
   reason is the first read's own refusal, then what differed, so it stays
