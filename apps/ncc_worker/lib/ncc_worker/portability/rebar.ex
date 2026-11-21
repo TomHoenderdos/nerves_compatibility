@@ -109,10 +109,15 @@ defmodule NccWorker.Portability.Rebar do
   `rebar_utils:vcs_vsn/3` runs a command). rebar3 evaluates them in its own
   VM, where the code has only OTP and rebar3 frames, so the trace drops what
   it does, and the result goes into the `.app` it writes, a published file.
-  They are read from the verified tarball, anywhere in it (fail closed:
-  rebar3's `src_dirs` can name other dirs), and an `.app.src` the bounded
-  parser cannot read (a `fun` in its `env`) refuses too, since its `vsn`
-  cannot be known. `check/2` reads the same files under `dest`.
+  They are read from the verified tarball, in each dir rebar3 looks in
+  (`rebar_app_discover`: `<src dir>/*.app.src` and `*.app.src.script`, not
+  below): `src`, and every dir a `src_dirs` entry names anywhere in the
+  app's config, its parents' overrides and the `mix.rebar.config` rebar3
+  read (top level, `erl_opts`, any profile or override; fail closed). A
+  `src_dirs` value the rule cannot read makes every dir count. So a
+  template under `priv` (rebar3_erllambda's) is not read. An `.app.src` the
+  bounded parser cannot read (a `fun` in its `env`) refuses too, since its
+  `vsn` cannot be known. `check/2` reads the same files under `dest`.
 
   Config files are anyone's text, so they are read with
   `NccWorker.Portability.HexFiles.parse/1` (bounded, creates no atoms)
@@ -166,8 +171,8 @@ defmodule NccWorker.Portability.Rebar do
   @type sources :: %{
           required(:config) => binary() | nil | :unreadable,
           required(:script?) => boolean(),
-          optional(:app_src_script?) => boolean(),
-          optional(:app_srcs) => [binary() | :unreadable],
+          optional(:app_src_scripts) => [String.t()],
+          optional(:app_srcs) => [{String.t(), binary() | :unreadable}],
           optional(:mix_config) => String.t() | {:unjudged, String.t()},
           optional(:reviewed) => [{String.t(), String.t()}]
         }
@@ -211,14 +216,15 @@ defmodule NccWorker.Portability.Rebar do
     sources = %{
       config: config,
       script?: File.exists?(Path.join(dest, "rebar.config.script")),
-      app_src_script?: scripts != [],
-      app_srcs: Enum.map(srcs, &app_src_text/1)
+      app_src_scripts: Enum.map(scripts, &Path.relative_to(&1, dest)),
+      app_srcs: Enum.map(srcs, &{Path.relative_to(&1, dest), app_src_text(&1)})
     }
 
     check_sources(sources, [], mix_config)
   end
 
-  # The `.app.src` and `.app.src.script` files under `dest`, at any depth.
+  # The `.app.src` and `.app.src.script` files under `dest`, at any depth;
+  # `app_src/2` keeps those in a src dir.
   # sobelow_skip ["Traversal.FileModule"]
   defp app_src_paths(dest) do
     Path.wildcard(Path.join(dest, "**/*.app.src")) ++
@@ -245,9 +251,9 @@ defmodule NccWorker.Portability.Rebar do
   def check_sources(%{config: own} = sources, parents, mix_config) do
     reviewed = Map.get(sources, :reviewed, [])
 
-    with :ok <- app_src(sources),
-         {:ok, own_terms} <- parse_own(own),
+    with {:ok, own_terms} <- parse_own(own),
          {:ok, inherited} <- parent_overrides(parents),
+         :ok <- app_src(sources, src_dirs(own_terms ++ inherited ++ mix_terms(mix_config))),
          {:ok, own_inputs} <- inputs(config({:ok, own_terms ++ inherited}, reviewed)),
          {:ok, mix_inputs} <- inputs(mix_config(mix_config, reviewed)) do
       case Enum.uniq(own_inputs ++ mix_inputs) do
@@ -292,16 +298,83 @@ defmodule NccWorker.Portability.Rebar do
         do: name
   end
 
-  # Review S5 S2: what rebar3 evaluates itself (moduledoc).
-  defp app_src(%{app_src_script?: true}),
-    do: {:refuse, "rebar3 build evaluates an .app.src.script"}
+  # Review S5 S2: what rebar3 evaluates itself (moduledoc), in the dirs it
+  # looks in (`dirs`, or `:any`).
+  defp app_src(sources, dirs) do
+    read? = fn path -> dirs == :any or Path.dirname(path) in dirs end
 
-  defp app_src(sources) do
-    sources
-    |> Map.get(:app_srcs, [])
-    |> Enum.map(&app_src_vsn/1)
-    |> Enum.find(:ok, &(&1 != :ok))
+    if Enum.any?(Map.get(sources, :app_src_scripts, []), read?) do
+      {:refuse, "rebar3 build evaluates an .app.src.script"}
+    else
+      sources
+      |> Map.get(:app_srcs, [])
+      |> Enum.filter(fn {path, _text} -> read?.(path) end)
+      |> Enum.map(fn {_path, text} -> app_src_vsn(text) end)
+      |> Enum.find(:ok, &(&1 != :ok))
+    end
   end
+
+  # The dirs rebar3 finds an `.app.src` in: `src` and every dir a
+  # `src_dirs` entry names anywhere in `terms`, or `:any` when one cannot be
+  # read (fail closed).
+  defp src_dirs(terms) do
+    terms
+    |> src_dirs_values()
+    |> Enum.reduce_while(MapSet.new(["src"]), fn value, acc ->
+      case src_dir_list(value) do
+        {:ok, dirs} -> {:cont, MapSet.union(acc, MapSet.new(dirs))}
+        :error -> {:halt, :any}
+      end
+    end)
+  end
+
+  defp src_dirs_values({{:atom, "src_dirs"}, value}), do: [value]
+  defp src_dirs_values(term) when is_tuple(term), do: term |> Tuple.to_list() |> src_dirs_values()
+
+  defp src_dirs_values(term) when is_list(term) do
+    if List.ascii_printable?(term), do: [], else: Enum.flat_map(term, &src_dirs_values/1)
+  end
+
+  defp src_dirs_values(_term), do: []
+
+  defp src_dir_list(value) when is_list(value) do
+    dirs = Enum.map(value, &src_dir/1)
+    if :error in dirs, do: :error, else: {:ok, dirs}
+  end
+
+  defp src_dir_list(_value), do: :error
+
+  defp src_dir({dir, opts}) when is_list(opts), do: src_dir(dir)
+  defp src_dir(dir) when is_binary(dir), do: normal_dir(dir)
+
+  defp src_dir(dir) when is_list(dir) and dir != [] do
+    if List.ascii_printable?(dir), do: normal_dir(List.to_string(dir)), else: :error
+  end
+
+  defp src_dir(_dir), do: :error
+
+  defp normal_dir(dir) do
+    parts = dir |> Path.split() |> Enum.reject(&(&1 == "."))
+
+    cond do
+      parts == [] -> "."
+      Path.type(dir) != :relative or ".." in parts -> :error
+      true -> Path.join(parts)
+    end
+  end
+
+  # The terms of the `mix.rebar.config` rebar3 read, for its `src_dirs`;
+  # none when it cannot be read (the config rules decide that case).
+  defp mix_terms(path) when is_binary(path) do
+    with {:ok, text} <- read_file(path),
+         {:ok, terms} <- HexFiles.parse(text) do
+      terms
+    else
+      _ -> []
+    end
+  end
+
+  defp mix_terms(_path), do: []
 
   defp app_src_vsn(text) when is_binary(text) do
     case HexFiles.parse(text) do
@@ -489,8 +562,8 @@ defmodule NccWorker.Portability.Rebar do
      %{
        config: Map.get(files, "rebar.config"),
        script?: Map.has_key?(files, "rebar.config.script"),
-       app_src_script?: scripts != [],
-       app_srcs: for(src <- Enum.sort(srcs), do: bounded(files[src]))
+       app_src_scripts: Enum.sort(scripts),
+       app_srcs: for(src <- Enum.sort(srcs), do: {src, bounded(files[src])})
      }}
   end
 

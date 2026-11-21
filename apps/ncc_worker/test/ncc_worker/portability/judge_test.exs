@@ -2705,8 +2705,29 @@ defmodule NccWorker.Portability.JudgeTest do
       {"script",
        %{"src/x.app.src.script" => ~s|CONFIG ++ [{env, [{arch, os:cmd("uname -m")}]}].\n|},
        "rebar3 build evaluates an .app.src.script"},
-      {"nested_script", %{"src/sub/x.app.src.script" => "CONFIG.\n"},
-       "rebar3 build evaluates an .app.src.script"},
+      # A src dir the config names (`src_dirs`, top level, in `erl_opts`,
+      # a profile or an override, as a string or with options).
+      {"src_dirs_script",
+       %{
+         "rebar.config" => ~s|{src_dirs, ["src", {"lib", [{recursive, true}]}]}.\n|,
+         "lib/x.app.src.script" => "CONFIG.\n"
+       }, "rebar3 build evaluates an .app.src.script"},
+      {"erl_opts_src_dir",
+       %{
+         "rebar.config" => ~s|{erl_opts, [{src_dirs, ["src/sub"]}]}.\n|,
+         "src/sub/x.app.src" => "{application, x, [{vsn, git}]}.\n"
+       }, "rebar3 build computes its .app.src vsn"},
+      {"override_src_dir",
+       %{
+         "rebar.config" => ~s|{overrides, [{override, x, [{src_dirs, [<<"gen">>]}]}]}.\n|,
+         "gen/x.app.src.script" => "CONFIG.\n"
+       }, "rebar3 build evaluates an .app.src.script"},
+      # A `src_dirs` the rule cannot read: every dir counts (fail closed).
+      {"odd_src_dirs",
+       %{
+         "rebar.config" => "{src_dirs, [src, 1]}.\n",
+         "priv/templates/x.app.src" => "{application, {{name}}, [{vsn, \"git\"}]}.\n"
+       }, "rebar3 build .app.src unreadable"},
       {"vsn_git", %{"src/x.app.src" => "{application, x, [{vsn, git}]}.\n"},
        "rebar3 build computes its .app.src vsn"},
       {"vsn_cmd", %{"src/x.app.src" => ~s|{application, x, [{vsn, {cmd, "uname -m"}}]}.\n|},
@@ -2758,6 +2779,25 @@ defmodule NccWorker.Portability.JudgeTest do
       for {name, vsn} <- [{"git_suffix", "1.0.0-git"}, {"git_case", "Git"}, {"pkg_in", "pkg1"}] do
         files = %{"src/x.app.src" => ~s|{application, x, [{vsn, "#{vsn}"}]}.\n|}
         assert :ok = Rebar.check(write_tree(dir, name, files)), name
+      end
+
+      # rebar3 reads `<src dir>/*.app.src` only (`rebar_app_discover`): a
+      # template under priv (rebar3_erllambda 1.1.4, atomvm_rebar3_plugin
+      # 0.7.5, rebar3_rustler 0.1.1) or a file below a src dir is never
+      # evaluated (review S5, concern 1).
+      template = "{application, {{name}}, [{vsn, \"git\"}, {registered, []}]}.\n"
+
+      for {name, files} <- [
+            {"priv_template", Map.put(plain, "priv/templates/erllambda.app.src", template)},
+            {"priv_src", Map.put(plain, "priv/src/atomvm_app.app.src", template)},
+            {"below_src", Map.put(plain, "src/sub/x.app.src.script", "CONFIG.\n")}
+          ] do
+        assert :ok = Rebar.check(write_tree(dir, name, files)), name
+        home = Path.join(dir, "hex-" <> name)
+        {_app, release} = NccWorker.TracerFixtures.hex_release(home, "x", ["src"], files)
+        tar = File.read!(Path.join([home, "packages/hexpm", "x-#{release.version}.tar"]))
+        assert {:ok, sources} = Rebar.tarball_sources(tar), name
+        assert :ok = Rebar.check_sources(sources, [], nil), name
       end
 
       for {name, files, reason} <- @app_src_cases ++ @vsn_directive_cases do

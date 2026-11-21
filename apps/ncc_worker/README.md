@@ -736,7 +736,8 @@ of these skips the build:
   any other plugin, or one from git, still refuses. A hook `bare compile` can reach refuses even for a natively built app (crc32cer's `make nif`: rebar3 runs it
   untraced and nothing checks what it wrote), and `escriptize` counts as such a command: rebar3's
   `rebar_prv_escriptize` runs its own hooks, and a provider hook on `compile` (cuttlefish's) runs it (review S5 R1).
-  What rebar3 evaluates itself refuses too (review S5 S2): an `.app.src.script` anywhere in the verified tarball
+  What rebar3 evaluates itself refuses too (review S5 S2), in each src dir rebar3 reads (`src` and every dir a
+  `src_dirs` entry in the config names; a template under `priv` is never read): an `.app.src.script`
   (`rebar3 build evaluates an .app.src.script`; jesse 1.8.2, plain_fsm 1.4.9), an `.app.src` whose `vsn` is not a
   plain string (`git`, `semver`, `{cmd, ...}`, and the strings `"git"`, `"semver"`, `"hg"`, `"pkg"` and `"git_subdir"`,
   which rebar3 takes as the same directives: `rebar3 build computes its .app.src vsn`; poolboy 1.3.0 to 1.4.1, yamerl 0.3.3)
