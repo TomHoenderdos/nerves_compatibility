@@ -240,16 +240,7 @@ defmodule Portal.Precompiled.Holds do
     {:ok, result} =
       Repo.transaction(
         fn ->
-          touched =
-            Enum.flat_map(@tables, fn table ->
-              %{rows: others} = Repo.query!(sql(@drop_other_sql, table), [reason, at])
-              %{rows: newest} = Repo.query!(sql(@release_sql, table), [reason, at])
-
-              Enum.map(others, fn [id] -> {table, id} end) ++
-                for([id, _served] <- newest, do: {table, id})
-            end)
-            |> Enum.uniq()
-
+          touched = @tables |> Enum.flat_map(&release(&1, reason, at)) |> Enum.uniq()
           :ok = reapply(touched)
           _ = FirmwareRefusal.withdraw_superseded()
           counts(touched)
@@ -262,6 +253,13 @@ defmodule Portal.Precompiled.Holds do
     )
 
     {:ok, result}
+  end
+
+  # The rows of `table` the hold was taken from, `{table, id}` each.
+  defp release(table, reason, at) do
+    %{rows: others} = Repo.query!(sql(@drop_other_sql, table), [reason, at])
+    %{rows: newest} = Repo.query!(sql(@release_sql, table), [reason, at])
+    Enum.map(others, fn [id] -> {table, id} end) ++ for([id, _served] <- newest, do: {table, id})
   end
 
   defp sql(template, table) when table in @tables, do: String.replace(template, "$TABLE", table)
