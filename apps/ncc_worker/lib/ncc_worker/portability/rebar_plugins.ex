@@ -26,9 +26,12 @@ defmodule NccWorker.Portability.RebarPlugins do
     * its dir holds exactly the tarball's files, byte for byte, plus
       `hex_metadata.config` (the tarball's `metadata.config`), the `.erl`
       rebar3's leex or yecc compiler wrote next to a `.xrl` or `.yrl` the
-      release ships in `src`, and an `ebin` of `<name>.app` and one beam
-      per module of its own sources (or the tarball's own `ebin` files): no
-      file planted, changed or left out.
+      release ships in `src`, and an `ebin` of `<name>.app` (its own
+      application, with the `env` its `.app.src` gives, so the `providers`
+      whose `init/1` rebar3 runs, and modules its sources define) and beams
+      that each hold the module their file is named for, one its sources
+      define (or the tarball's own `ebin` files): no file planted, changed
+      or left out.
 
   Every entry of every `_build/<profile>/plugins` dir is judged (a link must
   name a plugin dir of the same name under `_build`), and every reviewed
@@ -39,6 +42,7 @@ defmodule NccWorker.Portability.RebarPlugins do
   is reviewed and added to `pins/0`; see the S5 design note for how.
   """
 
+  alias Compatibility.KinoAssets
   alias NccWorker.Portability.{HexFiles, Rebar}
 
   @max_tarball_bytes 32 * 1024 * 1024
@@ -65,6 +69,32 @@ defmodule NccWorker.Portability.RebarPlugins do
       installed
       |> Enum.sort()
       |> Enum.find_value(:ok, fn {name, dir} -> failed(release(name, dir, cache, pins)) end)
+    end
+  end
+
+  @doc """
+  What a build records of the plugins installed for the rebar3 app in
+  `dest`: each installed release's name, version and the sha256 of its
+  tarball in `cache` (nil when it cannot be read), sorted by name, pinned or
+  not; `[]` when nothing can be read. Only a record: `check/4` judges.
+  """
+  @spec releases(String.t(), String.t() | nil) :: [map()]
+  def releases(dest, cache) do
+    case installed(dest) do
+      {:ok, installed} ->
+        for {name, dir} <- Enum.sort(installed),
+            {:ok, version} <- [metadata_version(name, dir)] do
+          sha =
+            case cached(cache, name, version) do
+              {:ok, bytes} -> :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+              _ -> nil
+            end
+
+          %{"name" => name, "version" => version, "sha256" => sha}
+        end
+
+      _ ->
+        []
     end
   end
 
@@ -259,26 +289,94 @@ defmodule NccWorker.Portability.RebarPlugins do
 
   defp generated?(_file, _files), do: false
 
-  # `ebin`: the app file and one beam per module of its own sources, or a
+  # `ebin` (review S5 N3): `<name>.app`, the release's own application with
+  # the env its `.app.src` gives (whose `providers` decide which modules'
+  # `init/1` rebar3 runs) and modules its sources define; and beams, each
+  # holding the module its file is named for, one its sources define. Or a
   # file the tarball itself ships there, byte for byte.
   defp ebin_ok?(ebin, files, name, generated) do
-    sources = Map.keys(files) ++ Enum.map(generated, &elem(&1, 0))
+    sources = Map.merge(files, Map.new(generated))
+    modules = defined_modules(sources)
+    shipped? = fn path, bytes -> Map.get(files, path) == bytes end
 
-    modules =
-      for path <- sources,
-          String.starts_with?(path, "src/"),
-          Path.extname(path) in [".erl", ".xrl", ".yrl"],
-          into: MapSet.new(),
-          do: Path.basename(path, Path.extname(path))
+    app_ok?(Map.new(ebin)["ebin/" <> name <> ".app"], files, name, modules) and
+      Enum.all?(ebin, fn {"ebin/" <> file = path, bytes} ->
+        cond do
+          shipped?.(path, bytes) -> true
+          String.contains?(file, "/") -> false
+          file == name <> ".app" -> true
+          Path.extname(file) == ".beam" -> beam_ok?(bytes, Path.basename(file, ".beam"), modules)
+          true -> false
+        end
+      end)
+  end
 
-    Enum.all?(ebin, fn {"ebin/" <> file = path, bytes} ->
-      cond do
-        Map.get(files, path) == bytes -> true
-        String.contains?(file, "/") -> false
-        file == name <> ".app" -> true
-        Path.extname(file) == ".beam" -> MapSet.member?(modules, Path.basename(file, ".beam"))
-        true -> false
+  # The modules a release's sources define: an `.erl`'s `-module`, a leex or
+  # yecc file's own name (what it generates).
+  defp defined_modules(sources) do
+    for {"src/" <> _ = path, text} <- sources,
+        module = source_module(Path.extname(path), path, text),
+        is_binary(module),
+        into: MapSet.new(),
+        do: module
+  end
+
+  defp source_module(".erl", _path, text) do
+    case Regex.run(~r/^\s*-module\(\s*'?([A-Za-z0-9_@.]+)'?\s*\)/m, text) do
+      [_, module] -> module
+      nil -> nil
+    end
+  end
+
+  defp source_module(ext, path, _text) when ext in [".xrl", ".yrl"],
+    do: Path.basename(path, ext)
+
+  defp source_module(_ext, _path, _text), do: nil
+
+  defp beam_ok?(bytes, module, modules) do
+    match?({:ok, ^module, _exports?}, KinoAssets.exports_assets_info(bytes)) and
+      MapSet.member?(modules, module)
+  end
+
+  defp app_ok?(app, files, name, modules) when is_binary(app) do
+    app_src =
+      Enum.find_value(files, fn {path, text} ->
+        if Path.basename(path) == name <> ".app.src" and String.starts_with?(path, "src/"),
+          do: text
+      end)
+
+    with {:ok, props} <- application(app, name),
+         {:ok, src_props} <- application(app_src, name),
+         true <- prop(props, "env") == prop(src_props, "env") do
+      case prop(props, "modules") do
+        list when is_list(list) ->
+          Enum.all?(list, &match?({:atom, m} when is_binary(m), &1)) and
+            Enum.all?(list, fn {:atom, m} -> MapSet.member?(modules, m) end)
+
+        _ ->
+          false
       end
+    else
+      _ -> false
+    end
+  end
+
+  defp app_ok?(_app, _files, _name, _modules), do: false
+
+  defp application(text, name) when is_binary(text) do
+    case HexFiles.parse(text) do
+      {:ok, [{{:atom, "application"}, {:atom, ^name}, props}]} when is_list(props) -> {:ok, props}
+      _ -> :error
+    end
+  end
+
+  defp application(_text, _name), do: :error
+
+  # A property of an application, `[]` when it is not there.
+  defp prop(props, key) do
+    Enum.find_value(props, [], fn
+      {{:atom, ^key}, value} -> value
+      _ -> nil
     end)
   end
 

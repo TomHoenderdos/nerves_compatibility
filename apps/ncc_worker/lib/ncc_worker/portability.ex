@@ -2271,14 +2271,15 @@ defmodule NccWorker.Portability do
   defp installed_plugins(result, _ctx, _dest, _named), do: result
 
   # rebar3's cache dir of a compile with `env` (`rebar_dir:global_cache_dir/1`):
-  # `REBAR_CACHE_DIR`, else `$HOME/.cache/rebar3`, each from `env` or, when
-  # `env` does not name it, this VM's environment, which the compile
-  # inherits. A name `env` unsets (`nil`) is unset.
+  # `REBAR_CACHE_DIR`, else `$HOME/.cache/rebar3`, each the last value `env`
+  # gives it, as the compile's environment applies them, or, when `env` does
+  # not name it, this VM's, which the compile inherits. A name `env` unsets
+  # (`nil`) is unset.
   @doc false
   @spec rebar_cache([{String.t(), String.t() | nil}]) :: String.t() | nil
   def rebar_cache(env) do
     get = fn name ->
-      case List.keyfind(env, name, 0) do
+      case env |> Enum.reverse() |> List.keyfind(name, 0) do
         {^name, value} -> value
         nil -> System.get_env(name)
       end
@@ -3187,8 +3188,23 @@ defmodule NccWorker.Portability do
       "config_unreviewed" => Enum.take(facts.config.unreviewed, 50),
       "nif_check" => if(facts.libs.waived, do: "waived", else: "ok"),
       "tree_check" => tree_summary(facts),
+      "rebar3_plugins" => rebar3_plugins(facts),
       "problems" => problems |> Enum.uniq() |> Enum.take(@max_problems)
     })
+  end
+
+  # The rebar3 plugin releases installed for every rebar3 app in the
+  # package's closure (`RebarPlugins.releases/2`), so the portal can find
+  # each build that ran one (`Portal.Precompiled.PluginWatch`).
+  defp rebar3_plugins(%{ctx: ctx, scope: scope}) do
+    for app <- Enum.sort(scope),
+        Context.manager(ctx, app) == "rebar3",
+        dest = Context.dest(ctx, app),
+        is_binary(dest),
+        release <- RebarPlugins.releases(dest, ctx.rebar_cache) do
+      Map.put(release, "owner", app)
+    end
+    |> Enum.take(50)
   end
 
   defp tree_summary(%{ctx: ctx, scope: scope}) do

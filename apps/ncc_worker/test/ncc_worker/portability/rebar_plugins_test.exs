@@ -12,9 +12,20 @@ defmodule NccWorker.Portability.RebarPluginsTest do
 
   @src %{
     "src/fx_plugin.erl" => "-module(fx_plugin).\n-export([init/1]).\ninit(S) -> {ok, S}.\n",
-    "src/fx_plugin.app.src" => "{application, fx_plugin, [{vsn, \"1.0.0\"}]}.\n",
+    "src/fx_plugin.app.src" =>
+      "{application, fx_plugin, [{vsn, \"1.0.0\"}, {env, [{providers, [fx_plugin]}]}]}.\n",
     "rebar.config" => "{erl_opts, [debug_info]}.\n"
   }
+
+  # A real beam of `module`, as rebar3's compile writes it.
+  defp beam(module) do
+    {:ok, ^module, bytes} =
+      :compile.forms([{:attribute, 1, :module, module}, {:attribute, 1, :export, []}], [:binary])
+
+    bytes
+  end
+
+  @app ~s|{application,fx_plugin,[{vsn,"1.0.0"},{env,[{providers,[fx_plugin]}]},{modules,[fx_plugin]}]}.\n|
 
   defp metadata(name, version),
     do: ~s({<<"name">>,<<"#{name}">>}.\n{<<"version">>,<<"#{version}">>}.\n)
@@ -58,8 +69,11 @@ defmodule NccWorker.Portability.RebarPluginsTest do
 
     File.write!(Path.join(dir, "hex_metadata.config"), metadata(name, version))
     File.mkdir_p!(Path.join(dir, "ebin"))
-    for beam <- ebin, do: File.write!(Path.join([dir, "ebin", beam]), "compiled")
-    File.write!(Path.join([dir, "ebin", name <> ".app"]), "{application, x, []}.\n")
+
+    for file <- ebin,
+        do: File.write!(Path.join([dir, "ebin", file]), beam(String.to_atom(Path.rootname(file))))
+
+    File.write!(Path.join([dir, "ebin", name <> ".app"]), String.replace(@app, "fx_plugin", name))
 
     prod = Path.join([dest, "_build", "prod", "plugins"])
     File.mkdir_p!(Path.join(prod, ".rebar3"))
@@ -78,6 +92,23 @@ defmodule NccWorker.Portability.RebarPluginsTest do
 
     assert RebarPlugins.check(i.dest, i.cache, ["fx_plugin"], pins("fx_plugin", "1.0.0", i.sha)) ==
              :ok
+  end
+
+  # What a build records of the plugins it ran (review S5 S1): every
+  # installed release, its version and its cached tarball's checksum, pinned
+  # or not.
+  test "the installed releases, as a build records them", %{tmp_dir: root} do
+    i = install(root, "fx_plugin", "1.0.0")
+
+    assert RebarPlugins.releases(i.dest, i.cache) == [
+             %{"name" => "fx_plugin", "version" => "1.0.0", "sha256" => i.sha}
+           ]
+
+    assert RebarPlugins.releases(i.dest, nil) == [
+             %{"name" => "fx_plugin", "version" => "1.0.0", "sha256" => nil}
+           ]
+
+    assert RebarPlugins.releases(Path.join(root, "none"), i.cache) == []
   end
 
   test "a release the table does not pin refuses, naming the plugin and its version",
@@ -157,6 +188,50 @@ defmodule NccWorker.Portability.RebarPluginsTest do
 
     assert {:refuse, _} =
              RebarPlugins.check(j.dest, j.cache, [], pins("fx_plugin", "1.0.0", j.sha))
+  end
+
+  # rebar3 runs `init/1` of the modules the `.app`'s `providers` names, and
+  # loads the beams by file name (review S5 N3).
+  test "an ebin whose app file or beams are not the release's sources' refuses",
+       %{tmp_dir: root} do
+    differs = "from files that are not its reviewed release's"
+
+    for {case_name, change} <- [
+          {"no_app", fn dir -> File.rm!(Path.join(dir, "ebin/fx_plugin.app")) end},
+          {"providers",
+           fn dir ->
+             File.write!(
+               Path.join(dir, "ebin/fx_plugin.app"),
+               String.replace(@app, "{providers,[fx_plugin]}", "{providers,[evil]}")
+             )
+           end},
+          {"app_unreadable",
+           fn dir -> File.write!(Path.join(dir, "ebin/fx_plugin.app"), "{") end},
+          {"other_app",
+           fn dir ->
+             File.write!(
+               Path.join(dir, "ebin/fx_plugin.app"),
+               String.replace(@app, "{application,fx_plugin", "{application,other")
+             )
+           end},
+          {"beam_module",
+           fn dir -> File.write!(Path.join(dir, "ebin/fx_plugin.beam"), beam(:evil)) end},
+          {"beam_bytes",
+           fn dir -> File.write!(Path.join(dir, "ebin/fx_plugin.beam"), "compiled") end}
+        ] do
+      i = install(Path.join(root, case_name), "fx_plugin", "1.0.0")
+      change.(i.dir)
+
+      assert {:refuse, "rebar3 build runs plugin fx_plugin 1.0.0 " <> ^differs} =
+               RebarPlugins.check(i.dest, i.cache, [], pins("fx_plugin", "1.0.0", i.sha)),
+             case_name
+    end
+  end
+
+  test "a module a source defines under another file name is that module", %{tmp_dir: root} do
+    files = Map.put(@src, "src/named.erl", "-module('fx_named').\n")
+    i = install(root, "fx_plugin", "1.0.0", files, ["fx_plugin.beam", "fx_named.beam"])
+    assert RebarPlugins.check(i.dest, i.cache, [], pins("fx_plugin", "1.0.0", i.sha)) == :ok
   end
 
   test "a file of the release changed, planted or missing refuses", %{tmp_dir: root} do
@@ -244,6 +319,12 @@ defmodule NccWorker.Portability.RebarPluginsTest do
     rebar_cache = &NccWorker.Portability.rebar_cache/1
 
     assert rebar_cache.([{"REBAR_CACHE_DIR", "/c"}, {"HOME", "/h"}]) == "/c"
+    # The compile's env applies the last value of a name (review S5 N4).
+    assert rebar_cache.([{"HOME", "/first"}, {"HOME", "/last"}]) == "/last/.cache/rebar3"
+
+    assert rebar_cache.([{"REBAR_CACHE_DIR", "/c"}, {"REBAR_CACHE_DIR", nil}, {"HOME", "/h"}]) ==
+             "/h/.cache/rebar3"
+
     assert rebar_cache.([{"REBAR_CACHE_DIR", nil}, {"HOME", "/h"}]) == "/h/.cache/rebar3"
     assert rebar_cache.([{"REBAR_CACHE_DIR", ""}, {"HOME", nil}]) == nil
   end

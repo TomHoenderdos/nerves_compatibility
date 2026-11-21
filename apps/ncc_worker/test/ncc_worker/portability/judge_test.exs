@@ -2072,8 +2072,19 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{
                reason:
                  "closure dependency observed the host: dep (rebar3 build runs plugin " <>
-                   "rebar3_ex_doc 0.3.99, a release not reviewed)"
+                   "rebar3_ex_doc 0.3.99, a release not reviewed)",
+               observations: obs
              } = judge(proj, r, opts)
+
+      # The build records what it ran, so the portal can find it.
+      assert obs["rebar3_plugins"] == [
+               %{
+                 "owner" => "dep",
+                 "name" => "rebar3_ex_doc",
+                 "version" => "0.3.99",
+                 "sha256" => nil
+               }
+             ]
     end
 
     test "a dependency whose mix.rebar.config is missing could not be judged", %{proj: proj} do
