@@ -143,7 +143,6 @@ defmodule Compatibility.Portability do
   @dependency_probe "compile-time probe of a dependency outside the closure: "
   @loaded_probe "compile-time probe of whether a module is loaded: "
 
-  @doc "Every prefix a trace refusal starts with."
   @doc """
   Whether `text` is a compile-time probe's text, its owner prefix (when the
   worker gave it one) aside.
@@ -158,6 +157,7 @@ defmodule Compatibility.Portability do
   @spec unowned(String.t()) :: String.t()
   def unowned(text) when is_binary(text), do: String.replace(text, @owned_probe, "")
 
+  @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
   def refusal_prefixes, do: @refusal_prefixes
 
