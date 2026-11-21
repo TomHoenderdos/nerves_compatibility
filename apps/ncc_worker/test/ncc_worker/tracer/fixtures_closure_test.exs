@@ -305,6 +305,18 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
     for app <- ["fx_r3_clean", "fx_r3_two", "fx_r3_pd", "fx_r3_hooks", "fx_r3_empty"] do
       assert %{sentinel?: true, problems: []} = traced.report.children[app], app
     end
+
+    # Each compile line carries the sha256 of the beam its compile wrote, as
+    # the tracer read it when `compile:file/2` returned (review S5 R1).
+    proj = ctx.runs["shared"].proj
+    lines = traced.report.children["fx_r3_two"].compiles
+    assert length(lines) == 3
+
+    for line <- lines do
+      beam = Path.join([proj, "_build/host/lib/fx_r3_two/ebin", line["module"] <> ".beam"])
+      sha = :sha256 |> :crypto.hash(File.read!(beam)) |> Base.encode16(case: :lower)
+      assert line["beam_sha256"] == sha, line["module"]
+    end
   end
 
   test "a dependency that observed the host refuses every package that has it (R3)",
@@ -413,7 +425,7 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
         template = Enum.find(lines, &(&1["kind"] == "compile"))
         assert template, "#{app} has no compile line to copy"
         rest = Enum.reject(lines, &(&1["kind"] == "compile"))
-        rest ++ Enum.map(keep, &compile_line(template, &1))
+        rest ++ Enum.map(keep, &compile_line(template, &1, lines))
 
       _app, lines ->
         lines
@@ -424,6 +436,14 @@ defmodule NccWorker.Tracer.FixturesClosureTest do
     source = Path.join(Path.dirname(template["source"]), module <> ".erl")
     %{template | "module" => module, "result" => result, "source" => source}
   end
+
+  # A kept module keeps its own real line, its beam's sha256 included.
+  defp compile_line(_template, module, lines) when is_binary(module) do
+    Enum.find(lines, &(&1["kind"] == "compile" and &1["module"] == module)) ||
+      flunk("no compile line of #{module}")
+  end
+
+  defp compile_line(template, entry, _lines), do: compile_line(template, entry)
 
   defp compile_line(template, module), do: compile_line(template, {module, "ok"})
 

@@ -107,7 +107,9 @@ defmodule NccWorker.Portability.Rebar do
 
   Coverage: a child VM's trace counts only when it fired its sentinel, has no
   problems, and recorded a successful `compile:file/2` return for every beam
-  in the dependency's `ebin`. rebar3 ends with `erlang:halt/1`, which can
+  in the dependency's `ebin`, with the sha256 of the beam it wrote, which
+  the beam must still have (review S5 R1): a beam written over after its
+  compile returned, or a return without a hash, taints. rebar3 ends with `erlang:halt/1`, which can
   drop the collector's last queued line, the return of a compile. The tracer
   records returns only, so which one was last cannot be checked: at most
   one beam without a return per child, with the sentinel present and the
@@ -845,16 +847,21 @@ defmodule NccWorker.Portability.Rebar do
   def coverage(ebin, child) do
     case beams(ebin) do
       {:unjudged, _} = unjudged -> unjudged
-      {:ok, beams} -> covered(beams, child)
+      {:ok, beams} -> covered(beams, child, ebin)
     end
   end
 
-  defp covered([], nil), do: {:unjudged, "rebar3 built nothing and was not traced"}
-  defp covered(_beams, nil), do: {:error, "rebar3 compile was not traced"}
+  defp covered([], nil, _ebin), do: {:unjudged, "rebar3 built nothing and was not traced"}
+  defp covered(_beams, nil, _ebin), do: {:error, "rebar3 compile was not traced"}
 
-  defp covered(beams, child) do
-    compiled = for %{"result" => "ok", "module" => m} <- child.compiles, into: MapSet.new(), do: m
-    missing = Enum.reject(beams, &MapSet.member?(compiled, &1))
+  defp covered(beams, child, ebin) do
+    # The beam each module's last traced compile returned, by sha256.
+    compiled =
+      for %{"result" => "ok", "module" => m} = line <- child.compiles,
+          into: %{},
+          do: {m, line["beam_sha256"]}
+
+    missing = Enum.reject(beams, &Map.has_key?(compiled, &1))
 
     cond do
       child.problems != [] ->
@@ -866,6 +873,9 @@ defmodule NccWorker.Portability.Rebar do
       Enum.any?(child.compiles, &(&1["result"] != "ok")) ->
         {:unjudged, "rebar3 compile returned an error"}
 
+      changed = changed_beam(beams -- missing, compiled, ebin) ->
+        changed
+
       missing == [] ->
         :ok
 
@@ -874,6 +884,39 @@ defmodule NccWorker.Portability.Rebar do
 
       true ->
         {:error, "rebar3 compile of #{Enum.join(missing, ", ")} was not traced"}
+    end
+  end
+
+  # Review S5 R1: each traced beam must be, byte for byte, what its compile
+  # wrote when it returned (the tracer hashes the beam then), so anything
+  # that wrote over it later, a hook or any other writer, taints.
+  defp changed_beam(beams, compiled, ebin) do
+    Enum.find_value(beams, fn module ->
+      case compiled[module] do
+        sha when is_binary(sha) ->
+          if beam_sha(ebin, module) == sha,
+            do: nil,
+            else: {:error, "rebar3 beam #{module} changed after its traced compile"}
+
+        _ ->
+          {:error, "rebar3 compile of #{module} recorded no beam hash"}
+      end
+    end)
+  end
+
+  @max_beam_bytes 64 * 1024 * 1024
+
+  # `ebin` is the dependency's build ebin and `module` a beam file's name in it.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp beam_sha(ebin, module) do
+    path = Path.join(ebin, module <> ".beam")
+
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_beam_bytes <-
+           File.lstat(path),
+         {:ok, bytes} <- File.read(path) do
+      :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+    else
+      _ -> nil
     end
   end
 

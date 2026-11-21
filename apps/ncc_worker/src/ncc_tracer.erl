@@ -12,6 +12,8 @@
          installed_app/3, cache_hit/2, canary_patterns/0, code_prepared/3, code_finished/2,
          prepared_ref/2, on_load_ran/2, toolchain_code/2, installed_modules/2]).
 
+-include_lib("kernel/include/file.hrl").
+
 -define(DEPTH, 64).
 -define(COLLECTOR, {?MODULE, collector}).
 -define(PROBE, ncc_tracer_probe).
@@ -893,8 +895,8 @@ traced({trace_ts, Pid, exception_from, ?FINISH_LOADING, _Exception, _Ts}, St) ->
     St;
 traced({trace_ts, Pid, call, {M, F, Args}, Stack, Ts}, St) ->
     call_event(Pid, M, F, Args, Stack, Ts, pending(Pid, M, F, Args, St));
-traced({trace_ts, Pid, call, {compile, file, [Src | _]}, _Ts}, St) ->
-    St#st{sources = maps:put(Pid, Src, St#st.sources)};
+traced({trace_ts, Pid, call, {compile, file, [Src | Rest]}, _Ts}, St) ->
+    St#st{sources = maps:put(Pid, {Src, outdir(Rest)}, St#st.sources)};
 traced({trace_ts, Pid, call, {M, F, Args}, Ts}, St) ->
     %% A call with no stack: our match spec was replaced. Unjudged.
     call_event(Pid, M, F, Args, no_stack, Ts, pending(Pid, M, F, Args, St));
@@ -1499,10 +1501,42 @@ list_refs(Tail, Depth, _N) -> refs_user(Tail, Depth).
 %% --- child compiles ------------------------------------------------------------
 
 compiled(Pid, Result, Ts, St) ->
-    Source = ncc_tracer_channels:chars(maps:get(Pid, St#st.sources, null)),
+    {Src, OutDir} = maps:get(Pid, St#st.sources, {null, null}),
+    Source = ncc_tracer_channels:chars(Src),
     write(St, #{kind => compile, ts => Ts, source => Source,
-                result => compile_result(Result), module => compile_module(Result)}),
+                result => compile_result(Result), module => compile_module(Result),
+                beam_sha256 => beam_sha256(OutDir, Result)}),
     libs_line(St#st{sources = maps:remove(Pid, St#st.sources)}).
+
+%% The output dir compile:file/2 was given ({outdir, Dir}, as rebar3 passes
+%% it), or null.
+outdir([Opts | _]) when is_list(Opts) ->
+    case lists:keyfind(outdir, 1, Opts) of
+        {outdir, Dir} when is_list(Dir); is_binary(Dir) -> Dir;
+        _ -> null
+    end;
+outdir(_Rest) -> null.
+
+%% The sha256 of the beam a compile wrote, read by this untraced collector
+%% when the compile's return reaches it, so the judge can hold the beam on
+%% disk to it: one written over later is not the traced compile's (review
+%% S5 R1). null when the module, the dir or the file cannot be read.
+-define(MAX_BEAM_BYTES, 67108864).
+beam_sha256(OutDir, Result) when OutDir =/= null, is_tuple(Result),
+                                 element(1, Result) =:= ok, tuple_size(Result) >= 2,
+                                 is_atom(element(2, Result)) ->
+    Path = filename:join(OutDir, atom_to_list(element(2, Result)) ++ ".beam"),
+    try
+        case file:read_file_info(Path) of
+            {ok, #file_info{type = regular, size = Size}} when Size =< ?MAX_BEAM_BYTES ->
+                {ok, Bytes} = file:read_file(Path),
+                binary:encode_hex(crypto:hash(sha256, Bytes), lowercase);
+            _ ->
+                null
+        end
+    catch _:_ -> null
+    end;
+beam_sha256(_OutDir, _Result) -> null.
 
 %% A child VM has no end line (rebar3 halts): it writes its mapped
 %% libraries after every compile and flush, whenever they changed, and once

@@ -1967,6 +1967,14 @@ defmodule NccWorker.Portability.JudgeTest do
     # A real (R2-clean) beam of an empty module `Elixir.<name>`.
     defp beam!(proj, app, name), do: write_beam(proj, app, "defmodule #{name} do\nend\n")
 
+    # A child's compile line for `module`, with the sha256 of its beam in
+    # `app`'s build ebin as the tracer takes it when the compile returns.
+    defp compiled_line(proj, app, module) do
+      beam = File.read!(Path.join([proj, "_build/host/lib", app, "ebin", module <> ".beam"]))
+      sha = :sha256 |> :crypto.hash(beam) |> Base.encode16(case: :lower)
+      %{"result" => "ok", "module" => module, "beam_sha256" => sha}
+    end
+
     test "the package: hooks refuse, missing coverage could not be judged", %{proj: proj} do
       File.write!(
         Path.join([proj, "deps/pkg/rebar.config"]),
@@ -2254,7 +2262,7 @@ defmodule NccWorker.Portability.JudgeTest do
       traced =
         child([], %{
           compiles: [
-            %{"result" => "ok", "module" => "Elixir.JudgeRebarE1"},
+            compiled_line(proj, "dep", "Elixir.JudgeRebarE1"),
             %{"result" => "error", "module" => nil}
           ]
         })
@@ -2276,7 +2284,7 @@ defmodule NccWorker.Portability.JudgeTest do
          %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
       for m <- ["JudgeRebarG1", "JudgeRebarG2"], do: beam!(proj, "dep", m)
-      traced = child([], %{compiles: [%{"result" => "ok", "module" => "Elixir.JudgeRebarG1"}]})
+      traced = child([], %{compiles: [compiled_line(proj, "dep", "Elixir.JudgeRebarG1")]})
 
       assert %{status: :pass, observations: obs} =
                rjudge(proj, "dep", %{"dep" => traced})
@@ -2791,12 +2799,35 @@ defmodule NccWorker.Portability.JudgeTest do
       assert {:unjudged, "rebar3 built nothing and was not traced"} = Rebar.coverage(ebin, nil)
       assert :ok = Rebar.coverage(ebin, child([]))
 
-      for m <- ["r3", "r4", "r5"], do: File.write!(Path.join(ebin, m <> ".beam"), "")
+      for m <- ["r3", "r4", "r5"], do: File.write!(Path.join(ebin, m <> ".beam"), "beam " <> m)
 
-      ok = fn m -> %{"result" => "ok", "module" => m} end
+      # Each compile line carries the sha256 of the beam its compile wrote,
+      # taken when it returned (review S5 R1).
+      sha = fn m -> :sha256 |> :crypto.hash("beam " <> m) |> Base.encode16(case: :lower) end
+      ok = fn m -> %{"result" => "ok", "module" => m, "beam_sha256" => sha.(m)} end
       c = child([], %{compiles: Enum.map(["r3", "r4", "r5"], ok)})
 
       assert :ok = Rebar.coverage(ebin, c)
+
+      # A beam written over after its compile returned taints, whatever wrote it.
+      File.write!(Path.join(ebin, "r4.beam"), "beam r4, overwritten")
+
+      assert {:error, "rebar3 beam r4 changed after its traced compile"} =
+               Rebar.coverage(ebin, c)
+
+      File.write!(Path.join(ebin, "r4.beam"), "beam r4")
+
+      # A compile line without the hash proves nothing about the bytes.
+      unhashed = %{c | compiles: [Map.delete(ok.("r3"), "beam_sha256") | tl(c.compiles)]}
+
+      assert {:error, "rebar3 compile of r3 recorded no beam hash"} =
+               Rebar.coverage(ebin, unhashed)
+
+      # A module compiled twice is held to its last compile.
+      twice = %{c | compiles: c.compiles ++ [%{ok.("r3") | "beam_sha256" => sha.("r4")}]}
+
+      assert {:error, "rebar3 beam r3 changed after its traced compile"} =
+               Rebar.coverage(ebin, twice)
 
       assert {:error, "rebar3 trace sentinel missing"} =
                Rebar.coverage(ebin, %{c | sentinel?: false})
