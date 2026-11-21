@@ -644,8 +644,13 @@ of whether a module of its path is loaded now (`function_exported?/3`, `:code.is
 application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier
 dependency used URI), refuses as `compile-time probe of whether a module is loaded: ` unless the same process
 ensure-loaded it first (the package's own modules included: whether one is loaded is the parallel compiler's schedule), or the probe follows a reviewed call site's own direct call
-of the module (plug's `Plug.Builder.init_module_plug/4` in 1.5.0 to 1.20.4, phoenix_live_view's tag engine in 1.2.0 to 1.2.15; a newer release refuses until it is reviewed). Only a
-module loaded before the tracer started, or by Mix in every compile, is never traced. The collector writes no probe
+of the module (plug's `Plug.Builder.init_module_plug/4` in 1.5.0 to 1.20.4, phoenix_live_view's tag engine in 1.2.0 to 1.2.15; a newer release refuses until it is reviewed). A module
+loaded before the tracer started is taken as loaded for the user, and never traced, only when a bare `elixir -e` VM
+of the toolchain has it loaded too, or it is one of Mix's own modules every way a user compiles a dependency has
+loaded before the first dependency's compile (`mix compile`, `mix deps.compile`, `Mix.install`), measured per
+toolchain by `priv/mix_base/measure.exs` into the checked-in `priv/mix_base/<pair>.txt` (`NccWorker.Tracer.MixBase`;
+elixir_make's `function_exported?(Mix, :ensure_application!, 1)` passes, `Mix.CLI` is outside it). Any other is
+traced and judged like a module not loaded yet; so is every module on a toolchain with no measured list. The collector writes no probe
 the judge would ignore (a toolchain function's, or one the code server makes inside another), and a toolchain
 `code:ensure_loaded/1` once per process, module and window without frames (`trace_stats.dropped_probes`). The tracer
 watches every module on disk under

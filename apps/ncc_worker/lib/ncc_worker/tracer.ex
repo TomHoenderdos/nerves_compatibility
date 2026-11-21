@@ -283,17 +283,26 @@ defmodule NccWorker.Tracer do
 
   # The modules a bare VM of this toolchain has loaded once it runs code
   # (`elixir -e`, with the compile's own environment): erts's, kernel's,
-  # stdlib's and Elixir's boot. The tracer takes as loaded for the user only
-  # a module both loaded before it started and in this list (round 3, R2-6);
-  # one Mix, Hex or the driver loaded is traced and judged like any other.
-  # A list that cannot be made fails the trace.
+  # stdlib's and Elixir's boot; and Mix's own modules every way a user
+  # compiles a dependency has loaded by then (`MixBase`, measured per
+  # toolchain, round 4). The tracer takes as loaded for the user only a
+  # module both loaded before it started and in this list (round 3, R2-6);
+  # one Mix, Hex or the driver loaded otherwise is traced and judged like
+  # any other. A list that cannot be made fails the trace.
   # sobelow_skip ["CI.System", "Traversal.FileModule"]
   defp base_loaded(elixir, trace_dir, env) do
-    script = ~S|IO.write(Enum.map_join(:code.all_loaded(), "\n", &Atom.to_string(elem(&1, 0))))|
+    script =
+      ~S{IO.write(Enum.join([System.version() <> " " <> System.otp_release()] ++ Enum.map(:code.all_loaded(), &Atom.to_string(elem(&1, 0))), "\n"))}
 
     case System.cmd(elixir, ["-e", script], env: env, cd: trace_dir, stderr_to_stdout: true) do
-      {out, 0} -> File.write(Path.join(trace_dir, @base_loaded), out)
-      {out, code} -> {:error, {:base_loaded, code, String.slice(out, 0, 500)}}
+      {out, 0} ->
+        [toolchain | loaded] = String.split(out, "\n", trim: true)
+        [version, otp] = String.split(toolchain, " ")
+        mix = NccWorker.Tracer.MixBase.modules(NccWorker.Tracer.MixBase.pair(version, otp))
+        File.write(Path.join(trace_dir, @base_loaded), Enum.join(loaded ++ mix, "\n"))
+
+      {out, code} ->
+        {:error, {:base_loaded, code, String.slice(out, 0, 500)}}
     end
   rescue
     e -> {:error, {:base_loaded, Exception.message(e)}}

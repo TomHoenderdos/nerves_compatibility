@@ -676,6 +676,39 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
              "compile-time probe of whether a module is loaded: sofs via erlang:function_exported/3"
   end
 
+  # Round 4, the ruling on R2-6: Mix's own modules loaded before the first
+  # dependency's compile on every way a user compiles one (measured per
+  # toolchain, `NccWorker.Tracer.MixBase`) count as loaded for the user:
+  # elixir_make's `function_exported?(Mix, :ensure_application!, 1)` passes.
+  # Mix.CLI, loaded by the mix command but not under Mix.install, is outside
+  # the list: its loaded-now probe refuses.
+  for {expr, verdict} <- [
+        {"function_exported?(Mix, :ensure_application!, 1)", :pass},
+        {"function_exported?(Mix.CLI, :main, 1)", :skip}
+      ] do
+    @expr expr
+    @verdict verdict
+    test "a Mix module's loaded-now probe: #{expr}", %{tmp_dir: dir} do
+      proj =
+        TracerFixtures.project(dir, ["fx_probe"], %{
+          "fx_probe" => %{
+            files: %{"lib/fx_probe.ex" => TracerFixtures.attr_module("FxProbe", @expr)}
+          }
+        })
+
+      traced = TracerFixtures.trace(proj, ["fx_probe"])
+      assert {:ok, 0} = traced.result, traced.log
+      verdict = TracerFixtures.judge(proj, "fx_probe", traced)
+      assert verdict.status == @verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+      if @verdict == :skip do
+        assert verdict.reason ==
+                 "compile-time probe of whether a module is loaded: Elixir.Mix.CLI via " <>
+                   "erlang:function_exported/3"
+      end
+    end
+  end
+
   # Round-2 ruling 2: a plug pipeline. Plug.Builder's init_module_plug/4
   # calls `plug.init(opts)` and then asks `function_exported?(plug, :call,
   # 2)` (plug 1.5.0 and later, reviewed): the direct call loaded the module
