@@ -552,15 +552,28 @@ code_loading_shapes(Release) ->
 %% Mix's eval_script/2 is the toolchain's interpreted script code (erl_eval,
 %% file's script evaluation, a nested file:script/2 of the script's own,
 %% File.cd!/2), and eval_script/2 itself the toolchain's. Any other frame in
-%% between (a fun a list function runs, a helper module) is no such read.
+%% between (a fun a list function runs, a helper module) is no such read,
+%% and so is one whose eval_script/2 Mix.Dep.Loader.rebar_dep/4 did not run.
 %% Only a flag: NccWorker.Portability.Events decides (differential builds).
-rebar_script_read([{'Elixir.Mix.Rebar', eval_script, A, _} | _], IsToolchain)
+rebar_script_read([{'Elixir.Mix.Rebar', eval_script, A, _} | Below], IsToolchain)
   when A =:= 2; is_list(A), length(A) =:= 2 ->
-    IsToolchain('Elixir.Mix.Rebar') =:= true;
+    IsToolchain('Elixir.Mix.Rebar') =:= true andalso loaded_by_mix(Below, IsToolchain);
 rebar_script_read([{M, F, _A, _} | Rest], IsToolchain) ->
     script_frame(M, F) andalso IsToolchain(M) =:= true andalso
         rebar_script_read(Rest, IsToolchain);
 rebar_script_read(_Stack, _IsToolchain) -> false.
+
+%% Mix's own loading of a rebar3 dependency: Mix.Dep.Loader.rebar_dep/4 runs
+%% `File.cd!(Dest, fun() -> Mix.Rebar.load_config(".") end)`, whose fun and
+%% load_config/1 tail-call, so File.cd!/2 and then rebar_dep/4 are right
+%% below eval_script/2 (review R1: a mix.exs calling load_config/1 itself
+%% leaves its own or Mix.Project's frames there instead).
+loaded_by_mix([{'Elixir.File', 'cd!', A1, _}, {'Elixir.Mix.Dep.Loader', rebar_dep, A2, _} | _],
+              IsToolchain)
+  when (A1 =:= 2 orelse (is_list(A1) andalso length(A1) =:= 2)),
+       (A2 =:= 4 orelse (is_list(A2) andalso length(A2) =:= 4)) ->
+    IsToolchain('Elixir.File') =:= true andalso IsToolchain('Elixir.Mix.Dep.Loader') =:= true;
+loaded_by_mix(_Below, _IsToolchain) -> false.
 
 script_frame(erl_eval, _F) -> true;
 script_frame(file, F) -> lists:member(F, [script, path_script, eval_stream, eval_stream2]);

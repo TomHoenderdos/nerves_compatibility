@@ -944,6 +944,22 @@ defmodule NccWorker.Tracer.StackTest do
     test "a package's module of a toolchain name is not" do
       refute in_script?(@script_top ++ @below, &(&1 in [:erl_eval, :file, File]))
       refute in_script?(@script_top ++ @below, &(&1 in [:file, File, Mix.Rebar]))
+      refute in_script?(@script_top ++ @below, &(&1 in [:erl_eval, :file, File, Mix.Rebar]))
+    end
+
+    # Review R1: only Mix's own loading of a rebar3 dependency, which runs
+    # `Mix.Rebar.load_config/1` under `File.cd!/2` in
+    # `Mix.Dep.Loader.rebar_dep/4` (Elixir 1.19 and 1.20). A mix.exs whose
+    # `project/0` tail-calls `Mix.Rebar.load_config/1` itself leaves Mix's
+    # project frames below instead.
+    test "only below Mix.Dep.Loader.rebar_dep/4, through File.cd!/2" do
+      [eval_script | _] = @below
+      by_mix_exs = [eval_script, {Mix.Project, :in_project, 4}, {Mix.Dep.Loader, :load, 3}]
+      refute in_script?(@script_top ++ by_mix_exs)
+      refute in_script?(@script_top ++ [eval_script, {Mix.Dep.Loader, :rebar_dep, 4}])
+      refute in_script?(@script_top ++ [eval_script, {File, :cd!, 2}, {Mix.Dep.Loader, :load, 3}])
+      refute in_script?(@script_top ++ [eval_script])
+      refute in_script?(@script_top ++ [eval_script, {File, :cd!, 2}])
     end
 
     test "Mix's frame with its arguments instead of its arity" do
