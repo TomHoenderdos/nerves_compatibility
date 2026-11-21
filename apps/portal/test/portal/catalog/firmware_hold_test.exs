@@ -489,6 +489,63 @@ defmodule Portal.Catalog.FirmwareHoldTest do
       assert rpi4_of(new).unpublished_reason == @taint
     end
 
+    # Review R4, the reviewer's T8: a newer refusal records its hold on a row
+    # that is already withdrawn, so the bare printed undo of the older
+    # withdrawal fails rather than serve a row the refusal covers.
+    test "a newer judge refusal records its hold on an already withdrawn row" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      at = revoke!(rpi4_of(a), @taint)
+
+      refused =
+        run!("1.4.0", "2026-11-02T10:00:00Z", "r", judge: verdict("skipped", "x", ["probe"]))
+
+      held = rpi4_of(a)
+      assert held.unpublished_reason == @taint
+      refusal_at = refused |> rpi4_of() |> Map.fetch!(:inserted_at) |> DateTime.to_naive()
+
+      assert [%{"reason" => @judge, "at" => entry}] = held.other_holds
+      assert NaiveDateTime.compare(NaiveDateTime.from_iso8601!(entry), refusal_at) == :eq
+
+      assert_raise Postgrex.Error, ~r/catalog_system_results_holds_withdrawn/, fn ->
+        undo!(@taint, at)
+      end
+
+      # Idempotent: the next sweep adds nothing.
+      _ = Portal.Precompiled.FirmwareRefusal.withdraw_superseded()
+      assert length(rpi4_of(a).other_holds) == 1
+    end
+
+    test "a newer build path refusal records its hold on an already withdrawn row" do
+      a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
+      at = revoke!(rpi4_of(a), @taint)
+
+      _ =
+        run!("1.4.0", "2026-11-02T10:00:00Z", "r",
+          rpi4: %{
+            "beam_scan" => %{"footprint" => %{}},
+            "build_root" => %{
+              "status" => "skipped",
+              "reason" => "bakes the build path: X",
+              "observations" => []
+            }
+          }
+        )
+
+      assert [%{"reason" => reason}] = rpi4_of(a).other_holds
+      assert reason == SystemResult.superseded_by_refusal()
+
+      assert_raise Postgrex.Error, ~r/catalog_system_results_holds_withdrawn/, fn ->
+        undo!(@taint, at)
+      end
+
+      _ = Portal.Precompiled.FirmwareRefusal.withdraw_superseded()
+      assert length(rpi4_of(a).other_holds) == 1
+
+      # Released through the hold set, the row stays out by the refusal.
+      assert {:ok, _} = Holds.undo(@taint, at)
+      assert rpi4_of(a).unpublished_reason == SystemResult.superseded_by_refusal()
+    end
+
     test "re-runs the superseding refusals: a released row a newer refusal covers stays withdrawn" do
       a = run!("1.4.0", "2026-11-01T10:00:00Z", "a")
       at = revoke!(rpi4_of(a), @taint)

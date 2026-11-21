@@ -52,8 +52,14 @@ defmodule Portal.Precompiled.FirmwareRefusal do
   several apply), the same hold `Portal.Precompiled.Holds` gives a new
   build of the target at ingest.
 
-  Statuses, runs and logs never change: only `unpublished_at` and
-  `unpublished_reason`, which are the audit trail. Nothing undoes it
+  A build either rule covers that is already withdrawn otherwise gets the
+  rule's hold in its `other_holds` instead (review R4), once: R2's with this
+  call's timestamp, the judge's with its newest refusal's. So it stays out
+  when its own withdrawal is undone (`Portal.Precompiled.Holds.undo/2`), and
+  a bare undo of that withdrawal fails on the hold set's check constraint.
+
+  Statuses, runs and logs never change: only `unpublished_at`,
+  `unpublished_reason` and `other_holds`, which are the audit trail. Nothing undoes it
   automatically, also not a later revocation of the refusing run; putting a
   result back is `Portal.Precompiled.Holds.undo/2`, which runs this sweep
   again afterwards.
@@ -78,10 +84,9 @@ defmodule Portal.Precompiled.FirmwareRefusal do
 
   # `$1`/`$2` scope it to a package and version (NULL: every one). `o` is the
   # candidate, `f` the refusal; `ob`/`fb` their building runs when carried.
-  @withdraw_sql """
-  UPDATE catalog_system_results s
-  SET unpublished_at = $3, unpublished_reason = $4, updated_at = $3
-  WHERE s.id IN (
+  # The R2 candidates of `$1`/`$2`: `$WITHDRAWN` picks the served ones, or
+  # those already withdrawn otherwise that carry no R2 hold yet.
+  @r2_candidates """
     SELECT o.id
     FROM catalog_system_results o
     JOIN catalog_runs orun ON orun.id = o.run_id
@@ -92,7 +97,7 @@ defmodule Portal.Precompiled.FirmwareRefusal do
     LEFT JOIN catalog_runs fb ON fb.id = f.carried_from_run_id
     WHERE ($1::uuid IS NULL OR orun.package_id = $1::uuid)
       AND ($2::text IS NULL OR orun.version_tested = $2::text)
-      AND o.unpublished_at IS NULL
+      AND $WITHDRAWN
       AND o.status = 'pass'
       AND o.system_pkg NOT IN ('host', 'pure_elixir')
       AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m WHERE m.system_result_id = o.id)
@@ -106,6 +111,26 @@ defmodule Portal.Precompiled.FirmwareRefusal do
                               OR coalesce(v.value->>'status', '') <> 'pass')))
       AND coalesce(fb.finished_at, frun.finished_at) >
           coalesce(ob.finished_at, orun.finished_at)
+  """
+
+  @withdraw_sql """
+  UPDATE catalog_system_results s
+  SET unpublished_at = $3, unpublished_reason = $4, updated_at = $3
+  WHERE s.id IN (
+  #{String.replace(@r2_candidates, "$WITHDRAWN", "o.unpublished_at IS NULL")}
+  )
+  """
+
+  # Review R4: an already withdrawn result gets the hold too (`other_holds`),
+  # once, so it stays out when its own withdrawal is undone, and a bare undo
+  # of that withdrawal fails (the hold set's check constraint).
+  @hold_withdrawn_sql """
+  UPDATE catalog_system_results s
+  SET other_holds = coalesce(s.other_holds, '{}') ||
+                      ARRAY[jsonb_build_object('reason', $4::text, 'at', $5::text)],
+      updated_at = $3
+  WHERE s.id IN (
+  #{String.replace(@r2_candidates, "$WITHDRAWN", "o.unpublished_at IS NOT NULL AND o.unpublished_reason IS DISTINCT FROM $4 AND NOT EXISTS (SELECT 1 FROM unnest(coalesce(o.other_holds, '{}')) h WHERE h->>'reason' = $4)")}
   )
   """
 
@@ -135,44 +160,78 @@ defmodule Portal.Precompiled.FirmwareRefusal do
   )
   """
 
-  @withdraw_judged_sql """
-  WITH #{@refusals_cte}
-  UPDATE catalog_system_results s
-  SET unpublished_at = w.at, unpublished_reason = $3, updated_at = now() AT TIME ZONE 'utc'
-  FROM (
-    SELECT DISTINCT ON (o.id) o.id, f.at
+  # The judge candidates and the newest refusal that applies to each (`at`):
+  # a system result, then a pinned build. `$WITHDRAWN` picks the served ones
+  # or the withdrawn ones (`o` the candidate).
+  @judged_results """
+    SELECT DISTINCT ON (o.id) o.id, f.at, o.unpublished_at, o.unpublished_reason, o.other_holds
     FROM catalog_system_results o
     JOIN catalog_runs orun ON orun.id = o.run_id
     LEFT JOIN catalog_runs ob ON ob.id = o.carried_from_run_id
     JOIN refusals f ON f.package_id = orun.package_id AND f.version = orun.version_tested
                    AND (f.target = o.system_pkg OR coalesce(f.wide, false))
-    WHERE o.unpublished_at IS NULL
+    WHERE $WITHDRAWN
       AND o.status = 'pass'
       AND o.system_pkg NOT IN ('host', 'pure_elixir')
       AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m WHERE m.system_result_id = o.id)
       AND (coalesce(o.firmware_judge->>'status', '') <> 'pass'
            OR coalesce(ob.finished_at, orun.finished_at) < f.built)
     ORDER BY o.id, f.at DESC
-  ) w
+  """
+
+  @judged_pinned """
+    SELECT DISTINCT ON (o.id) o.id, f.at, o.unpublished_at, o.unpublished_reason, o.other_holds
+    FROM catalog_pinned_builds o
+    JOIN refusals f ON f.package_id = o.package_id AND f.version = o.version
+                   AND (f.target = o.target OR coalesce(f.wide, false))
+    WHERE $WITHDRAWN AND o.revoked_at IS NULL
+      AND o.status = 'pass'
+      AND o.target LIKE 'nerves\\_system\\_%'
+      AND (coalesce(o.firmware_judge->>'status', '') <> 'pass' OR o.finished_at < f.built)
+    ORDER BY o.id, f.at DESC
+  """
+
+  # Whether the candidate `w` already carries the judge hold of its newest
+  # refusal, as its withdrawal or in `other_holds`.
+  @judge_held "((w.unpublished_reason = $3 AND w.unpublished_at = w.at) OR " <>
+                "EXISTS (SELECT 1 FROM unnest(coalesce(w.other_holds, '{}')) h " <>
+                "WHERE h->>'reason' = $3 AND (h->>'at')::timestamp = w.at))"
+
+  @judge_entry "ARRAY[jsonb_build_object('reason', $3::text, " <>
+                 "'at', to_char(w.at, 'YYYY-MM-DD\"T\"HH24:MI:SS.US'))]"
+
+  @withdraw_judged_sql """
+  WITH #{@refusals_cte}
+  UPDATE catalog_system_results s
+  SET unpublished_at = w.at, unpublished_reason = $3, updated_at = now() AT TIME ZONE 'utc'
+  FROM (#{String.replace(@judged_results, "$WITHDRAWN", "o.unpublished_at IS NULL")}) w
   WHERE s.id = w.id
+  """
+
+  @hold_judged_sql """
+  WITH #{@refusals_cte}
+  UPDATE catalog_system_results s
+  SET other_holds = coalesce(s.other_holds, '{}') || #{@judge_entry},
+      updated_at = now() AT TIME ZONE 'utc'
+  FROM (#{String.replace(@judged_results, "$WITHDRAWN", "o.unpublished_at IS NOT NULL")}) w
+  WHERE s.id = w.id AND NOT #{@judge_held}
   """
 
   @withdraw_judged_pinned_sql """
   WITH #{@refusals_cte}
   UPDATE catalog_pinned_builds pb
   SET unpublished_at = w.at, unpublished_reason = $3, updated_at = now() AT TIME ZONE 'utc'
-  FROM (
-    SELECT DISTINCT ON (o.id) o.id, f.at
-    FROM catalog_pinned_builds o
-    JOIN refusals f ON f.package_id = o.package_id AND f.version = o.version
-                   AND (f.target = o.target OR coalesce(f.wide, false))
-    WHERE o.unpublished_at IS NULL AND o.revoked_at IS NULL
-      AND o.status = 'pass'
-      AND o.target LIKE 'nerves\\_system\\_%'
-      AND (coalesce(o.firmware_judge->>'status', '') <> 'pass' OR o.finished_at < f.built)
-    ORDER BY o.id, f.at DESC
-  ) w
+  FROM (#{String.replace(@judged_pinned, "$WITHDRAWN", "o.unpublished_at IS NULL")}) w
   WHERE pb.id = w.id
+  """
+
+  @hold_judged_pinned_sql """
+  WITH #{@refusals_cte}
+  UPDATE catalog_pinned_builds pb
+  SET other_holds = coalesce(pb.other_holds, '{}') || #{@judge_entry},
+      updated_at = now() AT TIME ZONE 'utc'
+  FROM (#{String.replace(@judged_pinned, "$WITHDRAWN", "o.unpublished_at IS NOT NULL")}) w
+  WHERE pb.id = w.id AND NOT #{@judge_held}
   """
 
   @doc """
@@ -193,14 +252,30 @@ defmodule Portal.Precompiled.FirmwareRefusal do
   defp run(package_id, version) do
     at = DateTime.utc_now()
 
-    %{num_rows: r2} =
-      Repo.query!(@withdraw_sql, [package_id, version, at, SystemResult.superseded_by_refusal()])
+    r2_reason = SystemResult.superseded_by_refusal()
+    iso = at |> DateTime.to_naive() |> NaiveDateTime.to_iso8601()
+
+    # The holds on rows already withdrawn first, then the withdrawals: a row
+    # this call withdraws is not held twice (review R4).
+    %{num_rows: _} =
+      Repo.query!(@hold_withdrawn_sql, [package_id, version, at, r2_reason, iso])
+
+    %{num_rows: r2} = Repo.query!(@withdraw_sql, [package_id, version, at, r2_reason])
 
     judged =
-      for sql <- [@withdraw_judged_sql, @withdraw_judged_pinned_sql] do
+      for sql <- [
+            @hold_judged_sql,
+            @withdraw_judged_sql,
+            @hold_judged_pinned_sql,
+            @withdraw_judged_pinned_sql
+          ],
+          into: [] do
         %{num_rows: n} = Repo.query!(sql, [package_id, version, SystemResult.judge_refusal()])
-        n
+        {sql, n}
       end
+
+    judged =
+      for {sql, n} <- judged, sql in [@withdraw_judged_sql, @withdraw_judged_pinned_sql], do: n
 
     n = r2 + Enum.sum(judged)
 
