@@ -468,8 +468,14 @@ defmodule Portal.HostNative.Ingest do
   end
 
   # The rebar3 plugin releases the run ran (`Portal.Precompiled.PluginWatch`).
-  defp plugins_recorded({:ok, _row} = ok, attrs) do
-    :ok = Portal.Precompiled.PluginWatch.record(attrs[:run_id], attrs[:compile_observations])
+  defp plugins_recorded({:ok, row} = ok, attrs) do
+    :ok =
+      Portal.Precompiled.PluginWatch.record(
+        row.package_id,
+        attrs[:run_id],
+        attrs[:compile_observations]
+      )
+
     ok
   end
 

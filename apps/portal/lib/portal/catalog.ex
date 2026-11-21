@@ -1325,7 +1325,6 @@ defmodule Portal.Catalog do
            coalesce('|plugins:' || pw.watch, '')
   FROM catalog_packages p
   CROSS JOIN setting_changes sc
-  CROSS JOIN (#{PluginWatch.fingerprint_sql()}) pw
   LEFT JOIN runs ON runs.package_id = p.id
   LEFT JOIN results ON results.package_id = p.id
   LEFT JOIN result_files rf ON rf.package_id = p.id
@@ -1340,6 +1339,7 @@ defmodule Portal.Catalog do
   LEFT JOIN setting_bound sb ON sb.package_id = p.id
   LEFT JOIN foreign_pkgs fpk ON fpk.package_id = p.id
   LEFT JOIN (SELECT DISTINCT package_id FROM relocated_pkgs) rpk ON rpk.package_id = p.id
+  LEFT JOIN (#{PluginWatch.fingerprint_sql()}) pw ON pw.package_id = p.id
   WHERE runs.package_id IS NOT NULL OR tc.package_id IS NOT NULL OR hn.package_id IS NOT NULL
      OR pn.package_id IS NOT NULL
   """
@@ -1352,9 +1352,11 @@ defmodule Portal.Catalog do
   `beam_scan` value, for `Portal.Precompiled.Batches`. Read it before the
   manifests it vouches for: a write in between then only makes the next
   fingerprint differ. The withheld package list (`Portal.Precompiled.Withheld`)
-  is part of every fingerprint, so a change to it renders every package again,
-  and so is the rebar3 plugin watch while it holds anything, in the same
-  query (`Portal.Precompiled.PluginWatch.fingerprint_sql/0`).
+  is part of every fingerprint, so a change to it renders every package again.
+  The rebar3 plugin watch is part of the fingerprint of each package whose
+  runs ran a plugin, in the same query
+  (`Portal.Precompiled.PluginWatch.fingerprint_sql/0`), so its change renders
+  only those packages again.
   The settings a manifest depends on (`host_native_enabled`,
   `deterministic_builds_enabled`, `foreign_priv_enabled`,
   `relocated_enabled`) are in it through a count of their changes.

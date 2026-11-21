@@ -1691,8 +1691,8 @@ defmodule Portal.Catalog.Ingestion do
   # The rebar3 plugin releases the run ran, by run id
   # (`Portal.Precompiled.PluginWatch`), from the build's own observations,
   # before the row keeps a bounded copy of them.
-  defp plugins_recorded({:ok, _row} = ok, run_id, build) do
-    :ok = PluginWatch.record(run_id, build["compile_observations"])
+  defp plugins_recorded({:ok, row} = ok, run_id, build) do
+    :ok = PluginWatch.record(row.package_id, run_id, build["compile_observations"])
     ok
   end
 
@@ -2009,7 +2009,7 @@ defmodule Portal.Catalog.Ingestion do
 
     with {:ok, row} <-
            PinnedBuild |> Ash.Changeset.for_create(:upsert, attrs) |> Ash.create(domain: @domain) do
-      :ok = PluginWatch.record(opts.run_id, build["compile_observations"])
+      :ok = PluginWatch.record(row.package_id, opts.run_id, build["compile_observations"])
       :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
       :ok = replace_pinned_memberships(row.id, staged)
       with :ok <- Portal.Deterministic.replace(row, sibling), do: {:ok, row}

@@ -301,7 +301,8 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert Portal.Precompiled.PluginWatch.stale?()
 
       Portal.Repo.query!(
-        "INSERT INTO rebar3_plugin_runs (run_id, package, version) VALUES ('uc-run', 'rebar3_hex', '7.5.0')",
+        "INSERT INTO rebar3_plugin_runs (run_id, package, version, package_id) " <>
+          "VALUES ('uc-run', 'rebar3_hex', '7.5.0', gen_random_uuid())",
         []
       )
 

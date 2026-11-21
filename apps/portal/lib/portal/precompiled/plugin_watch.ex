@@ -19,10 +19,10 @@ defmodule Portal.Precompiled.PluginWatch do
   ## How
 
     * Every build records the plugin releases it ran
-      (`compile_observations.rebar3_plugins`); ingest copies them by run id
-      into `rebar3_plugin_runs` (`record/2`), so an earlier build kept on a
-      row is found by its own run, and a truncated observation map loses
-      nothing.
+      (`compile_observations.rebar3_plugins`); ingest copies them by run id,
+      with the catalog package the build is of, into `rebar3_plugin_runs`
+      (`record/3`), so an earlier build kept on a row is found by its own
+      run, and a truncated observation map loses nothing.
     * `Portal.Workers.UpdateCheck` reads the whole registry every hour and
       writes, for each reviewed package, the releases Hex has that the review
       does not cover into `rebar3_plugin_watch` (`refresh/1`): any such
@@ -34,9 +34,12 @@ defmodule Portal.Precompiled.PluginWatch do
       every build that ran any plugin is withheld.
     * Every selector of published files leaves out a toolchain, pinned or
       host-native build whose run ran a watched package (`served_clause/1` in
-      SQL, `withheld_runs/1` in Elixir), and the watch is part of every
-      manifest fingerprint (`fingerprint_sql/0`), so a change renders the
-      batch again. Deterministic siblings are served only beside their build.
+      SQL, `withheld_runs/1` in Elixir). The watch entries of the plugin
+      packages a package's runs ran, and the staleness while it has any
+      record, are part of that package's manifest fingerprint
+      (`fingerprint_sql/0`; review S5 N8): a change renders again only the
+      packages that ran a plugin it touches. Deterministic siblings are
+      served only beside their build.
 
   Reviewing a new release: the S5 design note's "Reviewing a new plugin
   release". Once a release that adds it to `Compatibility.RebarPlugins`
@@ -74,7 +77,8 @@ defmodule Portal.Precompiled.PluginWatch do
   def max_releases, do: @max_releases
 
   @doc """
-  Records the plugin releases run `run_id` ran, from its build's
+  Records the plugin releases run `run_id` ran, a build of the catalog
+  package `package_id`, from its build's
   `compile_observations` (`"rebar3_plugins"`: `%{"name", "version",
   "sha256"}` each). Deduplicated first and never cut (review S5 R3): a
   record of more than `max_releases/0` releases, or one with any malformed
@@ -82,18 +86,21 @@ defmodule Portal.Precompiled.PluginWatch do
   serves. Observations without the key record nothing (a build from before
   the record). Idempotent.
   """
-  @spec record(String.t() | nil, term()) :: :ok
-  def record(run_id, %{"rebar3_plugins" => plugins}) when is_binary(run_id) and run_id != "" do
+  @spec record(Ecto.UUID.t(), String.t() | nil, term()) :: :ok
+  def record(package_id, run_id, %{"rebar3_plugins" => plugins})
+      when is_binary(run_id) and run_id != "" do
+    package = Ecto.UUID.dump!(package_id)
+
     Enum.each(releases(plugins), fn {name, version, sha} ->
       Portal.Repo.query!(
-        "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256) " <>
-          "VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-        [run_id, name, version, sha]
+        "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256, package_id) " <>
+          "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        [run_id, name, version, sha, package]
       )
     end)
   end
 
-  def record(_run_id, _observations), do: :ok
+  def record(_package_id, _run_id, _observations), do: :ok
 
   defp releases(plugins) when is_list(plugins) do
     parsed = Enum.map(plugins, &release/1)
@@ -192,17 +199,21 @@ defmodule Portal.Precompiled.PluginWatch do
   end
 
   @doc """
-  A subquery of one row and one column, `watch`: the watch as text for the
-  manifest fingerprints (`Portal.Catalog.precompiled_fingerprints/0`) and
-  whether it is stale, NULL while nothing is watched and it is fresh, so a
-  fingerprint is then what it was before.
-  Literal SQL only.
+  A subquery of one row per catalog package with a plugin record,
+  `package_id` and `watch`: the watch entries of the plugin packages its
+  runs ran, as text, and whether the watch is stale, for the manifest
+  fingerprints (`Portal.Catalog.precompiled_fingerprints/0`). A package
+  without a record has no row, so its fingerprint is the same bytes
+  whatever the watch holds (review S5 N8). Literal SQL only.
   """
   @spec fingerprint_sql() :: String.t()
   def fingerprint_sql do
-    "SELECT nullif(coalesce(string_agg(package || ':' || array_to_string(unreviewed, ','), ';' " <>
-      "ORDER BY package), '') || CASE WHEN #{stale_sql()} THEN '|stale' ELSE '' END, '') " <>
-      "AS watch FROM rebar3_plugin_watch"
+    entry = "w.package || ':' || array_to_string(w.unreviewed, ',')"
+
+    "SELECT bp.package_id, coalesce(string_agg(DISTINCT #{entry}, ';' ORDER BY #{entry}), '') " <>
+      "|| CASE WHEN #{stale_sql()} THEN '|stale' ELSE '' END AS watch " <>
+      "FROM rebar3_plugin_runs bp LEFT JOIN rebar3_plugin_watch w ON w.package = bp.package " <>
+      "GROUP BY bp.package_id"
   end
 
   @doc "The ones of `run_ids` whose run ran a watched package."

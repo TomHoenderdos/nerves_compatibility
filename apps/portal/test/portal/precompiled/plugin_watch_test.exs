@@ -31,9 +31,11 @@ defmodule Portal.Precompiled.PluginWatchTest do
         }
   end
 
+  @package_id "0b9c6f5e-3d0c-4e57-9a43-0c7f1d2e8a11"
+
   @reviewed_hex Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys() |> Enum.sort()
 
-  describe "record/2" do
+  describe "record/3" do
     test "keeps each plugin release a run ran, once" do
       plugins = [
         ran("rebar3_hex", "7.5.0"),
@@ -41,11 +43,11 @@ defmodule Portal.Precompiled.PluginWatchTest do
         ran("rebar3_hex", "7.5.0")
       ]
 
-      assert :ok = PluginWatch.record("tc-1", observations(plugins))
-      assert :ok = PluginWatch.record("tc-1", observations(plugins))
-      assert :ok = PluginWatch.record("tc-2", %{"truncated" => true})
-      assert :ok = PluginWatch.record("tc-3", nil)
-      assert :ok = PluginWatch.record(nil, observations(plugins))
+      assert :ok = PluginWatch.record(@package_id, "tc-1", observations(plugins))
+      assert :ok = PluginWatch.record(@package_id, "tc-1", observations(plugins))
+      assert :ok = PluginWatch.record(@package_id, "tc-2", %{"truncated" => true})
+      assert :ok = PluginWatch.record(@package_id, "tc-3", nil)
+      assert :ok = PluginWatch.record(@package_id, nil, observations(plugins))
 
       assert PluginWatch.ran("tc-1") == [{"hex_core", "0.21.1"}, {"rebar3_hex", "7.5.0"}]
       assert PluginWatch.ran("tc-2") == []
@@ -58,10 +60,10 @@ defmodule Portal.Precompiled.PluginWatchTest do
       many = for i <- 1..(max + 1), do: ran("rebar3_hex", "7.#{i}.0")
       dup = for _ <- 1..(max + 5), do: ran("rebar3_hex", "7.5.0")
 
-      assert :ok = PluginWatch.record("tc-dup", observations(dup))
+      assert :ok = PluginWatch.record(@package_id, "tc-dup", observations(dup))
       assert PluginWatch.ran("tc-dup") == [{"rebar3_hex", "7.5.0"}]
 
-      assert :ok = PluginWatch.record("tc-many", observations(many))
+      assert :ok = PluginWatch.record(@package_id, "tc-many", observations(many))
       assert PluginWatch.ran("tc-many") == [{"*", "unrecorded"}]
 
       for {id, bad} <- [
@@ -70,7 +72,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
             {"tc-junk", ["junk"]},
             {"tc-not-list", %{"name" => "x"}}
           ] do
-        assert :ok = PluginWatch.record(id, %{"rebar3_plugins" => bad})
+        assert :ok = PluginWatch.record(@package_id, id, %{"rebar3_plugins" => bad})
         assert PluginWatch.ran(id) == [{"*", "unrecorded"}], id
       end
     end
@@ -134,6 +136,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
       assert Catalog.published_sha256?(ctx.sha)
       assert ctx.name in Catalog.packages_with_precompiled_files()
       before = Catalog.precompiled_fingerprints()[ctx.name]
+      other_before = Catalog.precompiled_fingerprints()[ctx.other]
 
       PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex ++ ["7.6.0"]}]))
 
@@ -142,9 +145,12 @@ defmodule Portal.Precompiled.PluginWatchTest do
       refute ctx.name in Catalog.packages_with_precompiled_files()
       assert Catalog.precompiled_fingerprints()[ctx.name] != before
 
-      # A build that ran no plugin is not touched.
+      # A build that ran no plugin is not touched, nor is its package's
+      # fingerprint: only the packages that ran a watched plugin render
+      # again (review S5 N8).
       assert served?(ctx.other)
       assert Catalog.published_sha256?(ctx.other_sha)
+      assert Catalog.precompiled_fingerprints()[ctx.other] == other_before
 
       PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
 
@@ -152,13 +158,19 @@ defmodule Portal.Precompiled.PluginWatchTest do
       assert Catalog.published_sha256?(ctx.sha)
       assert ctx.name in Catalog.packages_with_precompiled_files()
       assert Catalog.precompiled_fingerprints()[ctx.name] == before
+
+      # A watched plugin the package never ran leaves its fingerprint alone.
+      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}, {"verl", ["9.9.9"]}]))
+      assert PluginWatch.watched() == %{"verl" => ["9.9.9"]}
+      assert served?(ctx.name)
+      assert Catalog.precompiled_fingerprints()[ctx.name] == before
     end
 
     test "a build whose record is the withholding mark is withheld while nothing is watched",
          ctx do
       Portal.Repo.query!(
-        "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256) " <>
-          "SELECT run_id, '*', 'unrecorded', NULL FROM catalog_toolchain_builds t " <>
+        "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256, package_id) " <>
+          "SELECT run_id, '*', 'unrecorded', NULL, t.package_id FROM catalog_toolchain_builds t " <>
           "JOIN catalog_packages p ON p.id = t.package_id WHERE p.name = $1",
         [ctx.name]
       )
@@ -176,6 +188,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
       PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
       assert served?(ctx.name)
       fresh = Catalog.precompiled_fingerprints()[ctx.name]
+      other_fresh = Catalog.precompiled_fingerprints()[ctx.other]
 
       Portal.Repo.query!(
         "UPDATE rebar3_plugin_watch_state SET checked_at = now() - interval '7 hours'",
@@ -186,8 +199,9 @@ defmodule Portal.Precompiled.PluginWatchTest do
       refute Catalog.published_sha256?(ctx.sha)
       refute ctx.name in Catalog.packages_with_precompiled_files()
       assert Catalog.precompiled_fingerprints()[ctx.name] != fresh
-      # A build that ran no plugin is not touched.
+      # A build that ran no plugin is not touched, nor its fingerprint (N8).
       assert served?(ctx.other)
+      assert Catalog.precompiled_fingerprints()[ctx.other] == other_fresh
 
       Portal.Repo.query!("DELETE FROM rebar3_plugin_watch_state", [])
       refute served?(ctx.name)
@@ -201,8 +215,8 @@ defmodule Portal.Precompiled.PluginWatchTest do
 
     test "a watched dependency of the plugin withholds it too", ctx do
       Portal.Repo.query!(
-        "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256) " <>
-          "SELECT run_id, 'hex_core', '0.21.1', NULL FROM catalog_toolchain_builds t " <>
+        "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256, package_id) " <>
+          "SELECT run_id, 'hex_core', '0.21.1', NULL, t.package_id FROM catalog_toolchain_builds t " <>
           "JOIN catalog_packages p ON p.id = t.package_id WHERE p.name = $1",
         [ctx.name]
       )
