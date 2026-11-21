@@ -199,6 +199,13 @@ defmodule NccWorker.Portability.Probes do
   @every_path ~w(kernel stdlib compiler erts elixir mix iex ex_unit logger)
   # Elixir's modules whose functions probe for the package.
   @elixir_wrappers ~w(Code Kernel Application)
+  # Call sites that call a module directly right before they ask whether it
+  # exports a function, reviewed in every release from the given one on:
+  # plug's `init_module_plug/4` runs `plug.init(opts)`, then
+  # `function_exported?(plug, :call, 2)` (plug 1.5.0 to 1.20.4, read
+  # 2026-11-21; Plug.Builder, so Plug.Router and Phoenix's router and
+  # endpoint pipelines).
+  @reviewed_direct_calls [{"Elixir.Plug.Builder", "init_module_plug", 4, "plug", "1.5.0"}]
   # The stacks the tracer judged (`NccWorker.Portability.Events`).
   @extents ~w(frame dispatcher truncated lineage)
 
@@ -432,12 +439,48 @@ defmodule NccWorker.Portability.Probes do
   # earlier (`ensured`).
   # Only the package's own probe (`by_package`): a toolchain function's
   # check of a module it is about to use (EEx's of its engine) is judged as
-  # before.
+  # before. And not of the owner's own module (round 2, ruling 2): it does
+  # not exist before the owner's compile on either side, so whether it is
+  # loaded is that compile's doing, which the user's compile of the same
+  # sources repeats (Spark's `function_exported?(extension,
+  # :add_extensions, 0)`). Nor right after a reviewed call site's own direct
+  # call of the module (`@reviewed_direct_calls`).
   defp found_or_ensured(event, ctx, owner) do
+    module = event["arg"]["module"]
+
     if event["mfa"] in @path_probes or event["arg"]["by_package"] != true or
-         ensured?(event, ctx, owner),
+         ensured?(event, ctx, owner) or Map.get(ctx.modules, module) == owner or
+         reviewed_direct_call?(event, ctx, owner),
        do: :ignore,
-       else: {:refuse, Reasons.loaded_probe() <> "#{event["arg"]["module"]} via #{via(event)}"}
+       else: {:refuse, Reasons.loaded_probe() <> "#{module} via #{via(event)}"}
+  end
+
+  # The call site, by its frame (the probe's caller), the application its
+  # module must be built by, in the owner's closure, and the oldest locked
+  # release of it reviewed.
+  defp reviewed_direct_call?(
+         %{
+           "mfa" => "erlang:function_exported/3",
+           "caller" => %{"module" => m, "function" => f, "arity" => a}
+         },
+         ctx,
+         owner
+       ) do
+    Enum.any?(@reviewed_direct_calls, fn {rm, rf, ra, app, oldest} ->
+      {m, f, a} == {rm, rf, ra} and Map.get(ctx.modules, m) == app and
+        app in Context.closure_of(ctx, owner) and reviewed_release?(ctx, app, oldest)
+    end)
+  end
+
+  defp reviewed_direct_call?(_event, _ctx, _owner), do: false
+
+  defp reviewed_release?(%Context{hex: {_home, releases}}, app, oldest) do
+    with %{version: v} when is_binary(v) <- Map.get(releases, app),
+         {:ok, version} <- Version.parse(v) do
+      Version.compare(version, oldest) != :lt
+    else
+      _ -> false
+    end
   end
 
   defp ensured?(%{"pid" => pid, "ts" => ts, "arg" => %{"module" => module}}, ctx, owner)

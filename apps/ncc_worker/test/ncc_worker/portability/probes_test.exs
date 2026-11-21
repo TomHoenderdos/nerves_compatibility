@@ -688,23 +688,78 @@ defmodule NccWorker.Portability.ProbesTest do
     # Whether it is loaded now: what other compile-time code in the same VM
     # ran decides it (a call into a module loads it), and the user's project
     # decides that, not the builder's.
-    test "of a closure module by a loaded-now probe refuses unless ensured first",
+    test "of a closure dependency's module by a loaded-now probe refuses unless ensured first",
          %{tmp_dir: dir} do
-      c = dir |> ctx(%{"pkg" => ["kernel"]}) |> with_modules(%{"Elixir.Pkg.Other" => "pkg"})
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "dep" => ["kernel"]})
+        |> with_modules(%{"Elixir.Dep.Other" => "dep"})
+
+      c = put_in(c.deps["pkg"].children, ["dep"])
 
       for mfa <- ~w(code:is_loaded/1 code:module_status/1 erlang:module_loaded/1
                     erlang:function_exported/3) do
-        event = hex("Elixir.Pkg.Other", mfa: mfa, caller: frame("Elixir.Pkg", "f", 0))
+        event = hex("Elixir.Dep.Other", mfa: mfa, caller: frame("Elixir.Pkg", "f", 0))
 
         assert Probes.decide(event, c, "pkg") ==
                  {:refuse,
-                  "compile-time probe of whether a module is loaded: Elixir.Pkg.Other via #{mfa}"}
+                  "compile-time probe of whether a module is loaded: Elixir.Dep.Other via #{mfa}"}
       end
 
-      loaded = hex("Elixir.Pkg.Other") |> at("<0.10.0>", 100)
-      exported = hex("Elixir.Pkg.Other", mfa: "erlang:function_exported/3") |> at("<0.10.0>", 200)
+      loaded = hex("Elixir.Dep.Other") |> at("<0.10.0>", 100)
+      exported = hex("Elixir.Dep.Other", mfa: "erlang:function_exported/3") |> at("<0.10.0>", 200)
       c = %{c | ensured: Probes.ensured([{"pkg", loaded}])}
       assert Probes.decide(exported, c, "pkg") == :ignore
+    end
+
+    # Round-2 ruling 2. The owner's own module: it does not exist before
+    # the owner's compile on either side, so whether it is loaded is that
+    # compile's doing, which the user's compile repeats (Spark's
+    # `function_exported?(extension, :add_extensions, 0)`).
+    test "of the owner's own module by a loaded-now probe is no concern", %{tmp_dir: dir} do
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "dep" => ["kernel"]})
+        |> with_modules(%{"Elixir.Pkg.Ext" => "pkg", "Elixir.Dep.Ext" => "dep"})
+
+      c = put_in(c.deps["pkg"].children, ["dep"])
+      exported = &hex(&1, mfa: "erlang:function_exported/3", caller: frame("Elixir.Pkg", "f", 0))
+      assert Probes.decide(exported.("Elixir.Pkg.Ext"), c, "pkg") == :ignore
+      # Another closure dependency's module: an earlier compile in the VM
+      # loaded it on the builder, maybe not on the user's side.
+      assert {:refuse, _} = Probes.decide(exported.("Elixir.Dep.Ext"), c, "pkg")
+      # dep's own module, in dep's window.
+      assert Probes.decide(exported.("Elixir.Dep.Ext"), c, "dep") == :ignore
+    end
+
+    # Round-2 ruling 2. A reviewed call site that calls the module directly
+    # right before it probes it: plug's `Plug.Builder.init_module_plug/4`
+    # runs `plug.init(opts)` and then `function_exported?(plug, :call, 2)`
+    # (plug 1.5.0 and later). The module is loaded then on both sides.
+    test "a reviewed site's probe right after its direct call is no concern", %{tmp_dir: dir} do
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "plug" => ["kernel"]})
+        |> with_modules(%{"Elixir.Plug.Builder" => "plug", "Elixir.Plug.Parsers" => "plug"})
+
+      c = put_in(c.deps["pkg"].children, ["plug"])
+      c = %{c | hex: {nil, %{"plug" => %{name: "plug", version: "1.20.4", checksum: "x"}}}}
+      site = frame("Elixir.Plug.Builder", "init_module_plug", 4)
+      probe = hex("Elixir.Plug.Parsers", mfa: "erlang:function_exported/3", caller: site)
+      assert Probes.decide(probe, c, "pkg") == :ignore
+
+      # Another function, another arity, an older plug, a Plug.Builder of
+      # another application, the module_loaded/1 probe.
+      for {event, ctx} <- [
+            {put_in(probe["caller"]["function"], "init_fun_plug"), c},
+            {put_in(probe["caller"]["arity"], 3), c},
+            {probe,
+             %{c | hex: {nil, %{"plug" => %{name: "plug", version: "1.4.5", checksum: "x"}}}}},
+            {probe, %{c | modules: Map.put(c.modules, "Elixir.Plug.Builder", "pkg")}},
+            {%{probe | "mfa" => "erlang:module_loaded/1"}, c}
+          ] do
+        assert {:refuse, _} = Probes.decide(event, ctx, "pkg"), inspect(event["caller"])
+      end
     end
 
     # An installed OTP module on the owner's path is the same: listed, it

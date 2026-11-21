@@ -475,6 +475,43 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     end
   end
 
+  # Round-2 ruling 2: a Spark-like DSL. The DSL module's body asks whether
+  # an extension of the same package exports add_extensions/0, with no
+  # ensure first: own modules are compiled by the same parallel compile on
+  # both sides, so it passes.
+  test "a loaded-now probe of the package's own module passes (Spark's DSL)", %{tmp_dir: dir} do
+    body = """
+    defmodule FxDsl.Ext do
+      def add_extensions, do: []
+    end
+
+    defmodule FxDsl do
+      @default_extensions Enum.flat_map([FxDsl.Ext], fn module ->
+                            if function_exported?(module, :add_extensions, 0),
+                              do: [module | module.add_extensions()],
+                              else: [module]
+                          end)
+      def x, do: @default_extensions
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{files: %{"lib/fx_dsl.ex" => body}}
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"])
+    assert {:ok, 0} = traced.result, traced.log
+    verdict = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+    assert Enum.any?(
+             probes(traced),
+             &(&1["arg"]["module"] == "Elixir.FxDsl.Ext" and
+                 &1["mfa"] == "erlang:function_exported/3")
+           )
+  end
+
   # The compiler's own lookups of a module nothing defines (a remote call,
   # an alias in a def body) decide only its warnings: no concern.
   test "the compiler's lookups of a missing module pass", %{tmp_dir: dir} do
