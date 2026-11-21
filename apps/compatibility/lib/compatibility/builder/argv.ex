@@ -40,7 +40,8 @@ defmodule Compatibility.Builder.Argv do
           required(:cache) => Path.t(),
           required(:nerves_cache) => Path.t(),
           required(:hex_cache) => Path.t(),
-          optional(:build_cache) => Path.t() | nil
+          optional(:build_cache) => Path.t() | nil,
+          optional(:users) => Path.t() | nil
         }
 
   @type nerves_cache_mode :: :readonly | :warm | :rw
@@ -190,9 +191,17 @@ defmodule Compatibility.Builder.Argv do
       bind(Map.fetch!(paths, :cache), "/home/nerves/.cache"),
       nerves_cache_mount(Map.fetch!(paths, :nerves_cache), nerves_cache_mode),
       hex_cache_mount(Map.fetch!(paths, :hex_cache), hex_cache_mode),
-      build_cache_mount(Map.get(paths, :build_cache))
+      build_cache_mount(Map.get(paths, :build_cache)),
+      users_mount(Map.get(paths, :users))
     ])
   end
+
+  # S4: a build that may relocate builds its package a third time under
+  # `/Users` (`Compatibility.Relocation.third_layout/2`), on a root that is
+  # otherwise read-only: a per-run scratch dir, removed with the run, like
+  # /tmp. No other build gets it.
+  defp users_mount(nil), do: []
+  defp users_mount(dir), do: bind(dir, "/Users")
 
   defp bind(source, target), do: ["--mount", "type=bind,source=#{source},target=#{target}"]
 

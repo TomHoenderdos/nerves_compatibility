@@ -65,7 +65,8 @@ defmodule Portal.Settings.Setting do
         :host_native_enabled,
         :deterministic_builds_enabled,
         :foreign_priv_enabled,
-        :relocated_enabled
+        :relocated_enabled,
+        :relocate_builds_enabled
       ])
 
       upsert?(true)
@@ -200,6 +201,16 @@ defmodule Portal.Settings.Setting do
     # published under a version's `relocated` object and their files served.
     # Off by default; stored rows stay when it is turned off, unserved.
     attribute :relocated_enabled, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Whether toolchain jobs ask the judge to relocate a build that bakes its
+    # deps or build path (`Portal.Builder.judge_input/1`,
+    # `NccWorker.Portability.Relocate`). Off by default; it serves nothing by
+    # itself: `relocated_enabled` decides that.
+    attribute :relocate_builds_enabled, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)

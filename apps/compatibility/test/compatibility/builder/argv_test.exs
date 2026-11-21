@@ -45,6 +45,20 @@ defmodule Compatibility.Builder.ArgvTest do
            )
   end
 
+  # S4: a build that may relocate gets a per-run scratch dir at /Users, the
+  # third root (`Compatibility.Relocation.third_layout/2`); no other build
+  # does, so the pinned argv above is unchanged.
+  test "a users path mounts it at /Users; none, no mount", %{input: input} do
+    argv = Argv.build(put_in(input, [:paths, :users], "/scratch/run/users"))
+    assert "type=bind,source=/scratch/run/users,target=/Users" in argv
+    refute Enum.any?(Argv.build(input), &String.contains?(&1, "/Users"))
+
+    refute Enum.any?(
+             Argv.build(put_in(input, [:paths, :users], nil)),
+             &String.contains?(&1, "/Users")
+           )
+  end
+
   test "no build cache means neither the mount nor its env", %{input: input} do
     argv = Argv.build(put_in(input, [:paths, :build_cache], nil))
 

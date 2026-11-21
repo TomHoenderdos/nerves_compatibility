@@ -115,6 +115,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
       deterministic_enabled: Portal.Settings.get().deterministic_builds_enabled,
       foreign_priv_enabled: Portal.Settings.get().foreign_priv_enabled,
       relocated_enabled: Portal.Settings.get().relocated_enabled,
+      relocate_builds_enabled: Portal.Settings.get().relocate_builds_enabled,
       worlds: Portal.Toolchains.worlds(),
       world_top_packages: Portal.Toolchains.world_top_packages(),
       rows: nil
@@ -251,6 +252,26 @@ defmodule PortalWeb.Admin.MaintenanceLive do
            |> put_flash(
              :info,
              "Deterministic builds turned #{if enabled, do: "on", else: "off"}."
+           )
+           |> load_panels()}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, AdminMessages.error(reason)) |> load_panels()}
+      end
+    end)
+  end
+
+  def handle_event("toggle_relocate_builds", params, socket) do
+    as_admin(socket, fn socket, user ->
+      enabled = params["enabled"] == "true"
+
+      case Portal.Admin.set_relocate_builds_enabled(enabled, user) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_flash(
+             :info,
+             "Relocation in builds turned #{if enabled, do: "on", else: "off"}."
            )
            |> load_panels()}
 
@@ -984,6 +1005,39 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               {if @toolchains.foreign_priv_enabled,
                 do: "Turn foreign priv builds off",
                 else: "Turn foreign priv builds on"}
+            </button>
+          </div>
+
+          <div
+            id="relocate-builds"
+            class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <h3 class="font-semibold">Relocation in builds</h3>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                <span id="relocate-builds-state">
+                  Relocation in builds is {if @toolchains.relocate_builds_enabled,
+                    do: "on",
+                    else: "off"}.
+                </span>
+                Toolchain builds whose beams hold their build's paths are built again at two more
+                roots and, when every root proves, stored as relocated builds. It serves nothing by
+                itself; relocated builds below decides that.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="relocate-builds-toggle"
+              phx-click="toggle_relocate_builds"
+              phx-value-enabled={to_string(not @toolchains.relocate_builds_enabled)}
+              class={[
+                "btn btn-sm",
+                if(@toolchains.relocate_builds_enabled, do: "btn-ghost", else: "btn-primary")
+              ]}
+            >
+              {if @toolchains.relocate_builds_enabled,
+                do: "Turn relocation in builds off",
+                else: "Turn relocation in builds on"}
             </button>
           </div>
 

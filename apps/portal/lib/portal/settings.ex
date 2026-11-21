@@ -26,7 +26,8 @@ defmodule Portal.Settings do
     host_native_enabled: false,
     deterministic_builds_enabled: false,
     foreign_priv_enabled: false,
-    relocated_enabled: false
+    relocated_enabled: false,
+    relocate_builds_enabled: false
   }
 
   resources do

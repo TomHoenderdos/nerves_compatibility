@@ -235,10 +235,11 @@ defmodule Portal.Builder do
   `"native_side" => true` while `NCC_JUDGE_NATIVE_SIDE=1`
   (`:judge_native_side`: a natively built dependency's native side set
   apart from its beams, and rule 2's finer target and native-tool
-  reading, `NccWorker.Portability`), and `"relocate" => true` while
-  `NCC_JUDGE_RELOCATE=1` (`:judge_relocate`, relocatable builds,
-  `NccWorker.Portability.Relocate`); nil when none, which the worker reads
-  as off. Remote builds never run
+  reading, `NccWorker.Portability`), and `"relocate" => true` while the
+  `relocate_builds_enabled` setting is on (relocatable builds,
+  `NccWorker.Portability.Relocate`; such a job also gets a `/Users` mount
+  of its own scratch, `build_docker_args/4`); nil when none, which the
+  worker reads as off. Remote builds never run
   toolchain builds, so the builder API sends none.
   """
   @spec judge_input(String.t() | nil) :: map() | nil
@@ -247,7 +248,7 @@ defmodule Portal.Builder do
     |> put_on("makefile_rule2", config(:judge_makefile_rule2, false) == true)
     |> put_on("foreign_priv", Portal.Precompiled.ForeignPriv.enabled?())
     |> put_on("native_side", config(:judge_native_side, false) == true)
-    |> put_on("relocate", config(:judge_relocate, false) == true)
+    |> put_on("relocate", Portal.Settings.get().relocate_builds_enabled == true)
     |> case do
       options when map_size(options) == 0 -> nil
       options -> options
@@ -518,15 +519,17 @@ defmodule Portal.Builder do
          {:ok, hex_cache_mode} <- hex_cache_mode(job),
          job = Map.put(job, :hex_cache_mode, hex_cache_mode),
          :ok <-
-           ensure_directories([
-             work_dir,
-             output_dir,
-             files_dir,
-             tmp_dir,
-             cache_dir,
-             nerves_cache(),
-             hex_cache()
-           ]),
+           ensure_directories(
+             [
+               work_dir,
+               output_dir,
+               files_dir,
+               tmp_dir,
+               cache_dir,
+               nerves_cache(),
+               hex_cache()
+             ] ++ List.wrap(users_dir(job, scratch))
+           ),
          {:ok, prefetch_line} <- prefetch_build_cache(job),
          job = with_known_system_abi(job),
          :ok <- write_worker_input(job, work_dir),
@@ -1226,10 +1229,17 @@ defmodule Portal.Builder do
         cache: Path.join(scratch, "cache"),
         nerves_cache: nerves_cache(),
         hex_cache: hex_cache(),
-        build_cache: build_cache_dir(job)
+        build_cache: build_cache_dir(job),
+        users: users_dir(job, scratch)
       }
     })
   end
+
+  # S4: the third root of a relocation (`Compatibility.Relocation.third_layout/2`)
+  # is under `/Users`, a per-run scratch dir bound there only for a job that
+  # sends the judge `relocate`.
+  defp users_dir(%{judge: %{"relocate" => true}}, scratch), do: Path.join(scratch, "users")
+  defp users_dir(_job, _scratch), do: nil
 
   @doc """
   How the container for `job` mounts the Nerves cache

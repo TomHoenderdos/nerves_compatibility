@@ -667,6 +667,24 @@ defmodule Portal.Admin do
   end
 
   @doc """
+  Turns relocation in toolchain builds on or off: the
+  `relocate_builds_enabled` setting under which toolchain jobs ask the
+  judge to relocate a build that bakes its paths
+  (`Portal.Builder.judge_input/1`). It serves nothing by itself.
+  """
+  @spec set_relocate_builds_enabled(boolean(), %{username: String.t()}) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, term()}
+  def set_relocate_builds_enabled(enabled, actor) when is_boolean(enabled) do
+    with {:ok, setting} <- Portal.Settings.save(%{relocate_builds_enabled: enabled}) do
+      Logger.warning(
+        "Relocation in builds turned #{if enabled, do: "on", else: "off"} by #{actor.username}"
+      )
+
+      {:ok, setting}
+    end
+  end
+
+  @doc """
   Turns relocated builds (`Portal.Precompiled.Relocated`) on or off: the
   `relocated_enabled` setting under which they are listed under a version's
   `relocated` object and their files served. Off withdraws every one at the

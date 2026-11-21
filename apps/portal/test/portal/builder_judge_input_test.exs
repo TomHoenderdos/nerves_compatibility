@@ -89,18 +89,53 @@ defmodule Portal.BuilderJudgeInputTest do
     assert Builder.judge_input("toolchain") == %{"makefile_rule2" => true, "native_side" => true}
   end
 
-  # S4: relocatable builds, a host flag like makefile_rule2's, for toolchain
-  # builds only.
-  test "relocate: toolchain builds only, and only with NCC_JUDGE_RELOCATE", %{previous: previous} do
-    base = previous |> Keyword.delete(:judge_makefile_rule2) |> Keyword.delete(:judge_relocate)
-    Application.put_env(:portal, Builder, base)
+  # S4: relocatable builds, a setting like foreign_priv's (turned on without
+  # a deploy), for toolchain builds only.
+  test "relocate: toolchain builds only, and only with the relocate_builds_enabled setting", %{
+    previous: previous
+  } do
+    Application.put_env(
+      :portal,
+      Builder,
+      Keyword.drop(previous, [:judge_makefile_rule2, :judge_native_side])
+    )
+
+    {:ok, _} =
+      Portal.Settings.save(%{foreign_priv_enabled: false, relocate_builds_enabled: false})
+
     assert Builder.judge_input("toolchain") == nil
 
-    Application.put_env(:portal, Builder, Keyword.put(base, :judge_relocate, true))
+    {:ok, _} = Portal.Settings.save(%{relocate_builds_enabled: true})
     assert Builder.judge_input("toolchain") == %{"relocate" => true}
 
     for mode <- [nil, "argus_only", "warm_nerves", "host_native"],
         do: assert(Builder.judge_input(mode) == nil, inspect(mode))
+  end
+
+  # A toolchain job that may relocate gets its /Users scratch dir; no other.
+  test "a job sent relocate gets a /Users mount of its own scratch" do
+    job = %{
+      run_id: "r-users",
+      image_name: "ncc-worker:local",
+      image_digest: "sha256:x",
+      mode: "toolchain",
+      judge: %{"relocate" => true},
+      memory: "4g",
+      hex_cache_mode: :readonly
+    }
+
+    argv = Builder.build_docker_args(job, "/scratch/work", "/scratch/out", "/scratch/files")
+    assert "type=bind,source=/scratch/users,target=/Users" in argv
+
+    plain =
+      Builder.build_docker_args(
+        %{job | judge: nil},
+        "/scratch/work",
+        "/scratch/out",
+        "/scratch/files"
+      )
+
+    refute Enum.any?(plain, &String.contains?(&1, "/Users"))
   end
 
   test "worker_input carries judge only when set" do
