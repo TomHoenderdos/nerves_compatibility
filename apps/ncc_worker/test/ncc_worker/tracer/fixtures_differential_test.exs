@@ -47,6 +47,23 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
       """),
     # A power-of-two count picks a bitmask, any other a rem/2 (review B4):
     # built on 8 schedulers, as on an 8-CPU builder.
+    # Review N3: parity and divisibility of the count, which 1 and a prime
+    # share. Each built on a builder count whose answer is 1's.
+    "fx_dv_even" =>
+      lib(
+        "fx_dv_even",
+        "defmodule FxDvEven do\n  @even rem(System.schedulers_online(), 2) == 0\n  def even?, do: @even\nend\n"
+      ),
+    "fx_dv_by4" =>
+      lib(
+        "fx_dv_by4",
+        "defmodule FxDvBy4 do\n  @by4 rem(System.schedulers_online(), 4) == 0\n  def by4?, do: @by4\nend\n"
+      ),
+    "fx_dv_by3" =>
+      lib(
+        "fx_dv_by3",
+        "defmodule FxDvBy3 do\n  @by3 rem(System.schedulers_online(), 3) == 0\n  def by3?, do: @by3\nend\n"
+      ),
     "fx_dv_pow2" =>
       lib("fx_dv_pow2", """
       defmodule FxDvPow2 do
@@ -127,6 +144,12 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
 
     off = run(root, proj, "fx_dv_pool", differential: false)
     pow2 = run(root, proj, "fx_dv_pow2", env: [{"ERL_ZFLAGS", "+S 8:8"}])
+
+    divisors =
+      for {app, s} <- [{"fx_dv_even", 3}, {"fx_dv_by4", 6}, {"fx_dv_by3", 8}], into: %{} do
+        {app, run(root, proj, app, env: [{"ERL_ZFLAGS", "+S #{s}:#{s}"}])}
+      end
+
     gate = run(root, proj, "fx_dv_gate", env: [{"ERL_ZFLAGS", "+S 8:8"}, {"FX_GATE", nil}])
 
     # Each rebar3 script in a project of its own: a read outside every
@@ -136,7 +159,14 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
         {name, script_run(root, name, script)}
       end
 
-    %{verdicts: verdicts, off: off, pow2: pow2, gate: gate, scripts: scripts}
+    %{
+      verdicts: verdicts,
+      off: off,
+      pow2: pow2,
+      divisors: divisors,
+      gate: gate,
+      scripts: scripts
+    }
   end
 
   # Builds under asdf find their install through HOME, which a variant moves.
@@ -244,6 +274,21 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     v = ctx.verdicts["fx_dv_many"]
     assert v.status == :skip, log(v)
     assert v.reason =~ "; a differential build differs: ebin/Elixir.FxDvMany.beam: "
+  end
+
+  # Review N3: the first builds ran on 3, 6 and 8 schedulers, whose answer
+  # is 1's, so only `high` (240 = 2^4 x 3 x 5) can tell.
+  test "parity and divisibility by 4 or by 3 of the count refuse", ctx do
+    for {app, module} <- [
+          {"fx_dv_even", "FxDvEven"},
+          {"fx_dv_by4", "FxDvBy4"},
+          {"fx_dv_by3", "FxDvBy3"}
+        ] do
+      v = ctx.divisors[app]
+      assert v.status == :skip, "#{app}: " <> log(v)
+      assert v.reason =~ ~r/\Acompile-time host read: erlang:system_info\/1 \(schedulers_online\)/
+      assert v.reason =~ "; a differential build differs: ebin/Elixir.#{module}.beam: ", app
+    end
   end
 
   test "a power-of-two test of the count refuses on a power-of-two builder", ctx do

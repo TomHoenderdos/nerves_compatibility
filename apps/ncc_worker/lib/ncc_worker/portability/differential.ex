@@ -33,8 +33,9 @@ defmodule NccWorker.Portability.Differential do
       own trace dir, and with the varied values at either end of their
       domain: `low` with `+S 1:1`, a short HOME (`/tmp/h<4 hex>`, shorter
       than `/home/nerves`) and no extra plain arguments, `high` with
-      `+S 251:251` (a prime: parity and a power-of-two test differ from
-      1's), a long HOME and the command words a Mix user's line can hold
+      `+S 240:240` (even, no power of two, divisible by 2, 3, 4, 5, 6, 8,
+      10, 12, 15 and 16: parity, a power-of-two test and those
+      divisibilities answer otherwise than for 1), a long HOME and the command words a Mix user's line can hold
       (`ScriptCheck.words/0`). Each must pass the judge, its own varied
       reads held as the first's were, and read nothing the first build did
       not (review B1: a compile input, config item, varied read, or env or
@@ -54,13 +55,19 @@ defmodule NccWorker.Portability.Differential do
   judged is `"not_judged"`. Variant dirs are removed either way. Never
   raises.
 
-  No finite set of values proves a value cannot reach a build: a test
-  against one value (`n == 12`) differs only there. Two variants at the
-  ends of the domain catch a value copied into the output and every
-  monotone use of it, and 1 against a prime catches parity and a
-  power-of-two test. The values move together (low, low; high, high), so a
-  condition pairing one read's low end with another's high end is not
-  tried; nor is a HOME of one exact value or prefix.
+  No finite set of values proves a value cannot reach a build. Two
+  variants at the ends of the domain catch a value copied into the output
+  and every monotone use of it, and 1 against 240 catches parity, a
+  power-of-two test and divisibility by 2, 3, 4, 5, 6, 8, 10, 12, 15 or 16.
+  The residual: a test against one exact value (`n == 12`); a threshold
+  above 240; a window that holds none of 1, 240 and the builder's count (`n
+  in 9..64` on an 8-CPU builder); divisibility by a k that divides none of
+  them (7, 9, 32 on an 8-CPU builder); a HOME of one exact value or prefix;
+  and a condition that pairs one read's low end with another's high end,
+  since the values move together (low, low; high, high). Two varied reads
+  at one site (a helper or macro several callers reach) are one read, so a
+  variant reaching that site from a new caller is not "read more" (review
+  R2): the value is varied there anyway, so this is the pairing residual.
   """
 
   alias Compatibility.Portability, as: Reasons
@@ -75,13 +82,15 @@ defmodule NccWorker.Portability.Differential do
   @max_reads 50
   # The reads a pass records in `observations["differential"]`.
   @max_recorded 20
-  # 1 is the smallest count; 251 a prime, so parity and a power-of-two test
-  # differ from 1's and from a builder's usual power-of-two count (review
-  # B4). HOME: `low` a short one under `/tmp` (shorter than the worker's
-  # `/home/nerves`), `high` a long one.
+  # 1 is the smallest count; 240 = 2^4 x 3 x 5 is even, no power of two, and
+  # divisible by 2, 3, 4, 5, 6, 8, 10, 12, 15 and 16, so parity, a
+  # power-of-two test and those divisibilities answer for 240 what they do
+  # not for 1, whatever the builder's own count (review B4, N3). HOME: `low`
+  # a short one under `/tmp` (shorter than the worker's `/home/nerves`),
+  # `high` a long one.
   @variants [
     low: %{schedulers: 1, home: :short, plain_args: []},
-    high: %{schedulers: 251, home: "home-of-a-much-longer-name", plain_args: ScriptCheck.words()}
+    high: %{schedulers: 240, home: "home-of-a-much-longer-name", plain_args: ScriptCheck.words()}
   ]
   @short_root "/tmp"
 

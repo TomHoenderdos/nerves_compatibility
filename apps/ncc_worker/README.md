@@ -609,7 +609,8 @@ between the read and `Mix.Rebar.eval_script/2`), is observed as `varied_reads` i
 varied read is settled by two variant builds of the closure, each at a fresh build root of a random name made
 exclusively (of the first's length where one fits, and still empty once the container is swept) after a gap of a
 little over a second: `low` with `ERL_ZFLAGS=+S 1:1`, a short HOME under `/tmp` and no extra plain arguments, `high`
-with `+S 251:251` (a prime: parity and a power-of-two test differ from `low`'s), a long HOME and a Mix user's command
+with `+S 240:240` (even, no power of two, divisible by 2, 3, 4, 5, 6, 8, 10, 12, 15 and 16: parity, a power-of-two test
+and those divisibilities answer otherwise than for `low`'s 1), a long HOME and a Mix user's command
 words (`iex`'s `+iex` and `--no-halt` included) after the task. A plain-arguments read first needs the script check
 (`NccWorker.Portability.ScriptCheck`), one wall budget of at most five minutes and a third of the run's time left:
 Mix VMs in the run's own project (`elixir -pa <ebin> -S mix ncc.script_eval <words>`, Mix, Mix.Project and Hex
