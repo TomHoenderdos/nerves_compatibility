@@ -131,6 +131,34 @@ defmodule NccWorker.Portability.RebarPluginsTest do
         do: assert(is_binary(pins[name][version]), "#{name} #{version}")
   end
 
+  # rebar3's leex and yecc compilers write the module they generate next to
+  # the `.xrl`/`.yrl` in the plugin's own `src` (hex_core's safe_erl_term).
+  test "a module generated from the release's own leex or yecc file is the release's",
+       %{tmp_dir: root} do
+    files = Map.merge(@src, %{"src/lexer.xrl" => "Definitions.\n", "src/parser.yrl" => "x.\n"})
+
+    i =
+      install(root, "fx_plugin", "1.0.0", files, ["fx_plugin.beam", "lexer.beam", "parser.beam"])
+
+    File.write!(Path.join(i.dir, "src/lexer.erl"), "-module(lexer).\n")
+    File.write!(Path.join(i.dir, "src/parser.erl"), "-module(parser).\n")
+    pins = pins("fx_plugin", "1.0.0", i.sha)
+
+    assert RebarPlugins.check(i.dest, i.cache, [], pins) == :ok
+
+    # Only next to its source, and never over a module the release ships.
+    File.write!(Path.join(i.dir, "lexer.erl"), "-module(lexer).\n")
+    assert {:refuse, _} = RebarPlugins.check(i.dest, i.cache, [], pins)
+    File.rm!(Path.join(i.dir, "lexer.erl"))
+
+    shipped = Map.merge(files, %{"src/lexer.erl" => "-module(lexer).\n%% shipped\n"})
+    j = install(Path.join(root, "shipped"), "fx_plugin", "1.0.0", shipped)
+    File.write!(Path.join(j.dir, "src/lexer.erl"), "-module(lexer).\n")
+
+    assert {:refuse, _} =
+             RebarPlugins.check(j.dest, j.cache, [], pins("fx_plugin", "1.0.0", j.sha))
+  end
+
   test "a file of the release changed, planted or missing refuses", %{tmp_dir: root} do
     differs = "from files that are not its reviewed release's"
 

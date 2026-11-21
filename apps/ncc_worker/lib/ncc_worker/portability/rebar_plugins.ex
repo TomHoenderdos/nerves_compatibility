@@ -24,9 +24,11 @@ defmodule NccWorker.Portability.RebarPlugins do
       that version;
     * its cached tarball hashes to the pinned checksum;
     * its dir holds exactly the tarball's files, byte for byte, plus
-      `hex_metadata.config` (the tarball's `metadata.config`) and an `ebin`
-      of `<name>.app` and one beam per module of its own sources (or the
-      tarball's own `ebin` files): no file planted, changed or left out.
+      `hex_metadata.config` (the tarball's `metadata.config`), the `.erl`
+      rebar3's leex or yecc compiler wrote next to a `.xrl` or `.yrl` the
+      release ships in `src`, and an `ebin` of `<name>.app` and one beam
+      per module of its own sources (or the tarball's own `ebin` files): no
+      file planted, changed or left out.
 
   Every entry of every `_build/<profile>/plugins` dir is judged (a link must
   name a plugin dir of the same name under `_build`), and every reviewed
@@ -470,10 +472,11 @@ defmodule NccWorker.Portability.RebarPlugins do
     with {:ok, files, metadata} <- tarball_files(tarball),
          {:ok, disk} <- walk(dir) do
       {ebin, rest} = Enum.split_with(disk, fn {path, _} -> String.starts_with?(path, "ebin/") end)
+      {generated, rest} = Enum.split_with(rest, &generated?(&1, files))
       expected = files |> Map.reject(fn {p, _} -> String.starts_with?(p, "ebin/") end)
       expected = Map.put(expected, "hex_metadata.config", metadata)
 
-      if Map.new(rest) == expected and ebin_ok?(ebin, files, name),
+      if Map.new(rest) == expected and ebin_ok?(ebin, files, name, generated),
         do: :ok,
         else: differs
     else
@@ -482,11 +485,24 @@ defmodule NccWorker.Portability.RebarPlugins do
     end
   end
 
+  # rebar3's leex and yecc compilers write the module they generate from a
+  # `.xrl` or `.yrl` the release ships next to it in `src` (hex_core's
+  # `safe_erl_term`): such an `.erl` is the release's, when the release
+  # ships no file at that path.
+  defp generated?({"src/" <> _ = path, _bytes}, files) do
+    Path.extname(path) == ".erl" and not Map.has_key?(files, path) and
+      Enum.any?([".xrl", ".yrl"], &Map.has_key?(files, Path.rootname(path) <> &1))
+  end
+
+  defp generated?(_file, _files), do: false
+
   # `ebin`: the app file and one beam per module of its own sources, or a
   # file the tarball itself ships there, byte for byte.
-  defp ebin_ok?(ebin, files, name) do
+  defp ebin_ok?(ebin, files, name, generated) do
+    sources = Map.keys(files) ++ Enum.map(generated, &elem(&1, 0))
+
     modules =
-      for {path, _} <- files,
+      for path <- sources,
           String.starts_with?(path, "src/"),
           Path.extname(path) in [".erl", ".xrl", ".yrl"],
           into: MapSet.new(),
