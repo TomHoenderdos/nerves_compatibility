@@ -85,12 +85,26 @@ defmodule NccWorker.Portability.DifferentialTest do
     end
   end
 
-  defp held_variant do
+  # A variant held for its own varied reads, as `Differential.hold/2` holds
+  # one: what it read (`merge`) is the first build's unless a test says so.
+  defp held_variant(merge \\ %{}) do
+    held =
+      Map.merge(
+        %{
+          compile_inputs: [%{"kind" => "os_type", "family" => "unix"}],
+          compile_env: [],
+          reads: [@sched]
+        },
+        Map.take(merge, [:compile_inputs, :compile_env, :reads])
+      )
+
     %{
       status: :skip,
       reason: Reasons.could_not_judge(),
-      differential: %{},
+      differential: held,
       observations: %{
+        "env_reads" => Map.get(merge, :env_reads, []),
+        "config_reads" => Map.get(merge, :config_reads, []),
         "problems" => [Differential.hold_problem()],
         "trace_stats" => %{"judge_compile" => "finished"}
       }
@@ -171,6 +185,92 @@ defmodule NccWorker.Portability.DifferentialTest do
     assert v.observations["trace_stats"]["differential"] == "differs"
     assert v.compile_inputs == nil
     refute Map.has_key?(v, :differential)
+  end
+
+  # Review B1: a varied value that gates another read. The variant reads
+  # what the first build never did; its value is no input the client
+  # compares, so the build refuses (coordinator ruling: never add it with
+  # the builder's value).
+  test "a variant with a compile input the first build lacks refuses", ctx do
+    gate = %{"kind" => "env", "name" => "FX_GATE", "set_by" => "host", "value" => "unset"}
+    inputs = [%{"kind" => "os_type", "family" => "unix"}, gate]
+    v = settle(held(ctx), ctx, variant(%{}, held_variant(%{compile_inputs: inputs})))
+
+    assert v.status == :skip
+
+    assert v.reason ==
+             @sched["refusal"] <>
+               "; a differential build (low) read what the first did not: env FX_GATE"
+
+    assert v.observations["trace_stats"]["differential"] == "differs"
+  end
+
+  test "a variant with a config read the first build lacks refuses", ctx do
+    env = [%{app: "pkg", path: ["gate"], value: "g3cFZXJyb3I"}]
+    v = settle(held(ctx), ctx, variant(%{}, held_variant(%{compile_env: env})))
+
+    assert v.reason =~
+             "; a differential build (low) read what the first did not: config pkg [\"gate\"]"
+  end
+
+  test "a variant with an env or config read observed that the first lacks refuses", ctx do
+    read = %{"name" => "FX_GATE", "all" => false, "slice_allowed" => true}
+    v = settle(held(ctx), ctx, variant(%{}, held_variant(%{env_reads: [read]})))
+    assert v.reason =~ "read what the first did not: env read FX_GATE"
+
+    read = %{"arg" => %{"app" => "g3cFZXJyb3I", "key" => "g3cFZXJyb3J"}}
+    v = settle(held(ctx), ctx, variant(%{}, held_variant(%{config_reads: [read]})))
+    assert v.reason =~ "read what the first did not: config read"
+  end
+
+  test "a variant with a varied read the first build lacks refuses", ctx do
+    home = %{
+      "mfa" => "init:get_argument/1",
+      "arg" => %{"name" => "home"},
+      "read" => "home",
+      "owner" => "pkg",
+      "refusal" => "compile-time host read: init:get_argument/1 (home)"
+    }
+
+    v = settle(held(ctx), ctx, variant(%{}, held_variant(%{reads: [@sched, home]})))
+    assert v.reason =~ "read what the first did not: home in pkg"
+  end
+
+  # Only the varied value itself may differ: an env input of the same name
+  # with another value (HOME, read by name) is the same input.
+  test "the same inputs with other values pass", ctx do
+    inputs = [%{"kind" => "os_type", "family" => "unix"}]
+
+    pass = %{
+      ctx.pass
+      | compile_inputs:
+          inputs ++ [%{"kind" => "env", "name" => "HOME", "set_by" => "host", "value" => "a"}]
+    }
+
+    held = Differential.hold(pass, ctx.varied)
+    other = inputs ++ [%{"kind" => "env", "name" => "HOME", "set_by" => "host", "value" => "b"}]
+
+    v =
+      settle(
+        held,
+        ctx,
+        variant(
+          %{"pkg.app" => "{application,pkg,[]}.\n", "x.beam" => "same"},
+          held_variant(%{compile_inputs: other})
+        )
+      )
+
+    assert v.status == :pass, inspect(v.observations["problems"])
+  end
+
+  test "a first build whose read list hit its cap cannot tell, and cannot be judged", ctx do
+    reads = for i <- 1..50, do: %{"name" => "V#{i}", "all" => false}
+    pass = put_in(ctx.pass, [:observations, "env_reads"], reads)
+    held = Differential.hold(pass, ctx.varied)
+    extra = %{"name" => "FX_GATE", "all" => false}
+    v = settle(held, ctx, variant(%{}, held_variant(%{env_reads: reads ++ [extra]})))
+    assert v.reason == Reasons.could_not_judge()
+    assert Enum.any?(v.observations["problems"], &(&1 =~ "env reads over their cap"))
   end
 
   test "a variant that refuses refuses, naming the read and its reason", ctx do
@@ -257,7 +357,8 @@ defmodule NccWorker.Portability.DifferentialTest do
       {:ok, ["gproc"]}
     end
 
-    v = settle(held, ctx, variant(), script_check: check)
+    same = %{"pkg.app" => "{application,pkg,[]}.\n", "x.beam" => "same"}
+    v = settle(held, ctx, variant(same, held_variant(%{reads: [@plain]})), script_check: check)
     assert_received :script_check
     assert v.status == :pass
     assert v.observations["differential"]["scripts"] == ["gproc"]

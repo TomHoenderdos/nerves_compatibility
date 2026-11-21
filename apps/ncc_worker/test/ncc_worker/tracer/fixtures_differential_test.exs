@@ -55,6 +55,14 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
         def strategy, do: if(@mask, do: :band, else: :rem)
       end
       """),
+    # Review B1: the count gates an env read, only above 64 schedulers.
+    "fx_dv_gate" =>
+      lib("fx_dv_gate", """
+      defmodule FxDvGate do
+        @v if System.schedulers_online() > 64, do: System.get_env("FX_GATE"), else: nil
+        def v, do: @v
+      end
+      """),
     "fx_dv_home" =>
       lib("fx_dv_home", """
       defmodule FxDvHome do
@@ -119,6 +127,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
 
     off = run(root, proj, "fx_dv_pool", differential: false)
     pow2 = run(root, proj, "fx_dv_pow2", env: [{"ERL_ZFLAGS", "+S 8:8"}])
+    gate = run(root, proj, "fx_dv_gate", env: [{"ERL_ZFLAGS", "+S 8:8"}, {"FX_GATE", nil}])
 
     # Each rebar3 script in a project of its own: a read outside every
     # window counts against everything in it.
@@ -127,7 +136,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
         {name, script_run(root, name, script)}
       end
 
-    %{verdicts: verdicts, off: off, pow2: pow2, scripts: scripts}
+    %{verdicts: verdicts, off: off, pow2: pow2, gate: gate, scripts: scripts}
   end
 
   # Builds under asdf find their install through HOME, which a variant moves.
@@ -232,6 +241,16 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     assert v.status == :skip, log(v)
     assert v.reason =~ ~r/\Acompile-time host read: erlang:system_info\/1 \(schedulers_online\)/
     assert v.reason =~ "; a differential build differs: ebin/Elixir.FxDvPow2.beam: "
+  end
+
+  # A user with more than 64 schedulers and FX_GATE set compiles another
+  # `@v`; the first build never read FX_GATE, so no input would say so.
+  test "a count that gates an env read refuses: the variant read more", ctx do
+    v = ctx.gate
+    assert v.status == :skip, log(v)
+    assert v.reason =~ ~r/\Acompile-time host read: erlang:system_info\/1 \(schedulers_online\)/
+    assert v.reason =~ "; a differential build (high) read what the first did not: env FX_GATE"
+    assert v.compile_inputs == nil
   end
 
   test "HOME read and not kept publishes; HOME baked refuses", ctx do

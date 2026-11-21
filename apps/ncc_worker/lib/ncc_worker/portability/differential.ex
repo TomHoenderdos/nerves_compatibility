@@ -105,7 +105,8 @@ defmodule NccWorker.Portability.Differential do
       reads: Enum.take(varied.reads, @max_reads),
       build: varied.build,
       trees: varied.trees,
-      scripts: Map.get(varied, :scripts, [])
+      scripts: Map.get(varied, :scripts, []),
+      observed: observed(verdict)
     }
 
     %{verdict | status: :skip, reason: Reasons.could_not_judge(), compile_env: nil}
@@ -209,7 +210,11 @@ defmodule NccWorker.Portability.Differential do
           run.(project_dir, package, variant_opts(opts, dir, root, home, values, held.trees))
 
         app = Path.join([root, "lib", Path.basename(held.build)])
-        judged(built, name, fn -> compared(held.build, app, {first_root, root}, name) end)
+
+        judged(built, name, fn ->
+          with :ok <- read_no_more(held, built, name),
+               do: compared(held.build, app, {first_root, root}, name)
+        end)
       end)
     after
       File.rm_rf(dir)
@@ -347,6 +352,125 @@ defmodule NccWorker.Portability.Differential do
         {:refuse, "a differential build refused (#{built[:reason]})"}
     end
   end
+
+  # Review B1: a varied value may gate another read (a count above a
+  # threshold reading an env var). A variant that read anything the first
+  # build did not, whose value no input of the first build records, refuses:
+  # a compile input or a config item (`compile_inputs`, `compile_env`) by
+  # what it names, never its value (HOME read by name differs in value
+  # alone), a varied read, or an env or config read its observations list.
+  # Never added with the builder's value (coordinator ruling). A first
+  # build whose observed list reached its cap cannot tell.
+  defp read_no_more(held, built, name) do
+    with {:ok, theirs} <- variant_reads(built) do
+      case more(held, theirs) do
+        {:extra, what} ->
+          {:refuse, "a differential build (#{name}) read what the first did not: #{what}"}
+
+        {:capped, kind} ->
+          {:unjudged, "#{kind} over their cap: a differential build (#{name}) cannot be compared",
+           false}
+
+        :ok ->
+          :ok
+      end
+    else
+      :error -> {:unjudged, "differential build (#{name}) recorded no compile inputs", false}
+    end
+  end
+
+  # What a variant read: its pass's inputs, or the ones its own hold kept.
+  defp variant_reads(%{status: :pass} = built),
+    do: reads_of(built[:compile_inputs], built[:compile_env], [], built)
+
+  defp variant_reads(%{differential: held} = built) when is_map(held),
+    do: reads_of(held[:compile_inputs], held[:compile_env], held[:reads] || [], built)
+
+  defp variant_reads(_built), do: :error
+
+  defp reads_of(inputs, env, reads, built) when is_list(inputs) and is_list(env) do
+    {:ok, %{inputs: inputs, env: env, reads: reads, observed: observed(built)}}
+  end
+
+  defp reads_of(_inputs, _env, _reads, _built), do: :error
+
+  @value_keys ["value", "seen", "matched", :value]
+  @env_cap 50
+  @config_cap 200
+
+  # The env and config reads a verdict's observations list, by what they
+  # name, and whether a list reached its cap (`NccWorker.Portability`'s).
+  defp observed(verdict) do
+    obs = Map.get(verdict, :observations) || %{}
+    env = list(obs["env_reads"])
+    config = list(obs["config_reads"])
+
+    %{
+      env: MapSet.new(env, &{&1["name"], &1["all"]}),
+      config: MapSet.new(config, &config_read/1),
+      env_capped: length(env) >= @env_cap,
+      config_capped: length(config) >= @config_cap
+    }
+  end
+
+  defp list(items) when is_list(items), do: Enum.filter(items, &is_map/1)
+  defp list(_items), do: []
+
+  defp config_read(item) do
+    arg = if is_map(item["arg"]), do: item["arg"], else: %{}
+    Map.take(arg, ["app", "key", "all"])
+  end
+
+  defp more(held, theirs) do
+    first_inputs = MapSet.new(held.compile_inputs || [], &identity/1)
+    first_env = MapSet.new(held.compile_env || [], &identity/1)
+    first_reads = MapSet.new(held.reads, &read_identity/1)
+    first = held.observed
+
+    cond do
+      item = Enum.find(theirs.inputs, &(identity(&1) not in first_inputs)) ->
+        {:extra, describe_input(item)}
+
+      item = Enum.find(theirs.env, &(identity(&1) not in first_env)) ->
+        {:extra, "config #{item[:app] || item["app"]} #{inspect(item[:path] || item["path"])}"}
+
+      read = Enum.find(theirs.reads, &(read_identity(&1) not in first_reads)) ->
+        {:extra, "#{read["read"]} in #{read["owner"]}"}
+
+      extra?(theirs.observed.env, first.env) and first.env_capped ->
+        {:capped, "env reads"}
+
+      name = Enum.find(theirs.observed.env, &(&1 not in first.env)) ->
+        {:extra, "env read #{elem(name, 0) || "(all)"}"}
+
+      extra?(theirs.observed.config, first.config) and first.config_capped ->
+        {:capped, "config reads"}
+
+      key = Enum.find(theirs.observed.config, &(&1 not in first.config)) ->
+        {:extra, "config read #{key["app"]} #{key["key"]}"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp extra?(theirs, first), do: not MapSet.subset?(theirs, first)
+
+  defp identity(item) when is_map(item), do: Map.drop(item, @value_keys)
+  defp identity(item), do: item
+
+  defp read_identity(read) when is_map(read),
+    do: Map.take(read, ~w(owner read mfa arg module file line))
+
+  defp read_identity(read), do: read
+
+  defp describe_input(%{"kind" => "env", "name" => name}), do: "env #{name}"
+
+  defp describe_input(%{"kind" => "config_order", "app" => app, "path" => path}),
+    do: "config #{app} #{inspect(path)}"
+
+  defp describe_input(%{"kind" => kind}), do: "#{kind} input"
+  defp describe_input(_item), do: "an input"
 
   # Passed, or held for differential builds of its own, which it does not
   # get: then its only problem is the hold.
