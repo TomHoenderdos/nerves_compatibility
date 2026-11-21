@@ -34,6 +34,26 @@ defmodule Portal.Precompiled.RelocationRevocationTest do
     assert listed?(a)
   end
 
+  # The umbrella re-review's Q1: a dependent that passed because a
+  # dependency was held is gated as a relocated build, so the same lever
+  # takes it back.
+  test "a dependent's relocated pass is selected and revoked too", _ctx do
+    d = "rel_dep_#{System.unique_integer([:positive])}"
+
+    ingest_toolchain_build(d, "1.0.0",
+      compile_env_rule: 1,
+      relocation: Portal.Test.RelocationFixtures.dependent_record()
+    )
+
+    assert listed?(d)
+    assert {:dry_run, [%{package: ^d}]} = RelocationRevocation.revoke(package: d)
+
+    assert {:revoked, 1, [%{package: ^d}], _at} =
+             RelocationRevocation.revoke(package: d, dry_run: false)
+
+    refute listed?(d)
+  end
+
   test "an act needs a filter", _ctx do
     assert {:error, :filter_required} = RelocationRevocation.revoke(dry_run: false)
   end

@@ -8,6 +8,13 @@ defmodule Portal.Precompiled.Relocated do
   and renders only under a version's `relocated` object while the
   `relocated_enabled` setting is on (`Portal.Catalog`), where clients
   before 0.9.0 never read: a byte copy of one would hold the builder's path.
+
+  A dependent that passed only because a dependency was held is one too
+  (the umbrella re-review's Q1): its record lists the three roots and often
+  no file to rewrite, but its pass rests on the same residual (a test of
+  the dependency's path that all three roots answer alike), so it is
+  stored, gated, counted and revoked the same way, and the client's
+  envelope holds it.
   """
 
   @doc "A build's relocation record while it is its own run's, else nil."

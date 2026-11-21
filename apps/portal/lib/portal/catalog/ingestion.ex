@@ -812,7 +812,7 @@ defmodule Portal.Catalog.Ingestion do
       |> gate_pins(result, opts)
 
     case ToolchainPriv.verify(result, build, opts) do
-      :ok -> foreign_checked(result, build, opts)
+      :ok -> relocation_checked(result, build, opts)
       {:refused, reason} -> stage_toolchain_build(result, refused(build, reason), opts)
       {:error, reason} -> {:error, reason}
     end
@@ -852,6 +852,108 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp gate_relocation(build, _opts), do: Map.drop(build, ["relocation", @relocated_shape])
+
+  # The client re-review's R7: every beam of a relocated build must have
+  # been compiled from its package's dir under the record's deps path (its
+  # `CInf` source, `Compatibility.Relocation.compiled_in_problem/3`), or
+  # every client 0.9.0 fetches it and refuses it at install. The package's
+  # dir is its app's, named by the build's one `.app` file. Read from the
+  # run's files (or the store, on a retry); a blob in neither is the
+  # retryable error staging gives.
+  defp relocation_checked(result, build, opts) do
+    case relocation_sources(build, opts) do
+      :ok ->
+        foreign_checked(result, build, opts)
+
+      {:refused, why} ->
+        build = build |> Map.delete("relocation") |> refused(why, @relocation_refused)
+        stage_toolchain_build(result, build, opts)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @max_relocated_ebin_bytes 256 * 1024 * 1024
+
+  defp relocation_sources(%{"relocation" => %{"deps" => deps}} = build, opts) do
+    entries =
+      if relocated?(build), do: manifest_entries(build["file_manifest"], "ebin"), else: nil
+
+    with [_ | _] <- entries,
+         {:ok, app} <- relocated_app(entries),
+         {:ok, beams} <- read_beams(entries, opts.files_dir) do
+      case Compatibility.Relocation.compiled_in_problem(beams, deps, app) do
+        nil -> :ok
+        why -> {:refused, why}
+      end
+    else
+      nil -> :ok
+      [] -> {:refused, "no ebin"}
+      other -> other
+    end
+  end
+
+  defp relocation_sources(_build, _opts), do: :ok
+
+  defp relocated_app(entries) do
+    case for(%{"path" => "ebin/" <> name} <- entries, Path.extname(name) == ".app", do: name) do
+      [name] -> {:ok, Path.basename(name, ".app")}
+      _ -> {:refused, "not one .app file in its ebin"}
+    end
+  end
+
+  # `%{file name => bytes}` of the ebin's beams, each read by its sha and
+  # hashed again.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_beams(entries, files_dir) do
+    entries
+    |> Enum.filter(&match?(%{"path" => "ebin/" <> _}, &1))
+    |> Enum.filter(&(Path.extname(&1["path"]) == ".beam"))
+    |> Enum.reduce_while({:ok, %{}, 0}, fn %{"path" => "ebin/" <> name} = entry,
+                                           {:ok, acc, total} ->
+      case read_beam(entry, files_dir) do
+        {:ok, bytes} when total + byte_size(bytes) <= @max_relocated_ebin_bytes ->
+          {:cont, {:ok, Map.put(acc, name, bytes), total + byte_size(bytes)}}
+
+        {:ok, _bytes} ->
+          {:halt, {:refused, "its ebin is too large to check"}}
+
+        other ->
+          {:halt, other}
+      end
+    end)
+    |> case do
+      {:ok, beams, _total} -> {:ok, beams}
+      other -> other
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_beam(%{"sha256" => sha}, files_dir) when is_binary(sha) do
+    if sha =~ ~r/\A[0-9a-f]{64}\z/ do
+      [Path.join(files_dir, sha), ArtifactStore.blob_path(sha)]
+      |> Enum.find_value(fn path ->
+        case File.read(path) do
+          {:ok, bytes} -> {:ok, bytes}
+          _ -> nil
+        end
+      end)
+      |> case do
+        {:ok, bytes} ->
+          if Base.encode16(:crypto.hash(:sha256, bytes), case: :lower) == sha,
+            do: {:ok, bytes},
+            else: {:refused, "a beam that does not hash to its sha"}
+
+        nil ->
+          {:error, {:artifacts_unstaged, [sha]}}
+      end
+    else
+      {:refused, "a beam with no valid sha"}
+    end
+  end
+
+  defp read_beam(_entry, _files_dir), do: {:refused, "a beam with no valid sha"}
 
   defp relocation_problem(record, build, shaped) do
     cond do

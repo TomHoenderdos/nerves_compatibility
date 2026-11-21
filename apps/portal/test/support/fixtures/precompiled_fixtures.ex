@@ -51,10 +51,11 @@ defmodule Portal.PrecompiledFixtures do
   the result's echo of it; absent, a `with` build that echoes nothing).
   """
   def ingest_toolchain_build(name, version, opts \\ []) do
-    content = "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
+    content = beam_content(name, version, opts)
     sha = Base.encode16(:crypto.hash(:sha256, content), case: :lower)
     dir = tmp_files_dir()
     File.write!(Path.join(dir, sha), content)
+    write_app!(dir, name, opts)
 
     result = toolchain_result(name, version, Keyword.put(opts, :content, content))
 
@@ -64,9 +65,27 @@ defmodule Portal.PrecompiledFixtures do
     build
   end
 
+  # A relocated build's beam is a real one compiled from its package's dir
+  # under the worker's first deps path, as the ingest's source check reads
+  # it (`Compatibility.Relocation.compiled_in_problem/3`); any other's is
+  # stand-in bytes.
+  defp beam_content(name, version, opts) do
+    if Keyword.has_key?(opts, :relocation),
+      do: Portal.Test.RelocationFixtures.beam(name),
+      else: "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
+  end
+
+  defp write_app!(dir, name, opts) do
+    if Keyword.has_key?(opts, :relocation) do
+      app = Portal.Test.RelocationFixtures.app(name)
+      File.write!(Path.join(dir, Base.encode16(:crypto.hash(:sha256, app), case: :lower)), app)
+    end
+  end
+
   @doc """
   The `result.json` `ingest_toolchain_build/3` ingests, with the same options,
-  plus `:content` (the one ebin file's bytes).
+  plus `:content` (the one ebin file's bytes). A relocated build (with
+  `:relocation`) also lists its `.app` file.
   """
   def toolchain_result(name, version, opts \\ []) do
     content = Keyword.get(opts, :content, "toolchain-beam-#{name}-#{version}")
@@ -120,21 +139,33 @@ defmodule Portal.PrecompiledFixtures do
       )
     end)
     |> put_requested_optional_deps(Keyword.get(opts, :variant))
-    |> relocated_shape()
+    |> relocated_shape(name)
   end
 
   # A relocated pass lists its files under `relocated_file_manifest` (S4),
-  # as the worker writes it.
-  defp relocated_shape(%{"toolchain_build" => %{"relocation" => %{}} = build} = result) do
+  # with its `.app`, as the worker writes it.
+  defp relocated_shape(%{"toolchain_build" => %{"relocation" => %{}} = build} = result, name) do
+    app = Portal.Test.RelocationFixtures.app(name)
+
+    app_entry = %{
+      "path" => "ebin/#{name}.app",
+      "sha256" => Base.encode16(:crypto.hash(:sha256, app), case: :lower),
+      "size" => byte_size(app),
+      "mode" => 33_188
+    }
+
     build =
       build
-      |> Map.put("relocated_file_manifest", build["file_manifest"])
+      |> Map.put(
+        "relocated_file_manifest",
+        Map.update!(build["file_manifest"], "ebin", &(&1 ++ [app_entry]))
+      )
       |> Map.put("file_manifest", nil)
 
     %{result | "toolchain_build" => build}
   end
 
-  defp relocated_shape(result), do: result
+  defp relocated_shape(result, _name), do: result
 
   # The worker's echo of the optional-deps variant it was asked to build.
   defp put_requested_optional_deps(result, nil), do: result

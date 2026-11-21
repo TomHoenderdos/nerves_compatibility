@@ -17,6 +17,20 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
 
   defp record(name), do: Portal.Test.RelocationFixtures.record(name)
 
+  # The relocated build's beam (beside its `.app`).
+  defp beam_sha(row) do
+    [%{"sha256" => sha}] =
+      Enum.filter(row.relocated_file_manifest["ebin"], &String.ends_with?(&1["path"], ".beam"))
+
+    sha
+  end
+
+  defp all_shas(row) do
+    for key <- ["ebin", "priv"],
+        %{"sha256" => sha} <- row.relocated_file_manifest[key] || [],
+        do: sha
+  end
+
   # No regular list of any version, nor any deterministic one, holds a
   # relocated entry: a client before 0.9.0 would install its bytes as they
   # are, with the builder's path in them.
@@ -50,9 +64,71 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
     assert entry["target"] == "pure_elixir"
     assert entry["relocation"] == record(name)
     assert entry["build"]["run_id"] == row.run_id
-    assert [%{"path" => path}] = entry["ebin"]
-    assert path == "ebin/#{name}.beam"
+    assert Enum.map(entry["ebin"], & &1["path"]) == ["ebin/#{name}.beam", "ebin/#{name}.app"]
     PortalWeb.ApiSpecAssertions.assert_api_schema(m, "ManifestV2")
+  end
+
+  # The umbrella re-review's Q1: a dependent that passed because a
+  # dependency was held carries the record with no file to rewrite, and is
+  # gated as a relocated build: never in a regular list or format 1, only
+  # under `relocated` while the setting is on.
+  test "a dependent's relocated pass is listed only under relocated, only while on" do
+    dep = "fine_dep_#{System.unique_integer([:positive])}"
+
+    row =
+      ingest_toolchain_build(dep, "0.2.0",
+        compile_env_rule: 1,
+        relocation: Portal.Test.RelocationFixtures.dependent_record()
+      )
+
+    assert row.relocation_run_id == row.run_id
+    assert row.file_manifest == nil
+
+    off!()
+    assert no_client_sees?(dep, row)
+
+    on!()
+    m = manifest(dep)
+    assert_contract!(m)
+    assert m["versions"]["0.2.0"]["builds"] == []
+
+    assert %{"builds" => [%{"relocation" => %{"files" => []}}]} =
+             m["versions"]["0.2.0"]["relocated"]
+
+    assert Catalog.precompiled_manifest(dep) == nil
+    PortalWeb.ApiSpecAssertions.assert_api_schema(m, "ManifestV2")
+  end
+
+  # The ruling on Q1: with relocation in builds on and serving off, no row
+  # it makes reaches any client, through any route.
+  test "relocate_builds_enabled on and relocated_enabled off: no new row reaches a client", %{
+    name: name,
+    row: row
+  } do
+    {:ok, _} = Portal.Settings.save(%{relocate_builds_enabled: true, relocated_enabled: false})
+    dep = "fine_dep_#{System.unique_integer([:positive])}"
+
+    dependent =
+      ingest_toolchain_build(dep, "0.2.0",
+        compile_env_rule: 1,
+        relocation: Portal.Test.RelocationFixtures.dependent_record()
+      )
+
+    assert no_client_sees?(name, row)
+    assert no_client_sees?(dep, dependent)
+  end
+
+  # Neither manifest format, the files route nor the batch's package list
+  # lists the row or serves a file of it.
+  defp no_client_sees?(name, row) do
+    v2 = manifest(name)
+    v1 = Catalog.precompiled_manifest(name)
+
+    assert v2 == nil or not Map.has_key?(v2["versions"], "0.2.0"), inspect(v2)
+    assert v1 == nil or not Map.has_key?(v1["versions"] || %{}, "0.2.0"), inspect(v1)
+    refute Enum.any?(all_shas(row), &Catalog.published_sha256?/1)
+    refute name in Catalog.packages_with_precompiled_files()
+    true
   end
 
   test "setting off: no relocated object, and the version is not listed", %{name: name} do
@@ -112,8 +188,7 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
     m = manifest(name)
     assert_contract!(m)
     assert m == nil or not Map.has_key?(m["versions"], "0.2.0")
-    [%{"sha256" => sha}] = row.relocated_file_manifest["ebin"]
-    refute Catalog.published_sha256?(sha)
+    refute Catalog.published_sha256?(beam_sha(row))
   end
 
   test "the package's own name on the withheld list withholds its relocated build", %{name: name} do
@@ -156,7 +231,7 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
   describe "files route and fingerprints" do
     test "a relocated build's files are served while the setting is on and the mark is the row's",
          %{name: name, row: row} do
-      [%{"sha256" => sha}] = row.relocated_file_manifest["ebin"]
+      sha = beam_sha(row)
       off!()
       refute Catalog.published_sha256?(sha)
       refute name in Catalog.packages_with_precompiled_files()

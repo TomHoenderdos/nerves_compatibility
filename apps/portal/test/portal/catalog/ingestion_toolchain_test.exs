@@ -196,9 +196,16 @@ defmodule Portal.Catalog.IngestionToolchainTest do
   # lists it under `relocated` only (`Portal.Precompiled.Relocated`).
   # As the worker writes a relocated pass: its files under
   # `relocated_file_manifest`, `file_manifest` nil.
-  defp relocated_result(name, beam, priv, record) do
+  defp relocated_result(name, beam, priv, record, app \\ nil) do
     result = pass_result(name, beam, priv)
-    manifest = result["toolchain_build"]["file_manifest"]
+    app = app || reloc_app(name)
+
+    manifest =
+      Map.update!(
+        result["toolchain_build"]["file_manifest"],
+        "ebin",
+        &(&1 ++ [entry("ebin/#{name}.app", app)])
+      )
 
     result
     |> put_in(["toolchain_build", "relocation"], record)
@@ -211,24 +218,102 @@ defmodule Portal.Catalog.IngestionToolchainTest do
 
   defp record(name), do: Portal.Test.RelocationFixtures.record(name)
 
+  # A real beam compiled from the package's dir under the worker's first
+  # deps path, and its `.app`: what the ingest's source check reads.
+  defp reloc_beam(name, deps \\ nil) do
+    blob(
+      if deps,
+        do: Portal.Test.RelocationFixtures.beam(name, deps),
+        else: Portal.Test.RelocationFixtures.beam(name)
+    )
+  end
+
+  defp reloc_app(name), do: blob(Portal.Test.RelocationFixtures.app(name))
+
   test "a relocated pass is stored with its record, its files under relocated_file_manifest only" do
     name = unique_name()
-    beam = blob("beam-#{name}")
+    beam = reloc_beam(name)
     priv = blob("priv-#{name}")
     run_id = "tc-reloc-#{System.unique_integer([:positive])}"
 
     assert {:ok, %ToolchainBuild{} = tb} =
              Ingestion.ingest_toolchain(
                relocated_result(name, beam, priv, record(name)),
-               opts(name, files_dir_with([beam, priv]), run_id)
+               opts(name, files_dir_with([beam, priv, reloc_app(name)]), run_id)
              )
 
     assert tb.status == :pass
     assert tb.relocation == record(name)
     assert tb.relocation_run_id == tb.run_id
     assert tb.file_manifest == nil
-    assert %{"ebin" => [_], "priv" => [_]} = tb.relocated_file_manifest
-    assert length(memberships(tb)) == 2
+    assert %{"ebin" => [_, _], "priv" => [_]} = tb.relocated_file_manifest
+    assert length(memberships(tb)) == 3
+  end
+
+  # The umbrella re-review's Q1: a dependent that passed because a
+  # dependency was held carries the record with no file to rewrite, and is
+  # stored as a relocated build: its files under relocated_file_manifest,
+  # marked, so it is gated, counted and revoked as one.
+  test "a dependent's pass with an empty record is stored as a relocated build" do
+    name = unique_name()
+    beam = reloc_beam(name)
+    priv = blob("priv-#{name}")
+
+    result =
+      name
+      |> relocated_result(beam, priv, Portal.Test.RelocationFixtures.dependent_record())
+      |> put_in(["toolchain_build", "compile_observations"], %{
+        "trace_stats" => %{"relocate" => "dependencies"}
+      })
+
+    assert {:ok, %ToolchainBuild{} = tb} =
+             Ingestion.ingest_toolchain(
+               result,
+               opts(name, files_dir_with([beam, priv, reloc_app(name)]))
+             )
+
+    assert tb.status == :pass
+    assert tb.relocation["files"] == []
+    assert tb.relocation_run_id == tb.run_id
+    assert tb.file_manifest == nil
+    assert %{"ebin" => [_, _]} = tb.relocated_file_manifest
+  end
+
+  # The client re-review's R7: every client 0.9.0 refuses a beam that was
+  # not compiled from its package's dir under the record's deps path, so
+  # the host does not list one.
+  test "a relocated pass whose beams were compiled elsewhere, or with no .app, stores a fail" do
+    name = unique_name()
+    priv = blob("priv-#{name}")
+    elsewhere = reloc_beam(name, "/elsewhere/deps")
+    other_app = reloc_beam("other_app")
+    app = reloc_app(name)
+
+    no_app =
+      name
+      |> relocated_result(reloc_beam(name), priv, record(name))
+      |> update_in(
+        ["toolchain_build", "relocated_file_manifest", "ebin"],
+        &Enum.reject(&1, fn e -> String.ends_with?(e["path"], ".app") end)
+      )
+
+    for {result, blobs, why} <- [
+          {relocated_result(name, elsewhere, priv, record(name)), [elsewhere, priv, app],
+           "not compiled from"},
+          {relocated_result(name, other_app, priv, record(name)), [other_app, priv, app],
+           "not compiled from"},
+          {no_app, [priv], ".app"}
+        ] do
+      assert {:ok, %ToolchainBuild{} = tb} =
+               Ingestion.ingest_toolchain(result, opts(name, files_dir_with(blobs)))
+
+      assert tb.status == :fail
+      assert tb.reason =~ "relocation refused on the host: "
+      assert tb.reason =~ why
+      assert tb.relocated_file_manifest == nil
+      assert tb.relocation == nil
+      assert memberships(tb) == []
+    end
   end
 
   # The umbrella review's B3: main cda77d24 (a release before S4) reads a
@@ -238,14 +323,16 @@ defmodule Portal.Catalog.IngestionToolchainTest do
   # gives it nothing to serve.
   test "a release before S4 finds nothing to serve in a relocated row" do
     name = unique_name()
-    beam = blob("beam-#{name}")
+    beam = reloc_beam(name)
     priv = blob("priv-#{name}")
 
     {:ok, tb} =
       Ingestion.ingest_toolchain(
         relocated_result(name, beam, priv, record(name)),
-        opts(name, files_dir_with([beam, priv]))
+        opts(name, files_dir_with([beam, priv, reloc_app(name)]))
       )
+
+    assert tb.status == :pass
 
     main_served = """
     SELECT 1 FROM catalog_toolchain_builds t
@@ -273,7 +360,7 @@ defmodule Portal.Catalog.IngestionToolchainTest do
 
   test "a relocation record the host refuses stores a fail with no files" do
     name = unique_name()
-    beam = blob("beam-#{name}")
+    beam = reloc_beam(name)
     priv = blob("priv-#{name}")
     other = put_in(record(name), ["files", Access.at(0), "path"], "ebin/other.beam")
     unpinned = %{record(name) | "deps" => "/elsewhere/proj/deps"}
@@ -288,11 +375,23 @@ defmodule Portal.Catalog.IngestionToolchainTest do
 
     big = put_in(record(name), ["files", Access.at(0), "occurrences"], List.duplicate(occ, 100))
 
-    for {bad, why} <- [{other, "not a file of the build"}, {unpinned, "worker"}, {big, "256 KiB"}] do
+    tail =
+      put_in(record(name), ["files", Access.at(0), "occurrences", Access.at(0), "parts"], [
+        "",
+        "build",
+        "_x/lib/fx/priv"
+      ])
+
+    for {bad, why} <- [
+          {other, "not a file of the build"},
+          {unpinned, "worker"},
+          {big, "256 KiB"},
+          {tail, "a build path followed by"}
+        ] do
       assert {:ok, %ToolchainBuild{} = tb} =
                Ingestion.ingest_toolchain(
                  relocated_result(name, beam, priv, bad),
-                 opts(name, files_dir_with([beam, priv]))
+                 opts(name, files_dir_with([beam, priv, reloc_app(name)]))
                )
 
       assert tb.status == :fail
