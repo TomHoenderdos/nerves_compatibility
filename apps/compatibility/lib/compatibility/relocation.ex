@@ -196,6 +196,80 @@ defmodule Compatibility.Relocation do
     _ -> {:refuse, "unreadable beam"}
   end
 
+  @record_keys ["build", "deps", "files"]
+  @kinds ["binary", "charlist", "atom"]
+  @max_files 10_000
+
+  @doc """
+  Why a worker's `relocation` record (`NccWorker.Portability.Relocate`) is
+  not one a client can apply, or nil: the build's `deps` and `build` paths
+  (absolute, distinct, neither inside the other), and `files`, a non-empty
+  list of distinct `%{"path" => "ebin/<name>.beam", "occurrences" => [...]}`,
+  each path one of `ebin_paths` (the build's own `ebin` files), each with
+  at least one occurrence of a known chunk, a non-negative index, a term
+  path of non-negative integers, a known kind and a template of text and
+  slot names with at least one slot. Reads the record alone, never a beam:
+  the portal checks it at ingest on its own node, which makes no atom.
+  """
+  @spec record_problem(term(), [String.t()]) :: String.t() | nil
+  def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin_paths)
+      when is_list(files) and is_list(ebin_paths) do
+    cond do
+      record |> Map.keys() |> Enum.sort() != @record_keys -> "unknown keys"
+      match?({:refuse, _}, valid_slots(%{"deps" => deps, "build" => build})) -> "bad paths"
+      files == [] or length(files) > @max_files -> "no files, or too many"
+      length(Enum.uniq_by(files, &file_path/1)) != length(files) -> "a file twice"
+      true -> Enum.find_value(files, &file_problem(&1, ebin_paths))
+    end
+  end
+
+  def record_problem(_record, _ebin_paths), do: "not a relocation record"
+
+  defp file_path(%{"path" => path}), do: path
+  defp file_path(file), do: file
+
+  defp file_problem(%{"path" => "ebin/" <> name = path, "occurrences" => [_ | _] = occs}, ebin) do
+    cond do
+      Path.basename(name) != name or Path.extname(name) != ".beam" ->
+        "not a beam: #{inspect(path)}"
+
+      path not in ebin ->
+        "not a file of the build: #{inspect(path)}"
+
+      length(occs) > @max_occurrences ->
+        "too many occurrences"
+
+      not Enum.all?(occs, &occurrence?/1) ->
+        "a malformed occurrence in #{inspect(path)}"
+
+      true ->
+        nil
+    end
+  end
+
+  defp file_problem(file, _ebin), do: "a malformed file entry #{inspect(file, limit: 3)}"
+
+  defp occurrence?(
+         %{"chunk" => chunk, "index" => i, "term" => term, "kind" => kind, "parts" => parts} = occ
+       )
+       when map_size(occ) == 5 and chunk in @rewritten and is_integer(i) and i >= 0 and
+              is_list(term) and kind in @kinds and is_list(parts) do
+    Enum.all?(term, &(is_integer(&1) and &1 >= 0)) and template?(parts)
+  end
+
+  defp occurrence?(_occ), do: false
+
+  # Text and slot names in turn, odd in length, at least one slot.
+  defp template?([_text, _slot | _] = parts) do
+    parts
+    |> Enum.with_index()
+    |> Enum.all?(fn {part, i} ->
+      is_binary(part) and (rem(i, 2) == 0 or part in @slots)
+    end) and rem(length(parts), 2) == 1
+  end
+
+  defp template?(_parts), do: false
+
   @doc "A template's value at `slots`."
   @spec render([String.t()], slots()) :: String.t()
   def render(parts, slots), do: render(parts, slots, [])

@@ -198,4 +198,49 @@ defmodule Compatibility.RelocationTest do
     assert {:refuse, _} =
              Relocation.prove_ebin(ebin_a, slots(ra), Map.delete(ebin_b, "fx.app"), slots(rb))
   end
+
+  describe "record_problem/2" do
+    @occ %{
+      "chunk" => "LitT",
+      "index" => 0,
+      "term" => [1],
+      "kind" => "binary",
+      "parts" => ["", "deps", "/x"]
+    }
+    @record %{
+      "deps" => "/work/proj/deps",
+      "build" => "/work/proj/_build/host",
+      "files" => [%{"path" => "ebin/Elixir.A.beam", "occurrences" => [@occ]}]
+    }
+
+    test "a well-formed record of the build's own beams has none" do
+      assert Relocation.record_problem(@record, ["ebin/Elixir.A.beam", "ebin/a.app"]) == nil
+    end
+
+    test "every malformed shape is named" do
+      ebin = ["ebin/Elixir.A.beam"]
+      file = fn occ -> %{"path" => "ebin/Elixir.A.beam", "occurrences" => [occ]} end
+
+      for record <- [
+            nil,
+            %{@record | "deps" => "deps"},
+            %{@record | "build" => @record["deps"]},
+            %{@record | "files" => []},
+            %{@record | "files" => [%{"path" => "ebin/Elixir.B.beam", "occurrences" => [@occ]}]},
+            %{@record | "files" => [%{"path" => "priv/x.beam", "occurrences" => [@occ]}]},
+            %{@record | "files" => [%{"path" => "ebin/Elixir.A.beam", "occurrences" => []}]},
+            %{@record | "files" => List.duplicate(hd(@record["files"]), 2)},
+            %{@record | "files" => [file.(%{@occ | "chunk" => "StrT"})]},
+            %{@record | "files" => [file.(%{@occ | "index" => -1})]},
+            %{@record | "files" => [file.(%{@occ | "term" => ["x"]})]},
+            %{@record | "files" => [file.(%{@occ | "kind" => "float"})]},
+            %{@record | "files" => [file.(%{@occ | "parts" => ["", "home", "/x"]})]},
+            %{@record | "files" => [file.(%{@occ | "parts" => ["/x"]})]},
+            %{@record | "files" => [file.(%{@occ | "parts" => ["", "deps"]})]},
+            Map.put(@record, "extra", 1)
+          ] do
+        assert is_binary(Relocation.record_problem(record, ebin)), inspect(record)
+      end
+    end
+  end
 end
