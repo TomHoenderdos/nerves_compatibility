@@ -108,6 +108,21 @@ defmodule Portal.Workers.ReleaseFastPathTest do
                0
     end
 
+    # Review R8: the update check calls this after its own writes; a failed
+    # query must not fail and retry the whole check.
+    test "a query that fails offers nothing instead of raising" do
+      Application.put_env(:portal, ReleaseFastPath, enabled: true, min_dependents: "many")
+      locking!(name(), "popular", "1.0.0")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert ReleaseFastPath.offer([entry("popular", ["1.0.0", "1.1.0"], @now)], now: @now) ==
+                   0
+        end)
+
+      assert log =~ "Release fast path could not offer"
+    end
+
     test "offers nothing while switched off" do
       Application.put_env(:portal, ReleaseFastPath, enabled: false, min_dependents: 2)
       locking!(name(), "popular", "1.0.0")

@@ -172,7 +172,9 @@ defmodule Portal.Workers.ReleaseFastPath do
   Queues a job for each release in `registry` (`Portal.HexRegistry.snapshot/1`
   with `all_versions: true`) that the moduledoc says is worth one, and
   returns how many it queued. A release queued before is not queued again.
-  Option `:now` (tests) is the time the window ends.
+  A query that fails is logged and offers nothing: the update check that
+  calls this has already written its own work, and the next hour offers
+  again. Option `:now` (tests) is the time the window ends.
   """
   @spec offer([map()], keyword()) :: non_neg_integer()
   def offer(registry, opts \\ []) do
@@ -188,6 +190,10 @@ defmodule Portal.Workers.ReleaseFastPath do
     else
       0
     end
+  rescue
+    error in [DBConnection.ConnectionError, DBConnection.EncodeError, Postgrex.Error] ->
+      Logger.warning("Release fast path could not offer: #{Exception.message(error)}")
+      0
   end
 
   defp newest_release({_name, %{newest: nil}}), do: []
