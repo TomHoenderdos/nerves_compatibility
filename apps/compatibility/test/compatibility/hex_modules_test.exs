@@ -58,6 +58,25 @@ defmodule Compatibility.HexModulesTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom("NeverAnAtomBeforeThisTestXyz") end
   end
 
+  # Round 6: what a real index run of the 5,008 popular packages hit.
+  test "hidden files, many non-source files and large Erlang sources are read" do
+    many = for i <- 1..6_000, into: %{}, do: {"priv/icons/i#{i}.svg", "<svg/>"}
+
+    bytes =
+      tarball(
+        Map.merge(many, %{
+          "lib/a.ex" => "defmodule HmMany do\nend\n",
+          # macOS AppleDouble junk, which Mix's lib/**/*.ex never matches.
+          "lib/._a.ex" => <<0, 5, 22, 7, 0, 2, 0, 0>>,
+          "src/big.erl" => "-module(hm_big).\n" <> String.duplicate("%% pad\n", 5_000_000)
+        })
+      )
+
+    assert {:ok, %{modules: modules}} = HexModules.read(bytes, max_tarball: 64 * 1024 * 1024)
+    assert "Elixir.HmMany" in modules
+    assert "hm_big" in modules
+  end
+
   test "anything that is not a Hex tarball defines nothing" do
     assert HexModules.modules("not a tarball") == []
     assert HexModules.modules(nil) == []

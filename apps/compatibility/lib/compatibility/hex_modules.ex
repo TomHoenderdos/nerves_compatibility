@@ -10,12 +10,15 @@ defmodule Compatibility.HexModules do
   without creating atoms, and every `-module` of its `.erl` sources. A
   module a macro defines is not found. Bounded: the tarball at
   `Compatibility.StaticPriv.max_tarball_bytes/0` (or `:max_tarball`), its
-  contents at 64 MiB inflated, 5,000 files and 32 MiB of parsed source.
+  contents at 64 MiB inflated, 5,000 source files and 64 MiB of parsed
+  Elixir source (an Erlang source's `-module` is read by a regex).
   Never raises.
   """
 
   @max_contents_bytes 64 * 1024 * 1024
-  @max_source_bytes 32 * 1024 * 1024
+  # Elixir source parsed per tarball: aws 1.0.16 ships 45 MiB of generated
+  # Elixir in 442 files (the largest 1.7 MiB), parsed one file at a time.
+  @max_source_bytes 64 * 1024 * 1024
   @max_files 5_000
 
   @doc """
@@ -50,6 +53,7 @@ defmodule Compatibility.HexModules do
          {:ok, gz} <- Map.fetch(outer, "contents.tar.gz") |> found(:no_contents),
          {:ok, tar} <- inflate(gz),
          {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory]) |> tar_files(),
+         files = Enum.filter(files, &source_file?/1),
          :ok <- if(length(files) <= @max_files, do: :ok, else: {:error, :too_many_files}),
          {:ok, modules} <- sources(files) do
       {:ok, %{modules: Enum.uniq(modules), app: app(Map.get(outer, "metadata.config"))}}
@@ -93,16 +97,29 @@ defmodule Compatibility.HexModules do
     end
   end
 
+  # A source file Mix would read: `.ex`, `.erl`, `.xrl`, `.yrl`, under no
+  # hidden directory and not hidden itself (Mix's `lib/**/*.ex` never
+  # matches macOS's `._x.ex` AppleDouble files). Only these count against
+  # the file cap: a package of icons is not a package of sources.
+  defp source_file?({name, _body}) do
+    path = List.to_string(name)
+
+    String.ends_with?(path, [".ex", ".erl", ".xrl", ".yrl"]) and
+      not Enum.any?(Path.split(path), &String.starts_with?(&1, "."))
+  end
+
+  # Only Elixir sources count against the parse cap: an Erlang source is
+  # read by a regex, which the inflated-contents cap bounds.
   defp source(name, body, used) do
     cond do
-      String.ends_with?(name, [".ex", ".erl"]) and used + byte_size(body) > @max_source_bytes ->
+      String.ends_with?(name, ".ex") and used + byte_size(body) > @max_source_bytes ->
         {:error, :source_too_large}
 
       String.ends_with?(name, ".ex") ->
         elixir_source(name, body, used)
 
       String.ends_with?(name, ".erl") ->
-        {:ok, erlang_modules(body), used + byte_size(body)}
+        {:ok, erlang_modules(body), used}
 
       String.ends_with?(name, [".xrl", ".yrl"]) ->
         {:ok, [Path.basename(name, Path.extname(name))], used}
