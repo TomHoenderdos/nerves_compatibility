@@ -215,6 +215,41 @@ defmodule Compatibility.RelocationTest do
       assert Relocation.record_problem(@record, ["ebin/Elixir.A.beam", "ebin/a.app"]) == nil
     end
 
+    # The umbrella re-review's Q1: a dependent that passed because a
+    # dependency was held is stored as a relocated build with nothing to
+    # rewrite, so the same gates and the client's envelope hold it.
+    test "a record with no files to rewrite is well formed" do
+      assert Relocation.record_problem(%{@record | "files" => []}, ["ebin/Elixir.A.beam"]) == nil
+    end
+
+    # The client re-review's R5: Mix's layout under a build path is `lib/`
+    # and `consolidated/`; a build slot followed by anything else is not a
+    # path Mix gave the compile.
+    test "a build slot is followed by nothing, /lib/ or /consolidated/" do
+      ebin = ["ebin/Elixir.A.beam"]
+
+      file = fn parts ->
+        [%{"path" => hd(ebin), "occurrences" => [%{@occ | "parts" => parts}]}]
+      end
+
+      for tail <- ["", "/lib/fx/priv", "/consolidated/Elixir.P.beam"] do
+        assert Relocation.record_problem(%{@record | "files" => file.(["", "build", tail])}, ebin) ==
+                 nil,
+               tail
+      end
+
+      for tail <- ["_x/lib/fx/priv", "/x/lib/fx/priv", "/lib", "/libx/a", "/consolidated"] do
+        assert Relocation.record_problem(%{@record | "files" => file.(["", "build", tail])}, ebin) =~
+                 "a build path followed by",
+               tail
+      end
+
+      assert Relocation.record_problem(
+               %{@record | "files" => file.(["", "build", "", "deps", "/x"])},
+               ebin
+             ) == nil
+    end
+
     test "every malformed shape is named" do
       ebin = ["ebin/Elixir.A.beam"]
       file = fn occ -> %{"path" => "ebin/Elixir.A.beam", "occurrences" => [occ]} end
@@ -223,7 +258,6 @@ defmodule Compatibility.RelocationTest do
             nil,
             %{@record | "deps" => "deps"},
             %{@record | "build" => @record["deps"]},
-            %{@record | "files" => []},
             %{@record | "files" => [%{"path" => "ebin/Elixir.B.beam", "occurrences" => [@occ]}]},
             %{@record | "files" => [%{"path" => "priv/x.beam", "occurrences" => [@occ]}]},
             %{@record | "files" => [%{"path" => "ebin/Elixir.A.beam", "occurrences" => []}]},
@@ -249,6 +283,84 @@ defmodule Compatibility.RelocationTest do
     end
   end
 
+  # The client re-review's R7: every beam of a relocated build was compiled
+  # from its package's own dir under the record's deps path (its `CInf`
+  # source), read without making an atom (the portal checks it at ingest).
+  describe "compiled_in_problem/3" do
+    test "a beam compiled in the package's dir has none; elsewhere, or no source, refuses",
+         ctx do
+      root = Path.join(ctx.tmp_dir, "w")
+      deps = slots(root)["deps"]
+      beam = compile_ex(root, "Where", "def a, do: 1")
+      erl = compile_erl(root, :reloc_where, "f() -> ok.\n")
+
+      ebin = %{
+        "Elixir.RelocationTest.Where.beam" => beam,
+        "reloc_where.beam" => erl,
+        "fx.app" => "x"
+      }
+
+      assert Relocation.compiled_in_problem(ebin, deps, "fx") == nil
+      assert Relocation.compiled_in_problem(ebin, deps, "fy") =~ "not compiled from"
+      assert Relocation.compiled_in_problem(ebin, deps <> "2", "fx") =~ "not compiled from"
+
+      assert Relocation.compiled_in_problem(ebin, Path.join(root, "dep"), "s/fx") =~
+               "not compiled"
+
+      {:ok, _, det} =
+        :compile.file(String.to_charlist(Path.join(deps, "fx/src/reloc_where.erl")), [
+          :binary,
+          :deterministic
+        ])
+
+      assert Relocation.compiled_in_problem(%{"reloc_where.beam" => det}, deps, "fx") =~
+               "not compiled from"
+
+      assert Relocation.compiled_in_problem(%{"x.beam" => "junk"}, deps, "fx") =~ "unreadable"
+    end
+
+    test "a source with .. in it, or options with atoms no VM knows, are read safely", ctx do
+      root = Path.join(ctx.tmp_dir, "w")
+      deps = slots(root)["deps"]
+      beam = compile_ex(root, "Odd", "def a, do: 1")
+      {:ok, _, chunks} = :beam_lib.all_chunks(beam)
+
+      with_cinf = fn info ->
+        cinf = :erlang.term_to_binary(info)
+
+        {:ok, bytes} =
+          :beam_lib.build_module(List.keystore(chunks, ~c"CInf", 0, {~c"CInf", cinf}))
+
+        %{"Elixir.RelocationTest.Odd.beam" => bytes}
+      end
+
+      escaped = String.to_charlist(Path.join(deps, "fx/../other/lib/x.ex"))
+
+      assert Relocation.compiled_in_problem(with_cinf.(source: escaped), deps, "fx") =~
+               "not compiled"
+
+      # A compile option naming an atom this VM has never seen: read as a
+      # name, never made.
+      name = "ncc_never_seen_#{System.unique_integer([:positive])}"
+      unseen = :erlang.term_to_binary([{:options, [{:parse_transform, :x}]}, {:source, ~c"/a"}])
+      unseen = :binary.replace(unseen, <<119, 1, ?x>>, <<119, byte_size(name)>> <> name)
+      ok = String.to_charlist(Path.join(deps, "fx/lib/fx.ex"))
+
+      unseen =
+        :binary.replace(
+          unseen,
+          <<107, 0, 2, ?/, ?a>>,
+          <<107, length(ok)::16>> <> List.to_string(ok)
+        )
+
+      {:ok, bytes} =
+        :beam_lib.build_module(List.keystore(chunks, ~c"CInf", 0, {~c"CInf", unseen}))
+
+      assert Relocation.compiled_in_problem(%{"o.beam" => bytes}, deps, "fx") == nil
+      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    end
+  end
+
   describe "the three roots and the record's limits" do
     # The umbrella re-review's R1: three roots, the first the worker's own
     # project, the second under /home, the third under /Users, unlike one
@@ -256,11 +368,17 @@ defmodule Compatibility.RelocationTest do
     # and holding between them the words user paths hold.
     test "the three roots differ in length, case, space, project dir name and order" do
       %{"deps" => _, "build" => _} = a = Relocation.first_root()
-      b = Relocation.second_layout("/home/nerves", 123)
-      c = Relocation.third_layout("/Users", 123)
+      %{second: home, third: users} = Relocation.bases()
+      b = Relocation.second_layout(home, 123)
+      c = Relocation.third_layout(users, 123)
 
       assert String.starts_with?(b["deps"], "/home/")
       assert String.starts_with?(c["deps"], "/Users/")
+
+      # The umbrella re-review's Q2: the container's HOME is one of R2's
+      # roots, and a root that holds it cannot be told from it.
+      refute String.starts_with?(b["deps"], "/home/nerves/")
+      refute String.starts_with?(b["deps"], "/home/nerves")
 
       for slot <- ["deps", "build"] do
         lengths = Enum.map([a, b, c], &byte_size(&1[slot]))
@@ -306,7 +424,7 @@ defmodule Compatibility.RelocationTest do
             %{
               record
               | "second" =>
-                  Map.take(Relocation.second_layout("/home/other", 42), ["deps", "build"])
+                  Map.take(Relocation.second_layout("/home/nerves", 42), ["deps", "build"])
             },
             %{record | "second" => Relocation.pinned_record(43)["second"]},
             %{
@@ -325,7 +443,7 @@ defmodule Compatibility.RelocationTest do
     # test pins this literal too, so a change here fails there until both
     # move together.
     test "pinned_record/1 is the literal client 0.9.0 ships" do
-      first = "/home/nerves/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7"
+      first = "/home/ncc-relocate/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7"
       second = first <> "/nix/store/src/code/projects/x_y@z~0.d/app"
 
       third =
@@ -390,7 +508,7 @@ defmodule Compatibility.RelocationTest do
     defp at_worker_roots(ctx, name, body) do
       base = Path.join(ctx.tmp_dir, "r")
       first = Path.join(base, "work/proj")
-      second = Relocation.second_layout(Path.join(base, "home/nerves"), 7)
+      second = Relocation.second_layout(Path.join(base, "home/ncc-relocate"), 7)
       third = Relocation.third_layout(Path.join(base, "Users"), 7)
 
       compile_at = fn deps ->

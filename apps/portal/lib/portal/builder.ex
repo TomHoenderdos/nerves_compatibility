@@ -528,7 +528,7 @@ defmodule Portal.Builder do
                cache_dir,
                nerves_cache(),
                hex_cache()
-             ] ++ List.wrap(users_dir(job, scratch))
+             ] ++ relocate_list(relocate_dirs(job, scratch))
            ),
          {:ok, prefetch_line} <- prefetch_build_cache(job),
          job = with_known_system_abi(job),
@@ -1230,16 +1230,22 @@ defmodule Portal.Builder do
         nerves_cache: nerves_cache(),
         hex_cache: hex_cache(),
         build_cache: build_cache_dir(job),
-        users: users_dir(job, scratch)
+        relocate: relocate_dirs(job, scratch)
       }
     })
   end
 
-  # S4: the third root of a relocation (`Compatibility.Relocation.third_layout/2`)
-  # is under `/Users`, a per-run scratch dir bound there only for a job that
-  # sends the judge `relocate`.
-  defp users_dir(%{judge: %{"relocate" => true}}, scratch), do: Path.join(scratch, "users")
-  defp users_dir(_job, _scratch), do: nil
+  # S4: the second and third roots of a relocation
+  # (`Compatibility.Relocation.bases/0`) are under `/home/ncc-relocate` and
+  # `/Users`, per-run scratch dirs bound there only for a job that sends the
+  # judge `relocate`.
+  defp relocate_dirs(%{judge: %{"relocate" => true}}, scratch),
+    do: %{second: Path.join(scratch, "relocate-home"), third: Path.join(scratch, "users")}
+
+  defp relocate_dirs(_job, _scratch), do: nil
+
+  defp relocate_list(nil), do: []
+  defp relocate_list(%{second: second, third: third}), do: [second, third]
 
   @doc """
   How the container for `job` mounts the Nerves cache

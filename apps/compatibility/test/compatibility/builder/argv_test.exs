@@ -45,18 +45,24 @@ defmodule Compatibility.Builder.ArgvTest do
            )
   end
 
-  # S4: a build that may relocate gets a per-run scratch dir at /Users, the
-  # third root (`Compatibility.Relocation.third_layout/2`); no other build
-  # does, so the pinned argv above is unchanged.
-  test "a users path mounts it at /Users; none, no mount", %{input: input} do
-    argv = Argv.build(put_in(input, [:paths, :users], "/scratch/run/users"))
+  # S4: a build that may relocate gets two per-run scratch dirs, at
+  # /home/ncc-relocate (the second root, outside the container's HOME, the
+  # umbrella re-review's Q2) and /Users (the third root,
+  # `Compatibility.Relocation.bases/0`); no other build does, so the pinned
+  # argv above is unchanged.
+  test "relocate paths mount at /home/ncc-relocate and /Users; none, no mount", %{
+    input: input
+  } do
+    dirs = %{second: "/scratch/run/relocate-home", third: "/scratch/run/users"}
+    argv = Argv.build(put_in(input, [:paths, :relocate], dirs))
+    assert "type=bind,source=/scratch/run/relocate-home,target=/home/ncc-relocate" in argv
     assert "type=bind,source=/scratch/run/users,target=/Users" in argv
-    refute Enum.any?(Argv.build(input), &String.contains?(&1, "/Users"))
+    assert Compatibility.Relocation.bases() == %{second: "/home/ncc-relocate", third: "/Users"}
 
-    refute Enum.any?(
-             Argv.build(put_in(input, [:paths, :users], nil)),
-             &String.contains?(&1, "/Users")
-           )
+    for plain <- [Argv.build(input), Argv.build(put_in(input, [:paths, :relocate], nil))] do
+      refute Enum.any?(plain, &String.contains?(&1, "/Users"))
+      refute Enum.any?(plain, &String.contains?(&1, "ncc-relocate"))
+    end
   end
 
   test "no build cache means neither the mount nor its env", %{input: input} do

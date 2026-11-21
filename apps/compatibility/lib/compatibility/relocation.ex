@@ -206,11 +206,17 @@ defmodule Compatibility.Relocation do
   # work dir `/work` in the container (`Compatibility.Builder.Argv`).
   @first %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
 
-  # The worker's other two roots, in production: the second under the
-  # container's home (`/home/nerves/.cache` is per-run writable scratch),
-  # the third under `/Users` (a per-run scratch dir the portal binds there
-  # for a build that may relocate, `Portal.Builder`).
-  @home "/home/nerves"
+  # The worker's other two roots, in production: the second under
+  # `/home/ncc-relocate`, the third under `/Users`, each a per-run scratch
+  # dir the portal binds there for a build that may relocate
+  # (`Portal.Builder`, `Compatibility.Builder.Argv`). The second is under
+  # `/home/` but not under the container's `HOME` (`/home/nerves`) or any
+  # other root R2 searches: a root that holds one of those cannot be told
+  # from it, and the extra build would hold nothing (the umbrella
+  # re-review's Q2). Frozen: client 0.9.0 holds every record to exactly
+  # this layout (`pinned_problem/1`), so another layout needs another
+  # record version.
+  @home "/home/ncc-relocate"
   @users "/Users"
 
   # The second root, under a home: lower case, no space, of middle length,
@@ -245,9 +251,18 @@ defmodule Compatibility.Relocation do
   def first_root, do: @first
 
   @doc """
-  The worker's second root for run token `n` under `home` (`/home/nerves`
-  in the container): `"project"`, the dir its project is copied to, and its
-  `"deps"` and `"build"` paths (see the moduledoc).
+  The dirs the second and third roots are under in the container
+  (`second_layout/2`'s and `third_layout/2`'s first argument): each a
+  per-run bind of a build that may relocate.
+  """
+  @spec bases() :: %{second: String.t(), third: String.t()}
+  def bases, do: %{second: @home, third: @users}
+
+  @doc """
+  The worker's second root for run token `n` under `home`
+  (`/home/ncc-relocate` in the container, `bases/0`): `"project"`, the dir
+  its project is copied to, and its `"deps"` and `"build"` paths (see the
+  moduledoc).
   """
   @spec second_layout(String.t(), non_neg_integer()) :: %{String.t() => String.t()}
   def second_layout(home, n) when is_integer(n) and n >= 0 do
@@ -309,15 +324,18 @@ defmodule Compatibility.Relocation do
   @doc """
   Why a worker's `relocation` record (`NccWorker.Portability.Relocate`) is
   not one a client can apply, or nil: the build's `deps` and `build` paths
-  (absolute, distinct, neither inside the other), `second`, the second
-  build's (the same), every one of the four printable ASCII, the record at
-  most 256 KiB as JSON, and `files`, a non-empty
-  list of distinct `%{"path" => "ebin/<name>.beam", "occurrences" => [...]}`,
-  each path one of `ebin_paths` (the build's own `ebin` files), each with
-  at least one occurrence of a known chunk, a non-negative index, a term
-  path of non-negative integers, a known kind and a template of text and
-  slot names with at least one slot. Reads the record alone, never a beam:
-  the portal checks it at ingest on its own node, which makes no atom.
+  (absolute, distinct, neither inside the other), `second` and `third`, the
+  other two builds' (the same), every one of the six printable ASCII, the
+  record at most 256 KiB as JSON, and `files`, a list (empty for a
+  dependent that passed because a dependency was held, whose own beams need
+  no rewrite) of distinct `%{"path" => "ebin/<name>.beam", "occurrences" =>
+  [...]}`, each path one of `ebin_paths` (the build's own `ebin` files),
+  each with at least one occurrence of a known chunk, a non-negative index,
+  a term path of non-negative integers, a known kind and a template of text
+  and slot names with at least one slot, every `build` slot in it followed
+  by nothing, `/lib/` or `/consolidated/` (Mix's layout under a build path,
+  the client re-review's R5). Reads the record alone, never a beam: the
+  portal checks it at ingest on its own node, which makes no atom.
   """
   @spec record_problem(term(), [String.t()]) :: String.t() | nil
   def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin_paths)
@@ -330,8 +348,8 @@ defmodule Compatibility.Relocation do
           roots_problem(%{"deps" => deps, "build" => build}, record["second"], record["third"]) ->
         problem
 
-      files == [] or length(files) > @max_files ->
-        "no files, or too many"
+      length(files) > @max_files ->
+        "too many files"
 
       record_bytes(record) > @max_record_bytes ->
         "a record over 256 KiB"
@@ -386,12 +404,31 @@ defmodule Compatibility.Relocation do
       not Enum.all?(occs, &occurrence?/1) ->
         "a malformed occurrence in #{inspect(path)}"
 
+      tail = Enum.find_value(occs, &build_tail/1) ->
+        "a build path followed by #{inspect(tail, limit: 3, printable_limit: 40)} in #{inspect(path)}"
+
       true ->
         nil
     end
   end
 
   defp file_problem(file, _ebin), do: "a malformed file entry #{inspect(file, limit: 3)}"
+
+  # The text after a `build` slot that is not Mix's layout under a build
+  # path (nothing, `lib/`, `consolidated/`), or nil.
+  defp build_tail(%{"parts" => parts}) do
+    parts
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.find_value(fn
+      ["build", tail] -> if not mix_layout?(tail), do: tail
+      _ -> nil
+    end)
+  end
+
+  defp mix_layout?(tail),
+    do:
+      tail == "" or String.starts_with?(tail, "/lib/") or
+        String.starts_with?(tail, "/consolidated/")
 
   defp occurrence?(
          %{"chunk" => chunk, "index" => i, "term" => term, "kind" => kind, "parts" => parts} = occ
@@ -422,6 +459,146 @@ defmodule Compatibility.Relocation do
 
   defp render([text, slot | rest], slots, acc),
     do: render(rest, slots, [acc, text, Map.fetch!(slots, slot)])
+
+  @doc """
+  Why the beams of `ebin` (`%{file name => bytes}`, any other file left
+  alone) do not show they were compiled from their package's own dir,
+  `<deps>/<app>/`, or nil: each beam's `CInf` `source`, the file its
+  compile read made absolute, must be a normalised path in that dir (the
+  client re-review's R7). A beam with no source (a `deterministic` or
+  `slim` compile) or compiled elsewhere does not show the record's deps
+  path is its own, and every client 0.9.0 refuses it at install. Reads
+  `CInf` without making an atom (`safe_term/1`), so the portal checks it
+  at ingest.
+  """
+  @spec compiled_in_problem(%{String.t() => binary()}, String.t(), String.t()) ::
+          String.t() | nil
+  def compiled_in_problem(ebin, deps, app)
+      when is_map(ebin) and is_binary(deps) and is_binary(app) do
+    dir = Path.join(deps, app) <> "/"
+
+    ebin
+    |> Enum.filter(fn {name, _} -> Path.extname(name) == ".beam" end)
+    |> Enum.sort()
+    |> Enum.find_value(fn {name, bytes} ->
+      case beam_source(bytes) do
+        {:ok, source} ->
+          if not (String.starts_with?(source, dir) and Path.expand(source) == source),
+            do: "#{name}: not compiled from #{inspect(dir)}"
+
+        :none ->
+          "#{name}: not compiled from #{inspect(dir)} (no source)"
+
+        :error ->
+          "#{name}: unreadable compile info"
+      end
+    end)
+  end
+
+  def compiled_in_problem(_ebin, _deps, _app), do: "no ebin"
+
+  @max_cinf_bytes 1024 * 1024
+
+  defp beam_source(bytes) do
+    with {:ok, chunks} <- chunks(bytes),
+         data when is_binary(data) and byte_size(data) <= @max_cinf_bytes <- chunk(chunks, "CInf"),
+         {:ok, info} when is_list(info) <- safe_term(data) do
+      case for({{:atom, "source"}, value} <- info, do: value) do
+        [value] -> source_text(value)
+        [] -> :none
+        _ -> :error
+      end
+    else
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp source_text(value) when is_binary(value),
+    do: if(String.valid?(value), do: {:ok, value}, else: :error)
+
+  defp source_text(value) when is_list(value) do
+    if Enum.all?(value, &(is_integer(&1) and &1 >= 0 and &1 <= 0x10FFFF)),
+      do: source_text(List.to_string(value)),
+      else: :error
+  rescue
+    _ -> :error
+  end
+
+  defp source_text(_value), do: :error
+
+  @doc """
+  An external term format binary decoded without making an atom or
+  running anything: an atom is `{:atom, name}`, a string or list a list, a
+  tuple a tuple, a map a list of `{key, value}` pairs. Integers, floats,
+  binaries and bitstrings as they are. `:error` for anything else (a
+  compressed term, a pid, a fun, trailing bytes).
+  """
+  @spec safe_term(binary()) :: {:ok, term()} | :error
+  def safe_term(<<131, rest::binary>>) do
+    case etf(rest) do
+      {:ok, term, <<>>} -> {:ok, term}
+      _ -> :error
+    end
+  end
+
+  def safe_term(_bytes), do: :error
+
+  defp etf(<<97, n, rest::binary>>), do: {:ok, n, rest}
+  defp etf(<<98, n::signed-32, rest::binary>>), do: {:ok, n, rest}
+  defp etf(<<70, f::float-64, rest::binary>>), do: {:ok, f, rest}
+  defp etf(<<99, _f::binary-size(31), rest::binary>>), do: {:ok, :float, rest}
+
+  defp etf(<<tag, len::16, name::binary-size(len), rest::binary>>) when tag in [100, 118],
+    do: {:ok, {:atom, name}, rest}
+
+  defp etf(<<tag, len, name::binary-size(len), rest::binary>>) when tag in [115, 119],
+    do: {:ok, {:atom, name}, rest}
+
+  defp etf(<<104, n, rest::binary>>), do: etf_tuple(n, rest)
+  defp etf(<<105, n::32, rest::binary>>), do: etf_tuple(n, rest)
+  defp etf(<<106, rest::binary>>), do: {:ok, [], rest}
+
+  defp etf(<<107, len::16, chars::binary-size(len), rest::binary>>),
+    do: {:ok, :binary.bin_to_list(chars), rest}
+
+  defp etf(<<108, n::32, rest::binary>>) do
+    with {:ok, items, rest} <- etf_many(n, rest, []),
+         {:ok, tail, rest} <- etf(rest) do
+      {:ok, if(tail == [], do: items, else: {:improper, items, tail}), rest}
+    end
+  end
+
+  defp etf(<<109, len::32, bin::binary-size(len), rest::binary>>), do: {:ok, bin, rest}
+
+  defp etf(<<77, len::32, bits, bin::binary-size(len), rest::binary>>),
+    do: {:ok, {:bits, bits, bin}, rest}
+
+  defp etf(<<110, n, _sign, _digits::binary-size(n), rest::binary>>), do: {:ok, :big, rest}
+  defp etf(<<111, n::32, _sign, _digits::binary-size(n), rest::binary>>), do: {:ok, :big, rest}
+
+  defp etf(<<116, n::32, rest::binary>>) do
+    with {:ok, flat, rest} <- etf_many(2 * n, rest, []),
+         do: {:ok, flat |> Enum.chunk_every(2) |> Enum.map(&List.to_tuple/1), rest}
+  end
+
+  defp etf(_bytes), do: :error
+
+  defp etf_tuple(n, rest) do
+    with {:ok, items, rest} <- etf_many(n, rest, []), do: {:ok, List.to_tuple(items), rest}
+  end
+
+  # Each item takes at least one byte, so `n` is bounded by what is left.
+  defp etf_many(0, rest, acc), do: {:ok, Enum.reverse(acc), rest}
+  defp etf_many(n, rest, _acc) when n > byte_size(rest), do: :error
+
+  defp etf_many(n, rest, acc) do
+    case etf(rest) do
+      {:ok, item, rest} -> etf_many(n - 1, rest, [item | acc])
+      :error -> :error
+    end
+  end
 
   # --- slots -----------------------------------------------------------------
 

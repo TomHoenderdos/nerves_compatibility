@@ -112,8 +112,9 @@ defmodule Portal.BuilderJudgeInputTest do
         do: assert(Builder.judge_input(mode) == nil, inspect(mode))
   end
 
-  # A toolchain job that may relocate gets its /Users scratch dir; no other.
-  test "a job sent relocate gets a /Users mount of its own scratch" do
+  # A toolchain job that may relocate gets its two scratch dirs, at
+  # /home/ncc-relocate and /Users; no other.
+  test "a job sent relocate gets /home/ncc-relocate and /Users mounts of its own scratch" do
     job = %{
       run_id: "r-users",
       image_name: "ncc-worker:local",
@@ -126,6 +127,7 @@ defmodule Portal.BuilderJudgeInputTest do
 
     argv = Builder.build_docker_args(job, "/scratch/work", "/scratch/out", "/scratch/files")
     assert "type=bind,source=/scratch/users,target=/Users" in argv
+    assert "type=bind,source=/scratch/relocate-home,target=/home/ncc-relocate" in argv
 
     plain =
       Builder.build_docker_args(
@@ -136,6 +138,7 @@ defmodule Portal.BuilderJudgeInputTest do
       )
 
     refute Enum.any?(plain, &String.contains?(&1, "/Users"))
+    refute Enum.any?(plain, &String.contains?(&1, "ncc-relocate"))
   end
 
   test "worker_input carries judge only when set" do

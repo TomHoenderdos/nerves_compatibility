@@ -41,7 +41,7 @@ defmodule Compatibility.Builder.Argv do
           required(:nerves_cache) => Path.t(),
           required(:hex_cache) => Path.t(),
           optional(:build_cache) => Path.t() | nil,
-          optional(:users) => Path.t() | nil
+          optional(:relocate) => %{second: Path.t(), third: Path.t()} | nil
         }
 
   @type nerves_cache_mode :: :readonly | :warm | :rw
@@ -192,16 +192,22 @@ defmodule Compatibility.Builder.Argv do
       nerves_cache_mount(Map.fetch!(paths, :nerves_cache), nerves_cache_mode),
       hex_cache_mount(Map.fetch!(paths, :hex_cache), hex_cache_mode),
       build_cache_mount(Map.get(paths, :build_cache)),
-      users_mount(Map.get(paths, :users))
+      relocate_mounts(Map.get(paths, :relocate))
     ])
   end
 
-  # S4: a build that may relocate builds its package a third time under
-  # `/Users` (`Compatibility.Relocation.third_layout/2`), on a root that is
-  # otherwise read-only: a per-run scratch dir, removed with the run, like
-  # /tmp. No other build gets it.
-  defp users_mount(nil), do: []
-  defp users_mount(dir), do: bind(dir, "/Users")
+  # S4: a build that may relocate builds its package again under
+  # `/home/ncc-relocate` and under `/Users` (`Compatibility.Relocation.bases/0`),
+  # on a root that is otherwise read-only: per-run scratch dirs, removed
+  # with the run, like /tmp. The first is under `/home/` but outside the
+  # container's `HOME`, one of the roots R2 searches. No other build gets
+  # them.
+  defp relocate_mounts(%{second: second, third: third}) do
+    bases = Compatibility.Relocation.bases()
+    [bind(second, bases.second), bind(third, bases.third)]
+  end
+
+  defp relocate_mounts(nil), do: []
 
   defp bind(source, target), do: ["--mount", "type=bind,source=#{source},target=#{target}"]
 
