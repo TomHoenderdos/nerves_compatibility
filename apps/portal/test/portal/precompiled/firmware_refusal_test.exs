@@ -67,20 +67,7 @@ defmodule Portal.Precompiled.FirmwareRefusalTest do
           |> Map.put("build_root", build_root)
       end
 
-    rpi4 =
-      case Keyword.fetch(opts, :judge) do
-        {:ok, judge} ->
-          rpi4
-          |> Map.put("firmware_judge", judge)
-          |> then(fn r ->
-            if judge["status"] == "skipped",
-              do: Map.put(r, "beam_scan", %{"footprint" => %{}}),
-              else: r
-          end)
-
-        :error ->
-          rpi4
-      end
+    rpi4 = put_judge(rpi4, Keyword.fetch(opts, :judge))
 
     rpi4 =
       if Keyword.get(opts, :variant, false) do
@@ -133,6 +120,15 @@ defmodule Portal.Precompiled.FirmwareRefusalTest do
 
     run
   end
+
+  # The firmware judge's verdict, as the worker writes it: a "skipped" one
+  # has withheld the target's files.
+  defp put_judge(rpi4, :error), do: rpi4
+
+  defp put_judge(rpi4, {:ok, %{"status" => "skipped"} = judge}),
+    do: rpi4 |> Map.put("firmware_judge", judge) |> Map.put("beam_scan", %{"footprint" => %{}})
+
+  defp put_judge(rpi4, {:ok, judge}), do: Map.put(rpi4, "firmware_judge", judge)
 
   defp served_rpi4(version) do
     case Catalog.precompiled_manifest_v2("jason") do

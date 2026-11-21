@@ -641,17 +641,16 @@ defmodule NccWorker.FirmwareInputs do
         :ok
     end
 
-    case verdict do
-      %{status: :pass, compile_inputs: inputs, compile_env: env} when is_list(inputs) ->
-        {:ok, %{compile_inputs: inputs, compile_env: env || []}}
-
-      %{status: :skip, reason: reason} ->
-        {:skip, reason || "not judged", FirmwareJudge.texts(verdict)}
-
-      %{reason: reason} ->
-        {:error, reason || "not judged"}
-    end
+    outcome(verdict)
   end
+
+  defp outcome(%{status: :pass, compile_inputs: inputs, compile_env: env}) when is_list(inputs),
+    do: {:ok, %{compile_inputs: inputs, compile_env: env || []}}
+
+  defp outcome(%{status: :skip, reason: reason} = verdict),
+    do: {:skip, reason || "not judged", FirmwareJudge.texts(verdict)}
+
+  defp outcome(%{reason: reason}), do: {:error, reason || "not judged"}
 
   @doc """
   How the worker runs a target's firmware build (`NccWorker.Worker`):
