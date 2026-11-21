@@ -1093,7 +1093,7 @@ sources"), `foreign_priv_conflict` ("writes {0}'s priv/assets/{1}, which {2} als
 know") and `foreign_priv_device` ("writes into {0}'s priv at compile time; not installed on a
 device"), and the relocation codes of client 0.9.0: `relocated_paths` ("relocated build: this
 project's paths are not its own real paths"), `relocated_otp` ("relocated build: needs OTP 28 or
-later") and `relocation_refused` ("relocated build: {0}"). Another code is stored as `unknown`.
+later") and `relocation_refused` ("relocated build: the rewrite refused"). Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300
