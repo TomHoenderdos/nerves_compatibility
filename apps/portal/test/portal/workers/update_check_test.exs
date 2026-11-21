@@ -690,6 +690,28 @@ defmodule Portal.Workers.UpdateCheckTest do
     end
   end
 
+  describe "the release fast path" do
+    test "a run offers a release its dependents' builds lock behind" do
+      Application.put_env(:portal, Portal.Workers.ReleaseFastPath, min_dependents: 1)
+      on_exit(fn -> Application.delete_env(:portal, Portal.Workers.ReleaseFastPath) end)
+
+      passing_package("alpha", "1.0.0")
+
+      Portal.PrecompiledFixtures.ingest_toolchain_build("dependent", "0.1.0",
+        deps_lock: %{"alpha" => %{"version" => "1.0.0", "checksum" => "a"}}
+      )
+
+      hex_says([{"alpha", "1.0.1"}])
+
+      assert {:ok, %{fast_path: 1}} = UpdateCheck.run()
+
+      assert [%{args: %{"package" => "alpha", "version" => "1.0.1"}}] =
+               all_enqueued(worker: Portal.Workers.ReleaseFastPath)
+
+      assert {:ok, %{fast_path: 0}} = UpdateCheck.run(dry_run: true)
+    end
+  end
+
   describe "a second release the same day" do
     # `Backfill` is unique per package for a day; without the version in its
     # args, attesto 2.31.0 waited a day behind the 2.30.0 queued that morning.

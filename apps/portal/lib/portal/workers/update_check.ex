@@ -69,7 +69,9 @@ defmodule Portal.Workers.UpdateCheck do
   This worker rebuilds a package when the package itself releases. A
   release of one of its dependencies leaves its toolchain builds' locks
   behind instead, which `Portal.Workers.ClosureDrift` rebuilds from the same
-  registry once a day.
+  registry once a day. A release that many packages' builds lock behind is
+  handed to `Portal.Workers.ReleaseFastPath` from this run instead, which
+  rebuilds them within the hour.
 
   ## Scope
 
@@ -107,6 +109,7 @@ defmodule Portal.Workers.UpdateCheck do
   alias Portal.Catalog.LatestRun
   alias Portal.Catalog.Package
   alias Portal.Workers.Backfill
+  alias Portal.Workers.ReleaseFastPath
 
   @doc """
   Args:
@@ -153,6 +156,7 @@ defmodule Portal.Workers.UpdateCheck do
         "moved" => summary.moved,
         "enqueued" => summary.enqueued,
         "nominated" => summary.nominated,
+        "fast_path" => summary.fast_path,
         "dry_run" => dry_run?
       })
 
@@ -167,10 +171,11 @@ defmodule Portal.Workers.UpdateCheck do
   Runs regardless of the `:enabled` flag -- that gate belongs to the scheduled
   path, not to a human at a console deciding to run one on purpose.
 
-  Returns `{:ok, %{seen: n, moved: n, enqueued: n, nominated: n}}`, where
-  `seen` counts registry packages, `moved` counts tracked packages worth
-  rebuilding, `enqueued` counts newly inserted jobs, and `nominated` counts
-  packages whose `hex_latest_version` this run set. Existing jobs do not
+  Returns `{:ok, %{seen: n, moved: n, enqueued: n, nominated: n, fast_path: n}}`,
+  where `seen` counts registry packages, `moved` counts tracked packages
+  worth rebuilding, `enqueued` counts newly inserted jobs, `nominated`
+  counts packages whose `hex_latest_version` this run set, and `fast_path`
+  the releases it handed to `Portal.Workers.ReleaseFastPath`. Existing jobs do not
   prevent other eligible updates from being queued.
 
   Metadata lookup jobs are scheduled one second apart, oldest updates first.
@@ -202,8 +207,10 @@ defmodule Portal.Workers.UpdateCheck do
             nominate(patch_only ++ hidden)
           end
 
+        fast_path = if dry_run?, do: 0, else: ReleaseFastPath.offer(registry)
+
         Logger.info(
-          "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued, #{nominated} toolchain builds nominated"
+          "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued, #{nominated} toolchain builds nominated, #{fast_path} releases on the fast path"
         )
 
         {:ok,
@@ -211,7 +218,8 @@ defmodule Portal.Workers.UpdateCheck do
            seen: length(registry),
            moved: length(moved),
            enqueued: enqueued,
-           nominated: nominated
+           nominated: nominated,
+           fast_path: fast_path
          }}
 
       {:error, reason} ->

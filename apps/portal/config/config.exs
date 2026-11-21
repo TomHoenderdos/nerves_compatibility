@@ -211,6 +211,18 @@ config :portal, Portal.Workers.ClosureDrift,
   firmware_scan_limit: 1_000,
   budget_ms: :timer.minutes(60)
 
+# Rebuilding, within the hour, the builds a release of a popular package left
+# behind (`Portal.Workers.ReleaseFastPath`): offered by the hourly update check
+# for a package the registry changed in the last `window_hours` whose newest
+# release at least `min_dependents` packages' passing builds lock behind, at
+# most `max_per_release` rebuilds a release. `NCC_RELEASE_FAST_PATH=0` switches
+# it off at runtime.
+config :portal, Portal.Workers.ReleaseFastPath,
+  enabled: true,
+  min_dependents: 10,
+  window_hours: 3,
+  max_per_release: 2_000
+
 # Registry-based native-code filter for bulk intake (`catalog_seed`,
 # `backfill`). Off by default so a deploy changes nothing until
 # `NCC_QUEUE_FILTER=1` is set. See `Portal.Workers.Backfill` and

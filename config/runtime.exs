@@ -395,6 +395,20 @@ if portal_available? do
     _ -> :ok
   end
 
+  # The release fast path (`Portal.Workers.ReleaseFastPath`), parsed the
+  # same way: `NCC_RELEASE_FAST_PATH=0` offers no release and cancels a
+  # queued one; the daily drift run goes on.
+  case System.get_env("NCC_RELEASE_FAST_PATH") do
+    v when v in ["1", "true", "yes"] ->
+      config :portal, Portal.Workers.ReleaseFastPath, enabled: true
+
+    v when v in ["0", "false", "no"] ->
+      config :portal, Portal.Workers.ReleaseFastPath, enabled: false
+
+    _ ->
+      :ok
+  end
+
   # Its firmware phase, parsed the same way: `NCC_FIRMWARE_DRIFT=0` stops the
   # firmware rebuilds and leaves the toolchain ones running.
   case System.get_env("NCC_FIRMWARE_DRIFT") do
