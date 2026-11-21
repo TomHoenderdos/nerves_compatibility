@@ -125,6 +125,43 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
     assert toolchain!(%{}).status == :pass
   end
 
+  # Round 6, R5-6: a pure_elixir result runs the same judge (its
+  # host_portability), so the result keeps its record, for the recheck.
+  test "a pure_elixir result keeps its declared-absent record" do
+    name = "abs_pe_ok_#{System.unique_integer([:positive])}"
+    record = %{@money | "declared" => ["ex_money", "money"]}
+
+    result = %{
+      "package" => %{"name" => name, "version" => "1.0.0"},
+      "finished_at" => "2026-11-21T10:00:00Z",
+      "scope" => "full",
+      "systems" => %{"pure_elixir" => %{"status" => "pass"}},
+      "host_portability" => %{
+        "status" => "pass",
+        "reason" => nil,
+        "portability_rule" => 2,
+        "compile_observations" => %{"declared_absent" => [record]}
+      }
+    }
+
+    {:ok, run} =
+      Ingestion.ingest(result, %{
+        package: name,
+        version: "1.0.0",
+        run_id: "r-#{System.unique_integer([:positive])}",
+        image_digest: "sha256:x",
+        files_dir: System.tmp_dir!()
+      })
+
+    [sr] =
+      SystemResult
+      |> Ash.Query.filter(run_id == ^run.id and system_pkg == "pure_elixir")
+      |> Ash.read!(domain: @domain)
+
+    assert sr.unpublished_at == nil
+    assert sr.declared_absent == [record]
+  end
+
   test "a pure_elixir result with a colliding probe is held back, unpublished" do
     name = "abs_pe_#{System.unique_integer([:positive])}"
 

@@ -583,18 +583,38 @@ defmodule Portal.Catalog.ModuleIndex do
   # --- recheck (R3-5a) ---------------------------------------------------------
 
   # Every served row, of every toolchain config_variant: each is served.
+  # `{kind, table, served rows with a record (id, records, lock), revoked-at
+  # column, reason column}`; a `pure_elixir` result keeps its record in a
+  # column of its own (round 6, R5-6).
+  @record_where "jsonb_typeof(RECORDS) = 'array' AND jsonb_array_length(RECORDS) > 0"
   @recheck_kinds [
-    {"toolchain_build", "catalog_toolchain_builds", "t.revoked_at IS NULL AND t.status = 'pass'",
+    {"toolchain_build", "catalog_toolchain_builds",
+     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM catalog_toolchain_builds t " <>
+       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND " <>
+       String.replace(@record_where, "RECORDS", "t.compile_observations->'declared_absent'"),
      "revoked_at", "revoked_reason"},
-    {"pinned_build", "catalog_pinned_builds", "t.revoked_at IS NULL AND t.status = 'pass'",
+    {"pinned_build", "catalog_pinned_builds",
+     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM catalog_pinned_builds t " <>
+       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND " <>
+       String.replace(@record_where, "RECORDS", "t.compile_observations->'declared_absent'"),
      "revoked_at", "revoked_reason"},
     {"host_native_build", "catalog_host_native_builds",
-     "t.revoked_at IS NULL AND t.status = 'pass'", "revoked_at", nil}
+     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM catalog_host_native_builds t " <>
+       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND " <>
+       String.replace(@record_where, "RECORDS", "t.compile_observations->'declared_absent'"),
+     "revoked_at", nil},
+    {"system_result", "catalog_system_results",
+     "SELECT t.id, t.declared_absent, coalesce(t.deps_lock, r.deps_lock) FROM catalog_system_results t " <>
+       "JOIN catalog_runs r ON r.id = t.run_id " <>
+       "WHERE t.unpublished_at IS NULL AND t.status = 'pass' AND t.system_pkg = 'pure_elixir' AND " <>
+       String.replace(@record_where, "RECORDS", "t.declared_absent"), "unpublished_at",
+     "unpublished_reason"}
   ]
 
   @doc """
-  Re-checks every served toolchain, pinned and host-native build whose
-  judge recorded declared-absent probes against the index as it is now,
+  Re-checks every served toolchain, pinned and host-native build, and
+  every served `pure_elixir` result, whose judge recorded declared-absent
+  probes against the index as it is now,
   and withholds (revokes) each one that now collides, tagged with the
   generation (`withheld_reason/1`) and listed in
   `catalog_module_index_withheld` for `undo_recheck/1`. Only on a complete
@@ -608,8 +628,8 @@ defmodule Portal.Catalog.ModuleIndex do
 
     if complete?() do
       found =
-        for {kind, table, served, _at, _reason} <- @recheck_kinds,
-            [id, items, lock] <- served_with_records(table, served),
+        for {kind, _table, select, _at, _reason} <- @recheck_kinds,
+            [id, items, lock] <- served_with_records(select),
             refusal = refusal(items, lock_keys(lock)),
             refusal != nil,
             do: {kind, Ecto.UUID.load!(id), refusal}
@@ -639,25 +659,15 @@ defmodule Portal.Catalog.ModuleIndex do
 
   # The table and column names come from @recheck_kinds, never from input.
   # sobelow_skip ["SQL.Query"]
-  defp served_with_records(table, served) do
-    %{rows: rows} =
-      Repo.query!(
-        """
-        SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM #{table} t
-        WHERE #{served} AND jsonb_typeof(t.compile_observations->'declared_absent') = 'array'
-          AND jsonb_array_length(t.compile_observations->'declared_absent') > 0
-        """,
-        [],
-        timeout: 600_000
-      )
-
+  defp served_with_records(select) do
+    %{rows: rows} = Repo.query!(select, [], timeout: 600_000)
     rows
   end
 
   defp count_with_records do
     Enum.sum(
-      for {_kind, table, served, _at, _reason} <- @recheck_kinds,
-          do: length(served_with_records(table, served))
+      for {_kind, _table, select, _at, _reason} <- @recheck_kinds,
+          do: length(served_with_records(select))
     )
   end
 

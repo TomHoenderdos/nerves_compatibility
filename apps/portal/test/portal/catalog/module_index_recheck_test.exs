@@ -167,6 +167,50 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
     assert length(all_enqueued(worker: Portal.Workers.ToolchainBuild)) == 1
   end
 
+  # R5-6: a served pure_elixir result with a record is re-checked too, and
+  # withheld as unpublished with the generation's reason.
+  test "a served pure_elixir result that now collides is withheld, and the undo restores it",
+       %{opts: opts} do
+    {:ok, id} = Ingestion.ensure_package_id("pe_like")
+
+    %{rows: [[run_id]]} =
+      Repo.query!(
+        """
+        INSERT INTO catalog_runs (id, run_id, package_id, version_tested, overall_status, image_digest,
+                                  inserted_at, updated_at)
+        VALUES (gen_random_uuid(), 'r-pe', $1, '1.0.0', 'pass', 'sha256:x', now(), now())
+        RETURNING id
+        """,
+        [Ecto.UUID.dump!(id)]
+      )
+
+    %{rows: [[sr]]} =
+      Repo.query!(
+        """
+        INSERT INTO catalog_system_results (id, run_id, system_pkg, status, declared_absent,
+                                            inserted_at, updated_at)
+        VALUES (gen_random_uuid(), $1, 'pure_elixir', 'pass', $2, now(), now())
+        RETURNING id
+        """,
+        [run_id, [@money]]
+      )
+
+    assert %{complete: true, withheld: 1, generation: generation} = ModuleIndex.refresh(opts)
+
+    %{rows: [[at, reason]]} =
+      Repo.query!(
+        "SELECT unpublished_at, unpublished_reason FROM catalog_system_results WHERE id = $1",
+        [sr]
+      )
+
+    assert at != nil
+    assert reason == ModuleIndex.withheld_reason(generation)
+    assert ModuleIndex.undo_recheck(generation)["system_result"] == 1
+
+    assert Repo.query!("SELECT unpublished_at FROM catalog_system_results WHERE id = $1", [sr]).rows ==
+             [[nil]]
+  end
+
   test "an incomplete run withholds nothing", %{opts: opts} do
     colliding = served!("bitcrowd_like", %{"declared_absent" => [@money]})
     failing = Keyword.put(opts, :tarball, fn _n, _v -> {:error, :hex_registry_unavailable} end)

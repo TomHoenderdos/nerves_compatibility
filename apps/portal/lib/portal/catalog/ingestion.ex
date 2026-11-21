@@ -1333,6 +1333,23 @@ defmodule Portal.Catalog.Ingestion do
   defp locked_names(%{} = lock), do: Map.keys(lock)
   defp locked_names(_lock), do: []
 
+  # A `pure_elixir` result keeps its run's `host_portability` record (round
+  # 6, R5-6), for `ModuleIndex.recheck/1`.
+  defp with_pure_elixir_record(%{"pure_elixir" => %{} = pe} = systems, result) do
+    case get_in(result, ["host_portability", "compile_observations", "declared_absent"]) do
+      items when is_list(items) and items != [] ->
+        Map.put(systems, "pure_elixir", Map.put(pe, "declared_absent", items))
+
+      _ ->
+        systems
+    end
+  end
+
+  defp with_pure_elixir_record(systems, _result), do: systems
+
+  defp record_list(items) when is_list(items), do: Enum.filter(items, &is_map/1)
+  defp record_list(_items), do: nil
+
   # The same refusal for a run's `pure_elixir` result, which the judge
   # passed (`host_portability`): held back as unpublished, with the reason.
   defp declared_absent_hold(%{"host_portability" => %{"status" => "pass"} = hp} = result) do
@@ -2032,7 +2049,7 @@ defmodule Portal.Catalog.Ingestion do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
     package_name = package_name(package_info, opts)
     version = package_info["version"] || "unknown"
-    systems = Map.get(result, "systems", %{})
+    systems = result |> Map.get("systems", %{}) |> with_pure_elixir_record(result)
     finished_at = parse_datetime(result["finished_at"])
     # Read before the new run exists, which would otherwise be the latest.
     carried = carry_candidates(result, package_name, version, systems)
@@ -2608,7 +2625,8 @@ defmodule Portal.Catalog.Ingestion do
         toolchain_version: toolchain_version,
         otp_full: fact_string(sys["otp_full"]),
         published_variants: variants,
-        build_root: build_root(sys["build_root"])
+        build_root: build_root(sys["build_root"]),
+        declared_absent: if(system_pkg == "pure_elixir", do: record_list(sys["declared_absent"]))
       })
       |> Ash.create(domain: @domain)
 

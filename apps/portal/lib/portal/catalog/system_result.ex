@@ -89,7 +89,8 @@ defmodule Portal.Catalog.SystemResult do
         :toolchain_version,
         :otp_full,
         :published_variants,
-        :build_root
+        :build_root,
+        :declared_absent
       ])
     end
 
@@ -266,6 +267,13 @@ defmodule Portal.Catalog.SystemResult do
     # version and target (`Portal.Precompiled.FirmwareRefusal`). Carried
     # copies keep it.
     attribute :build_root, :map do
+      public?(true)
+    end
+
+    # A `pure_elixir` result's declared-absent probe record, from its run's
+    # `host_portability` trace (otp-probe round 6, R5-6), for
+    # `Portal.Catalog.ModuleIndex.recheck/1`.
+    attribute :declared_absent, {:array, :map} do
       public?(true)
     end
 
