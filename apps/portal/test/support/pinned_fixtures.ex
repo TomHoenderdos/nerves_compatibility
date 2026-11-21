@@ -147,6 +147,7 @@ defmodule Portal.PinnedFixtures do
       }
       |> put_build_root(build_root)
       |> put_judge(judge)
+      |> put_plugins(Keyword.fetch(opts, :plugins))
 
     %{
       "scope" => Keyword.get(opts, :scope, "targets"),
@@ -187,6 +188,11 @@ defmodule Portal.PinnedFixtures do
   # withheld the target's files at the source.
   defp put_judge(sys, nil), do: sys
   defp put_judge(sys, judge), do: Map.put(sys, "firmware_judge", judge)
+
+  # The rebar3 plugin releases the target's build ran (`:plugins`,
+  # `NccWorker.FirmwarePlugins`), as the worker writes them.
+  defp put_plugins(sys, :error), do: sys
+  defp put_plugins(sys, {:ok, plugins}), do: Map.put(sys, "rebar3_plugins", plugins)
 
   def firmware_opts(name, pins, files_dir) do
     name

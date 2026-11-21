@@ -26,6 +26,8 @@ defmodule Portal.PinnedFirmwareIngestTest do
     |> Ash.read!(domain: Catalog)
   end
 
+  defp row_name(row), do: Ash.get!(Catalog.Package, row.package_id, domain: Catalog).name
+
   defp package(name) do
     Catalog.Package |> Ash.Query.filter(name == ^name) |> Ash.read_one!(domain: Catalog)
   end
@@ -94,6 +96,41 @@ defmodule Portal.PinnedFirmwareIngestTest do
       "reason" => "rebar3 build runs plugins",
       "classes" => ["plugins_hooks"]
     }
+
+    # Review R2, the reviewer's T10: the plugin watch covers a pinned
+    # firmware target, as it covers a regular one.
+    test "a pinned target that ran an unreviewed plugin release is not served" do
+      reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys() |> Enum.sort()
+
+      Portal.Precompiled.PluginWatch.refresh(
+        Portal.PrecompiledFixtures.plugin_registry([{"rebar3_hex", reviewed}])
+      )
+
+      {version, sha} =
+        Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Enum.max_by(&elem(&1, 0))
+
+      hex = %{"name" => "rebar3_hex", "version" => version, "sha256" => sha, "owners" => ["dep"]}
+
+      dirs = %{
+        "name" => "rebar3_dirs",
+        "version" => "0.1.0",
+        "sha256" => String.duplicate("a", 64),
+        "owners" => ["dep"]
+      }
+
+      served = fn row ->
+        row.id in Enum.map(Portal.Pins.Served.served(row.package_id, row_name(row), []), & &1.id)
+      end
+
+      clean = unique()
+      assert {:ok, ok_row} = ingest_firmware(clean, pins(clean), plugins: [hex])
+      assert ok_row.status == :pass and served.(ok_row)
+
+      bad = unique()
+      assert {:ok, bad_row} = ingest_firmware(bad, pins(bad), plugins: [hex, dirs])
+      assert bad_row.status == :pass
+      refute served.(bad_row)
+    end
 
     test "a target the judge refused is skipped with its verdict and no files" do
       name = unique()

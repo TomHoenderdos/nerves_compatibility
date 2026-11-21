@@ -634,7 +634,10 @@ defmodule Portal.Catalog.Ingestion do
       "otp_full" => fact_string(sys["otp_full"]),
       "system_libs" => if(is_map(sys["system_libs"]), do: sys["system_libs"]),
       "build_root" => sys["build_root"],
-      "firmware_judge" => firmware_judge(sys["firmware_judge"])
+      "firmware_judge" => firmware_judge(sys["firmware_judge"]),
+      # As the worker wrote it: `PluginWatch.record_firmware/3` judges it
+      # (review R2, R3).
+      "rebar3_plugins" => sys["rebar3_plugins"]
     }
   end
 
@@ -2036,6 +2039,8 @@ defmodule Portal.Catalog.Ingestion do
     with {:ok, row} <-
            PinnedBuild |> Ash.Changeset.for_create(:upsert, attrs) |> Ash.create(domain: @domain) do
       :ok = PluginWatch.record(row.package_id, opts.run_id, build["compile_observations"])
+      # A firmware target's plugins, under the pinned row's run (review R2).
+      :ok = PluginWatch.record_firmware(row.package_id, opts.run_id, build["rebar3_plugins"])
       :ok = PluginWatch.mark_unrecorded({:pinned, row.id})
       :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
       :ok = replace_pinned_memberships(row.id, staged)
