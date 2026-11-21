@@ -250,7 +250,10 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
      "mnesia"},
     {"Application.spec(:mnesia, :vsn) != nil", nil, "Application.spec/2", "mnesia"},
     {"match?({:ok, _}, Application.ensure_all_started(:mnesia))", nil,
-     "application_controller:is_running/1", "mnesia"}
+     "application_controller:is_running/1", "mnesia"},
+    # Round 2 (R1-D): loading a module by name.
+    {"match?({:module, _}, :code.load_file(:mnesia))", nil, "code:load_file/1", "mnesia"},
+    {"match?(:ok, :code.atomic_load([:mnesia]))", nil, :host_read_atomic, nil}
   ]
 
   for {{expr, _, via, app}, i} <- Enum.with_index(@forms) do
@@ -264,8 +267,14 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
       assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
 
       case @via do
-        :host_read -> assert reason =~ "compile-time host read: code:all_available/0 in ", reason
-        via -> assert reason == @refusal <> "#{@app} via #{via}"
+        :host_read ->
+          assert reason =~ "compile-time host read: code:all_available/0 in ", reason
+
+        :host_read_atomic ->
+          assert reason =~ "compile-time host read: code:atomic_load/1 in ", reason
+
+        via ->
+          assert reason == @refusal <> "#{@app} via #{via}"
       end
     end
   end

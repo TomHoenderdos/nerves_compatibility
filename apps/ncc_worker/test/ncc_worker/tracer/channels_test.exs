@@ -201,7 +201,7 @@ defmodule NccWorker.Tracer.ChannelsTest do
   test "probes of whether a module is or can be loaded, never in the patterns" do
     probes = :ncc_tracer_channels.probe_mfas()
     patterns = :ncc_tracer_channels.patterns()
-    assert length(probes) == 7
+    assert length(probes) == 8
     for mfa <- probes, do: refute(mfa in patterns, inspect(mfa))
 
     for {m, f, args} <- [
@@ -210,6 +210,7 @@ defmodule NccWorker.Tracer.ChannelsTest do
           {:code, :which, [:dbg]},
           {:code, :module_status, [:dbg]},
           {:code, :get_object_code, [:dbg]},
+          {:code, :load_file, [:dbg]},
           {:erlang, :module_loaded, [:dbg]},
           {:erlang, :function_exported, [:dbg, :p, 2]}
         ] do
@@ -259,6 +260,14 @@ defmodule NccWorker.Tracer.ChannelsTest do
              classify(:code, :where_is_file, [[~c"/p"], ~c"mnesia.beam"])
 
     assert {:install, %{what: :all_available}} == classify(:code, :all_available, [])
+
+    # Round 2 (R1-D): loading modules by name through the code path, which
+    # code:load_file/1 does by local calls (a probe_mfas/0 entry), and the
+    # list forms: a host read.
+    for f <- [:atomic_load, :prepare_loading] do
+      assert {:code, f, 1} in patterns
+      assert {:install, %{what: f}} == classify(:code, f, [[:mnesia]])
+    end
 
     for {f, args} <- [
           load_application: [:mnesia],

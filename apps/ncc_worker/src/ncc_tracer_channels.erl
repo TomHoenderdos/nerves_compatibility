@@ -70,6 +70,7 @@ patterns() ->
      %% and Mix.install does not (NccWorker.Portability.Probes). Not
      %% probe_mfas/0: these are rare outside Mix's own frames.
      {code, where_is_file, 1}, {code, where_is_file, 2}, {code, all_available, 0},
+     {code, atomic_load, 1}, {code, prepare_loading, 1},
      {application_controller, load_application, 1}, {application_controller, get_key, 2},
      {application_controller, get_all_key, 1}, {application_controller, is_running, 1},
      {application_controller, start_application, 2},
@@ -240,6 +241,9 @@ patterned(M, F, A) ->
 probe_mfas() ->
     [{code, ensure_loaded, 1}, {code, is_loaded, 1}, {code, which, 1},
      {code, module_status, 1}, {code, get_object_code, 1},
+     %% Round 2 (R1-D): loads by name through the code path, by local calls
+     %% (code:get_object_code/1 never sees it).
+     {code, load_file, 1},
      {erlang, module_loaded, 1}, {erlang, function_exported, 3}].
 
 %% The functions whose OS-family read is path handling, as the first frame
@@ -407,8 +411,10 @@ specific(application_controller, which_applications, _) ->
 %% Before the install channel's by_module(code, ...) clauses, which would
 %% take code:which/1 for a lib_dir-like read.
 specific(code, F, [M]) when F =:= ensure_loaded; F =:= is_loaded; F =:= which;
-                            F =:= module_status; F =:= get_object_code ->
+                            F =:= module_status; F =:= get_object_code; F =:= load_file ->
     {probe, #{module => term_name(M)}};
+specific(code, F, [_Modules]) when F =:= atomic_load; F =:= prepare_loading ->
+    {install, #{what => F}};
 specific(erlang, module_loaded, [M]) -> {probe, #{module => term_name(M)}};
 specific(code, F, []) when F =:= all_loaded; F =:= module_status; F =:= modified_modules ->
     {loaded_modules, #{}};

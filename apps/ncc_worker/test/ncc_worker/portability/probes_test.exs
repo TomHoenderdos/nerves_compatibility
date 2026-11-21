@@ -180,7 +180,7 @@ defmodule NccWorker.Portability.ProbesTest do
       assert Probes.decide(nested, c, "pkg") == :ignore
     end
 
-    other = probe("dbg", mfa: "erlang:module_loaded/1", caller: frame("code", "load_file", 1))
+    other = probe("dbg", mfa: "erlang:module_loaded/1", caller: frame("code", "purge", 1))
     assert {:unjudged, _} = Probes.decide(other, c, "pkg")
   end
 
@@ -715,7 +715,8 @@ defmodule NccWorker.Portability.ProbesTest do
          %{tmp_dir: dir} do
       c = dir |> ctx(%{"pkg" => ["kernel"]}) |> with_modules(%{"Elixir.Pkg.Other" => "pkg"})
 
-      for mfa <- ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1 code:where_is_file/1),
+      for mfa <-
+            ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1 code:where_is_file/1 code:load_file/1),
           do: assert(Probes.decide(hex("Elixir.Pkg.Other", mfa: mfa), c, "pkg") == :ignore, mfa)
     end
 

@@ -188,8 +188,9 @@ defmodule NccWorker.Portability.Probes do
   @base ~w(kernel stdlib elixir)
   @tracer_app "ncc_tracer"
   @path_probes ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1 code:where_is_file/1
-                  application_controller:get_application_module/1)
-  @probe_functions ~w(ensure_loaded is_loaded which module_status get_object_code)
+                  code:load_file/1 application_controller:get_application_module/1)
+  @probe_functions ~w(ensure_loaded is_loaded which module_status get_object_code load_file
+                      where_is_file)
   @always ~w(kernel stdlib elixir compiler logger)
   # On the path of every compile Mix makes of an Elixir project's
   # dependency, whatever it lists: Mix.AppLoader's extra applications
