@@ -47,10 +47,19 @@ defmodule NccWorker.Tracer.FixturesBuildLayoutTest do
       }
     }
 
-    Map.put(keyed, "fx_native", native)
+    # A compile-time probe of a module the tracer loads itself (httpc), whose
+    # answer differs in the trace: the firmware judge withholds it.
+    probe =
+      lib(
+        "fx_probe",
+        "defmodule FxProbe do\n  @x :code.is_loaded(:httpc) != false\n  def x, do: @x\nend\n",
+        %{}
+      )
+
+    keyed |> Map.put("fx_native", native) |> Map.put("fx_probe", probe)
   end
 
-  @apps ["fx_native" | Map.keys(@keyed)]
+  @apps ["fx_native", "fx_probe" | Map.keys(@keyed)]
 
   setup_all do
     root =
@@ -176,10 +185,22 @@ defmodule NccWorker.Tracer.FixturesBuildLayoutTest do
     File.write!(extra, "not in the tarball\n")
 
     try do
-      assert {:error, _why} = ctx.record.("fx_dir")
+      assert {:skip, _reason, _texts} = ctx.record.("fx_dir")
     after
       File.rm!(extra)
     end
+  end
+
+  # The firmware judge (stream S8): the trace's verdict is the toolchain
+  # judge's, and its texts name the probe the judge classes.
+  test "a module body's probe of a module the trace loaded is a probe refusal", ctx do
+    assert {:skip, reason, texts} = ctx.record.("fx_probe")
+    assert reason =~ "could not be judged"
+
+    assert Enum.any?(texts, &(&1 =~ "compile-time probe of a module the trace loaded: httpc")),
+           inspect(texts)
+
+    assert NccWorker.FirmwareJudge.classes(texts) == ["probe"]
   end
 
   test "the project is left as the firmware build left it", ctx do
