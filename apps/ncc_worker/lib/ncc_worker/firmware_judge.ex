@@ -33,20 +33,37 @@ defmodule NccWorker.FirmwareJudge do
 
   @doc """
   The classes `texts` (a verdict's `texts/1`) hit, sorted and unique: any of
-  `"plugins_hooks"`, `"probe"`, `"taint"`.
+  `"plugins_hooks"`, `"probe"`, `"taint"`. A text another app of the closure
+  owns (`"<app>: <text>"`, the worker's owner prefix, S8 review R5) is that
+  dependency's taint when its own text is a probe or a rebar3 rule: it holds
+  the target's system only, not every system of the version (N9). A text of
+  `package`'s own, of the `outside` window, or with no owner is the
+  package's. With no `package`, every text counts as the package's.
   """
-  @spec classes([String.t()]) :: [String.t()]
-  def classes(texts) do
+  @spec classes([String.t()], String.t() | nil) :: [String.t()]
+  def classes(texts, package \\ nil) do
     texts
-    |> Enum.flat_map(&class/1)
+    |> Enum.flat_map(&class(&1, package))
     |> Enum.uniq()
     |> Enum.sort()
   end
 
-  defp class(text) do
-    case String.split(text, @taint, parts: 2) do
-      [_, rest] -> if own(inner(rest)) == [], do: [], else: ["taint"]
-      [_] -> own(text)
+  defp class(text, package) do
+    case {String.split(text, @taint, parts: 2), owner(text)} do
+      {[_, rest], _owner} -> taint(rest)
+      {[_], {app, rest}} when package != nil and app not in [package, "outside"] -> dep(rest)
+      {[_], _owner} -> own(text)
+    end
+  end
+
+  defp taint(rest), do: if(own(inner(rest)) == [], do: [], else: ["taint"])
+  defp dep(rest), do: if(own(rest) == [], do: [], else: ["taint"])
+
+  # `"<app>: <rest>"`, an app name before the first ": ".
+  defp owner(text) do
+    case Regex.run(~r/\A([a-z][a-z0-9_]*): (.*)\z/s, text) do
+      [_, app, rest] -> {app, rest}
+      nil -> nil
     end
   end
 
@@ -74,15 +91,17 @@ defmodule NccWorker.FirmwareJudge do
   verdict names its causes), each `observations["rebar"]` refusal (the
   package's and each dependency's rebar3 rule, which an earlier reason
   hides) and each `observations["taint"]` entry, as the R3 refusal names
-  it. Anything that is not a string is left out, and each text is kept
-  once.
+  it. A refusal or rebar3 record keeps its owner as a prefix, `"<app>: "`.
+  Anything that is not a string is left out, and each text is kept once.
   """
   @spec texts(map()) :: [String.t()]
   def texts(verdict) do
     obs = Map.get(verdict, :observations)
     obs = if is_map(obs), do: obs, else: %{}
 
-    refusals = for %{"reason" => r} <- list(obs["refusals"]), is_binary(r), do: r
+    refusals =
+      for %{"reason" => r} = e <- list(obs["refusals"]), is_binary(r), do: owned(e["owner"], r)
+
     problems = for p <- list(obs["problems"]), is_binary(p), do: p
 
     taint =
@@ -91,12 +110,15 @@ defmodule NccWorker.FirmwareJudge do
           do: "#{@taint}#{app} (#{why})"
 
     uncut = for t <- list(Map.get(verdict, :refusal_texts)), is_binary(t), do: t
-    rebar = for {_app, r} <- map(obs["rebar"]), is_binary(r), do: r
+    rebar = for {app, r} <- map(obs["rebar"]), is_binary(r), do: owned(app, r)
 
     (Enum.filter([Map.get(verdict, :reason)], &is_binary/1) ++
        uncut ++ refusals ++ problems ++ rebar ++ taint)
     |> Enum.uniq()
   end
+
+  defp owned(owner, text) when is_binary(owner), do: "#{owner}: #{text}"
+  defp owned(_owner, text), do: text
 
   defp list(value) when is_list(value), do: value
   defp list(_value), do: []

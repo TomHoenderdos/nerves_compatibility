@@ -209,7 +209,12 @@ defmodule NccWorker.FirmwareInputs do
     if passing == [] or not (judge? or reader?) do
       {systems, []}
     else
-      how = %{reader?: reader?, judge?: judge?, deadline: judge_deadline(ctx)}
+      how = %{
+        reader?: reader?,
+        judge?: judge?,
+        deadline: judge_deadline(ctx),
+        package: ctx.package
+      }
 
       Enum.reduce(passing, {systems, []}, fn {name, target_env, eligible?}, {acc, lines} ->
         {acc, new_lines} = put_target(acc, name, target_env, eligible?, {record, ctx, how})
@@ -318,7 +323,7 @@ defmodule NccWorker.FirmwareInputs do
     lines = not_recorded(name, reason, how)
 
     {systems, judge_lines} =
-      case FirmwareJudge.classes(texts) do
+      case FirmwareJudge.classes(texts, how.package) do
         [] -> judged(systems, name, how, {"unjudged", reason, []})
         classes -> judged(systems, name, how, {"skipped", reason, classes})
       end

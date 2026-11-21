@@ -1012,6 +1012,8 @@ defmodule NccWorker.Portability do
       |> tool_events(ctx.package)
 
     host_native = host_native?(opts)
+    # A probe's text names its window (`keep/3`); the portal's reason cause
+    # leaves the owner out (`Compatibility.Portability.unowned/1`).
     unjudged = for {_owner, {:unjudged, why}} <- decided, do: why
     decided = for {owner, decision} <- decided, in_scope?(owner, scope), do: {owner, decision}
 
@@ -1822,7 +1824,11 @@ defmodule NccWorker.Portability do
   # integrity refusal (the trace itself tampered with) refuses wherever it
   # fell too: from a quiet interval or an owner outside the package's
   # closure (its window or its child VM) it counts as `:outside`.
-  defp keep(_owner, {:unjudged, _} = decision, _scope), do: {:any, decision}
+  # A probe's text names the window it fell in (S8 review R5): an app, or
+  # `outside` for a quiet interval or an owner outside the closure, so a
+  # firmware target's judge and the withhold snippets tell a dependency's
+  # probe from the package's own.
+  defp keep(owner, {:unjudged, why}, _scope), do: {:any, {:unjudged, owned_problem(owner, why)}}
 
   defp keep(owner, {:refuse, @integrity <> _} = decision, scope),
     do: if(in_scope?(owner, scope), do: {owner, decision}, else: {:outside, decision})
@@ -3126,7 +3132,8 @@ defmodule NccWorker.Portability do
   # firmware judge's classes (`NccWorker.FirmwareJudge`): what `reason` names
   # is only the first, and `observations["problems"]` is cut.
   defp refusal_texts(facts) do
-    decided = for {_owner, {:refuse, reason}} <- facts.decided, do: reason
+    decided =
+      for {owner, {:refuse, reason}} <- facts.decided, do: "#{owner_name(owner)}: #{reason}"
 
     deps =
       Enum.flat_map(facts.deps, fn {app, result} ->
@@ -3357,6 +3364,15 @@ defmodule NccWorker.Portability do
     do: Map.put(stats, "foreign_priv", stat)
 
   defp dep_rebar(deps), do: Enum.map(deps, fn {app, result} -> {app, result.rebar} end)
+
+  defp owned_problem(owner, why) do
+    if Compatibility.Portability.probe_text?(why),
+      do: "#{window_name(owner)}: #{why}",
+      else: why
+  end
+
+  defp window_name(owner) when is_binary(owner), do: owner
+  defp window_name(_quiet_or_outside), do: "outside"
 
   defp owner_name(owner) when is_binary(owner), do: owner
   defp owner_name(owner) when is_atom(owner), do: Atom.to_string(owner)

@@ -326,7 +326,8 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
              TracerFixtures.judge(proj, "fx_probe", traced)
 
-    problem = "compile-time probe of a module the trace loaded: dbg (runtime_tools)"
+    # S8 review R5: each unjudged probe names the window it was in.
+    problem = "fx_probe: compile-time probe of a module the trace loaded: dbg (runtime_tools)"
     assert problem in obs["problems"]
   end
 
@@ -424,7 +425,7 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
              TracerFixtures.judge(proj, "fx_probe", traced)
 
-    assert ("compile-time probe of a module the trace loaded: json (stdlib) by " <>
+    assert ("fx_probe: compile-time probe of a module the trace loaded: json (stdlib) by " <>
               "erlang:function_exported/3") in obs["problems"]
   end
 
@@ -514,7 +515,9 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
              TracerFixtures.judge(proj, "fx_probe", traced)
 
-    assert "compile-time list of the loaded modules: code:all_loaded/0" in obs["problems"]
+    assert "fx_probe: compile-time list of the loaded modules: code:all_loaded/0" in obs[
+             "problems"
+           ]
   end
 
   # Untraced, :ssl is not on the path of a package that does not list it,
@@ -537,7 +540,7 @@ defmodule NccWorker.Tracer.HostModeTest do
     assert %{status: :skip, reason: "portability could not be judged", observations: obs} =
              TracerFixtures.judge(proj, "fx_probe", traced)
 
-    assert "compile-time call into a module the trace loaded: ssl:format_error/1 (ssl)" in obs[
+    assert "fx_probe: compile-time call into a module the trace loaded: ssl:format_error/1 (ssl)" in obs[
              "problems"
            ]
 

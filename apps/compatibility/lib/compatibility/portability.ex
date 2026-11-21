@@ -67,6 +67,17 @@ defmodule Compatibility.Portability do
   @withdrawal_judge_revision 3
 
   @could_not_judge "portability could not be judged"
+
+  # The texts of a compile-time probe the judge could not judge
+  # (`NccWorker.Portability.Probes`): the worker prefixes each with the
+  # window it was in, `"<app>: "` or `"outside: "` (S8 review R5).
+  @probe_texts [
+    "compile-time probe",
+    "compile-time call into a module the trace loaded",
+    "compile-time list of the loaded modules",
+    "unreadable probe event"
+  ]
+  @owned_probe ~r/\A[a-z][a-z0-9_]*: (?=(?:#{Enum.map_join(@probe_texts, "|", &Regex.escape/1)}))/
   @transient ~r/\A \(transient \d+ times\)\z/
 
   # A trace that broke shows that first and every other problem because of
@@ -133,6 +144,20 @@ defmodule Compatibility.Portability do
   @loaded_probe "compile-time probe of whether a module is loaded: "
 
   @doc "Every prefix a trace refusal starts with."
+  @doc """
+  Whether `text` is a compile-time probe's text, its owner prefix (when the
+  worker gave it one) aside.
+  """
+  @spec probe_text?(term()) :: boolean()
+  def probe_text?(text) when is_binary(text),
+    do: Enum.any?(@probe_texts, &String.contains?(text, &1))
+
+  def probe_text?(_text), do: false
+
+  @doc "A probe problem without the owner prefix the worker gives it; any other text as it is."
+  @spec unowned(String.t()) :: String.t()
+  def unowned(text) when is_binary(text), do: String.replace(text, @owned_probe, "")
+
   @spec refusal_prefixes() :: [String.t()]
   def refusal_prefixes, do: @refusal_prefixes
 
@@ -277,6 +302,7 @@ defmodule Compatibility.Portability do
   defp clean(problem) do
     if String.valid?(problem) do
       problem
+      |> unowned()
       |> String.replace(@breaks, " ")
       |> unwrap()
       |> without_value()

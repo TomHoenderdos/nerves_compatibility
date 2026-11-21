@@ -66,6 +66,22 @@ defmodule NccWorker.FirmwareJudgeTest do
     end
   end
 
+  # S8 review R5 and N9: a probe or rebar3 text whose owner is a dependency
+  # is that dependency's taint (its own system's), not the package's probe
+  # (every system of the version); an unowned or `outside` one stays the
+  # package's.
+  describe "classes/2" do
+    test "a text another app owns is a taint, the package's own or an unowned one is not" do
+      probe = "compile-time probe of a module the trace loaded: httpc (inets)"
+      assert FirmwareJudge.classes(["dep: " <> probe], "pkg") == ["taint"]
+      assert FirmwareJudge.classes(["pkg: " <> probe], "pkg") == ["probe"]
+      assert FirmwareJudge.classes(["outside: " <> probe], "pkg") == ["probe"]
+      assert FirmwareJudge.classes([probe], "pkg") == ["probe"]
+      assert FirmwareJudge.classes(["dep: rebar3 build runs plugins"], "pkg") == ["taint"]
+      assert FirmwareJudge.classes(["dep: compile-time host read: os:getenv/1"], "pkg") == []
+    end
+  end
+
   describe "texts/1" do
     test "the verdict's reason, refusals, problems and taint, each taint as the refusal names it" do
       verdict = %{
@@ -79,7 +95,7 @@ defmodule NccWorker.FirmwareJudgeTest do
 
       assert FirmwareJudge.texts(verdict) == [
                "portability could not be judged",
-               "rebar3 build runs plugins",
+               "pkg: rebar3 build runs plugins",
                "pkg: compile-time probe of whether a module is loaded: X",
                "closure dependency observed the host: crc32cer (rebar3 build runs pre_hooks)"
              ]
@@ -100,7 +116,7 @@ defmodule NccWorker.FirmwareJudgeTest do
 
       texts = FirmwareJudge.texts(verdict)
       assert "pkg: compile-time probe of whether a module is loaded: X" in texts
-      assert "rebar3 build runs plugins" in texts
+      assert "pkg: rebar3 build runs plugins" in texts
       assert FirmwareJudge.classes(texts) == ["plugins_hooks", "probe"]
     end
 

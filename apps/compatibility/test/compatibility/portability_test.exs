@@ -114,6 +114,25 @@ defmodule Compatibility.PortabilityTest do
   end
 
   describe "with_cause/2" do
+    # S8 review R5: the worker names the window of each unjudged probe
+    # (`"<app>: "`, `"outside: "`); the reason's cause stays the probe
+    # itself, so reasons, and the admin tab's groups, do not split by owner.
+    test "a probe problem's owner is not part of the cause" do
+      for owner <- ["fx_probe", "outside"] do
+        problems = [owner <> ": compile-time probe of a module the trace loaded: httpc (inets)"]
+
+        assert Portability.with_cause(Portability.could_not_judge(), problems) ==
+                 "portability could not be judged " <>
+                   "(compile-time probe of a module the trace loaded: httpc (inets))"
+      end
+
+      # Any other app-prefixed problem keeps its app, as before.
+      assert Portability.with_cause(Portability.could_not_judge(), [
+               "dep: rebar3 build dir cannot be read"
+             ]) ==
+               "portability could not be judged (dep: rebar3 build dir cannot be read)"
+    end
+
     test "names the trace break, not the lines missing because of it" do
       problems = [
         "no end line",
