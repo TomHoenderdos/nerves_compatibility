@@ -109,7 +109,7 @@ defmodule NccWorker.Portability do
   which publishes nothing and changes no status.
   """
 
-  alias Compatibility.Elf
+  alias Compatibility.{Elf, NifOrigin}
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.{BuildCache, DepsLock, NativeBuild, ProcessSweep}
 
@@ -872,7 +872,10 @@ defmodule NccWorker.Portability do
   def judge(project_dir, package, %Report{} = report, native, opts) do
     Context.with_link_cache(fn ->
       facts = facts(project_dir, package, report, native, opts)
-      if target(opts), do: target_verdict_of(facts), else: verdict_of(facts)
+
+      if target(opts),
+        do: target_verdict_of(facts),
+        else: facts |> verdict_of() |> put_stat("native_side", on_off(native_side?(opts)))
     end)
   rescue
     e -> not_judged("judge failed: " <> Exception.message(e))
@@ -891,9 +894,11 @@ defmodule NccWorker.Portability do
     gate = ForeignPriv.gate(ctx, scope, opts)
     ctx = %{ctx | foreign_priv: gate}
 
+    side = side_mode(opts, ctx, scope, native)
+
     decided =
       report
-      |> decide_all(ctx, scope, target_mode(opts, ctx, scope, native))
+      |> decide_all(ctx, scope, target_mode(opts, ctx, scope, native), side)
       |> tool_events(ctx.package)
 
     host_native = host_native?(opts)
@@ -937,7 +942,7 @@ defmodule NccWorker.Portability do
     {decided, settled} = ForeignPriv.settle(decided, ctx)
 
     package_r2 = package_build_root(ctx)
-    {decided, deps} = dep_results(ctx, report, decided, libs, target(opts) != nil)
+    {decided, deps} = dep_results(ctx, report, decided, libs, {target(opts) != nil, side != nil})
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
     rebar_inputs = Enum.uniq(package_inputs ++ Enum.flat_map(deps, &elem(&1, 1).inputs))
     endian = endian_of(report)
@@ -1126,7 +1131,7 @@ defmodule NccWorker.Portability do
   # with the Mix VM's windows). One `MixExsSlice.analyse/1` per `mix.exs`.
   # Each VM's events are decided with that VM's own ensure_loaded probes
   # (`Context.ensured`): pids and times mean nothing in another VM.
-  defp decide_all(report, ctx, scope, target_mode) do
+  defp decide_all(report, ctx, scope, target_mode, side) do
     main = for event <- report.events, do: {Context.owner(ctx, event), event}
 
     children =
@@ -1145,7 +1150,8 @@ defmodule NccWorker.Portability do
           event
           |> Events.decide(vm_ctx, owner, slices)
           |> in_vm(vm_name)
-          |> targeted(event, vm_name, target_mode),
+          |> targeted(event, vm_name, target_mode)
+          |> sided(event, owner, vm_name, side),
         kept = keep(owner, decision, scope),
         kept != nil,
         do: kept
@@ -1253,6 +1259,65 @@ defmodule NccWorker.Portability do
 
   defp tools(opts),
     do: if(host_native?(opts), do: @native_tools ++ @host_native_tools, else: @native_tools)
+
+  # --- a natively built dependency's native side ------------------------------
+
+  # The reviewed native build tools whose own activity in a closure
+  # dependency's window `native_side: true` sets apart on the toolchain
+  # judge: elixir_make's Mix compiler, and cc_precompiler, the precompiler
+  # elixir_make calls to pick and fetch the NIF (`make_precompiler:`). What
+  # their own code reads (the OS type, the architecture, the NIF version,
+  # the env, `priv`, their cache dir, the network) and runs (`make`) decides
+  # only the native files the dependency's build writes, which no
+  # dependent's compile may read: a call into the dependency, a read of its
+  # `priv` or of any file but a beam in its build dir keeps its refusal. A
+  # precompiler of the dependency's own is its own code, not set apart.
+  @side_tools ["elixir_make", "cc_precompiler"]
+
+  defp native_side?(opts), do: target(opts) == nil and Keyword.get(opts, :native_side) == true
+
+  defp on_off(true), do: "on"
+  defp on_off(false), do: "off"
+
+  # nil unless `native_side: true` on the toolchain judge (a firmware
+  # target's trace sets the tool apart already, `target_mode/4`); else the
+  # tools' modules, as `target_mode/4` takes them: none unless the tracer
+  # put call patterns on every tool in the closure (each on the native
+  # list), so that a dependency's own call into one is an event of its own.
+  defp side_mode(opts, ctx, scope, native) do
+    if native_side?(opts),
+      do: %{tool_modules: tool_modules(ctx, scope, native, @side_tools), package: ctx.package}
+  end
+
+  # A closure dependency's window only, never the package's: the package's
+  # own native files are what it would publish. Every event of the
+  # dependency's own code, and every event outside its windows, keeps its
+  # decision, and so does a package fun the tool runs.
+  defp sided(decision, _event, _owner, _vm, nil), do: decision
+  defp sided({:unjudged, _} = decision, _event, _owner, _vm, _side), do: decision
+  defp sided(:ignore, _event, _owner, _vm, _side), do: :ignore
+
+  defp sided(decision, event, owner, vm, %{tool_modules: tools, package: package}) do
+    if is_binary(owner) and owner != package and tool_event?(event, tools) and
+         not package_fun_frame?(event),
+       do: side_decision(decision, event, vm),
+       else: decision
+  end
+
+  # As in a firmware target's trace (`tool_decision/4`): an integrity call
+  # keeps its refusal, and a write to the env or the application env from
+  # the tool's frame refuses (a value it hands the dependency's own compile
+  # of its beams); anything else is `native_build`.
+  defp side_decision(decision, event, vm) do
+    cond do
+      event["channel"] == "integrity" -> decision
+      event["channel"] in @tool_never_writes -> tool_write_refusal(event)
+      true -> native_build(event, vm)
+    end
+  end
+
+  defp tool_write_refusal(event),
+    do: {:refuse, "compile-time write from the native build tool's frame: #{event["mfa"]}"}
 
   # nil outside target mode; else the native tools' modules (strings, as
   # the tracer names them). A tool is set apart only when the tracer put call
@@ -1404,7 +1469,7 @@ defmodule NccWorker.Portability do
         decision
 
       event["channel"] in @tool_never_writes ->
-        {:refuse, "compile-time write from the native build tool's frame: #{event["mfa"]}"}
+        tool_write_refusal(event)
 
       host_tool?(event, mode) and reviewed_unpack?(event) ->
         held("tool_unpacks", event, vm, decision)
@@ -2095,18 +2160,26 @@ defmodule NccWorker.Portability do
   # `native_beam_reads` observation settled (`beam_reads/5`): a dependency's
   # own reads before its R3 result, since a refused one taints it, then
   # everyone else's (the package's, outside every window).
-  defp dep_results(ctx, report, decided, libs, target?) do
+  defp dep_results(ctx, report, decided, libs, {target?, side?}) do
     scope = Context.closure_of(ctx, ctx.package)
 
     order =
       for %{"app" => app} <- closure_deps(report), app != ctx.package, app in scope, do: app
 
-    decided = if target?, do: Enum.map(decided, &native_file_read/1), else: decided
+    sided = if side?, do: side_built(decided, ctx.package), else: MapSet.new()
+
+    decided =
+      cond do
+        target? -> Enum.map(decided, &native_file_read/1)
+        side? -> Enum.map(decided, &side_file_read(&1, sided))
+        true -> decided
+      end
 
     {decided, results} =
       Enum.reduce(order, {decided, %{}}, fn app, {decided, results} ->
         decided = beam_reads(decided, ctx, report, {results, libs}, &(&1 == app))
-        {decided, Map.put(results, app, dep_result(ctx, report, decided, app))}
+        result = dep_result(ctx, report, decided, app, {libs, sided})
+        {decided, Map.put(results, app, result)}
       end)
 
     decided =
@@ -2235,7 +2308,7 @@ defmodule NccWorker.Portability do
     result.taint == nil and not match?({:error, _}, result.r2) and
       not match?({:unjudged, _}, result.rebar) and
       Context.manager(ctx, app) in ["mix", "rebar3"] and
-      libs_clean?(known.libs, app) and
+      (libs_clean?(known.libs, app) or result.side == true) and
       not MapSet.member?(known.calls, app) and
       tree_clean?(ctx, app)
   end
@@ -2404,9 +2477,10 @@ defmodule NccWorker.Portability do
 
   defp closure_deps(_report), do: []
 
-  defp dep_result(ctx, report, decided, app) do
+  defp dep_result(ctx, report, decided, app, {libs, sided}) do
     r2 = build_root(ctx, app)
     {rebar, inputs} = rebar(ctx, report, app)
+    side? = MapSet.member?(sided, app)
 
     taint =
       Enum.find_value(
@@ -2415,12 +2489,127 @@ defmodule NccWorker.Portability do
           fn -> first_refusal(decided, app) end,
           fn -> native_call(decided, app) end,
           fn -> refusal_of(r2) end,
-          fn -> unless match?({:error, _}, r2), do: rebar_taint(rebar) end
+          fn -> unless match?({:error, _}, r2), do: rebar_taint(rebar) end,
+          fn -> if side?, do: side_problem(ctx, libs, app) end
         ],
         & &1.()
       )
 
-    %{taint: taint, r2: r2, rebar: rebar, inputs: inputs}
+    %{taint: taint, r2: r2, rebar: rebar, inputs: inputs, side: side?}
+  end
+
+  # --- a natively built dependency's native side, settled ---------------------
+
+  # The closure dependencies (never the package) whose window ran the
+  # reviewed native build tool under `native_side: true` (`sided/5`).
+  defp side_built(decided, package) do
+    for {owner, {:observe, "native_build", _item}} <- decided,
+        is_binary(owner) and owner != package,
+        into: MapSet.new(),
+        do: owner
+  end
+
+  # A read of a file other than a beam in the ebin of a dependency whose
+  # native build ran: one `make` may have written, from inputs nobody
+  # records, as in a firmware target's trace (`native_file_read/1`).
+  defp side_file_read({_owner, {:observe, "native_beam_reads", %{"app" => app}}} = entry, sided) do
+    if MapSet.member?(sided, app), do: native_file_read(entry), else: entry
+  end
+
+  defp side_file_read(entry, _sided), do: entry
+
+  # `native_side: true`. The tool's activity in this dependency's window was
+  # set apart (`sided/5`), so what it decided must be shown to stop at the
+  # native files: the dependency's beams, which a dependent compiles
+  # against, must be its own sources' alone. Mix built it (the tool is a
+  # Mix compiler), no NIF of a closure dependency was mapped by its window's
+  # close (its own module bodies ran no native code; a library of OTP's
+  # own, the download's `crypto`, may be), its source tree is exactly its
+  # verified tarball's after the compile (`tree_clean?/2`: no source the
+  # native build generated was compiled), every beam in its ebin was
+  # compiled from a file of that tree (`compiled_in?/2`: no module the
+  # native build put there), and every checksum file elixir_make evaluates
+  # from it is a literal map (`Compatibility.NifOrigin.parse/1`: evaluating
+  # it runs nothing). The first that fails is its taint.
+  defp side_problem(ctx, libs, app) do
+    manager = Context.manager(ctx, app)
+
+    cond do
+      manager != "mix" ->
+        side_refusal("built by #{manager || "an unknown manager"}, not Mix")
+
+      lib = side_lib(ctx, libs, app) ->
+        "compile-time native library load: " <> lib
+
+      not tree_clean?(ctx, app) ->
+        side_refusal("source tree is not its verified tarball's")
+
+      beam = foreign_dep_beam(ctx, app) ->
+        side_refusal("beam not compiled from its own sources: " <> beam)
+
+      file = evaluated_checksum(ctx, app) ->
+        side_refusal("checksum file is not a literal map: " <> file)
+
+      true ->
+        nil
+    end
+  end
+
+  defp side_refusal(why), do: Reasons.native_side() <> why
+
+  # The first library mapped at the close of `app`'s window that lies under
+  # a closure dependency's build or source dir (`MappedLibs` lets one
+  # through there: a natively built dependency's own NIF).
+  defp side_lib(ctx, libs, app) do
+    dirs =
+      for {_app, dep} <- ctx.deps,
+          dir <- [dep.build, dep.dest],
+          is_binary(dir),
+          path <- Enum.uniq([dir, Context.realpath(dir) || dir]),
+          do: path
+
+    libs.by_owner
+    |> Map.get(app, [])
+    |> Enum.find_value(fn
+      {:ok, added} -> Enum.find(added, &under_any?(Context.realpath(&1) || &1, dirs))
+      _check -> nil
+    end)
+  end
+
+  defp under_any?(path, dirs), do: Enum.any?(dirs, &String.starts_with?(path, &1 <> "/"))
+
+  defp foreign_dep_beam(ctx, app) do
+    with ebin when is_binary(ebin) <- Context.ebin(ctx, app),
+         dest when is_binary(dest) <- Context.dest(ctx, app) do
+      ebin
+      |> Path.join("*.beam")
+      |> Path.wildcard()
+      |> Enum.sort()
+      |> Enum.find_value(&unless(compiled_in?(&1, dest), do: Path.basename(&1)))
+    else
+      _ -> "(no build dir)"
+    end
+  end
+
+  # The dependency's checksum files (`Compatibility.NifOrigin.checksum_file?/1`)
+  # at its source root, which elixir_make's `ElixirMake.Artefact` evaluates
+  # in its own frame: the first that is not a literal map, by name.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp evaluated_checksum(ctx, app) do
+    with dest when is_binary(dest) <- Context.dest(ctx, app),
+         {:ok, names} <- File.ls(dest) do
+      names
+      |> Enum.filter(&NifOrigin.checksum_file?/1)
+      |> Enum.sort()
+      |> Enum.find(fn name ->
+        case File.read(Path.join(dest, name)) do
+          {:ok, source} -> NifOrigin.parse(source) == :error
+          {:error, _} -> true
+        end
+      end)
+    else
+      _ -> "(no source dir)"
+    end
   end
 
   defp refusal_of({:refuse, reason}), do: reason

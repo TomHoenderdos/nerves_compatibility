@@ -26,7 +26,8 @@ defmodule Compatibility.Portability do
     "manager mismatch: ",
     "dependency tree differs from its tarball: ",
     "foreign priv write refused: ",
-    "compile-time read of kino's asset archives: "
+    "compile-time read of kino's asset archives: ",
+    "native build not set apart: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
@@ -118,6 +119,7 @@ defmodule Compatibility.Portability do
   @priv_not_reproduced "compile-time priv write not reproducible: "
   @foreign_priv_refused "foreign priv write refused: "
   @foreign_priv_read "compile-time read of kino's asset archives: "
+  @native_side "native build not set apart: "
 
   @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
@@ -356,6 +358,17 @@ defmodule Compatibility.Portability do
   """
   @spec tree_differs() :: String.t()
   def tree_differs, do: @tree_differs
+
+  @doc """
+  The prefix of a closure dependency's taint when its window ran the
+  reviewed native build tool (`NCC_INPUT.judge.native_side`) and its beams
+  could not be shown to be its own sources' alone: its source tree after
+  the compile, a beam compiled from elsewhere, an evaluated checksum file
+  that is not a literal map, or a manager other than Mix. A refusal that
+  withdraws nothing: it speaks of a dependency.
+  """
+  @spec native_side() :: String.t()
+  def native_side, do: @native_side
 
   @doc """
   The prefix of a refusal of a package whose own compile wrote into its own

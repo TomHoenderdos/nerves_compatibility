@@ -98,6 +98,15 @@ defmodule Compatibility.PortabilityTest do
     refute Compatibility.Portability.withdraws?(reason)
   end
 
+  test "a native side not set apart is a refusal that withdraws nothing" do
+    reason =
+      Compatibility.Portability.native_side() <> "source tree is not its verified tarball's"
+
+    assert reason == "native build not set apart: source tree is not its verified tarball's"
+    assert Compatibility.Portability.refusal?(reason)
+    refute Compatibility.Portability.withdraws?(reason)
+  end
+
   describe "with_cause/2" do
     test "names the trace break, not the lines missing because of it" do
       problems = [
