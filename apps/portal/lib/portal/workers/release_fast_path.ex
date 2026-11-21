@@ -75,9 +75,11 @@ defmodule Portal.Workers.ReleaseFastPath do
         )
       )
 
-  A run holds an `:intake` slot while it judges, a few minutes for a
-  release with a thousand dependents and at most `ClosureDrift.budget_ms/0`;
-  a snoozed job holds none.
+  A run holds an `:intake` slot and one database connection of its own
+  (the lock's, outside the pool) while it judges: a few minutes for a
+  release with a thousand dependents, at most `ClosureDrift.budget_ms/0`
+  between candidates, and `timeout/1` for the job as a whole. Its
+  statements keep their own timeouts. A snoozed job holds neither.
   """
 
   use Oban.Worker,
@@ -117,32 +119,76 @@ defmodule Portal.Workers.ReleaseFastPath do
       else: {:cancel, "the release fast path is off"}
   end
 
-  # One run at a time, on every node: a session advisory lock on the one
-  # connection the run uses throughout (`Repo.checkout/2`), let go when it
-  # ends. A run that dies closes that connection, which lets it go too.
+  # One run at a time, on every node: a session advisory lock held on a
+  # connection of its own, outside the pool, for as long as the run lasts.
+  # The run's own statements go through the pool and keep their timeouts:
+  # inside `Repo.checkout/2` a statement gets no deadline of its own
+  # (DBConnection sets one only at checkout), so a run held there could
+  # block for as long as any statement blocked. The connection is linked to
+  # the job process: a run that dies, or that `timeout/1` stops, takes the
+  # connection with it, and closing it lets the lock go.
   defp serialized(job) do
-    Repo.checkout(
-      fn ->
-        if locked?() do
-          try do
-            within_budget(job)
-          after
-            unlock()
-          end
-        else
-          {:snooze, @lock_snooze_seconds}
+    case lock() do
+      {:ok, conn} ->
+        try do
+          within_budget(job)
+        after
+          release(conn)
         end
-      end,
-      timeout: :infinity
-    )
+
+      :busy ->
+        lock_busy(job)
+    end
   end
 
-  defp locked? do
-    %{rows: [[locked]]} = Repo.query!("SELECT pg_try_advisory_lock($1)", [@lock_key])
-    locked
+  defp lock do
+    {:ok, conn} = Postgrex.start_link(lock_connection_opts())
+
+    case Postgrex.query(conn, "SELECT pg_try_advisory_lock($1)", [@lock_key], timeout: 15_000) do
+      {:ok, %{rows: [[true]]}} ->
+        {:ok, conn}
+
+      other ->
+        if not match?({:ok, _}, other),
+          do: Logger.warning("Release fast path could not take its lock: #{inspect(other)}")
+
+        GenServer.stop(conn)
+        :busy
+    end
   end
 
-  defp unlock, do: Repo.query!("SELECT pg_advisory_unlock($1)", [@lock_key])
+  # The unlock is for a connection that outlives the run; stopping it lets
+  # the lock go anyway.
+  defp release(conn) do
+    _ = Postgrex.query(conn, "SELECT pg_advisory_unlock($1)", [@lock_key], timeout: 15_000)
+    GenServer.stop(conn)
+  end
+
+  # The pool's connection settings, for one connection of its own.
+  @connection_keys ~w(hostname port username password database socket socket_dir ssl ssl_opts
+                      socket_options parameters connect_timeout handshake_timeout)a
+  defp lock_connection_opts do
+    Repo.config()
+    |> Keyword.take(@connection_keys)
+    |> Keyword.put(:pool_size, 1)
+  end
+
+  # Another run holds the lock: try again in a minute, until the job is as
+  # old as a carry-over may be.
+  defp lock_busy(%Oban.Job{args: args, inserted_at: inserted_at}) do
+    if hours_since(inserted_at) >= carry_over_hours(),
+      do:
+        {:cancel, "release fast path for #{args["package"]} #{args["version"]} gave up: locked"},
+      else: {:snooze, @lock_snooze_seconds}
+  end
+
+  @impl Oban.Worker
+  @doc """
+  A run stops at `Portal.Workers.ClosureDrift.budget_ms/0` between
+  candidates; Oban stops the job ten minutes after that whatever it is
+  doing, and the lock goes with it.
+  """
+  def timeout(_job), do: ClosureDrift.budget_ms() + :timer.minutes(10)
 
   defp within_budget(%Oban.Job{args: %{"package" => package, "version" => version}} = job) do
     case min(budget() - in_flight(), max_per_release()) do

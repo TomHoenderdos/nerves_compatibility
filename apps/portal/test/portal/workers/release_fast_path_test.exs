@@ -14,6 +14,7 @@ defmodule Portal.Workers.ReleaseFastPathTest do
   defmodule StubRegistry do
     def snapshot(_opts) do
       send(self(), :asked_registry)
+      if hook = Process.get(:registry_hook), do: hook.()
       Process.get(:hex_answer, {:ok, []})
     end
   end
@@ -182,6 +183,11 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       end
     end
 
+    defp lock_args, do: [ReleaseFastPath.lock_key()]
+    defp lock_sql, do: "SELECT pg_advisory_lock($1)"
+    defp try_lock_sql, do: "SELECT pg_try_advisory_lock($1)"
+    defp unlock_sql, do: "SELECT pg_advisory_unlock($1)"
+
     # A second database session, outside the test's sandbox.
     defp session_config do
       Portal.Repo.config()
@@ -293,13 +299,18 @@ defmodule Portal.Workers.ReleaseFastPathTest do
     end
 
     # Review F1: runs at once each read the same room, so the budget was soft.
+    # The lock lives on a connection of its own, outside the pool and so
+    # outside this test's sandbox: `other` and the run are two real
+    # sessions. That the run's own statements go through the pool, and not
+    # through the lock's connection, the sandbox cannot show (it sends every
+    # pool query to its one connection); `lock/0` holds that by construction.
     test "only one job runs at a time: another holding the lock snoozes it a minute" do
       certifi_release([name()])
       # Linked: should the test fail, the session closes with it and so lets
       # its lock go.
       {:ok, other} = Postgrex.start_link(session_config())
 
-      Postgrex.query!(other, "SELECT pg_advisory_lock($1)", [ReleaseFastPath.lock_key()])
+      Postgrex.query!(other, lock_sql(), lock_args())
       flush_registry_reads()
 
       assert {:snooze, 60} =
@@ -308,18 +319,53 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert fast_path_builds() == []
       refute_received :asked_registry
 
-      Postgrex.query!(other, "SELECT pg_advisory_unlock($1)", [ReleaseFastPath.lock_key()])
+      Postgrex.query!(other, unlock_sql(), lock_args())
 
       assert {:ok, %{enqueued: 1}} =
                perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
 
       # The run let the lock go: the other session takes it at once.
-      assert %{rows: [[true]]} =
-               Postgrex.query!(other, "SELECT pg_try_advisory_lock($1)", [
-                 ReleaseFastPath.lock_key()
-               ])
+      assert %{rows: [[true]]} = Postgrex.query!(other, try_lock_sql(), lock_args())
 
       GenServer.stop(other)
+    end
+
+    # Re-review G1: inside `Repo.checkout/2`, finite or not, a statement gets
+    # no deadline of its own (DBConnection sets one only at checkout), so a
+    # blocked statement held the lock, the `:intake` slot and the connection
+    # for as long as the block lasted. The run's statements keep theirs.
+    test "a statement in the run keeps its own timeout, and the lock goes with the run" do
+      certifi_release([name()])
+
+      Process.put(:registry_hook, fn ->
+        Portal.Repo.query!("SELECT pg_sleep(1.5)", [], timeout: 200)
+      end)
+
+      {elapsed, raised} =
+        :timer.tc(fn ->
+          try do
+            ReleaseFastPath.perform(%Oban.Job{
+              args: %{"package" => "certifi", "version" => "2.19.0"},
+              inserted_at: DateTime.utc_now()
+            })
+          rescue
+            error in DBConnection.ConnectionError -> error
+          end
+        end)
+
+      assert %DBConnection.ConnectionError{} = raised
+      assert div(elapsed, 1000) < 1_200
+
+      {:ok, other} = Postgrex.start_link(session_config())
+      assert %{rows: [[true]]} = Postgrex.query!(other, try_lock_sql(), lock_args())
+      GenServer.stop(other)
+    end
+
+    test "a run's job times out above the drift budget" do
+      job = %Oban.Job{args: %{"package" => "certifi", "version" => "2.19.0"}}
+      timeout = ReleaseFastPath.timeout(job)
+      assert is_integer(timeout)
+      assert timeout > Portal.Workers.ClosureDrift.budget_ms()
     end
 
     # Review F2: a newer release has its own job, which does the same work.
