@@ -17,6 +17,21 @@ defmodule NccWorker.Portability.NativeSideTest do
   @native ["dep", "elixir_make"]
   @on [native_side: true]
 
+  # The reviewed tools as the lock resolves them (review M3): the Hex
+  # package of the app's own name, in a reviewed version.
+  @tools %{
+    "elixir_make" => %{
+      name: "elixir_make",
+      version: "0.10.1",
+      checksum: String.duplicate("a", 64)
+    },
+    "cc_precompiler" => %{
+      name: "cc_precompiler",
+      version: "0.1.11",
+      checksum: String.duplicate("b", 64)
+    }
+  }
+
   @tool_modules ~w(Elixir.Mix.Tasks.Compile.ElixirMake Elixir.ElixirMake.Compiler
                    Elixir.ElixirMake.Artefact)
 
@@ -58,8 +73,9 @@ defmodule NccWorker.Portability.NativeSideTest do
       })
 
     beam = Path.join(proj, "_build/host/lib/dep/ebin/Elixir.#{module}.beam")
-    opts = [releases: %{"dep" => release}, hex_home: home, nif_waiver: false]
-    %{proj: proj, home: home, beam: beam, opts: opts, source: source}
+    releases = Map.merge(@tools, %{"dep" => release})
+    opts = [releases: releases, hex_home: home, nif_waiver: false]
+    %{proj: proj, home: home, beam: beam, opts: opts, source: source, releases: releases}
   end
 
   defp write_beam(proj, app, source, file \\ nil) do
@@ -349,7 +365,7 @@ defmodule NccWorker.Portability.NativeSideTest do
              judge(
                ctx.proj,
                report(ctx.proj, tool_run()),
-               Keyword.put(ctx.opts, :releases, %{}) ++ @on
+               Keyword.put(ctx.opts, :releases, Map.delete(ctx.releases, "dep")) ++ @on
              )
   end
 
@@ -379,7 +395,7 @@ defmodule NccWorker.Portability.NativeSideTest do
         "checksum.exs" => checksum
       })
 
-    opts = Keyword.put(ctx.opts, :releases, %{"dep" => release}) ++ @on
+    opts = Keyword.put(ctx.opts, :releases, Map.put(ctx.releases, "dep", release)) ++ @on
 
     assert %{status: :skip, reason: reason} = judge(ctx.proj, report(ctx.proj, tool_run()), opts)
 
@@ -399,7 +415,7 @@ defmodule NccWorker.Portability.NativeSideTest do
         "checksum.exs" => checksum
       })
 
-    opts = Keyword.put(ctx.opts, :releases, %{"dep" => release}) ++ @on
+    opts = Keyword.put(ctx.opts, :releases, Map.put(ctx.releases, "dep", release)) ++ @on
     assert %{status: :pass} = judge(ctx.proj, report(ctx.proj, tool_run()), opts)
   end
 
@@ -462,6 +478,20 @@ defmodule NccWorker.Portability.NativeSideTest do
     # Without cc_precompiler on the native list nothing is set apart: a
     # call into it would be no traced event.
     assert %{status: :skip} = Portability.judge(ctx.proj, "pkg", r, @native, opts)
+
+    # Nor with a cc_precompiler outside the reviewed versions, or another
+    # Hex package under its name (review M3): then elixir_make is not set
+    # apart either.
+    for release <- [
+          %{@tools["cc_precompiler"] | version: "0.1.9"},
+          %{@tools["cc_precompiler"] | name: "ccp"}
+        ] do
+      opts = Keyword.put(opts, :releases, Map.put(ctx.releases, "cc_precompiler", release))
+
+      assert %{status: :skip, observations: %{"native_build" => []}} =
+               Portability.judge(ctx.proj, "pkg", r, native, opts),
+             inspect(release)
+    end
   end
 
   # Review M1: the set-apart rests on a dependent being unable to read the
@@ -503,6 +533,42 @@ defmodule NccWorker.Portability.NativeSideTest do
 
     assert %{status: :skip, reason: "closure dependency observed the host: dep (" <> _} =
              judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts)
+  end
+
+  # Review M3: a lock can give the app name elixir_make to any Hex package
+  # (`{:elixir_make, "~> 1.0", hex: :other}`), and every frame of the tool
+  # is set apart. Only the reviewed Hex packages, in the reviewed versions.
+  test "the tool is set apart only as the reviewed Hex package and versions", ctx do
+    judged = fn release ->
+      releases = Map.put(ctx.releases, "elixir_make", release)
+
+      judge(
+        ctx.proj,
+        report(ctx.proj, tool_run()),
+        Keyword.put(ctx.opts, :releases, releases) ++ @on
+      )
+    end
+
+    make = @tools["elixir_make"]
+
+    for version <- ["0.7.8", "0.8.4", "0.9.0", "0.10.1"],
+        do: assert(%{status: :pass} = judged.(%{make | version: version}), version)
+
+    for release <- [
+          %{make | name: "elixir_make_fork"},
+          %{make | version: "0.7.7"},
+          %{make | version: "0.10.2"},
+          %{make | version: "0.11.0"},
+          %{make | version: "0.10.1-rc.0"},
+          %{make | version: "not a version"},
+          nil
+        ] do
+      assert %{status: :skip, reason: "closure dependency observed the host: dep (" <> inner} =
+               judged.(release),
+             inspect(release)
+
+      assert inner =~ "in Mix.Tasks.Compile.ElixirMake.run/1", inspect(release)
+    end
   end
 
   test "a firmware target's trace is unchanged by the option", ctx do

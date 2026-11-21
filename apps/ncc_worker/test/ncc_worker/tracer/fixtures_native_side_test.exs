@@ -151,7 +151,10 @@ defmodule NccWorker.Tracer.FixturesNativeSideTest do
     home = Path.join(root, "hex")
 
     releases =
-      Map.new(["elixir_make", "fx_sn_pad" | @natives ++ @users], &release(home, proj, &1))
+      ["elixir_make", "fx_sn_pad" | @natives ++ @users]
+      |> Map.new(&release(home, proj, &1))
+      # The stand-in as a reviewed elixir_make release (review M3).
+      |> Map.update!("elixir_make", &%{&1 | version: "0.10.1"})
 
     traced = TracerFixtures.trace(proj, @users, native: @native)
     %{proj: proj, traced: traced, opts: [releases: releases, hex_home: home]}
@@ -194,6 +197,21 @@ defmodule NccWorker.Tracer.FixturesNativeSideTest do
     if Version.match?(System.version(), ">= 1.20.0") do
       assert Enum.any?(v.observations["native_beam_reads"], &(&1["app"] == "fx_sn_nat"))
     end
+
+    # Not as an unreviewed elixir_make release (review M3).
+    opts = [
+      native_side: true,
+      releases: Map.update!(ctx.opts[:releases], "elixir_make", &%{&1 | version: "0.11.0"})
+    ]
+
+    assert %{status: :skip, observations: %{"native_build" => []}} =
+             TracerFixtures.judge(
+               ctx.proj,
+               "fx_sn_user",
+               ctx.traced,
+               @native,
+               Keyword.merge(ctx.opts, opts)
+             )
 
     # Without the option the tool's own reads taint the dependency (and on
     # 1.20 the read of its beam refuses first, in the package's window).

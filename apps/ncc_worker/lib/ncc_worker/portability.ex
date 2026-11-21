@@ -64,17 +64,19 @@ defmodule NccWorker.Portability do
   judge only) sets a natively built closure dependency's native side apart
   from its beams. In a closure dependency's window, never the package's,
   the reviewed native build tool's own activity (elixir_make's compiler and
-  cc_precompiler, its precompiler: their host reads, `make`, the download,
-  their cache dir, `priv`) is a `native_build` observation instead of a
-  refusal or an input, as in a firmware target's trace; an integrity call
+  cc_precompiler, its precompiler, each the Hex package of its name in a
+  reviewed version: their host reads, `make`, the download, their cache
+  dir, `priv`) is a `native_build` observation instead of a refusal or an
+  input, as in a firmware target's trace; an integrity call
   and a write to the env or the application env from their frame refuse
   as there, and a package fun they run is the dependency's own. Such a
   dependency is clean only when its beams are shown to be its sources'
-  alone (`side_problem/3`): Mix built it, no closure NIF was mapped by its
+  alone (`side_problem/3`): it is on the native list, Mix built it, no closure NIF was mapped by its
   window's close, its tree is exactly its verified tarball's, every beam in
   its ebin compiled from that tree and every checksum file the tool
   evaluates a literal map; else that is its taint (`native build not set
-  apart: `). A dependent's reads of its beams follow revision 15's rule,
+  apart: `), and then every beam in the package's own ebin must have
+  compiled from the package's own sources too. A dependent's reads of its beams follow revision 15's rule,
   a library of OTP's own (a download's `crypto`) mapped in its window
   allowed, and a read of any other file in its ebin refuses. Every call
   into it and every read of its `priv` still refuse. `trace_stats` records
@@ -1299,6 +1301,17 @@ defmodule NccWorker.Portability do
   # precompiler of the dependency's own is its own code, not set apart.
   @side_tools ["elixir_make", "cc_precompiler"]
 
+  # Review M3. A tool is trusted by the Hex package the lock resolved for its
+  # app, never by the app name alone (`{:elixir_make, "~> 1.0", hex: :other}`
+  # names any package so), and only in the versions whose sources were
+  # reviewed for what they read, write and run: the same surface from
+  # elixir_make 0.7.8 to 0.10.1 and cc_precompiler 0.1.10 to 0.1.11. A
+  # pre-release matches no range.
+  @side_tool_versions %{
+    "elixir_make" => ">= 0.7.8 and <= 0.10.1",
+    "cc_precompiler" => ">= 0.1.10 and <= 0.1.11"
+  }
+
   defp native_side?(opts), do: target(opts) == nil and Keyword.get(opts, :native_side) == true
 
   defp on_off(true), do: "on"
@@ -1308,11 +1321,39 @@ defmodule NccWorker.Portability do
   # target's trace sets the tool apart already, `target_mode/4`); else the
   # tools' modules, as `target_mode/4` takes them: none unless the tracer
   # put call patterns on every tool in the closure (each on the native
-  # list), so that a dependency's own call into one is an event of its own.
+  # list), so that a dependency's own call into one is an event of its own,
+  # and none unless every tool in the closure is a reviewed release
+  # (`reviewed_tools?/2`).
   defp side_mode(opts, ctx, scope, native) do
-    if native_side?(opts),
-      do: %{tool_modules: tool_modules(ctx, scope, native, @side_tools), package: ctx.package}
+    if native_side?(opts) do
+      tools =
+        if reviewed_tools?(ctx, scope),
+          do: tool_modules(ctx, scope, native, @side_tools),
+          else: MapSet.new()
+
+      %{tool_modules: tools, package: ctx.package}
+    end
   end
+
+  defp reviewed_tools?(%Context{hex: {_home, releases}}, scope) when is_map(releases),
+    do:
+      Enum.all?(@side_tools, fn tool ->
+        not MapSet.member?(scope, tool) or reviewed_release?(tool, Map.get(releases, tool))
+      end)
+
+  defp reviewed_tools?(_ctx, _scope), do: false
+
+  defp reviewed_release?(tool, %{name: tool, version: version}) when is_binary(version) do
+    case Version.parse(version) do
+      {:ok, parsed} ->
+        Version.match?(parsed, Map.fetch!(@side_tool_versions, tool), allow_pre: false)
+
+      :error ->
+        false
+    end
+  end
+
+  defp reviewed_release?(_tool, _release), do: false
 
   # A closure dependency's window only, never the package's: the package's
   # own native files are what it would publish. Every event of the
