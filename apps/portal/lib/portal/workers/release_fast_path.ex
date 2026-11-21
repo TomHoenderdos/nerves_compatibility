@@ -100,11 +100,13 @@ defmodule Portal.Workers.ReleaseFastPath do
   @reason "release_fast_path"
   @carry_over_seconds 3600
   @lock_snooze_seconds 60
-  # A fixed key for `pg_try_advisory_lock/1`: one fast-path run at a time.
-  @lock_key 0x52_46_50_00
+  # A fixed key for `pg_try_advisory_lock/2`: one fast-path run at a time.
+  # The two-key form, whose key space is apart from the one-key form the
+  # `hashtext` identity locks use (`pg_advisory_xact_lock(hashtext(...))`).
+  @lock_key {0x5246, 0x5000}
 
-  @doc "The advisory lock key a run holds while it runs."
-  @spec lock_key() :: integer()
+  @doc "The two-key advisory lock (`{classid, objid}`) a run holds while it runs."
+  @spec lock_key() :: {integer(), integer()}
   def lock_key, do: @lock_key
   @incomplete ~w(available scheduled executing retryable)
 
@@ -144,7 +146,7 @@ defmodule Portal.Workers.ReleaseFastPath do
   defp lock do
     {:ok, conn} = Postgrex.start_link(lock_connection_opts())
 
-    case Postgrex.query(conn, "SELECT pg_try_advisory_lock($1)", [@lock_key], timeout: 15_000) do
+    case Postgrex.query(conn, "SELECT pg_try_advisory_lock($1, $2)", lock_args(), timeout: 15_000) do
       {:ok, %{rows: [[true]]}} ->
         {:ok, conn}
 
@@ -160,9 +162,11 @@ defmodule Portal.Workers.ReleaseFastPath do
   # The unlock is for a connection that outlives the run; stopping it lets
   # the lock go anyway.
   defp release(conn) do
-    _ = Postgrex.query(conn, "SELECT pg_advisory_unlock($1)", [@lock_key], timeout: 15_000)
+    _ = Postgrex.query(conn, "SELECT pg_advisory_unlock($1, $2)", lock_args(), timeout: 15_000)
     GenServer.stop(conn)
   end
+
+  defp lock_args, do: Tuple.to_list(@lock_key)
 
   # The pool's connection settings, for one connection of its own.
   @connection_keys ~w(hostname port username password database socket socket_dir ssl ssl_opts

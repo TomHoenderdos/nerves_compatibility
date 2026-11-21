@@ -183,10 +183,10 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       end
     end
 
-    defp lock_args, do: [ReleaseFastPath.lock_key()]
-    defp lock_sql, do: "SELECT pg_advisory_lock($1)"
-    defp try_lock_sql, do: "SELECT pg_try_advisory_lock($1)"
-    defp unlock_sql, do: "SELECT pg_advisory_unlock($1)"
+    defp lock_args, do: Tuple.to_list(ReleaseFastPath.lock_key())
+    defp lock_sql, do: "SELECT pg_advisory_lock($1, $2)"
+    defp try_lock_sql, do: "SELECT pg_try_advisory_lock($1, $2)"
+    defp unlock_sql, do: "SELECT pg_advisory_unlock($1, $2)"
 
     # A second database session, outside the test's sandbox.
     defp session_config do
@@ -358,6 +358,25 @@ defmodule Portal.Workers.ReleaseFastPathTest do
 
       {:ok, other} = Postgrex.start_link(session_config())
       assert %{rows: [[true]]} = Postgrex.query!(other, try_lock_sql(), lock_args())
+      GenServer.stop(other)
+    end
+
+    # Re-review G4: a single bigint key shares its space with the
+    # `hashtext` identity locks (`pg_advisory_xact_lock(hashtext(...))`);
+    # the two-key form has a space of its own.
+    test "the lock is the two-key form, apart from the hashtext identity locks" do
+      assert {classid, objid} = ReleaseFastPath.lock_key()
+      assert classid in -2_147_483_648..2_147_483_647
+      assert objid in -2_147_483_648..2_147_483_647
+
+      # A one-key lock on any number does not hold it.
+      {:ok, other} = Postgrex.start_link(session_config())
+      Postgrex.query!(other, "SELECT pg_advisory_lock($1)", [classid * 4_294_967_296 + objid])
+      certifi_release([name()])
+
+      assert {:ok, %{enqueued: 1}} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
       GenServer.stop(other)
     end
 
