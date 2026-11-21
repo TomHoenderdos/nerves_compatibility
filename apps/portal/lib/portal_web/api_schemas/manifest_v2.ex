@@ -2,7 +2,7 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
   @moduledoc "Precompiled manifest, format 2."
   require OpenApiSpex
   alias OpenApiSpex.Schema
-  alias PortalWeb.ApiSchemas.{ForeignLists, ManifestBuild}
+  alias PortalWeb.ApiSchemas.{ForeignLists, ManifestBuild, RelocatedLists}
 
   OpenApiSpex.schema(
     %{
@@ -48,6 +48,7 @@ defmodule PortalWeb.ApiSchemas.ManifestV2 do
                     "`host_native_enabled` setting is off."
               },
               foreign_priv: ForeignLists,
+              relocated: RelocatedLists,
               deterministic: %Schema{
                 type: :object,
                 description:

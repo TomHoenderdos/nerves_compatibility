@@ -41,7 +41,9 @@ defmodule Portal.Precompiled.Withheld do
   compile packed Kino.JS archives into kino's `priv`, listed with them) is
   withheld when its own package is on the list, whatever it records (foreign
   priv spec 4.4, item 4): putting a writer's name on the list is a lever for
-  its foreign builds. kino on the list never withholds one.
+  its foreign builds. kino on the list never withholds one. So is a
+  relocated build (`Portal.Precompiled.Relocated`, S4): its own package's
+  name on the list withholds it whatever it records.
 
   Configured with `config :portal, #{inspect(__MODULE__)}, packages: [...]`.
   Without that key, or with anything but a list of strings, the default
@@ -78,7 +80,8 @@ defmodule Portal.Precompiled.Withheld do
   check, never the one below.
 
   A foreign priv build (`Portal.Precompiled.ForeignPriv.counted/1` not
-  empty) whose own package is on the list is withheld whatever it records.
+  empty) or a relocated one (`Portal.Precompiled.Relocated.counted/1`)
+  whose own package is on the list is withheld whatever it records.
 
   A build with no lock (`nil`: format 1's `"deps": null`, from before builds
   recorded one, or a lock ingest rejected) has an unknown closure, so it is
@@ -96,13 +99,16 @@ defmodule Portal.Precompiled.Withheld do
   def withheld?(_package_name, deps_lock, _packages, _build) when not is_map(deps_lock), do: true
 
   def withheld?(package_name, deps_lock, packages, build) do
-    (package_name in packages and foreign_priv?(build)) or
+    (package_name in packages and (foreign_priv?(build) or relocated?(build))) or
       (not records_config_reads?(build) and
          (package_name in packages or Enum.any?(packages, &Map.has_key?(deps_lock, &1))))
   end
 
   defp foreign_priv?(%{} = build), do: Portal.Precompiled.ForeignPriv.counted(build) != []
   defp foreign_priv?(_build), do: false
+
+  defp relocated?(%{} = build), do: Portal.Precompiled.Relocated.counted(build) != nil
+  defp relocated?(_build), do: false
 
   @doc """
   Whether a toolchain build's config variant lets it be served

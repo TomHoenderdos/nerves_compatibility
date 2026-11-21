@@ -1,0 +1,183 @@
+defmodule Portal.Catalog.ManifestRelocatedTest do
+  # S4: a relocated toolchain build (`Portal.Precompiled.Relocated`) is
+  # listed only under a version's `relocated` object, which no client before
+  # 0.9.0 reads, and only while `relocated_enabled` is on.
+  use Portal.DataCase, async: false
+
+  alias Portal.Catalog
+
+  import Portal.PrecompiledFixtures, only: [ingest_toolchain_build: 3]
+
+  @regular ~w(builds builds_with_inputs builds_closure builds_host_native)
+
+  defp on!, do: {:ok, _} = Portal.Settings.save(%{relocated_enabled: true})
+  defp off!, do: {:ok, _} = Portal.Settings.save(%{relocated_enabled: false})
+
+  defp manifest(name), do: Catalog.precompiled_manifest_v2(name)
+
+  defp record(name) do
+    %{
+      "deps" => "/work/proj/deps",
+      "build" => "/work/proj/_build/host",
+      "files" => [
+        %{
+          "path" => "ebin/#{name}.beam",
+          "occurrences" => [
+            %{
+              "chunk" => "LitT",
+              "index" => 0,
+              "term" => [],
+              "kind" => "binary",
+              "parts" => ["", "deps", "/#{name}/c_include"]
+            }
+          ]
+        }
+      ]
+    }
+  end
+
+  # No regular list of any version, nor any deterministic one, holds a
+  # relocated entry: a client before 0.9.0 would install its bytes as they
+  # are, with the builder's path in them.
+  defp assert_contract!(nil), do: :ok
+
+  defp assert_contract!(%{"versions" => versions}) do
+    for {_v, version} <- versions,
+        lists <- [version, version["deterministic"] || %{}],
+        key <- @regular,
+        build <- List.wrap(lists[key]) do
+      refute Map.has_key?(build, "relocation"), inspect({key, build["target"]})
+    end
+
+    :ok
+  end
+
+  setup do
+    name = "fine_#{System.unique_integer([:positive])}"
+    row = ingest_toolchain_build(name, "0.2.0", compile_env_rule: 1, relocation: record(name))
+    plain = ingest_toolchain_build("jason", "1.4.4", compile_env_rule: 1)
+    %{name: name, row: row, plain: plain}
+  end
+
+  test "setting on: listed only under relocated, beside an empty builds", %{name: name, row: row} do
+    on!()
+    m = manifest(name)
+    assert_contract!(m)
+    v = m["versions"]["0.2.0"]
+    assert v["builds"] == []
+    assert %{"builds" => [entry]} = v["relocated"]
+    assert entry["target"] == "pure_elixir"
+    assert entry["relocation"] == record(name)
+    assert entry["build"]["run_id"] == row.run_id
+    assert [%{"path" => path}] = entry["ebin"]
+    assert path == "ebin/#{name}.beam"
+    PortalWeb.ApiSpecAssertions.assert_api_schema(m, "ManifestV2")
+  end
+
+  test "setting off: no relocated object, and the version is not listed", %{name: name} do
+    off!()
+    m = manifest(name)
+    assert m == nil or not Map.has_key?(m["versions"], "0.2.0")
+  end
+
+  test "setting off or on, a package without relocated builds renders the same bytes" do
+    off!()
+    off_bytes = Jason.encode!(manifest("jason"))
+    on!()
+    assert Jason.encode!(manifest("jason")) == off_bytes
+  end
+
+  test "a revoked relocated build is listed nowhere", %{name: name, row: row} do
+    on!()
+
+    Portal.Repo.query!(
+      "UPDATE catalog_toolchain_builds SET revoked_at = now() WHERE id = $1",
+      [Ecto.UUID.dump!(row.id)]
+    )
+
+    m = manifest(name)
+    assert m == nil or not Map.has_key?(m["versions"], "0.2.0")
+  end
+
+  # An older release's rebuild replaces run_id (and its worker refuses the
+  # build) and leaves the record: it counts for nothing.
+  test "an old release's rebuild leaves a stale record that renders nothing", %{
+    name: name,
+    row: row
+  } do
+    on!()
+
+    Portal.Repo.query!(
+      "UPDATE catalog_toolchain_builds SET run_id = 'old-release-run', status = 'skipped' WHERE id = $1",
+      [Ecto.UUID.dump!(row.id)]
+    )
+
+    m = manifest(name)
+    assert_contract!(m)
+    assert m == nil or not Map.has_key?(m["versions"], "0.2.0")
+  end
+
+  # A stale record beside a pass the old release wrote with its own files:
+  # those files are a plain build's, listed as one, without the record.
+  test "a stale record beside an old release's pass lists it as a plain build", %{
+    name: name,
+    row: row
+  } do
+    on!()
+
+    Portal.Repo.query!(
+      "UPDATE catalog_toolchain_builds SET run_id = 'old-release-run' WHERE id = $1",
+      [Ecto.UUID.dump!(row.id)]
+    )
+
+    m = manifest(name)
+    assert_contract!(m)
+
+    assert [entry] =
+             m["versions"]["0.2.0"]["builds"] ++
+               (m["versions"]["0.2.0"]["builds_with_inputs"] || [])
+
+    refute Map.has_key?(entry, "relocation")
+    refute Map.has_key?(m["versions"]["0.2.0"], "relocated")
+  end
+
+  test "the package's own name on the withheld list withholds its relocated build", %{name: name} do
+    on!()
+    assert %{"builds" => [_]} = manifest(name)["versions"]["0.2.0"]["relocated"]
+
+    old = Application.get_env(:portal, Portal.Precompiled.Withheld)
+    on_exit(fn -> restore_withheld(old) end)
+    Application.put_env(:portal, Portal.Precompiled.Withheld, packages: [name])
+
+    m = manifest(name)
+    assert m == nil or not Map.has_key?(m["versions"], "0.2.0")
+  end
+
+  # Closure drift keeps the build a rebuild replaced as an earlier build:
+  # one that was relocated keeps its record and is listed under relocated.
+  test "an earlier relocated build keeps its record and is listed under relocated", %{
+    name: name,
+    row: row
+  } do
+    on!()
+    lock = %{"decimal" => %{"version" => "2.1.2", "checksum" => "def"}}
+
+    _rebuilt =
+      ingest_toolchain_build(name, "0.2.0",
+        compile_env_rule: 1,
+        relocation: record(name),
+        deps_lock: lock,
+        finished_at: "2026-10-25T10:00:00Z"
+      )
+
+    m = manifest(name)
+    assert_contract!(m)
+    entries = m["versions"]["0.2.0"]["relocated"]["builds"]
+    assert length(entries) == 2
+    assert Enum.all?(entries, &(&1["relocation"] == record(name)))
+    assert row.deps_lock in Enum.map(entries, & &1["build"]["deps"])
+  end
+
+  defp restore_withheld(nil), do: Application.delete_env(:portal, Portal.Precompiled.Withheld)
+  defp restore_withheld(old), do: Application.put_env(:portal, Portal.Precompiled.Withheld, old)
+end

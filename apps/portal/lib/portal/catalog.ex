@@ -53,7 +53,7 @@ defmodule Portal.Catalog do
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
   alias Portal.Deterministic
   alias Portal.HostNative
-  alias Portal.Precompiled.{ForeignPriv, Withheld}
+  alias Portal.Precompiled.{ForeignPriv, Relocated, Withheld}
   alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
@@ -1394,12 +1394,20 @@ defmodule Portal.Catalog do
       "AND coalesce(to_jsonb(#{table}.foreign_priv), '[]'::jsonb) <> '[]'::jsonb)"
   end
 
+  # `Withheld.withheld?/4`'s relocation rule for the toolchain build aliased
+  # `table` of the package `p`: a build whose record counts (the mark of the
+  # row's own run) is withheld when its own package is on the list.
+  withheld_relocated = fn table ->
+    "NOT (p.name = ANY($W::text[]) " <>
+      "AND coalesce(#{table}.relocation_run_id = #{table}.run_id, false))"
+  end
+
   # `Withheld.withheld?/4` for the toolchain build aliased `table`.
   withheld_toolchain = fn table ->
     (withheld_lock_clause
      |> String.replace("$L", "#{table}.deps_lock")
      |> String.replace("$E", records_config_reads.(table))) <>
-      " AND " <> withheld_foreign.(table)
+      " AND " <> withheld_foreign.(table) <> " AND " <> withheld_relocated.(table)
   end
 
   # `Withheld.config_variant_served?/2` for the toolchain build aliased
@@ -1451,7 +1459,8 @@ defmodule Portal.Catalog do
            r.config_variant, r.status, r.revoked_at, r.deps_lock,
            to_jsonb(r.compile_env) AS compile_env, r.compile_env_rule,
            r.compile_env_run_id, r.run_id, r.file_manifest,
-           to_jsonb(r.foreign_priv) AS foreign_priv, r.foreign_priv_run_id
+           to_jsonb(r.foreign_priv) AS foreign_priv, r.foreign_priv_run_id,
+           r.relocation_run_id
     UNION ALL
     SELECT r.id, r.package_id, r.version, r.toolchain, r.builder_version, r.variant,
            r.config_variant, r.status, r.revoked_at, e->'deps_lock',
@@ -1461,7 +1470,7 @@ defmodule Portal.Catalog do
                 THEN (e->>'compile_env_rule')::integer END,
            e->>'compile_env_run_id', e->>'run_id', e->'file_manifest',
            CASE WHEN jsonb_typeof(e->'foreign_priv') = 'array' THEN e->'foreign_priv' END,
-           e->>'foreign_priv_run_id'
+           e->>'foreign_priv_run_id', e->>'relocation_run_id'
     FROM unnest(r.earlier_builds) AS e
     WHERE e->'deps_lock' IS DISTINCT FROM r.deps_lock
       AND #{served_toolchain.("r")}
@@ -3609,6 +3618,7 @@ defmodule Portal.Catalog do
         %{
           package_name: package.name,
           foreign_enabled: ForeignPriv.enabled?(),
+          relocated_enabled: Relocated.enabled?(),
           runs: runs,
           results: results,
           shas_by_system_result_id: shas_by_system_result_id,
@@ -3719,6 +3729,7 @@ defmodule Portal.Catalog do
          toolchain_builds_v2(sources) ++ pinned_builds_v2(sources))
       |> listed()
       |> drop_foreign(sources.foreign_enabled)
+      |> drop_relocated(sources.relocated_enabled)
 
     host_native = host_native_v2(sources)
 
@@ -3751,13 +3762,20 @@ defmodule Portal.Catalog do
   # build (`put_foreign/4`) is tagged `{:foreign, list}`: it goes under the
   # version's `foreign_priv` object only, which no client before 0.8.0 reads
   # (foreign priv spec 4.3 and 4.5).
+  # A relocated build (`put_relocated/2`) is tagged `{:relocated, list}`: it
+  # goes under the version's `relocated` object only, which no client before
+  # 0.9.0 reads (`Portal.Precompiled.Relocated`).
   defp listed(builds) do
-    {foreign, regular} =
+    {relocated, builds} =
       builds
       |> Enum.filter(&matchable?/1)
-      |> Enum.split_with(&foreign_build?/1)
+      |> Enum.split_with(&relocated_build?/1)
 
-    tagged(regular) ++ Enum.map(tagged(foreign), fn {tag, build} -> {{:foreign, tag}, build} end)
+    {foreign, regular} = Enum.split_with(builds, &foreign_build?/1)
+
+    tagged(regular) ++
+      Enum.map(tagged(foreign), fn {tag, build} -> {{:foreign, tag}, build} end) ++
+      Enum.map(tagged(relocated), fn {tag, build} -> {{:relocated, tag}, build} end)
   end
 
   defp tagged(builds) do
@@ -3773,6 +3791,12 @@ defmodule Portal.Catalog do
   end
 
   defp foreign_build?({_version, _at, entry}), do: Map.get(entry, :foreign) == true
+  defp relocated_build?({_version, _at, entry}), do: Map.get(entry, :relocated) == true
+
+  # With `relocated_enabled` off nothing relocated is listed, and a version
+  # with only relocated builds is not listed at all.
+  defp drop_relocated(list, true), do: list
+  defp drop_relocated(list, _off), do: Enum.reject(list, &match?({{:relocated, _}, _}, &1))
 
   # Foreign priv spec 4.3: with the setting off nothing foreign is listed,
   # and a version with only foreign builds is not listed at all. kino's own
@@ -3823,6 +3847,7 @@ defmodule Portal.Catalog do
             {d.toolchain_build_id || d.pinned_build_id || d.system_result_id, d.run_id}
           ),
         build != nil,
+        not relocated_source?(build),
         stored = Map.get(sources.shas_by_deterministic_id, d.id, MapSet.new()),
         files = toolchain_files(d.file_manifest, stored, sources.present_shas),
         files != nil,
@@ -3834,6 +3859,11 @@ defmodule Portal.Catalog do
       |> put_foreign(d, foreign, sources)
     end
   end
+
+  # A relocated build has no sibling (the worker never relocates one); one
+  # stored beside it anyway is listed nowhere.
+  defp relocated_source?({:toolchain, tb}), do: Relocated.counted(tb) != nil
+  defp relocated_source?(_build), do: false
 
   defp sibling_build_v2({:toolchain, tb}, files), do: toolchain_build_v2(tb, files)
   defp sibling_build_v2({:pinned, pb}, files), do: pinned_build_v2(pb, files)
@@ -3945,7 +3975,10 @@ defmodule Portal.Catalog do
 
   defp version_builds(list) do
     pick = fn tag ->
-      for({^tag, {_version, _at, build}} <- list, do: Map.drop(build, [:closure_only, :foreign]))
+      for(
+        {^tag, {_version, _at, build}} <- list,
+        do: Map.drop(build, [:closure_only, :foreign, :relocated])
+      )
       |> Enum.sort_by(&build_order/1)
     end
 
@@ -3953,6 +3986,25 @@ defmodule Portal.Catalog do
     |> put_list("builds_with_inputs", pick.(:checked))
     |> put_list("builds_closure", pick.(:closure))
     |> put_foreign_lists(pick)
+    |> put_relocated_lists(pick)
+  end
+
+  # A version's relocated builds under its `relocated` object, in the same
+  # lists; a version with none renders the bytes it rendered before.
+  defp put_relocated_lists(version, pick) do
+    case {pick.({:relocated, :plain}), pick.({:relocated, :checked}),
+          pick.({:relocated, :closure})} do
+      {[], [], []} ->
+        version
+
+      {plain, checked, closure} ->
+        lists =
+          %{"builds" => plain}
+          |> put_list("builds_with_inputs", checked)
+          |> put_list("builds_closure", closure)
+
+        Map.put(version, "relocated", lists)
+    end
   end
 
   # A version's foreign builds under its `foreign_priv` object, in the same
@@ -4208,7 +4260,27 @@ defmodule Portal.Catalog do
         files != nil,
         foreign = foreign_files(tb, stored, sources.present_shas),
         foreign != :absent,
-        do: tb |> toolchain_build_v2(files) |> put_foreign(tb, foreign, sources)
+        listed = tb |> toolchain_build_v2(files) |> put_foreign(tb, foreign, sources),
+        listed = put_relocated(listed, tb),
+        listed != nil,
+        do: listed
+  end
+
+  # Tags a build whose record counts (`Portal.Precompiled.Relocated.counted/1`)
+  # for the `relocated` object, its record beside its files. One that is
+  # foreign too is listed nowhere: the ingest stores no such build, and no
+  # client applies both.
+  defp put_relocated({version, at, entry} = listed, tb) do
+    case {Relocated.counted(tb), Map.get(entry, :foreign) == true} do
+      {nil, _} ->
+        listed
+
+      {%{}, true} ->
+        nil
+
+      {%{} = record, false} ->
+        {version, at, Map.merge(entry, %{"relocation" => record, relocated: true})}
+    end
   end
 
   defp toolchain_build_v2(tb, files) do
@@ -4380,6 +4452,8 @@ defmodule Portal.Catalog do
       :foreign_priv,
       :foreign_priv_rule,
       :foreign_priv_run_id,
+      :relocation,
+      :relocation_run_id,
       :finished_at,
       :earlier_builds
     ])

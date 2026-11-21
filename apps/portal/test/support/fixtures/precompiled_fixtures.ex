@@ -113,7 +113,8 @@ defmodule Portal.PrecompiledFixtures do
           :declared,
           :manager,
           :judge_revision,
-          :compile_inputs
+          :compile_inputs,
+          :relocation
         ])
         |> Map.new(fn {k, v} -> {Atom.to_string(k), v} end)
       )
