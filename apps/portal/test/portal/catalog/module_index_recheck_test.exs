@@ -88,7 +88,9 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
 
     %{
       opts: [
-        registry: fn -> {:ok, %{"money" => "1.14.0", "ex_money" => "5.24.2"}} end,
+        registry: fn ->
+          {:ok, %{"money" => {"1.14.0", "1.14.0"}, "ex_money" => {"5.24.2", "5.24.2"}}}
+        end,
         tarball: fn n, _v -> {:ok, tarballs[n]} end,
         outer_checksum: fn n, _v -> {:ok, sha.(tarballs[n])} end
       ]

@@ -49,7 +49,16 @@ defmodule Portal.Catalog.ModuleIndexTest do
     Repo.insert_all("catalog_packages", rows)
   end
 
-  defp registry(versions), do: fn -> {:ok, versions} end
+  # `name => latest` (also the latest stable) or `name => {latest, stable}`.
+  defp registry(versions) do
+    releases =
+      Map.new(versions, fn
+        {n, {latest, stable}} -> {n, {latest, stable}}
+        {n, v} -> {n, {v, v}}
+      end)
+
+    fn -> {:ok, releases} end
+  end
 
   defp sha(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
@@ -197,6 +206,109 @@ defmodule Portal.Catalog.ModuleIndexTest do
     assert ModuleIndex.definers("Elixir.Jason") == []
   end
 
+  # Final round, R6-1, the reviewer's scratch case: money's registry latest
+  # is a prerelease that drops `Money`, which the latest stable (what Mix
+  # resolves by default) defines. Both are indexed, and both are needed.
+  test "a prerelease that drops a module the latest stable defines lets no collision pass",
+       %{opts: opts, latest: latest} do
+    rc = tarball(%{"lib/money.ex" => "defmodule MoneyNext do\nend\n"})
+    stable = Map.fetch!(latest, "money")
+
+    tarball = fn
+      "money", "2.0.0-rc.0" -> {:ok, rc}
+      n, v -> opts[:tarball].(n, v)
+    end
+
+    checksum = fn
+      "money", "2.0.0-rc.0" -> {:ok, sha(rc)}
+      n, v -> opts[:outer_checksum].(n, v)
+    end
+
+    opts =
+      Keyword.merge(opts,
+        registry: registry(Map.put(latest, "money", {"2.0.0-rc.0", stable})),
+        tarball: tarball,
+        outer_checksum: checksum
+      )
+
+    assert %{to_fetch: 4, releases_to_fetch: 5} =
+             ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
+
+    assert %{indexed: 4, complete: true} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
+    assert ModuleIndex.definers("Elixir.MoneyNext") == ["money"]
+    assert ModuleIndex.refusal([money()], ["ecto"]) =~ "also defined by money"
+
+    # Completeness needs both: the stable release failing keeps it incomplete.
+    stable_fails =
+      Keyword.merge(opts,
+        registry: registry(Map.put(latest, "money", {"2.0.0-rc.1", stable})),
+        tarball: fn
+          "money", "2.0.0-rc.1" -> {:ok, rc}
+          "money", ^stable -> {:error, :hex_registry_unavailable}
+          n, v -> tarball.(n, v)
+        end,
+        outer_checksum: fn
+          "money", "2.0.0-rc.1" -> {:ok, sha(rc)}
+          n, v -> checksum.(n, v)
+        end
+      )
+
+    assert %{failed: 1, complete: false} = ModuleIndex.refresh(stable_fails)
+    refute ModuleIndex.complete?()
+  end
+
+  # Final round: a run stays well under 1 GB on the web host. A tarball over
+  # the big-parse size is parsed alone (aws parses at about 230 MB); smaller
+  # ones go on at up to 4 at once.
+  test "large tarballs are parsed one at a time", %{opts: opts, latest: latest} do
+    counter = :counters.new(2, [])
+
+    read = fn bytes, read_opts ->
+      if byte_size(bytes) > 4_000 do
+        :counters.add(counter, 1, 1)
+        now = :counters.get(counter, 1)
+        if now > :counters.get(counter, 2), do: :counters.put(counter, 2, now)
+        Process.sleep(80)
+        :counters.sub(counter, 1, 1)
+      end
+
+      Compatibility.HexModules.read(bytes, read_opts)
+    end
+
+    big = for i <- 1..6, into: %{}, do: {"big_#{i}", "1.0.0"}
+    for {n, _} <- big, do: packages!([{n, "1.0.0", 5_000}])
+    filler = :crypto.strong_rand_bytes(6_000) |> Base.encode64()
+    stub = tarball(%{"lib/b.ex" => "defmodule Big do\nend\n", "priv/blob.txt" => filler})
+
+    opts =
+      Keyword.merge(opts,
+        registry: registry(Map.merge(latest, big)),
+        tarball: fn
+          "big_" <> _, _v -> {:ok, stub}
+          n, v -> opts[:tarball].(n, v)
+        end,
+        outer_checksum: fn
+          "big_" <> _, _v -> {:ok, sha(stub)}
+          n, v -> opts[:outer_checksum].(n, v)
+        end,
+        read: read,
+        big_parse_bytes: 4_000
+      )
+
+    assert %{indexed: 10, complete: true} = ModuleIndex.refresh(opts)
+    assert :counters.get(counter, 2) == 1
+  end
+
+  test "the latest stable release of a registry version list" do
+    assert ModuleIndex.latest_stable(["0.9.0", "1.0.0", "1.4.5", "1.5.0-alpha.2"]) == "1.4.5"
+    assert ModuleIndex.latest_stable(["1.0.0-rc.0", "1.0.0-rc.1"]) == nil
+    assert ModuleIndex.latest_stable(["1.10.0", "1.9.0"]) == "1.10.0"
+    assert ModuleIndex.latest_stable(nil) == nil
+  end
+
+  # Round 6, R5-4: completeness is judged when the index is used, against
+  # the current candidates and the releases the last run read.
   test "a package that crosses 1,000 after a complete run makes the index incomplete",
        %{opts: opts, latest: latest} do
     Repo.query!("UPDATE catalog_packages SET hex_downloads_recent = 500 WHERE name = 'money'")
@@ -253,14 +365,26 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
   test "a dry run counts what a run would fetch and writes nothing", %{opts: opts} do
     assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
-             %{to_fetch: 4, unchanged: 0, below_threshold: 1, not_in_registry: 0}
+             %{
+               to_fetch: 4,
+               releases_to_fetch: 4,
+               unchanged: 0,
+               below_threshold: 1,
+               not_in_registry: 0
+             }
 
     refute ModuleIndex.complete?()
     assert %{runs: 0} = ModuleIndex.status()
     ModuleIndex.refresh(failing(opts, "amqp"))
 
     assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
-             %{to_fetch: 1, unchanged: 3, below_threshold: 1, not_in_registry: 0}
+             %{
+               to_fetch: 1,
+               releases_to_fetch: 1,
+               unchanged: 3,
+               below_threshold: 1,
+               not_in_registry: 0
+             }
   end
 
   test "at most 4 downloads at a time, whatever is asked", %{opts: opts, latest: latest} do

@@ -31,8 +31,10 @@ defmodule Portal.Catalog.ModuleIndex do
       them itself.
 
   **Complete or nothing (round 5, R3-1).** A run (`refresh/1`) is a
-  generation of its own. It reads the latest release, as the Hex registry
-  lists it (round 6, R5-1), of every candidate
+  generation of its own. It reads the last release, as the Hex registry
+  lists it (round 6, R5-1), and the latest stable one when the last is a
+  prerelease (final round, R6-1: Mix resolves the stable one by default),
+  of every candidate
   (`hex_downloads_recent >= min_recent/0`), its tarball checked against the
   registry's outer checksum, and takes the union of the modules its sources
   define (`Compatibility.HexModules`: literal definitions, leex and yecc
@@ -62,6 +64,9 @@ defmodule Portal.Catalog.ModuleIndex do
   # 8 MiB a build's tarball check allows (rocksdb, astro), and a package the
   # index cannot read keeps it incomplete.
   @max_tarball_bytes 16 * 1024 * 1024
+  # A tarball over this size (compressed) is parsed while no other one over
+  # it is (`read_release/3`).
+  @big_parse_bytes 1024 * 1024
 
   @doc "The recent-download count from which another package defining a probed module refuses."
   @spec min_recent() :: pos_integer()
@@ -74,8 +79,10 @@ defmodule Portal.Catalog.ModuleIndex do
   @doc """
   Whether the index holds, now, a successful entry for every current
   candidate (`hex_downloads_recent >= min_recent/0` in the catalog as it is
-  now) at the latest release the Hex registry listed at the last run's start
-  (round 6, R5-4): the only state in which `refusal/2` decides by the index.
+  now) at the releases the Hex registry listed at the last run's start: its
+  last version and, when that is a prerelease, its latest stable one too
+  (round 6, R5-4; final round, R6-1): the only state in which `refusal/2`
+  decides by the index.
   A candidate the last run did not see (one that crossed the threshold
   since), a release it did not index (a failed fetch, a run still going or
   stopped before it) or no run at all makes it incomplete. A candidate the
@@ -93,7 +100,9 @@ defmodule Portal.Catalog.ModuleIndex do
              LEFT JOIN catalog_module_index_packages i ON i.package = p.name
              WHERE coalesce(p.hex_downloads_recent, 0) >= $1
                AND (c.package IS NULL
-                    OR (c.version IS NOT NULL AND i.version IS DISTINCT FROM c.version)))
+                    OR (c.version IS NOT NULL
+                        AND (i.version IS DISTINCT FROM c.version
+                             OR i.stable IS DISTINCT FROM c.stable))))
         """,
         [@min_recent]
       )
@@ -228,11 +237,14 @@ defmodule Portal.Catalog.ModuleIndex do
   Safe to start by hand on a host short on memory (round 4):
 
     * `dry_run: true` reads only the registry and writes nothing: it
-      returns `%{to_fetch, unchanged, below_threshold, not_in_registry}`;
+      returns `%{to_fetch, releases_to_fetch, unchanged, below_threshold,
+      not_in_registry}`;
     * at most `max_concurrency/0` (4) packages are fetched and parsed at
       once (`:concurrency` may lower it, never raise it), each with its
       tarball in memory only while it is read (at most 16 MiB), and killed
-      after 2 minutes;
+      after 2 minutes; a tarball over 1 MiB compressed is parsed while no
+      other one over it is, so a run stays well under 1 GB (aws parses at
+      about 230 MB);
     * each package is stored in a transaction of its own as soon as it is
       read, most downloaded first, so a run that is stopped keeps what it
       stored and the next run fetches only the rest (and confirms the rest
@@ -243,9 +255,10 @@ defmodule Portal.Catalog.ModuleIndex do
   `catalog_packages.hex_latest_version`; a registry that cannot be read is a
   failed run that changes nothing. The dry run reads the registry too.
 
-  Options: `:registry` (`fn -> {:ok, %{name => latest version}} | {:error,
+  Options: `:registry` (`fn -> {:ok, %{name => {last, stable}}} | {:error,
   why} end`), `:tarball` and `:outer_checksum` (`fn name, version -> {:ok,
-  value} | {:error, why} end`, default `Portal.HexDeps`), `:limit`,
+  value} | {:error, why} end`, default `Portal.HexDeps`), `:read` (default
+  `Compatibility.HexModules.read/2`), `:big_parse_bytes`, `:limit`,
   `:concurrency`, `:dry_run`, `:recheck`.
   """
   @spec refresh(keyword()) :: %{atom() => term()}
@@ -255,12 +268,13 @@ defmodule Portal.Catalog.ModuleIndex do
     case registry.() do
       {:ok, latest} ->
         rows = candidates(Keyword.get(opts, :limit, 100_000), latest)
-        {listed, unlisted} = Enum.split_with(rows, fn [_name, version, _indexed] -> version end)
-        {todo, unchanged} = Enum.split_with(listed, fn [_name, v, indexed] -> v != indexed end)
+        {listed, unlisted} = Enum.split_with(rows, &listed?/1)
+        {todo, unchanged} = Enum.split_with(listed, &(not indexed?(&1)))
 
         if Keyword.get(opts, :dry_run, false) do
           %{
             to_fetch: length(todo),
+            releases_to_fetch: todo |> Enum.map(&length(releases(&1))) |> Enum.sum(),
             unchanged: length(unchanged),
             below_threshold: below_threshold(),
             not_in_registry: length(unlisted)
@@ -281,27 +295,53 @@ defmodule Portal.Catalog.ModuleIndex do
     end
   end
 
-  # The latest release of every package the registry lists, by name
-  # (`Portal.HexRegistry`: `/names` joined with `/versions`, signed by hex.pm).
+  # Every package the registry lists, by name, with its last version and
+  # its latest stable one (final round, R6-1: when the last version is a
+  # prerelease, Mix resolves the stable one by default, and both are read),
+  # `nil` when it has no stable release (`Portal.HexRegistry`: `/names`
+  # joined with `/versions`, signed by hex.pm).
   defp registry do
-    case Portal.HexRegistry.snapshot() do
-      {:ok, entries} -> {:ok, Map.new(entries, &{&1.name, &1.latest_version})}
-      {:error, _} = error -> error
+    case Portal.HexRegistry.snapshot(all_versions: true) do
+      {:ok, entries} ->
+        {:ok, Map.new(entries, &{&1.name, {&1.latest_version, latest_stable(&1.versions)}})}
+
+      {:error, _} = error ->
+        error
     end
   end
 
-  # Every candidate with the registry's latest version at this run's start
-  # (NULL: the registry does not list it), for `complete?/0`.
+  @doc false
+  # The newest version that is no prerelease, of a list in registry order.
+  @spec latest_stable([String.t()]) :: String.t() | nil
+  def latest_stable(versions) when is_list(versions) do
+    versions
+    |> Enum.filter(&match?({:ok, %Version{pre: []}}, Version.parse(&1)))
+    |> Enum.max_by(&Version.parse!/1, Version, fn -> nil end)
+  end
+
+  def latest_stable(_versions), do: nil
+
+  # A candidate row: `[name, last, stable, indexed last, indexed stable]`.
+  defp listed?([_name, last, _stable, _il, _is]), do: last != nil
+  defp indexed?([_name, last, stable, il, is]), do: last == il and stable == is
+
+  # The releases to read for a candidate: its last version and, when it
+  # differs, its latest stable one.
+  defp releases([_name, last, stable, _il, _is]),
+    do: Enum.uniq(Enum.reject([last, stable], &is_nil/1))
+
+  # Every candidate with the registry's versions at this run's start (NULL
+  # last: the registry does not list it), for `complete?/0`.
   defp store_candidates(rows, generation) do
     rows
     |> Enum.chunk_every(1_000)
     |> Enum.each(fn chunk ->
       Repo.insert_all(
         "catalog_module_index_candidates",
-        Enum.map(chunk, fn [name, version, _] ->
-          %{package: name, version: version, generation: generation}
+        Enum.map(chunk, fn [name, last, stable, _, _] ->
+          %{package: name, version: last, stable: stable, generation: generation}
         end),
-        on_conflict: {:replace, [:version, :generation]},
+        on_conflict: {:replace, [:version, :stable, :generation]},
         conflict_target: [:package]
       )
     end)
@@ -328,13 +368,20 @@ defmodule Portal.Catalog.ModuleIndex do
     concurrency =
       opts |> Keyword.get(:concurrency, @max_concurrency) |> min(@max_concurrency) |> max(1)
 
+    reader = %{
+      tarball: tarball,
+      checksum: checksum,
+      read: Keyword.get(opts, :read, &Compatibility.HexModules.read/2),
+      big: Keyword.get(opts, :big_parse_bytes, @big_parse_bytes)
+    }
+
     rows
     |> Task.async_stream(
-      fn [name, version, indexed] ->
+      fn [name, last, stable, _il, _is] = row ->
         cond do
           superseded?(generation) -> :superseded
-          version == indexed -> confirm(name, version, generation)
-          true -> index_release(name, version, generation, tarball, checksum)
+          indexed?(row) -> confirm(name, last, stable, generation)
+          true -> index_release(name, {last, stable}, releases(row), generation, reader)
         end
       end,
       max_concurrency: concurrency,
@@ -361,6 +408,7 @@ defmodule Portal.Catalog.ModuleIndex do
         SELECT count(*) FROM catalog_module_index_packages i
         JOIN catalog_module_index_candidates c ON c.package = i.package
         WHERE i.package = ANY($1) AND i.generation = $2 AND i.version = c.version
+          AND i.stable IS NOT DISTINCT FROM c.stable
         """,
         [names, generation]
       )
@@ -408,7 +456,7 @@ defmodule Portal.Catalog.ModuleIndex do
     %{rows: rows} =
       Repo.query!(
         """
-        SELECT p.name, i.version
+        SELECT p.name, i.version, i.stable
         FROM catalog_packages p
         LEFT JOIN catalog_module_index_packages i ON i.package = p.name
         WHERE coalesce(p.hex_downloads_recent, 0) >= $1
@@ -418,7 +466,10 @@ defmodule Portal.Catalog.ModuleIndex do
         [@min_recent, limit]
       )
 
-    for [name, indexed] <- rows, do: [name, Map.get(latest, name), indexed]
+    for [name, il, is] <- rows do
+      {last, stable} = Map.get(latest, name, {nil, nil})
+      [name, last, stable, il, is]
+    end
   end
 
   defp below_threshold do
@@ -433,14 +484,17 @@ defmodule Portal.Catalog.ModuleIndex do
 
   # Indexed already at this release: confirmed in this generation, with the
   # module names of builds made since added.
-  defp confirm(name, version, generation) do
+  defp confirm(name, version, stable, generation) do
     {:ok, :ok} =
       Repo.transaction(fn ->
         insert_definers(name, manifest_modules(name))
 
         Repo.query!(
-          "UPDATE catalog_module_index_packages SET generation = $3 WHERE package = $1 AND version = $2",
-          [name, version, generation]
+          """
+          UPDATE catalog_module_index_packages SET generation = $3
+          WHERE package = $1 AND version = $2 AND stable IS NOT DISTINCT FROM $4
+          """,
+          [name, version, generation, stable]
         )
 
         :ok
@@ -449,22 +503,46 @@ defmodule Portal.Catalog.ModuleIndex do
     :unchanged
   end
 
-  defp index_release(name, version, generation, tarball, checksum) do
-    with {:ok, bytes} <- tarball.(name, version),
-         {:ok, sum} <- checksum.(name, version),
-         true <- :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == sum,
-         {:ok, %{modules: modules, app: app}} <-
-           Compatibility.HexModules.read(bytes, max_tarball: @max_tarball_bytes) do
-      store(name, version, generation, app, Enum.uniq(modules ++ manifest_modules(name)))
-    else
-      why ->
+  # Every release of `releases` read and checked, one after another, the
+  # union of their modules stored under `{last, stable}`; any release that
+  # cannot be read leaves the package as it was (`:failed`).
+  defp index_release(name, {last, stable}, releases, generation, reader) do
+    read =
+      Enum.reduce_while(releases, {:ok, [], nil}, fn version, {:ok, acc, app} ->
+        case read_release(name, version, reader) do
+          {:ok, %{modules: modules, app: found}} -> {:cont, {:ok, modules ++ acc, app || found}}
+          why -> {:halt, {version, why}}
+        end
+      end)
+
+    case read do
+      {:ok, modules, app} ->
+        store(name, {last, stable}, generation, app, Enum.uniq(modules ++ manifest_modules(name)))
+
+      {version, why} ->
         Logger.warning("module index: #{name} #{version} not indexed: #{inspect(why, limit: 5)}")
         :failed
     end
   rescue
     e ->
-      Logger.warning("module index: #{name} #{version} not indexed: #{Exception.message(e)}")
+      Logger.warning("module index: #{name} not indexed: #{Exception.message(e)}")
       :failed
+  end
+
+  # A tarball larger than `big_parse_bytes` compressed is parsed while no
+  # other large one is (a node-local lock): aws's 4.9 MB tarball parses at
+  # about 230 MB, so four at once could near 1 GB on the web host; smaller
+  # ones go on at up to `max_concurrency/0` at once.
+  defp read_release(name, version, reader) do
+    with {:ok, bytes} <- reader.tarball.(name, version),
+         {:ok, sum} <- reader.checksum.(name, version),
+         true <- :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == sum do
+      parse = fn -> reader.read.(bytes, max_tarball: @max_tarball_bytes) end
+
+      if byte_size(bytes) > reader.big,
+        do: :global.trans({{__MODULE__, :big_parse}, self()}, parse, [node()]),
+        else: parse.()
+    end
   end
 
   # The module names our passing builds of the package wrote (R3-5b), any
@@ -491,7 +569,7 @@ defmodule Portal.Catalog.ModuleIndex do
         do: Path.basename(path, ".beam")
   end
 
-  defp store(name, version, generation, app, modules) do
+  defp store(name, {version, stable}, generation, app, modules) do
     {:ok, :ok} =
       Repo.transaction(fn ->
         Repo.query!("DELETE FROM catalog_module_definers WHERE package = $1", [name])
@@ -499,13 +577,14 @@ defmodule Portal.Catalog.ModuleIndex do
 
         Repo.query!(
           """
-          INSERT INTO catalog_module_index_packages (package, version, modules, refreshed_at, generation, app)
-          VALUES ($1, $2, $3, now(), $4, $5)
+          INSERT INTO catalog_module_index_packages
+            (package, version, stable, modules, refreshed_at, generation, app)
+          VALUES ($1, $2, $6, $3, now(), $4, $5)
           ON CONFLICT (package) DO UPDATE
-          SET version = EXCLUDED.version, modules = EXCLUDED.modules, refreshed_at = now(),
-              generation = EXCLUDED.generation, app = EXCLUDED.app
+          SET version = EXCLUDED.version, stable = EXCLUDED.stable, modules = EXCLUDED.modules,
+              refreshed_at = now(), generation = EXCLUDED.generation, app = EXCLUDED.app
           """,
-          [name, version, length(modules), generation, app]
+          [name, version, length(modules), generation, app, stable]
         )
 
         :ok
