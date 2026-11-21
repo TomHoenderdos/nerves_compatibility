@@ -198,8 +198,10 @@ defmodule PortalWeb.PrecompiledRelocatedClientE2ETest do
     builder = project!(Path.join(base, "builder"), ~s([{:fine, "== 0.2.0"}]))
     mix!(builder, ["deps.get"], env)
     mix!(builder, ["deps.compile", "fine"], env)
-    {:ok, lock} = File.read(Path.join(builder, "mix.lock"))
-    {%{fine: {:hex, :fine, "0.2.0", _inner, _, _, "hexpm", outer}}, _} = Code.eval_string(lock)
+    lock = File.read!(Path.join(builder, "mix.lock"))
+
+    %{fine: {:hex, :fine, "0.2.0", _inner, _, _, "hexpm", outer}} =
+      Mix.Dep.Lock.read(Path.join(builder, "mix.lock"))
 
     # Moved to the worker's first root, as the worker's compile there writes it.
     first = Relocation.first_root()
