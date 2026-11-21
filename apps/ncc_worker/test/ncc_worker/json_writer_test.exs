@@ -447,6 +447,49 @@ defmodule NccWorker.JsonWriterTest do
       refute Map.has_key?(decoded["systems"]["nerves_system_bbb"], "rebar3_plugins")
     end
 
+    test "writes a firmware system's judge, and omits the key without one" do
+      dir = Path.join(System.tmp_dir!(), "jw_judge_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      system = %{
+        status: :pass,
+        duration_sec: 1.0,
+        firmware_size_bytes: 1,
+        log_tail: "",
+        error: nil
+      }
+
+      judge = %{
+        status: "skipped",
+        reason: "rebar3 build runs plugins",
+        classes: ["plugins_hooks"]
+      }
+
+      result = %{
+        run_id: "r",
+        package: %{name: "pkg", version: "1.0.0"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{
+          "nerves_system_rpi4" => Map.put(system, :firmware_judge, judge),
+          "nerves_system_bbb" => system
+        },
+        finished_at: "2026-11-21T00:00:00Z"
+      }
+
+      assert :ok = JsonWriter.write_result(dir, result)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["systems"]["nerves_system_rpi4"]["firmware_judge"] == %{
+               "status" => "skipped",
+               "reason" => "rebar3 build runs plugins",
+               "classes" => ["plugins_hooks"]
+             }
+
+      refute Map.has_key?(decoded["systems"]["nerves_system_bbb"], "firmware_judge")
+    end
+
     test "writes a firmware system's deterministic sibling, and omits the key without one" do
       dir = Path.join(System.tmp_dir!(), "jw_det_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)

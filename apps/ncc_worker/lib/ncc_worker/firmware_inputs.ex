@@ -105,12 +105,36 @@ defmodule NccWorker.FirmwareInputs do
   its optional dependencies, or publishes variants, was compiled against
   another closure than the run's, which the trace compiles. Anything that
   does not hold leaves the target as it was, without `compile_inputs`, and
-  a client refuses its build as before. Statuses, firmware images and files
-  never change.
+  a client refuses its build as before. Statuses and firmware images never
+  change.
+
+  ## The firmware judge (stream S8)
+
+  With `ctx.judge` (`judge_enabled?/1`: on unless `NCC_INPUT.firmware_judge`
+  is `false` or the worker's `NCC_FIRMWARE_JUDGE` is `"0"`) every such
+  target is traced, whatever its package reads, and its verdict is kept as
+  the target's `firmware_judge`: `%{status, reason, classes}`.
+
+    * `"pass"`: the trace passed and its beams bind; the files publish.
+    * `"skipped"`: the verdict refused for a probe, a rebar3 plugin or hook,
+      or a dependency's taint by one (`NccWorker.FirmwareJudge.classes/1`,
+      listed in `classes`), whether or not the beams bind: the target's own
+      `footprint.file_manifest` is removed, so nothing of it is archived or
+      published, as `NccWorker.FirmwareBuildRoot` withholds a baked build
+      path.
+    * `"unjudged"`: any other refusal, no verdict (the trace did not run or
+      finish, the beams do not bind, the run's or the judge's budget is
+      spent), or a target built against another closure; the files
+      publish, as every firmware target's did before.
+
+  `compile_inputs` are still recorded only for a package whose `lib/` reads
+  the environment at module level. A target the judge alone traces starts
+  only within its own budget (NCC_FIRMWARE_JUDGE_BUDGET_SEC, default 1800 s
+  from the pass's start).
   """
 
   alias Compatibility.CompileInputs
-  alias NccWorker.{BeamScan, HexHome, Portability, TargetScan, Tracer}
+  alias NccWorker.{BeamScan, FirmwareJudge, HexHome, Portability, TargetScan, Tracer}
   alias NccWorker.FirmwareInputs.LayoutNotRestored
 
   @env_task :"Elixir.Mix.Tasks.Ncc.NervesEnv"
@@ -127,11 +151,15 @@ defmodule NccWorker.FirmwareInputs do
   (the target's build env); `releases`, `trees` and `started_at` are the
   run's lock snapshot, tree snapshot and start (monotonic seconds);
   `work_dir` and `log_dir` where it writes; `enabled` (default true)
-  is `enabled?/1` of the run's input; `hex_home` (default this VM's
-  `HEX_HOME`) the Hex cache holding the run's tarballs.
+  is `enabled?/1` of the run's input; `judge` (default false) is
+  `judge_enabled?/1` of it, and `judge_budget_sec` the judge's own budget;
+  `hex_home` (default this VM's `HEX_HOME`) the Hex cache holding the run's
+  tarballs.
   """
   @type ctx :: %{
           optional(:enabled) => boolean(),
+          optional(:judge) => boolean(),
+          optional(:judge_budget_sec) => non_neg_integer(),
           optional(:hex_home) => String.t() | nil,
           project_dir: String.t(),
           package: String.t(),
@@ -145,36 +173,84 @@ defmodule NccWorker.FirmwareInputs do
 
   @doc """
   Puts `compile_inputs` and `compile_env` on every target of `systems` they
-  could be recorded for. Returns the systems and one line per target tried,
-  for the run's log, or `{:error, {:firmware_inputs_layout_not_restored,
-  why}}` when a target's dirs could not be put back after its trace
-  (`in_build_layout/4`) or its trace left processes running that may still
-  write them: the run fails (exit 10) rather than publish from a project its
-  build did not leave. `record` (default `record/4`) is for tests.
+  could be recorded for, and, with `ctx.judge`, the target's
+  `firmware_judge` (`NccWorker.FirmwareJudge`). Returns the systems and one
+  line per target tried, for the run's log, or `{:error,
+  {:firmware_inputs_layout_not_restored, why}}` when a target's dirs could
+  not be put back after its trace (`in_build_layout/4`) or its trace left
+  processes running that may still write them: the run fails (exit 10)
+  rather than publish from a project its build did not leave. `record`
+  (default `record/4`) is for tests.
   """
   @spec put(%{String.t() => map()}, ctx(), keyword()) ::
           {%{String.t() => map()}, [String.t()]}
           | {:error, {:firmware_inputs_layout_not_restored, String.t()}}
   def put(systems, ctx, opts \\ []) do
     record = Keyword.get(opts, :record, &record/4)
+    judge? = Map.get(ctx, :judge, false) == true and judge_enabled?(%{})
 
-    eligible =
+    passing =
       for {name, result} <- Enum.sort(systems),
-          eligible?(result),
+          published_pass?(result),
           {:ok, target_env} <- [Map.fetch(ctx.targets, name)],
-          do: {name, target_env}
+          do: {name, target_env, eligible?(result)}
 
-    if eligible == [] or not enabled?(%{firmware_inputs: Map.get(ctx, :enabled, true)}) or
-         not env_reads?(Path.join([ctx.project_dir, "deps", ctx.package])) do
+    reader? =
+      passing != [] and enabled?(%{firmware_inputs: Map.get(ctx, :enabled, true)}) and
+        env_reads?(Path.join([ctx.project_dir, "deps", ctx.package]))
+
+    if passing == [] or not (judge? or reader?) do
       {systems, []}
     else
-      Enum.reduce(eligible, {systems, []}, fn {name, target_env}, {acc, lines} ->
-        {acc, line} = put_one(acc, name, try_one(record, name, target_env, ctx, acc[name]))
-        {acc, lines ++ [line]}
+      how = %{reader?: reader?, judge?: judge?, deadline: judge_deadline(ctx)}
+
+      Enum.reduce(passing, {systems, []}, fn {name, target_env, eligible?}, {acc, lines} ->
+        {acc, new_lines} = put_target(acc, name, target_env, eligible?, {record, ctx, how})
+        {acc, lines ++ new_lines}
       end)
     end
   rescue
     e in LayoutNotRestored -> {:error, {:firmware_inputs_layout_not_restored, e.message}}
+  end
+
+  # A target the run's `deps/` did not build (optional deps kept, variants
+  # published): its inputs are never recorded, and the judge cannot speak
+  # for it.
+  defp put_target(systems, name, _target_env, false, {_record, _ctx, %{judge?: true}}),
+    do: unjudged(systems, name, "closure differs from the run's")
+
+  defp put_target(systems, _name, _target_env, false, _how), do: {systems, []}
+
+  defp put_target(systems, name, target_env, true, {record, ctx, how}) do
+    if how.reader? or System.monotonic_time(:second) < how.deadline do
+      outcome = try_one(record, name, target_env, ctx, systems[name])
+      put_one(systems, name, outcome, how)
+    else
+      unjudged(systems, name, "firmware judge budget spent")
+    end
+  end
+
+  # The judge's own budget for the targets it alone traces (an env-reading
+  # package's are traced for their inputs as before):
+  # `ctx.judge_budget_sec`, else NCC_FIRMWARE_JUDGE_BUDGET_SEC, default
+  # 1800 s from the pass's start.
+  @judge_budget_sec 1800
+
+  defp judge_deadline(ctx) do
+    budget =
+      case Map.fetch(ctx, :judge_budget_sec) do
+        {:ok, n} when is_integer(n) and n >= 0 -> n
+        _ -> env_budget()
+      end
+
+    System.monotonic_time(:second) + budget
+  end
+
+  defp env_budget do
+    case Integer.parse(System.get_env("NCC_FIRMWARE_JUDGE_BUDGET_SEC", "")) do
+      {n, ""} when n >= 0 -> n
+      _ -> @judge_budget_sec
+    end
   end
 
   defp try_one(record, name, target_env, ctx, result) do
@@ -203,23 +279,104 @@ defmodule NccWorker.FirmwareInputs do
   def enabled?(input) when is_map(input),
     do: Map.get(input, :firmware_inputs) != false and System.get_env("NCC_FIRMWARE_INPUTS") != "0"
 
-  defp put_one(systems, name, {:ok, %{compile_inputs: inputs, compile_env: env}})
+  @doc """
+  Whether a run with `input` judges every passing firmware target
+  (`NccWorker.FirmwareJudge`): unless its `firmware_judge` is `false` (the
+  portal's `NCC_FIRMWARE_JUDGE=0`) or the worker's own `NCC_FIRMWARE_JUDGE`
+  is `"0"`. An input without the key is on.
+  """
+  @spec judge_enabled?(map()) :: boolean()
+  def judge_enabled?(input) when is_map(input),
+    do: Map.get(input, :firmware_judge) != false and System.get_env("NCC_FIRMWARE_JUDGE") != "0"
+
+  defp put_one(systems, name, {:ok, %{compile_inputs: inputs, compile_env: env}}, how)
        when is_list(inputs) do
-    result = Map.merge(systems[name], %{compile_inputs: inputs, compile_env: env})
-    {Map.put(systems, name, result), "Compile inputs of #{name} recorded"}
+    {systems, inputs_lines} =
+      if how.reader?,
+        do:
+          {Map.update!(
+             systems,
+             name,
+             &Map.merge(&1, %{compile_inputs: inputs, compile_env: env})
+           ), ["Compile inputs of #{name} recorded"]},
+        else: {systems, []}
+
+    {systems, judge_lines} = judged(systems, name, how, {"pass", nil, []})
+    {systems, inputs_lines ++ judge_lines}
   end
 
-  defp put_one(systems, name, {:error, why}),
-    do: {systems, "Compile inputs of #{name} not recorded: #{why}"}
+  defp put_one(systems, name, {:skip, reason, texts}, how) do
+    lines = not_recorded(name, reason, how)
 
-  defp put_one(systems, name, _other),
-    do: {systems, "Compile inputs of #{name} not recorded: no inputs"}
+    {systems, judge_lines} =
+      case FirmwareJudge.classes(texts) do
+        [] -> judged(systems, name, how, {"unjudged", reason, []})
+        classes -> judged(systems, name, how, {"skipped", reason, classes})
+      end
+
+    {systems, lines ++ judge_lines}
+  end
+
+  defp put_one(systems, name, {:error, why}, how) do
+    {systems, judge_lines} = judged(systems, name, how, {"unjudged", why, []})
+    {systems, not_recorded(name, why, how) ++ judge_lines}
+  end
+
+  defp put_one(systems, name, _other, how) do
+    {systems, judge_lines} = judged(systems, name, how, {"unjudged", "no inputs", []})
+    {systems, not_recorded(name, "no inputs", how) ++ judge_lines}
+  end
+
+  defp not_recorded(name, why, %{reader?: true}),
+    do: ["Compile inputs of #{name} not recorded: #{why}"]
+
+  defp not_recorded(_name, _why, _how), do: []
+
+  defp judged(systems, _name, %{judge?: false}, _verdict), do: {systems, []}
+
+  defp judged(systems, name, _how, {"pass", nil, []}) do
+    {put_judge(systems, name, "pass", nil, []), ["Firmware judge of #{name}: pass"]}
+  end
+
+  defp judged(systems, name, _how, {"unjudged", why, []}), do: unjudged(systems, name, why)
+
+  # A refusal in a firmware channel withholds the target's own files, as R2
+  # does (`NccWorker.FirmwareBuildRoot`): its `footprint.file_manifest` goes,
+  # its status, firmware image and log stay.
+  defp judged(systems, name, _how, {"skipped", reason, classes}) do
+    systems =
+      systems
+      |> put_judge(name, "skipped", reason, classes)
+      |> Map.update!(name, &withhold/1)
+
+    {systems,
+     ["Files of #{name} not published: firmware judge (#{Enum.join(classes, ", ")}): #{reason}"]}
+  end
+
+  defp unjudged(systems, name, why) do
+    {put_judge(systems, name, "unjudged", why, []),
+     ["Firmware judge of #{name}: unjudged (#{why})"]}
+  end
+
+  defp put_judge(systems, name, status, reason, classes) do
+    Map.update!(
+      systems,
+      name,
+      &Map.put(&1, :firmware_judge, %{status: status, reason: reason, classes: classes})
+    )
+  end
+
+  defp withhold(%{beam_scan: %{"footprint" => footprint} = scan} = result) do
+    %{result | beam_scan: Map.put(scan, "footprint", Map.delete(footprint, "file_manifest"))}
+  end
 
   # A passing target that publishes its own first build and nothing else.
   defp eligible?(result) do
-    result[:status] in [:pass, "pass"] and published?(result[:beam_scan]) and
-      result[:deps_lock] == nil and List.wrap(result[:published_variants]) == []
+    result[:deps_lock] == nil and List.wrap(result[:published_variants]) == []
   end
+
+  defp published_pass?(result),
+    do: result[:status] in [:pass, "pass"] and published?(result[:beam_scan])
 
   defp published?(%{"footprint" => %{"file_manifest" => %{}}}), do: true
   defp published?(_scan), do: false
@@ -250,15 +407,19 @@ defmodule NccWorker.FirmwareInputs do
   end
 
   @doc """
-  Records one target's inputs: `{:ok, %{compile_inputs, compile_env}}`, or
-  `{:error, why}` when any step does not hold. `result` is the target's
+  Records one target's inputs: `{:ok, %{compile_inputs, compile_env}}`,
+  `{:skip, reason, texts}` when the trace's verdict refused (its texts,
+  `NccWorker.FirmwareJudge.texts/1`, whether or not the beams bind), or
+  `{:error, why}` when any other step does not hold. `result` is the target's
   system result. Raises only `LayoutNotRestored` (`in_build_layout/4`, or a
   trace that left processes running), which `put/3` returns as the run's
   error. `nerves_env:` and `target_inputs:` (tests) replace step 1 and
   `NccWorker.Portability.target_inputs/3`.
   """
   @spec record(String.t(), {String.t(), list()}, ctx(), map(), keyword()) ::
-          {:ok, %{compile_inputs: [map()], compile_env: [map()]}} | {:error, String.t()}
+          {:ok, %{compile_inputs: [map()], compile_env: [map()]}}
+          | {:skip, String.t(), [String.t()]}
+          | {:error, String.t()}
   def record(name, target_env, ctx, result, opts \\ [])
 
   # The run's own work dir.
@@ -483,6 +644,9 @@ defmodule NccWorker.FirmwareInputs do
     case verdict do
       %{status: :pass, compile_inputs: inputs, compile_env: env} when is_list(inputs) ->
         {:ok, %{compile_inputs: inputs, compile_env: env || []}}
+
+      %{status: :skip, reason: reason} ->
+        {:skip, reason || "not judged", FirmwareJudge.texts(verdict)}
 
       %{reason: reason} ->
         {:error, reason || "not judged"}

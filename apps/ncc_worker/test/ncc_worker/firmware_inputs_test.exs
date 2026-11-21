@@ -160,6 +160,193 @@ defmodule NccWorker.FirmwareInputsTest do
     end
   end
 
+  describe "put/3 with the firmware judge" do
+    @plain "defmodule Pkg do\n  def x, do: System.get_env(\"X\")\nend\n"
+    @probe "compile-time probe of whether a module is loaded: Jason"
+
+    defp judging(ctx, extra \\ %{}), do: ctx |> Map.put(:judge, true) |> Map.merge(extra)
+
+    defp withheld?(result), do: not Map.has_key?(result.beam_scan["footprint"], "file_manifest")
+
+    test "traces a package that reads no env; a pass records the judge, not inputs",
+         %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @plain)
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+
+      {systems, lines} =
+        FirmwareInputs.put(%{"rpi4" => pass()}, judging(ctx(proj, ["rpi4"])), record: record)
+
+      assert_received {:recorded, "rpi4", _}
+      result = systems["rpi4"]
+      assert result.firmware_judge == %{status: "pass", reason: nil, classes: []}
+      refute Map.has_key?(result, :compile_inputs)
+      refute withheld?(result)
+      assert lines == ["Firmware judge of rpi4: pass"]
+    end
+
+    test "an env-reading package gets its inputs and the judge", %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @module_read)
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+
+      {systems, lines} =
+        FirmwareInputs.put(%{"rpi4" => pass()}, judging(ctx(proj, ["rpi4"])), record: record)
+
+      assert %{compile_inputs: @inputs, firmware_judge: %{status: "pass"}} = systems["rpi4"]
+
+      assert lines == [
+               "Compile inputs of rpi4 recorded",
+               "Firmware judge of rpi4: pass"
+             ]
+    end
+
+    test "a probe, plugin or hook refusal withholds the target's files, its status kept",
+         %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @module_read)
+
+      for {texts, classes} <- [
+            {["portability could not be judged", "pkg: " <> @probe], ["probe"]},
+            {["rebar3 build runs plugins"], ["plugins_hooks"]},
+            {["closure dependency observed the host: crc32cer (rebar3 build runs pre_hooks)"],
+             ["taint"]}
+          ] do
+        record = recorder(self(), {:skip, hd(texts), texts})
+
+        {systems, lines} =
+          FirmwareInputs.put(%{"rpi4" => pass()}, judging(ctx(proj, ["rpi4"])), record: record)
+
+        result = systems["rpi4"]
+        assert result.status == :pass
+        assert withheld?(result), inspect(texts)
+        refute Map.has_key?(result, :compile_inputs)
+        assert result.firmware_judge == %{status: "skipped", reason: hd(texts), classes: classes}
+
+        assert lines == [
+                 "Compile inputs of rpi4 not recorded: #{hd(texts)}",
+                 "Files of rpi4 not published: firmware judge (#{Enum.join(classes, ", ")}): " <>
+                   hd(texts)
+               ]
+      end
+    end
+
+    test "any other refusal, or no verdict, leaves the files and records unjudged",
+         %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @plain)
+
+      for {outcome, reason} <- [
+            {{:skip, "compile-time host read: os:getenv/1 (HOME)",
+              ["compile-time host read: os:getenv/1 (HOME)"]},
+             "compile-time host read: os:getenv/1 (HOME)"},
+            {{:error, "the traced compile's beams differ from the published ones"},
+             "the traced compile's beams differ from the published ones"}
+          ] do
+        record = recorder(self(), outcome)
+
+        {systems, lines} =
+          FirmwareInputs.put(%{"rpi4" => pass()}, judging(ctx(proj, ["rpi4"])), record: record)
+
+        refute withheld?(systems["rpi4"])
+
+        assert systems["rpi4"].firmware_judge == %{
+                 status: "unjudged",
+                 reason: reason,
+                 classes: []
+               }
+
+        assert lines == ["Firmware judge of rpi4: unjudged (#{reason})"]
+      end
+    end
+
+    test "a target built against another closure than the run's is unjudged and not traced",
+         %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @plain)
+
+      systems = %{
+        "optional" => pass(%{deps_lock: %{"x" => %{}}}),
+        "variants" => pass(%{published_variants: [%{variant: "without"}]}),
+        "failed" => %{status: :fail, beam_scan: @manifest},
+        "withheld" => %{status: :pass, beam_scan: %{"footprint" => %{}}}
+      }
+
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+
+      {out, lines} =
+        FirmwareInputs.put(systems, judging(ctx(proj, Map.keys(systems))), record: record)
+
+      refute_received {:recorded, _, _}
+
+      for name <- ["optional", "variants"] do
+        assert out[name].firmware_judge ==
+                 %{status: "unjudged", reason: "closure differs from the run's", classes: []}
+      end
+
+      assert out["failed"] == systems["failed"]
+      assert out["withheld"] == systems["withheld"]
+      assert length(lines) == 2
+    end
+
+    test "the judge's own budget leaves the rest unjudged; an env reader's inputs are still tried",
+         %{tmp_dir: tmp_dir} do
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+      spent = %{judge_budget_sec: 0}
+
+      plain = project(Path.join(tmp_dir, "plain"), @plain)
+
+      {systems, lines} =
+        FirmwareInputs.put(%{"rpi4" => pass()}, judging(ctx(plain, ["rpi4"]), spent),
+          record: record
+        )
+
+      refute_received {:recorded, _, _}
+
+      assert systems["rpi4"].firmware_judge ==
+               %{status: "unjudged", reason: "firmware judge budget spent", classes: []}
+
+      assert lines == ["Firmware judge of rpi4: unjudged (firmware judge budget spent)"]
+
+      reader = project(Path.join(tmp_dir, "reader"), @module_read)
+
+      {systems, _lines} =
+        FirmwareInputs.put(%{"rpi4" => pass()}, judging(ctx(reader, ["rpi4"]), spent),
+          record: record
+        )
+
+      assert_received {:recorded, "rpi4", _}
+      assert %{compile_inputs: @inputs, firmware_judge: %{status: "pass"}} = systems["rpi4"]
+    end
+
+    test "with the inputs pass off, an env reader is judged but records no inputs",
+         %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @module_read)
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+      ctx = judging(ctx(proj, ["rpi4"]), %{enabled: false})
+
+      {systems, lines} = FirmwareInputs.put(%{"rpi4" => pass()}, ctx, record: record)
+
+      refute Map.has_key?(systems["rpi4"], :compile_inputs)
+      assert systems["rpi4"].firmware_judge.status == "pass"
+      assert lines == ["Firmware judge of rpi4: pass"]
+    end
+
+    test "the judge off leaves a package that reads no env untraced", %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @plain)
+      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+      ctx = Map.put(ctx(proj, ["rpi4"]), :judge, false)
+
+      assert FirmwareInputs.put(%{"rpi4" => pass()}, ctx, record: record) ==
+               {%{"rpi4" => pass()}, []}
+
+      refute_received {:recorded, _, _}
+    end
+  end
+
+  # `NCC_INPUT.firmware_judge: false` is the portal's rollback of the judge;
+  # an older portal sends nothing, which is on.
+  test "judge_enabled?/1 is on unless the input or the worker's env turns it off" do
+    assert FirmwareInputs.judge_enabled?(%{})
+    assert FirmwareInputs.judge_enabled?(%{firmware_judge: true})
+    refute FirmwareInputs.judge_enabled?(%{firmware_judge: false})
+  end
+
   test "a target whose dirs could not be put back fails the run", %{tmp_dir: tmp_dir} do
     proj = project(tmp_dir, @module_read)
     systems = %{"rpi3" => pass(), "rpi4" => pass()}
@@ -497,6 +684,38 @@ defmodule NccWorker.FirmwareInputsTest do
       assert which(c.proj, "_build/rpi4") == {:ok, "build"}
     end
 
+    # A refusal is evidence whether or not the beams bind: the judge's
+    # texts come back for `put/3` to class.
+    test "a refused trace returns its reason and texts, the project put back", c do
+      toolchain = Path.join([c.tmp_dir, "artifacts", "nerves_toolchain_fx-1.0.0"])
+      File.mkdir_p!(toolchain)
+      nerves_env = fn _proj, _env, _dir -> {:ok, [{"NERVES_TOOLCHAIN", toolchain}]} end
+      ctx = %{ctx(c.proj, []) | work_dir: c.tmp_dir, log_dir: c.tmp_dir}
+
+      refused = fn _proj, _package, _opts ->
+        %{
+          status: :skip,
+          reason: "rebar3 build runs plugins",
+          observations: %{
+            "problems" => ["pkg: compile-time probe of whether a module is loaded: X"]
+          }
+        }
+      end
+
+      assert FirmwareInputs.record("rpi4", {"rpi4", c.env}, ctx, pass(),
+               nerves_env: nerves_env,
+               target_inputs: refused
+             ) ==
+               {:skip, "rebar3 build runs plugins",
+                [
+                  "rebar3 build runs plugins",
+                  "pkg: compile-time probe of whether a module is loaded: X"
+                ]}
+
+      assert which(c.proj, "deps/pkg") == {:ok, "run"}
+      assert which(c.proj, "_build/rpi4") == {:ok, "build"}
+    end
+
     # The trace builds into the published build's own paths, so a process it
     # left running that the tracer could not kill (a writer on
     # `_build/<target>` or `deps_<target>`) would write into the published
@@ -537,7 +756,7 @@ defmodule NccWorker.FirmwareInputsTest do
         if left_running? do
           assert_raise FirmwareInputs.LayoutNotRestored, ~r/left processes running/, record
         else
-          assert {:error, _why} = record.()
+          assert {:skip, _reason, _texts} = record.()
         end
 
         assert which(c.proj, "deps/pkg") == {:ok, "run"}, inspect(error)

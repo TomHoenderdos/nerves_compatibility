@@ -120,6 +120,9 @@ defmodule NccWorker.Worker do
           # `NCC_FIRMWARE_INPUTS=0` rollback. Absent (an older portal) or
           # anything else is on.
           optional(:firmware_inputs) => boolean(),
+          # `false` turns off the firmware judge (`NccWorker.FirmwareInputs`,
+          # `judge_enabled?/1`); absent is on.
+          optional(:firmware_judge) => boolean(),
           # For "toolchain" and a firmware run (no `mode`): exactly `true`
           # also builds the deterministic sibling of the toolchain build
           # (`NccWorker.Deterministic`) or of each passing firmware target's
@@ -520,6 +523,15 @@ defmodule NccWorker.Worker do
               # rebar3 plugin releases its build ran (`NccWorker.FirmwarePlugins`),
               # each `%{"name", "version", "sha256", "owners"}`; `[]` for none.
               optional(:rebar3_plugins) => [FirmwarePlugins.release()],
+              # Only on a passing firmware system that published files when
+              # the judge ran (`NccWorker.FirmwareInputs`): the trace's verdict,
+              # `%{status: "pass" | "skipped" | "unjudged", reason, classes}`.
+              # "skipped" removed the system's `footprint.file_manifest`.
+              optional(:firmware_judge) => %{
+                status: String.t(),
+                reason: String.t() | nil,
+                classes: [String.t()]
+              },
               # Only on a passing firmware target that publishes its own
               # build, in a run asked for `deterministic: true`
               # (`NccWorker.FirmwareDeterministic`): the build's deterministic
@@ -1145,6 +1157,7 @@ defmodule NccWorker.Worker do
       known_system_abi: List.wrap(input[:known_system_abi]),
       firmware_world: input[:firmware_world],
       firmware_inputs: FirmwareInputs.enabled?(input),
+      firmware_judge: FirmwareInputs.judge_enabled?(input),
       deterministic: Deterministic.requested?(input),
       releases: releases,
       trees: trees
@@ -1716,7 +1729,8 @@ defmodule NccWorker.Worker do
         started_at: pass.started_at,
         work_dir: pass.paths.work_dir,
         log_dir: Path.join(pass.paths.output_dir, "logs"),
-        enabled: Map.get(pass, :firmware_inputs, true)
+        enabled: Map.get(pass, :firmware_inputs, true),
+        judge: Map.get(pass, :firmware_judge, true)
       },
       opts
     )

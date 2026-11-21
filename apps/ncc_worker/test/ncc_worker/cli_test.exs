@@ -27,6 +27,19 @@ defmodule NccWorker.CLITest do
     end
   end
 
+  # `firmware_judge: false` is the portal's rollback of the firmware judge
+  # (`NccWorker.FirmwareInputs`); an older portal sends nothing, which is on.
+  test "parse_input/1 reads firmware_judge, and its absence is on" do
+    assert {:ok, input} = CLI.parse_input(~s({"run_id":"r1","firmware_judge":false}))
+    assert %{firmware_judge: false} = input
+    refute NccWorker.FirmwareInputs.judge_enabled?(input)
+
+    for json <- [~s({"run_id":"r1"}), ~s({"run_id":"r1","firmware_judge":true})] do
+      assert {:ok, input} = CLI.parse_input(json)
+      assert NccWorker.FirmwareInputs.judge_enabled?(input), json
+    end
+  end
+
   # A toolchain build is queued per optional-deps variant: "include" runs the
   # optional dependencies pass, "exclude" builds without it.
   test "parse_input/1 keeps the optional_deps variant" do

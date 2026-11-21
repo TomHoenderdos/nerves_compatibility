@@ -152,6 +152,8 @@ defmodule NccWorker.JsonWriter do
   # siblings (`NccWorker.FirmwareDeterministic`). `rebar3_plugins` only on a
   # passing firmware target whose deps dir was read
   # (`NccWorker.FirmwarePlugins`), `[]` when it installed none.
+  # `firmware_judge` only on a passing firmware target that published files
+  # when the judge ran (`NccWorker.FirmwareInputs`).
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
     [
@@ -165,7 +167,8 @@ defmodule NccWorker.JsonWriter do
       :toolchain,
       :otp_full,
       :system_libs,
-      :rebar3_plugins
+      :rebar3_plugins,
+      :firmware_judge
     ]
     |> Enum.reduce(base_system_result(system_result), fn key, json ->
       put_present(json, key, Map.get(system_result, key))
