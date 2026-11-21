@@ -500,6 +500,8 @@ defmodule Portal.Catalog.ModuleIndex do
   def withheld_reason(generation),
     do: "declared-absent probe collides (module index generation #{generation})"
 
+  # The table and column names come from @recheck_kinds, never from input.
+  # sobelow_skip ["SQL.Query"]
   defp served_with_records(table, served) do
     %{rows: rows} =
       Repo.query!(
@@ -541,6 +543,8 @@ defmodule Portal.Catalog.ModuleIndex do
         )
   end
 
+  # The table and column names come from @recheck_kinds, never from input.
+  # sobelow_skip ["SQL.Query"]
   defp withhold_row({kind, id, refusal}, generation, reason) do
     {^kind, table, _served, at, reason_col} = List.keyfind(@recheck_kinds, kind, 0)
     set = if reason_col, do: "#{at} = now(), #{reason_col} = $2", else: "#{at} = now()"
@@ -576,6 +580,8 @@ defmodule Portal.Catalog.ModuleIndex do
     counts
   end
 
+  # The table and column names come from @recheck_kinds, never from input.
+  # sobelow_skip ["SQL.Query"]
   defp undo_kind({kind, table, _served, at, reason_col}, generation, reason) do
     match = if reason_col, do: "AND t.#{reason_col} = $2", else: "AND $2::text IS NOT NULL"
     clear = if reason_col, do: "#{at} = NULL, #{reason_col} = NULL", else: "#{at} = NULL"
