@@ -303,21 +303,12 @@ defmodule Compatibility.Relocation do
   @spec record_problem(term(), [String.t()]) :: String.t() | nil
   def record_problem(%{"deps" => deps, "build" => build, "files" => files} = record, ebin_paths)
       when is_list(files) and is_list(ebin_paths) do
-    first = %{"deps" => deps, "build" => build}
-    second = record["second"]
-
     cond do
       record |> Map.keys() |> Enum.sort() != @record_keys ->
         "unknown keys"
 
-      match?({:refuse, _}, valid_slots(first)) ->
-        "bad paths"
-
-      match?({:refuse, _}, valid_slots(second)) ->
-        "bad second paths"
-
-      not Enum.all?(Map.values(first) ++ Map.values(second), &printable?/1) ->
-        "a path not printable ASCII"
+      problem = roots_problem(%{"deps" => deps, "build" => build}, record["second"]) ->
+        problem
 
       files == [] or length(files) > @max_files ->
         "no files, or too many"
@@ -334,6 +325,22 @@ defmodule Compatibility.Relocation do
   end
 
   def record_problem(_record, _ebin_paths), do: "not a relocation record"
+
+  defp roots_problem(first, second) do
+    cond do
+      match?({:refuse, _}, valid_slots(first)) ->
+        "bad paths"
+
+      match?({:refuse, _}, valid_slots(second)) ->
+        "bad second paths"
+
+      not Enum.all?(Map.values(first) ++ Map.values(second), &printable?/1) ->
+        "a path not printable ASCII"
+
+      true ->
+        nil
+    end
+  end
 
   defp printable?(path), do: is_binary(path) and path =~ ~r/\A[\x20-\x7e]+\z/
 
@@ -868,9 +875,8 @@ defmodule Compatibility.Relocation do
   defp line_occurrences(data, slots, needles) do
     if contains?(data, needles) do
       with {:ok, {_head, _items, names}} <- line_table(data),
-           found =
-             for({name, j} <- Enum.with_index(names), contains?(name, needles), do: {name, j}),
-           nil <- Enum.find_value(found, fn {name, _} -> leaf_problem(name) end) do
+           found = Enum.filter(Enum.with_index(names), &contains?(elem(&1, 0), needles)),
+           nil <- Enum.find_value(found, &leaf_problem(elem(&1, 0))) do
         {:ok,
          for {name, j} <- found do
            %{
