@@ -106,15 +106,16 @@ defmodule Portal.Workers.ReleaseFastPath do
       registry
       |> Enum.filter(&changed_since?(&1, since))
       |> Drift.index()
-      |> Enum.flat_map(fn {name, %{newest: newest}} ->
-        if newest, do: [{name, newest}], else: []
-      end)
+      |> Enum.flat_map(&newest_release/1)
       |> popular()
       |> Enum.count(&queue/1)
     else
       0
     end
   end
+
+  defp newest_release({_name, %{newest: nil}}), do: []
+  defp newest_release({name, %{newest: newest}}), do: [{name, newest}]
 
   defp changed_since?(%{updated_at: %DateTime{} = at}, since),
     do: DateTime.compare(at, since) != :lt
