@@ -199,9 +199,22 @@ defmodule Portal.Workers.ReleaseFastPath do
   end
 
   # The unlock is for a connection that outlives the run; stopping it lets
-  # the lock go anyway.
+  # the lock go anyway. An unlock that does not return true means the lock's
+  # session ended during the run (an operator's pg_terminate_backend, a
+  # dropped socket) and DBConnection reconnected without it: another job may
+  # have run beside this one, by at most one share of the budget.
   defp release(conn) do
-    _ = Postgrex.query(conn, "SELECT pg_advisory_unlock($1, $2)", lock_args(), timeout: 15_000)
+    case Postgrex.query(conn, "SELECT pg_advisory_unlock($1, $2)", lock_args(), timeout: 15_000) do
+      {:ok, %{rows: [[true]]}} ->
+        :ok
+
+      other ->
+        Logger.warning(
+          "Release fast path lost its lock during the run: the unlock gave " <>
+            inspect(other, limit: 5, printable_limit: 200)
+        )
+    end
+
     GenServer.stop(conn)
   end
 

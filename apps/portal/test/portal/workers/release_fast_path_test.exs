@@ -417,6 +417,36 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert fast_path_builds() == []
     end
 
+    # Re-review H4: when the lock's session ends during a run (an operator's
+    # pg_terminate_backend, a dropped socket), DBConnection reconnects
+    # without the lock, and another job could take it. The run cannot undo
+    # that, but it says so.
+    test "a run whose lock was lost says so at the end" do
+      certifi_release([name()])
+
+      Process.put(:registry_hook, fn ->
+        Portal.Repo.query!(
+          """
+          SELECT pg_terminate_backend(pid) FROM pg_locks
+          WHERE locktype = 'advisory' AND granted AND classid = $1 AND objid = $2
+            AND objsubid = 2
+          """,
+          lock_args()
+        )
+
+        # Long enough for DBConnection to reconnect the lock's connection.
+        Process.sleep(1_500)
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, %{enqueued: 1}} =
+                   perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+        end)
+
+      assert log =~ "Release fast path lost its lock during the run"
+    end
+
     # Re-review H6: a job that finds the lock busy gives up at the same age
     # as one that carries over.
     test "a job that finds the lock busy gives up carry_over_hours after it was queued" do
