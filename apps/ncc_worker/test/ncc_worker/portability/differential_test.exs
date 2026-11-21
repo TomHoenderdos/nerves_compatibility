@@ -357,6 +357,8 @@ defmodule NccWorker.Portability.DifferentialTest do
       # build's mix.rebar.config files under its build root.
       assert opts[:project_dir] == Path.join(ctx.dir, "proj")
       assert opts[:build_root] == ctx.root
+      # Ruling 5: one wall budget for the whole check, at most 5 minutes.
+      assert opts[:budget_ms] in 10_000..300_000
       send(self(), :script_check)
       {:ok, ["gproc"]}
     end
@@ -385,6 +387,22 @@ defmodule NccWorker.Portability.DifferentialTest do
     check = fn _, _ -> {:differs, "gproc", "erl_opts differs with \"test\""} end
     v = settle(held, ctx, fn _, _, _ -> flunk("no variant build") end, script_check: check)
     assert String.starts_with?(v.reason, @plain["refusal"] <> "; gproc's rebar.config.script")
+  end
+
+  test "no time left in the run for the script check is transient", ctx do
+    held = held(ctx, [@plain], [{"gproc", "tarball"}])
+    no_check = fn _, _ -> flunk("no script check") end
+    late = System.monotonic_time(:second) - NccWorker.Tracer.run_ceiling_sec() + 20
+
+    v =
+      settle(held, ctx, fn _, _, _ -> flunk("no variant build") end,
+        script_check: no_check,
+        run_started_at: late
+      )
+
+    assert v.reason == Reasons.could_not_judge()
+    assert v.observations["trace_stats"]["differential"] == "not_finished"
+    assert Enum.any?(v.observations["problems"], &(&1 =~ "no time left for the script check"))
   end
 
   test "plain arguments with no rebar.config.script to settle them refuse", ctx do

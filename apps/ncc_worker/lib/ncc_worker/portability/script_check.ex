@@ -51,6 +51,7 @@ defmodule NccWorker.Portability.ScriptCheck do
   @max_script_bytes 1024 * 1024
   @max_out_bytes 1024 * 1024
   @timeout_sec 60
+  @default_budget_ms 5 * 60 * 1000
   # Mix task words a Mix user's command line holds that rebar3 scripts test
   # their arguments against, as rebar3 command names, and what `iex -S mix`
   # puts there (review B2).
@@ -72,7 +73,10 @@ defmodule NccWorker.Portability.ScriptCheck do
   tarball holds a `rebar.config.script`; `{:ok, apps}` names those checked.
   `opts`: `env:` and `extra_env:`, the build's, which every evaluation runs
   in; `project_dir:`, the run's project; `build_root:`, the first build's
-  `MIX_BUILD_PATH`, which holds its `mix.rebar.config` files.
+  `MIX_BUILD_PATH`, which holds its `mix.rebar.config` files; `budget_ms:`,
+  one wall budget for every evaluation together (default 5 minutes): each
+  evaluation's timeout is cut to what is left of it, and the check stops
+  with `{:error, "over its time budget ..."}` once nothing is.
   """
   @spec run([{String.t(), binary()}], keyword()) :: result()
   def run(scripts, opts) do
@@ -107,6 +111,14 @@ defmodule NccWorker.Portability.ScriptCheck do
          {:ok, elixir} <- executable("elixir") do
       literals =
         scripted |> Enum.flat_map(&elem(&1, 1)) |> Enum.uniq() |> Enum.take(@max_literals)
+
+      budget = Keyword.get(opts, :budget_ms, @default_budget_ms)
+
+      opts =
+        Keyword.merge(opts,
+          deadline: System.monotonic_time(:millisecond) + budget,
+          budget_s: div(budget, 1000)
+        )
 
       in_scratch(apps, fn paths ->
         evaluate(apps, anchors, literals, paths, {timeout, elixir}, opts)
@@ -228,8 +240,15 @@ defmodule NccWorker.Portability.ScriptCheck do
     end)
   end
 
+  defp eval(paths, exes, opts, words) do
+    case div(Keyword.fetch!(opts, :deadline) - System.monotonic_time(:millisecond), 1000) do
+      left when left >= 1 -> eval(paths, exes, opts, words, min(left, @timeout_sec))
+      _ -> {:error, "over its time budget of #{Keyword.fetch!(opts, :budget_s)} s"}
+    end
+  end
+
   # sobelow_skip ["CI.System", "Traversal.FileModule"]
-  defp eval(%{ebin: ebin, build: build, out: out}, {timeout, elixir}, opts, words) do
+  defp eval(%{ebin: ebin, build: build, out: out}, {timeout, elixir}, opts, words, seconds) do
     _ = File.rm(out)
 
     env =
@@ -238,7 +257,7 @@ defmodule NccWorker.Portability.ScriptCheck do
 
     argv = [
       "--kill-after=5",
-      "#{@timeout_sec}",
+      "#{seconds}",
       elixir,
       "-pa",
       ebin,
@@ -252,8 +271,14 @@ defmodule NccWorker.Portability.ScriptCheck do
            env: env,
            stderr_to_stdout: true
          ) do
-      {_out, 0} -> read_out(out)
-      {_out, status} -> {:error, "evaluation exited #{status}"}
+      {_out, 0} ->
+        read_out(out)
+
+      {_out, status} when status in [124, 137] ->
+        {:error, "evaluation timed out after #{seconds} s"}
+
+      {_out, status} ->
+        {:error, "evaluation exited #{status}"}
     end
   end
 

@@ -216,6 +216,16 @@ defmodule NccWorker.Portability.ScriptCheckTest do
     assert {:ok, ["fx_sc_doc", "fx_sc_tls"]} = check(ctx.first, ["fx_sc_doc", "fx_sc_tls"])
   end
 
+  # Coordinator ruling 5: the whole check has one wall budget.
+  test "a check past its time budget stops and cannot be judged", ctx do
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, "over its time budget of 0 s" <> _} =
+             check(ctx.first, ["fx_sc_eunit"], budget_ms: 1)
+
+    assert System.monotonic_time(:millisecond) - started < 30_000
+  end
+
   test "an evaluation that fails cannot be judged", ctx do
     assert {:error, "evaluation exited " <> _} = check(ctx.bad, ["fx_sc_bad"])
   end

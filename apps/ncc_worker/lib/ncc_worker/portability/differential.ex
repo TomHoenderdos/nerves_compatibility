@@ -58,8 +58,11 @@ defmodule NccWorker.Portability.Differential do
 
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.Portability.{Context, DifferentialBeams, ForeignPriv, ScriptCheck}
+  alias NccWorker.Tracer
 
   @gap_ms 1_100
+  @script_budget_ms 5 * 60 * 1000
+  @min_script_budget_ms 10_000
   @hold_problem "varied host reads wait for differential builds"
   @together "varied host reads and own priv writes are not settled together"
   @max_reads 50
@@ -166,22 +169,46 @@ defmodule NccWorker.Portability.Differential do
         {:refuse, nil, "plain_args"}
 
       true ->
-        check = Keyword.get(opts, :script_check, &ScriptCheck.run/2)
+        run_script_check(held, project_dir, opts, script_budget_ms(opts))
+    end
+  end
 
-        check_opts =
-          Keyword.take(opts, [:env, :extra_env]) ++
-            [project_dir: project_dir, build_root: first_root(held.build)]
+  # One wall budget for the whole script check (coordinator ruling 5): at
+  # most `@script_budget_ms`, and a third of what is left of the run, so the
+  # two variants keep the rest. Too little is transient: a later run has
+  # the time.
+  defp script_budget_ms(opts) do
+    cap = Keyword.get(opts, :script_budget_ms, @script_budget_ms)
 
-        case check.(held.scripts, check_opts) do
-          {:ok, _apps} ->
-            :ok
+    case Keyword.get(opts, :run_started_at) do
+      started when is_integer(started) ->
+        left = Tracer.run_ceiling_sec() - (System.monotonic_time(:second) - started)
+        min(cap, div(max(left, 0) * 1000, 3))
 
-          {:differs, app, why} ->
-            {:refuse, "#{app}'s rebar.config.script gives another config: #{why}", "plain_args"}
+      _ ->
+        cap
+    end
+  end
 
-          {:error, why} ->
-            {:unjudged, "script check: #{why}", false}
-        end
+  defp run_script_check(_held, _project_dir, _opts, budget) when budget < @min_script_budget_ms,
+    do: {:unjudged, "no time left for the script check", true}
+
+  defp run_script_check(held, project_dir, opts, budget) do
+    check = Keyword.get(opts, :script_check, &ScriptCheck.run/2)
+
+    check_opts =
+      Keyword.take(opts, [:env, :extra_env]) ++
+        [project_dir: project_dir, build_root: first_root(held.build), budget_ms: budget]
+
+    case check.(held.scripts, check_opts) do
+      {:ok, _apps} ->
+        :ok
+
+      {:differs, app, why} ->
+        {:refuse, "#{app}'s rebar.config.script gives another config: #{why}", "plain_args"}
+
+      {:error, why} ->
+        {:unjudged, "script check: #{why}", false}
     end
   end
 
