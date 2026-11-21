@@ -567,7 +567,10 @@ second build's paths, each beam is the second build's chunk for chunk but `CInf`
 the package carries `toolchain_build.relocation` (the build's `deps` and `build` paths and, per beam to rewrite, every
 occurrence). One that held only dependencies is a plain pass. `trace_stats.relocate` says `"relocated"`,
 `"dependencies"` or `"refused: <why>"`, and in the last case the verdict is the first build's refusal, unchanged. No
-judge revision: without the flag every verdict is today's, byte for byte.
+judge revision: without the flag every verdict is today's, byte for byte. The portal sends the flag while its node has
+`NCC_JUDGE_RELOCATE=1` (`Portal.Builder.judge_input/1`), and stores a pass that carries `relocation` as a skip with no
+files (`relocated build: no client rewrites its beams yet`, the record kept in `compile_observations`) until the
+manifest lists relocated builds for a client that rewrites them (elixir_precompiled `Precompiled.Relocate`).
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
