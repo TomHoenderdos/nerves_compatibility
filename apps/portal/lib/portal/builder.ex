@@ -232,10 +232,12 @@ defmodule Portal.Builder do
   while `NCC_JUDGE_MAKEFILE_RULE2=1` (`:judge_makefile_rule2`, precompiled
   judge refinements, item 1), `"foreign_priv" => true` while the
   `foreign_priv_enabled` setting is on (foreign priv spec 3.1, gate 1),
-  and `"native_side" => true` while `NCC_JUDGE_NATIVE_SIDE=1`
+  `"native_side" => true` while `NCC_JUDGE_NATIVE_SIDE=1`
   (`:judge_native_side`: a natively built dependency's native side set
   apart from its beams, and rule 2's finer target and native-tool
-  reading, `NccWorker.Portability`); nil when none, which the worker reads
+  reading, `NccWorker.Portability`), and `"relocate" => true` while
+  `NCC_JUDGE_RELOCATE=1` (`:judge_relocate`, relocatable builds,
+  `NccWorker.Portability.Relocate`); nil when none, which the worker reads
   as off. Remote builds never run
   toolchain builds, so the builder API sends none.
   """
@@ -245,6 +247,7 @@ defmodule Portal.Builder do
     |> put_on("makefile_rule2", config(:judge_makefile_rule2, false) == true)
     |> put_on("foreign_priv", Portal.Precompiled.ForeignPriv.enabled?())
     |> put_on("native_side", config(:judge_native_side, false) == true)
+    |> put_on("relocate", config(:judge_relocate, false) == true)
     |> case do
       options when map_size(options) == 0 -> nil
       options -> options

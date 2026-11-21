@@ -805,6 +805,7 @@ defmodule Portal.Catalog.Ingestion do
       result
       |> toolchain_build_map()
       |> gate_manifest()
+      |> gate_relocation()
       |> gate_config_variant(opts)
       |> gate_world_closure(opts)
       |> gate_pins(result, opts)
@@ -815,6 +816,34 @@ defmodule Portal.Catalog.Ingestion do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # S4 (`NccWorker.Portability.Relocate`): a pass whose own beams bake the
+  # deps or build path is served only rewritten to the user's own paths
+  # (`Compatibility.Relocation`), which no client does yet, so it publishes
+  # nothing: stored as a skip with no files, the worker's record kept in
+  # `compile_observations["relocation"]`. A dependent that passed because
+  # its dependency proved relocatable carries no record and is a plain pass.
+  @relocated "relocated build: no client rewrites its beams yet"
+
+  defp gate_relocation(%{"status" => "pass", "relocation" => %{} = record} = build) do
+    observations = Map.get(build, "compile_observations") || %{}
+
+    build
+    |> Map.delete("relocation")
+    |> Map.merge(%{
+      "status" => "skipped",
+      "reason" => @relocated,
+      "file_manifest" => nil,
+      "compile_env" => nil,
+      "compile_inputs" => nil,
+      "built_priv" => nil,
+      "foreign_priv" => nil,
+      "foreign_priv_rule" => nil,
+      "compile_observations" => Map.put(observations, "relocation", record)
+    })
+  end
+
+  defp gate_relocation(build), do: Map.delete(build, "relocation")
 
   # Foreign priv spec 4.2, once the build's own priv held: the archives its
   # compile wrote into kino's priv, proved again on the host

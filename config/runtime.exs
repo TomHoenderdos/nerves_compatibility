@@ -252,6 +252,13 @@ if portal_available? do
     # revision, so turning it on reopens nothing: a targeted requeue
     # rebuilds the rows it can change. Anything else, or unset, keeps it off.
     judge_native_side: if(System.get_env("NCC_JUDGE_NATIVE_SIDE") == "1", do: true),
+    # `1` sends toolchain jobs `NCC_INPUT.judge.relocate` (relocatable builds,
+    # `NccWorker.Portability.Relocate`): a build refused only for a baked
+    # deps or build path is built again at another root. A dependent that
+    # passes that way is a plain pass; a build whose own beams need the
+    # rewrite is stored as a skip until a client rewrites them
+    # (`Portal.Catalog.Ingestion`). No judge revision: every node may differ.
+    judge_relocate: if(System.get_env("NCC_JUDGE_RELOCATE") == "1", do: true),
     # `0` turns off the firmware targets' traced compile-input pass
     # (`NccWorker.FirmwareInputs`, judge revision 19): firmware builds get
     # `NCC_INPUT.firmware_inputs: false`, local and remote alike, with no

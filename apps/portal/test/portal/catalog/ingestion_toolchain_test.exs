@@ -191,6 +191,38 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert stored.latest_version == "1.4.3"
   end
 
+  # S4: no client rewrites a relocated build's beams yet, so a pass that
+  # carries `relocation` is stored as a skip with no files, its record kept.
+  test "a relocated pass is stored as a skip with no files, its record in the observations" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+
+    record = %{
+      "deps" => "/work/proj/deps",
+      "build" => "/work/proj/_build/host",
+      "files" => [%{"path" => "ebin/#{name}.beam", "occurrences" => []}]
+    }
+
+    result =
+      pass_result(name, beam, priv)
+      |> put_in(["toolchain_build", "relocation"], record)
+      |> put_in(["toolchain_build", "compile_observations"], %{
+        "trace_stats" => %{"relocate" => "relocated"}
+      })
+
+    assert {:ok, %ToolchainBuild{} = tb} =
+             Ingestion.ingest_toolchain(result, opts(name, files_dir_with([beam, priv])))
+
+    assert tb.status == :skipped
+    assert tb.reason == "relocated build: no client rewrites its beams yet"
+    assert tb.file_manifest == nil
+    assert tb.compile_env == nil
+    assert tb.compile_observations["relocation"] == record
+    assert tb.compile_observations["trace_stats"] == %{"relocate" => "relocated"}
+    assert memberships(tb) == []
+  end
+
   # Task I: a recorded compile_env value must be plain, small ETF; the
   # container writes result.json, so the portal re-checks it the same way
   # the worker already does before recording one.

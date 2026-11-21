@@ -89,6 +89,20 @@ defmodule Portal.BuilderJudgeInputTest do
     assert Builder.judge_input("toolchain") == %{"makefile_rule2" => true, "native_side" => true}
   end
 
+  # S4: relocatable builds, a host flag like makefile_rule2's, for toolchain
+  # builds only.
+  test "relocate: toolchain builds only, and only with NCC_JUDGE_RELOCATE", %{previous: previous} do
+    base = previous |> Keyword.delete(:judge_makefile_rule2) |> Keyword.delete(:judge_relocate)
+    Application.put_env(:portal, Builder, base)
+    assert Builder.judge_input("toolchain") == nil
+
+    Application.put_env(:portal, Builder, Keyword.put(base, :judge_relocate, true))
+    assert Builder.judge_input("toolchain") == %{"relocate" => true}
+
+    for mode <- [nil, "argus_only", "warm_nerves", "host_native"],
+        do: assert(Builder.judge_input(mode) == nil, inspect(mode))
+  end
+
   test "worker_input carries judge only when set" do
     input = Builder.worker_input(Map.put(@job, :judge, %{"makefile_rule2" => true}))
     assert input["judge"] == %{"makefile_rule2" => true}
