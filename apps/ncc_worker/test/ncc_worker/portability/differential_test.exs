@@ -147,8 +147,13 @@ defmodule NccWorker.Portability.DifferentialTest do
 
     env = fn opts, name -> opts[:env] |> List.keyfind(name, 0) |> elem(1) end
     assert env.(low_opts, "ERL_ZFLAGS") =~ "+S 1:1"
-    assert env.(high_opts, "ERL_ZFLAGS") =~ "+S 256:256"
-    assert env.(low_opts, "HOME") != "/home/nerves"
+    # A prime, no power of two: parity and a power-of-two test differ from
+    # `low`'s 1 and from a builder's usual power-of-two count (review B4).
+    assert env.(high_opts, "ERL_ZFLAGS") =~ "+S 251:251"
+    # HOME at either side of the first build's `/home/nerves`: shorter, and
+    # longer.
+    assert byte_size(env.(low_opts, "HOME")) < byte_size("/home/nerves")
+    assert byte_size(env.(high_opts, "HOME")) > byte_size("/home/nerves")
     assert env.(high_opts, "HOME") != env.(low_opts, "HOME")
     assert low_opts[:plain_args] == []
     assert "test" in high_opts[:plain_args] and "compile" in high_opts[:plain_args]

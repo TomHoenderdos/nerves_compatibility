@@ -45,6 +45,16 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
         def many?, do: @many
       end
       """),
+    # A power-of-two count picks a bitmask, any other a rem/2 (review B4):
+    # built on 8 schedulers, as on an 8-CPU builder.
+    "fx_dv_pow2" =>
+      lib("fx_dv_pow2", """
+      defmodule FxDvPow2 do
+        n = System.schedulers_online()
+        @mask Bitwise.band(n, n - 1) == 0
+        def strategy, do: if(@mask, do: :band, else: :rem)
+      end
+      """),
     "fx_dv_home" =>
       lib("fx_dv_home", """
       defmodule FxDvHome do
@@ -108,6 +118,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
       end
 
     off = run(root, proj, "fx_dv_pool", differential: false)
+    pow2 = run(root, proj, "fx_dv_pow2", env: [{"ERL_ZFLAGS", "+S 8:8"}])
 
     # Each rebar3 script in a project of its own: a read outside every
     # window counts against everything in it.
@@ -116,7 +127,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
         {name, script_run(root, name, script)}
       end
 
-    %{verdicts: verdicts, off: off, scripts: scripts}
+    %{verdicts: verdicts, off: off, pow2: pow2, scripts: scripts}
   end
 
   # Builds under asdf find their install through HOME, which a variant moves.
@@ -129,7 +140,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     Portability.run(
       proj,
       app,
-      env: TracerFixtures.env(proj) ++ asdf(),
+      env: TracerFixtures.env(proj) ++ asdf() ++ Keyword.get(opts, :env, []),
       releases: Keyword.get(opts, :releases, %{}),
       hex_home: Keyword.get(opts, :hex_home),
       mode: :judge,
@@ -214,6 +225,13 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     v = ctx.verdicts["fx_dv_many"]
     assert v.status == :skip, log(v)
     assert v.reason =~ "; a differential build differs: ebin/Elixir.FxDvMany.beam: "
+  end
+
+  test "a power-of-two test of the count refuses on a power-of-two builder", ctx do
+    v = ctx.pow2
+    assert v.status == :skip, log(v)
+    assert v.reason =~ ~r/\Acompile-time host read: erlang:system_info\/1 \(schedulers_online\)/
+    assert v.reason =~ "; a differential build differs: ebin/Elixir.FxDvPow2.beam: "
   end
 
   test "HOME read and not kept publishes; HOME baked refuses", ctx do

@@ -606,7 +606,7 @@ arguments outside every window (Mix evaluating a rebar3 dependency's `rebar.conf
 `varied_reads` instead of refused, and `File.exists?("")` (a stat of the empty path, `enoent` on every host) is
 ignored. A verdict that would pass with any varied read is settled by two variant builds of the closure, each at a
 build root of its own (of the first's length where one fits) after a gap of a little over a second: `low` with
-`ERL_ZFLAGS=+S 1:1`, another HOME and no extra plain arguments, `high` with `+S 256:256`, a longer HOME and a Mix
+`ERL_ZFLAGS=+S 1:1`, a short HOME under `/tmp` and no extra plain arguments, `high` with `+S 251:251` (a prime), a longer HOME and a Mix
 user's command words after the task. A plain-arguments read first needs the script check
 (`NccWorker.Portability.ScriptCheck`): every scripted rebar3 dependency of the closure evaluated from its verified
 tarball in fresh VMs, with no arguments, the traced compile's, the command words and every string literal of its

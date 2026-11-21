@@ -28,8 +28,10 @@ defmodule NccWorker.Portability.Differential do
       root's length where one fits, so a root in a literal reads as the
       first's), after a gap of a little over a second, with its own trace
       dir, and with the varied values at either end of their domain: `low`
-      with `+S 1:1`, a short HOME and no extra plain arguments, `high` with
-      `+S 256:256`, a long HOME and the Mix and rebar3 command words a Mix
+      with `+S 1:1`, a short HOME (`/tmp/h<4 hex>`, shorter than
+      `/home/nerves`) and no extra plain arguments, `high` with `+S 251:251`
+      (a prime: parity and a power-of-two test differ from 1's), a long HOME
+      and the Mix and rebar3 command words a Mix
       user's command line can hold (`ScriptCheck.words/0`). Each must pass the judge, its
       own varied reads held as the first's were;
     * the package's app in each must be the first build's
@@ -61,10 +63,15 @@ defmodule NccWorker.Portability.Differential do
   @max_reads 50
   # The reads a pass records in `observations["differential"]`.
   @max_recorded 20
+  # 1 is the smallest count; 251 a prime, so parity and a power-of-two test
+  # differ from 1's and from a builder's usual power-of-two count (review
+  # B4). HOME: `low` a short one under `/tmp` (shorter than the worker's
+  # `/home/nerves`), `high` a long one.
   @variants [
-    low: %{schedulers: 1, home: "h", plain_args: []},
-    high: %{schedulers: 256, home: "home-of-a-much-longer-name", plain_args: ScriptCheck.words()}
+    low: %{schedulers: 1, home: :short, plain_args: []},
+    high: %{schedulers: 251, home: "home-of-a-much-longer-name", plain_args: ScriptCheck.words()}
   ]
+  @short_root "/tmp"
 
   @doc "The problem a held verdict carries until `settle/6` decides it."
   @spec hold_problem() :: String.t()
@@ -196,14 +203,46 @@ defmodule NccWorker.Portability.Differential do
     try do
       # So a clock read to the second differs between the builds.
       Process.sleep(Keyword.get(opts, :differential_gap_ms, @gap_ms))
-      File.mkdir_p!(Path.join(dir, values.home))
-      built = run.(project_dir, package, variant_opts(opts, dir, root, values, held.trees))
-      app = Path.join([root, "lib", Path.basename(held.build)])
-      judged(built, name, fn -> compared(held.build, app, {first_root, root}, name) end)
+
+      with_home(values.home, dir, opts, fn home ->
+        built =
+          run.(project_dir, package, variant_opts(opts, dir, root, home, values, held.trees))
+
+        app = Path.join([root, "lib", Path.basename(held.build)])
+        judged(built, name, fn -> compared(held.build, app, {first_root, root}, name) end)
+      end)
     after
       File.rm_rf(dir)
       File.rm_rf(root)
     end
+  end
+
+  # The variant's HOME, for `fun`: under `dir` for a long one; for `:short`,
+  # a fresh `h<4 hex>` made exclusively under `/tmp`
+  # (`differential_short_root:`, tests), another name tried when one
+  # exists, and removed afterwards.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp with_home(:short, _dir, opts, fun) do
+    base = Keyword.get(opts, :differential_short_root, @short_root)
+
+    home =
+      Enum.find_value(1..8, fn _ ->
+        home = Path.join(base, "h" <> Base.encode16(:crypto.strong_rand_bytes(2), case: :lower))
+        if File.mkdir(home) == :ok, do: home
+      end) || raise "no fresh short HOME under #{base}"
+
+    try do
+      fun.(home)
+    after
+      File.rm_rf(home)
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp with_home(name, dir, _opts, fun) do
+    home = Path.join(dir, name)
+    File.mkdir_p!(home)
+    fun.(home)
   end
 
   defp first_root(build), do: build |> Path.dirname() |> Path.dirname()
@@ -226,9 +265,8 @@ defmodule NccWorker.Portability.Differential do
   # arguments, its own trace dir and log, judge mode, the tree snapshot the
   # first build was judged on and neither a second build nor variants of
   # its own.
-  defp variant_opts(opts, dir, root, values, trees) do
+  defp variant_opts(opts, dir, root, home, values, trees) do
     env = Keyword.fetch!(opts, :env)
-    home = Path.join(dir, values.home)
 
     env =
       env
