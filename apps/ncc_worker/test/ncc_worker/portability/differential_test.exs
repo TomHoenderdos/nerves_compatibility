@@ -154,6 +154,11 @@ defmodule NccWorker.Portability.DifferentialTest do
 
     assert_received {:variant, low, low_opts}
     assert_received {:variant, high, high_opts}
+    # Ruling 5: fresh roots, of random names, made empty and checked so
+    # after the container's sweep (`fresh:`).
+    assert low_opts[:fresh] == [low] and high_opts[:fresh] == [high]
+    assert Path.basename(low) =~ ~r/\Av[0-9a-f]{12}low/
+    assert Path.basename(high) =~ ~r/\Av[0-9a-f]{12}high/
     # Each at a root of its own, of the first's length, removed afterwards.
     assert byte_size(low) == byte_size(ctx.root) and byte_size(high) == byte_size(ctx.root)
     assert low != high
@@ -412,11 +417,36 @@ defmodule NccWorker.Portability.DifferentialTest do
     assert v.observations["trace_stats"]["differential"] == "differs"
   end
 
+  # The variant's dirs are made exclusively: one that exists is never used
+  # (a stale build of the package there would compare the first with
+  # itself), and never removed. `differential_name:` fixes the random part.
+  test "a variant dir or root that exists already cannot be judged, and is left alone", ctx do
+    base = Path.join(ctx.dir, "base")
+    File.mkdir_p!(base)
+    run = fn _, _, _ -> flunk("no variant build") end
+    fixed = [differential_root: base, differential_name: fn -> "fixed" end]
+    pad = byte_size(ctx.root) - byte_size(base) - 1 - byte_size("vfixedlow")
+
+    for taken <- [
+          Path.join(base, "ncc-dvfixedlow"),
+          Path.join(base, "vfixedlow" <> String.duplicate("b", pad))
+        ] do
+      File.mkdir_p!(taken)
+      File.write!(Path.join(taken, "stale"), "x")
+
+      v = settle(held(ctx), ctx, run, fixed)
+      assert v.reason == Reasons.could_not_judge()
+      assert Enum.any?(v.observations["problems"], &(&1 =~ "not fresh")), inspect(v.observations)
+      assert v.observations["trace_stats"]["differential"] == "not_judged"
+      assert File.read!(Path.join(taken, "stale")) == "x"
+      File.rm_rf!(taken)
+    end
+  end
+
   test "a first build root too short for a same-length variant root still compares", ctx do
-    v =
-      settle(held(ctx), ctx, variant(),
-        differential_root: Path.join(ctx.dir, String.duplicate("r", 200))
-      )
+    base = Path.join(ctx.dir, String.duplicate("r", 200))
+    File.mkdir_p!(base)
+    v = settle(held(ctx), ctx, variant(), differential_root: base)
 
     assert v.status == :pass
   end

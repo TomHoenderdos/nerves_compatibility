@@ -3199,6 +3199,27 @@ defmodule NccWorker.Portability.JudgeTest do
       refute File.exists?(trace_dir)
     end
 
+    # A differential variant's build path (coordinator ruling 5): made
+    # fresh and empty, and still empty once the container is swept, or
+    # nothing runs.
+    test "a fresh build path that is not empty runs nothing", %{proj: proj, dir: dir} do
+      fresh = Path.join(dir, "fresh")
+      File.mkdir_p!(Path.join(fresh, "lib/pkg/ebin"))
+      trace_dir = Path.join(dir, "trace")
+
+      assert %{status: :skip, reason: @cnj, observations: obs} =
+               Portability.run(proj, "pkg",
+                 env: [],
+                 releases: %{},
+                 trace_dir: trace_dir,
+                 fresh: [fresh]
+               )
+
+      assert ["a variant build path is not fresh: " <> _] = obs["problems"]
+      assert obs["trace_stats"]["judge_compile"] == "not_run"
+      refute File.exists?(trace_dir)
+    end
+
     test "passes run_started_at to the tracer: an exhausted run budget is not judged",
          %{proj: proj, dir: dir} do
       started = System.monotonic_time(:second) - 3 * 60 * 60

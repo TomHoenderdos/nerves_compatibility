@@ -535,7 +535,10 @@ defmodule NccWorker.Portability do
   defp traced_run(project_dir, package, opts, releases) do
     case Tracer.sweep(opts, :before) do
       :ok ->
-        swept_run(project_dir, package, opts, releases)
+        case not_fresh(Keyword.get(opts, :fresh, [])) do
+          nil -> swept_run(project_dir, package, opts, releases)
+          path -> not_run("a variant build path is not fresh: " <> path)
+        end
 
       {:error, {_kind, detail}} = error ->
         detail
@@ -543,6 +546,13 @@ defmodule NccWorker.Portability do
         |> not_run()
         |> put_stat("tracer_error", tracer_error(error))
     end
+  end
+
+  # `fresh:` (a differential variant's build path, `Differential`): dirs that
+  # must still be empty once the container is swept; the first that is not.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp not_fresh(paths) do
+    Enum.find(paths, fn path -> File.ls(path) != {:ok, []} end)
   end
 
   defp sweep_problem(procs) when is_list(procs), do: ProcessSweep.describe({:survivors, procs})

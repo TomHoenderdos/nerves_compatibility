@@ -221,37 +221,62 @@ defmodule NccWorker.Portability.Differential do
     end)
   end
 
-  # `dir` is a fresh directory this function names under the temp dir, and
-  # the only one it removes.
+  # `dir` (the variant's trace dir, log and long HOME) and `root` (its
+  # build path) are fresh: random names (`differential_name:`, tests), made
+  # exclusively, so a dir that exists already (a stale build of the package
+  # someone placed there, which Mix would not compile again) is never used
+  # nor removed; `root` is checked empty again once the container is swept
+  # (`run/3`'s `fresh:`). They are the only dirs this function removes.
   # sobelow_skip ["Traversal.FileModule"]
   defp variant(held, project_dir, package, opts, run, name, values) do
     # The real path: Mix links a build dir's `include`, `priv` and `src` by
     # relative paths, which a link above the dir (macOS's `/var`) breaks.
     base = Keyword.get_lazy(opts, :differential_root, &System.tmp_dir!/0)
     base = Context.realpath(base) || base
-    n = System.unique_integer([:positive])
-    dir = Path.join(base, "ncc-dv#{n}#{name}")
+    random = Keyword.get(opts, :differential_name, &random_name/0).()
+    dir = Path.join(base, "ncc-dv#{random}#{name}")
     first_root = first_root(held.build)
-    root = variant_root(base, "v#{n}#{name}", first_root)
+    root = variant_root(base, "v#{random}#{name}", first_root)
 
-    try do
-      # So a clock read to the second differs between the builds.
-      Process.sleep(Keyword.get(opts, :differential_gap_ms, @gap_ms))
+    with :ok <- fresh(dir),
+         :ok <- fresh(root, dir) do
+      try do
+        # So a clock read to the second differs between the builds.
+        Process.sleep(Keyword.get(opts, :differential_gap_ms, @gap_ms))
 
-      with_home(values.home, dir, opts, fn home ->
-        built =
-          run.(project_dir, package, variant_opts(opts, dir, root, home, values, held.trees))
+        with_home(values.home, dir, opts, fn home ->
+          built =
+            run.(project_dir, package, variant_opts(opts, dir, root, home, values, held.trees))
 
-        app = Path.join([root, "lib", Path.basename(held.build)])
+          app = Path.join([root, "lib", Path.basename(held.build)])
 
-        judged(built, name, fn ->
-          with :ok <- read_no_more(held, built, name),
-               do: compared(held.build, app, {first_root, root}, name)
+          judged(built, name, fn ->
+            with :ok <- read_no_more(held, built, name),
+                 do: compared(held.build, app, {first_root, root}, name)
+          end)
         end)
-      end)
-    after
-      File.rm_rf(dir)
-      File.rm_rf(root)
+      after
+        File.rm_rf(dir)
+        File.rm_rf(root)
+      end
+    end
+  end
+
+  # 48 random bits, 12 hex digits: short enough for a variant root of the
+  # worker's `/work/proj/_build/host` length under `/tmp`.
+  defp random_name, do: Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
+  # An empty dir made now, or an unjudged outcome; `made` is removed when
+  # `path` cannot be made.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp fresh(path, made \\ nil) do
+    case File.mkdir(path) do
+      :ok ->
+        :ok
+
+      {:error, why} ->
+        if made, do: File.rm_rf(made)
+        {:unjudged, "a variant dir is not fresh: #{Path.basename(path)} (#{inspect(why)})", false}
     end
   end
 
@@ -291,7 +316,7 @@ defmodule NccWorker.Portability.Differential do
   defp variant_root(base, stem, first) do
     pad = byte_size(first) - byte_size(base) - 1 - byte_size(stem)
 
-    if pad >= 1,
+    if pad >= 0,
       do: Path.join(base, stem <> String.duplicate("b", pad)),
       else: Path.join(base, stem <> "-build")
   end
@@ -324,7 +349,7 @@ defmodule NccWorker.Portability.Differential do
       end)
 
     opts
-    |> Keyword.drop([:trees, :trace_dir, :log_file, :mode, :env, :extra_env, :plain_args])
+    |> Keyword.drop([:trees, :trace_dir, :log_file, :mode, :env, :extra_env, :plain_args, :fresh])
     |> Keyword.merge(
       env: env,
       extra_env: extra,
@@ -333,6 +358,7 @@ defmodule NccWorker.Portability.Differential do
       trace_dir: Path.join(dir, "trace"),
       log_file: Path.join(dir, "compile.log"),
       plain_args: values.plain_args,
+      fresh: [root],
       priv_repro: false,
       differential: :variant
     )
