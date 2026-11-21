@@ -53,10 +53,17 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # be publishable under the trace ("pass"). Each refused entry names its
   # first refusal (the golden lists them all). These record what the rules
   # do today; they are not loosened here.
+  #
+  # The probe rules of fix/otp-app-probe round 1 refuse more of them: a
+  # closure dependency's probe of a module no dependency of its closure
+  # builds (websock_adapter's `cowboy_websocket`, jason's `Decimal` and
+  # mint's `CAStore` of their absent optional dependencies, phoenix_live_view
+  # and swoosh's own `Igniter` and `Plug`), and phoenix_live_dashboard's
+  # loaded-now `function_exported?/3` (@probe_reasons).
   @expected %{
-    {"phoenix", "exclude"} => "pass",
-    {"phoenix", "include"} => "pass",
-    {"phoenix_live_view", "exclude"} => "pass",
+    {"phoenix", "exclude"} => "refused",
+    {"phoenix", "include"} => "refused",
+    {"phoenix_live_view", "exclude"} => "refused",
     # fine (lazy_html's C++ headers dependency) bakes `deps/fine/c_include`
     # (R2 taint); lazy_html's elixir_make precompiled-NIF download reads the
     # host (open_port, system_info, its download cache).
@@ -66,15 +73,15 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     # (`embed_templates "layouts/*"`) is held only by __mix_recompile__?/0,
     # which Mix never calls on a served build: observed, not an R2 refusal
     # (c35aede2). The include variant refuses on exqlite's host reads.
-    {"phoenix_live_dashboard", "exclude"} => "pass",
+    {"phoenix_live_dashboard", "exclude"} => "refused",
     {"phoenix_live_dashboard", "include"} => "refused",
-    {"swoosh", "exclude"} => "pass",
+    {"swoosh", "exclude"} => "refused",
     # quic's reviewed build_nif.sh compile hook is let through (6cc2fd1e),
     # and hackney's clean hooks never run under `rebar3 bare compile`
     # (1c270cc5), so neither taints the closure. The reads certifi_pt and
     # parse_trans made through OTP's own code loading (erl_prim_loader) no
     # longer refuse (judge refinements, item 5a).
-    {"swoosh", "include"} => "pass",
+    {"swoosh", "include"} => "refused",
     # sentry's mix.exs reads SENTRY_INTEGRATION for `test_paths` (line 17),
     # but project/0 ends `++ xref_options()`, an `if` on System.version(),
     # so it is not a keyword list literal (mix.exs rule); and
@@ -87,11 +94,37 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     {"sentry", "include"} => "refused"
   }
 
+  @dep "compile-time probe of a dependency outside the closure: "
+  @taint "closure dependency observed the host: "
+
+  # What each build the probe rules refuse refuses for first, on this
+  # toolchain (Elixir 1.20, OTP 28 and 29: the closure's sources decide it).
+  @probe_reasons %{
+    {"phoenix", "exclude"} =>
+      @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
+    {"phoenix", "include"} => @taint <> "jason (#{@dep}Elixir.Decimal via Code.ensure_loaded?/1)",
+    {"phoenix_live_view", "exclude"} => @dep <> "Elixir.Igniter via Code.ensure_loaded?/1",
+    {"phoenix_live_view", "include"} => @dep <> "Elixir.Igniter via Code.ensure_loaded?/1",
+    {"phoenix_live_dashboard", "exclude"} =>
+      "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveView.HTMLEngine via " <>
+        "erlang:function_exported/3",
+    {"swoosh", "exclude"} => @dep <> "Elixir.Plug via Code.ensure_loaded?/1",
+    {"swoosh", "include"} => @taint <> "jason (#{@dep}Elixir.Decimal via Code.ensure_loaded?/1)",
+    {"finch", "include"} => @taint <> "mint (#{@dep}Elixir.CAStore via Code.ensure_loaded?/1)",
+    {"polymorphic_embed", "include"} =>
+      @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
+    {"rustler", "include"} => @taint <> "jason (#{@dep}Elixir.Decimal via Code.ensure_loaded?/1)",
+    {"kino_maplibre", "include"} =>
+      @taint <> "kino (#{@dep}Elixir.Nx.Heatmap via Code.ensure_loaded?/1)"
+  }
+
   # Packages whose toolchain builds are published hits today (the
   # 2026-11-06 benchmark's Phoenix and library locks), built as published:
   # with their optional dependencies. The trace must not take any of them
   # away: each must judge pass, observations allowed. A refusal or
-  # could-not-judge here is a regression, reported, never loosened here.
+  # could-not-judge here is a regression, reported, never loosened here;
+  # but for the ones the probe rules refuse (@probe_reasons), which must
+  # refuse for exactly that.
   @hits [
     {"telemetry", "1.4.2"},
     {"jason", "1.4.5"},
@@ -160,12 +193,16 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       expected_status = if @expected[{package, variant}] == "pass", do: "pass", else: "skipped"
       assert golden["status"] == expected_status, inspect(Map.take(golden, ["status", "reason"]))
 
+      if reason = @probe_reasons[{package, variant}] do
+        assert golden["reason"] == reason, inspect(golden["reason"])
+      end
+
       if package in ["phoenix", "phoenix_live_view", "swoosh"] do
         assert golden["rule1_reason"] in ["calls System.cmd/2", "calls erlang:open_port/2"],
                inspect(golden["rule1_reason"])
       end
 
-      if {package, variant} == {"phoenix_live_view", "exclude"} do
+      if {package, variant} == {"phoenix_live_view", "exclude"} and golden["status"] == "pass" do
         assert ~s(phoenix_live_view ["root_tag_attribute"] = :error) in golden["compile_env"],
                inspect(golden["compile_env"])
       end
@@ -181,7 +218,10 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       report(ctx, golden, stats)
       compare(ctx.tag, golden)
 
-      assert golden["trace_verdict"] == "pass",
+      expected = if r = @probe_reasons[{package, "include"}], do: r, else: nil
+      assert golden["reason"] == expected, inspect(golden["reason"])
+
+      assert golden["trace_verdict"] == if(expected, do: "refused", else: "pass"),
              "regression: #{package} #{version} (#{golden["trace_verdict"]}): " <>
                "#{golden["reason"]}\n" <>
                inspect(Map.take(golden["observations"], ["refusals", "taint", "problems"]),
@@ -201,16 +241,19 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
   for {package, version} <- @own_priv_reads do
     @tag package: package, version: version, variant: "include"
-    test "own priv reads: #{package} #{version} passes", ctx do
+    # Its closure's jason now refuses rustler (@probe_reasons); rustler's own
+    # priv reads are still let through.
+    test "own priv reads: #{package} #{version} are let through", ctx do
       %{package: package, version: version} = ctx
       {golden, stats} = build(ctx, package, version, "include", %{makefile_rule2: true})
       report(ctx, golden, stats)
       compare(ctx.tag, golden)
 
-      assert golden["trace_verdict"] == "pass",
+      assert golden["reason"] == @probe_reasons[{package, "include"}],
              inspect(Map.take(golden, ["reason", "observations"]), pretty: true, limit: :infinity)
 
-      assert golden["status"] == "pass", inspect(Map.take(golden, ["status", "reason"]))
+      refute Enum.any?(golden["observations"]["refusals"], &(&1["owner"] == package)),
+             inspect(golden["observations"]["refusals"])
 
       assert Enum.any?(
                golden["observations"]["own_priv_reads"],
@@ -250,22 +293,22 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
   for {package, version, dirs} <- @foreign_priv do
     @tag package: package, version: version, variant: "include", dirs: dirs
-    test "foreign priv: #{package} #{version} passes with its archives", ctx do
+    # kino's probe of nx's Nx.Heatmap now refuses it (@probe_reasons); the
+    # writer's own archive writes are still accepted.
+    test "foreign priv: #{package} #{version}'s archive writes are accepted", ctx do
       %{package: package, version: version, dirs: dirs} = ctx
       {golden, stats} = build(ctx, package, version, "include", %{foreign_priv: true})
       report(ctx, golden, stats)
 
-      assert golden["status"] == "pass",
+      assert golden["reason"] == @probe_reasons[{package, "include"}],
              inspect(Map.take(golden, ["status", "reason", "observations"]),
                pretty: true,
                limit: :infinity
              )
 
-      assert golden["foreign_priv_rule"] == "kino_js_v1"
-
-      assert golden["foreign_priv"]
-             |> Enum.map(&(&1["path"] |> Path.split() |> Enum.at(2)))
-             |> Enum.sort() == dirs
+      observed = Enum.map_join(golden["observations"]["foreign_priv"], &inspect/1)
+      assert Enum.all?(dirs, &String.contains?(observed, &1)), observed
+      refute Enum.any?(golden["observations"]["refusals"], &(&1["owner"] == package))
     end
   end
 
