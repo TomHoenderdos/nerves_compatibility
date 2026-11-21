@@ -2599,29 +2599,117 @@ defmodule NccWorker.Portability do
   # from it is a literal map (`Compatibility.NifOrigin.parse/1`: evaluating
   # it runs nothing). The first that fails is its taint.
   defp side_problem(ctx, libs, app) do
-    manager = Context.manager(ctx, app)
+    Enum.find_value(
+      [
+        fn -> unless native?(ctx, app), do: side_refusal("not on the native list") end,
+        fn -> side_manager(Context.manager(ctx, app)) end,
+        fn ->
+          if lib = side_lib(ctx, libs, app), do: "compile-time native library load: " <> lib
+        end,
+        fn ->
+          unless tree_clean?(ctx, app),
+            do: side_refusal("source tree is not its verified tarball's")
+        end,
+        fn ->
+          if beam = foreign_dep_beam(ctx, app),
+            do: side_refusal("beam not compiled from its own sources: " <> beam)
+        end,
+        fn ->
+          if file = evaluated_checksum(ctx, app),
+            do: side_refusal("checksum file is not a literal map: " <> file)
+        end,
+        fn ->
+          if file = beam_build_file(ctx, app),
+            do: side_refusal("native build file compiles BEAM code: " <> file)
+        end
+      ],
+      & &1.()
+    )
+  end
 
-    cond do
-      not native?(ctx, app) ->
-        side_refusal("not on the native list")
+  defp side_manager("mix"), do: nil
 
-      manager != "mix" ->
-        side_refusal("built by #{manager || "an unknown manager"}, not Mix")
+  defp side_manager(manager),
+    do: side_refusal("built by #{manager || "an unknown manager"}, not Mix")
 
-      lib = side_lib(ctx, libs, app) ->
-        "compile-time native library load: " <> lib
+  # Review L2. A native build file (a Makefile, a CMake list, a make
+  # include) that names `erlc`, `elixirc` or a `.beam` may compile or copy
+  # BEAM code into the dependency's ebin, and a build that runs after Mix's
+  # compilers can rewrite a beam Mix compiled and keep its compile info,
+  # which `compiled_in?/2` cannot tell apart. The first such file of the
+  # dependency's source tree, relative to it, by name; a file too large or
+  # unreadable, or a tree too large to walk, counts as one. Writing
+  # `$(MIX_COMPILE_PATH)/../priv`, as most do, is no mention.
+  @beam_build_files ~r/\A(?:GNUmakefile|[Mm]akefile(?:\..+)?|CMakeLists\.txt|.+\.mk|.+\.cmake)\z/
+  @beam_build_words ~r/\berlc\b|\belixirc\b|\.beam\b/i
+  @beam_build_skip ~w(.git _build node_modules)
+  @beam_build_max_depth 8
+  @beam_build_max_entries 20_000
+  @beam_build_max_bytes 4 * 1024 * 1024
 
-      not tree_clean?(ctx, app) ->
-        side_refusal("source tree is not its verified tarball's")
+  defp beam_build_file(ctx, app) do
+    with dest when is_binary(dest) <- Context.dest(ctx, app),
+         {:ok, files, _seen} <- build_files(dest, "", 0, {[], 0}) do
+      files |> Enum.sort() |> Enum.find(&beam_build?(Path.join(dest, &1)))
+    else
+      nil -> "(no source dir)"
+      :too_large -> "(source tree too large to scan)"
+    end
+  end
 
-      beam = foreign_dep_beam(ctx, app) ->
-        side_refusal("beam not compiled from its own sources: " <> beam)
+  # The native build files under `rel` of `root`, with the entries seen so
+  # far: `{:ok, files, seen}`, or `:too_large` past the depth or entry
+  # bounds or for a directory that cannot be listed. Links are not followed.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp build_files(_root, _rel, depth, _acc) when depth > @beam_build_max_depth, do: :too_large
 
-      file = evaluated_checksum(ctx, app) ->
-        side_refusal("checksum file is not a literal map: " <> file)
+  defp build_files(root, rel, depth, {found, seen}) do
+    case File.ls(Path.join(root, rel)) do
+      {:ok, names} when seen + length(names) <= @beam_build_max_entries ->
+        names
+        |> Enum.sort()
+        |> Enum.reduce_while(
+          {:ok, found, seen + length(names)},
+          &build_step(root, rel, depth, &1, &2)
+        )
 
-      true ->
-        nil
+      _too_large_or_unlistable ->
+        :too_large
+    end
+  end
+
+  defp build_step(root, rel, depth, name, {:ok, found, seen}) do
+    case build_entry(root, Path.join(rel, name), name, depth, {found, seen}) do
+      {:ok, _found, _seen} = acc -> {:cont, acc}
+      :too_large -> {:halt, :too_large}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp build_entry(root, rel, name, depth, {found, seen}) do
+    case File.lstat(Path.join(root, rel)) do
+      {:ok, %File.Stat{type: :directory}} ->
+        if name in @beam_build_skip,
+          do: {:ok, found, seen},
+          else: build_files(root, rel, depth + 1, {found, seen})
+
+      {:ok, %File.Stat{type: :regular}} ->
+        if Regex.match?(@beam_build_files, name),
+          do: {:ok, [rel | found], seen},
+          else: {:ok, found, seen}
+
+      _other ->
+        {:ok, found, seen}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp beam_build?(path) do
+    with {:ok, %File.Stat{size: size}} when size <= @beam_build_max_bytes <- File.stat(path),
+         {:ok, text} <- File.read(path) do
+      BuildCache.match_or_error?(@beam_build_words, text)
+    else
+      _ -> true
     end
   end
 

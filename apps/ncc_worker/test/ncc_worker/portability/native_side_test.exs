@@ -571,6 +571,65 @@ defmodule NccWorker.Portability.NativeSideTest do
     end
   end
 
+  # Review L2: a native build file that compiles BEAM code could rewrite a
+  # beam Mix compiled and keep its compile info, which `compiled_in?/2`
+  # cannot tell. Such a build is not set apart.
+  defp with_files(ctx, files) do
+    for {path, body} <- files do
+      full = Path.join([ctx.proj, "deps/dep", path])
+      File.mkdir_p!(Path.dirname(full))
+      File.write!(full, body)
+    end
+
+    contents = Map.merge(%{"lib/dep.ex" => ctx.source, "mix.exs" => ""}, Map.new(files))
+
+    {"dep", release} =
+      NccWorker.TracerFixtures.hex_release(ctx.home, "dep", Map.keys(contents), contents)
+
+    Keyword.put(ctx.opts, :releases, Map.put(ctx.releases, "dep", release)) ++ @on
+  end
+
+  test "a native build file that compiles BEAM code keeps the dependency tainted", ctx do
+    for {file, body} <- [
+          {"Makefile", "all:\n\terlc -o $(MIX_COMPILE_PATH) src/x.erl\n"},
+          {"Makefile", "ERLC ?= erlc\nall:\n\t$(ERLC) x.erl\n"},
+          {"Makefile.win", "all:\n\telixirc lib/x.ex\n"},
+          {"c_src/Makefile", "all:\n\tcp gen/X.beam $(MIX_COMPILE_PATH)\n"},
+          {"CMakeLists.txt", "install(FILES Elixir.X.beam DESTINATION ebin)\n"},
+          {"c_src/build.mk", "x:\n\terlc y.erl\n"},
+          {"GNUmakefile", "x:\n\tERLC x.erl\n"}
+        ] do
+      File.rm_rf!(Path.join(ctx.proj, "deps/dep/c_src"))
+
+      for f <- ~w(Makefile Makefile.win CMakeLists.txt GNUmakefile),
+          do: File.rm_rf!(Path.join(ctx.proj, "deps/dep/" <> f))
+
+      opts = with_files(ctx, [{file, body}])
+
+      assert %{status: :skip, reason: reason} =
+               judge(ctx.proj, report(ctx.proj, tool_run()), opts),
+             file
+
+      assert reason ==
+               "closure dependency observed the host: dep (native build not set apart: " <>
+                 "native build file compiles BEAM code: #{file})",
+             file
+    end
+  end
+
+  test "a native build file that writes only priv and objects is set apart", ctx do
+    makefile = """
+    PRIV = $(MIX_COMPILE_PATH)/../priv
+    ERL_CFLAGS ?= -I$(ERTS_INCLUDE_DIR)
+    all: $(PRIV)/dep_nif.so
+    $(PRIV)/dep_nif.so: c_src/dep.c
+    \tmkdir -p $(PRIV) && $(CC) $(ERL_CFLAGS) -shared -o $@ $<
+    """
+
+    opts = with_files(ctx, [{"Makefile", makefile}, {"c_src/dep.c", "int x;\n"}])
+    assert %{status: :pass} = judge(ctx.proj, report(ctx.proj, tool_run()), opts)
+  end
+
   test "a firmware target's trace is unchanged by the option", ctx do
     plain = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ [target: "rpi4"])
     on = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ [target: "rpi4"] ++ @on)
