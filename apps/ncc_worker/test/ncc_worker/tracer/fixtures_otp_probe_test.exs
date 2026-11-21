@@ -645,12 +645,13 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
                "erlang:function_exported/3"
   end
 
-  # Round 3, R2-6: a module loaded before the tracer started (Mix loads
-  # `:sofs` for its own work) is no longer taken as loaded for the user,
-  # whose VM need not have loaded it: only what a bare VM of the toolchain
-  # has loaded is (`NCC_TRACE_BASE`). So a loaded-now probe of it is traced
-  # and refuses, and a module the bare VM has (`:queue`) is still skipped.
-  test "a loaded-now probe of a module only Mix loaded before the trace refuses",
+  # Round 3, R2-6, measured since round 5 (R3-4): a module loaded before the
+  # tracer started counts as loaded for the user only when every way a user
+  # compiles a dependency has loaded it by that dependency's mix.exs
+  # (`NccWorker.Tracer.MixBase`). `:sofs` and `Process` are, so their probes
+  # are not traced; `Mix.CLI`, which only the mix command loads, is outside
+  # the list, so its probe is traced and refuses.
+  test "a pre-start module is taken as loaded only when every user path loaded it",
        %{tmp_dir: dir} do
     proj =
       TracerFixtures.project(dir, ["fx_probe"], %{
@@ -659,7 +660,7 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
             "lib/fx_probe.ex" =>
               TracerFixtures.attr_module(
                 "FxProbe",
-                "{function_exported?(:queue, :new, 0), function_exported?(:sofs, :empty_set, 0)}"
+                "{function_exported?(:sofs, :empty_set, 0), function_exported?(Process, :set_label, 1), function_exported?(Mix.CLI, :main, 1)}"
               )
           }
         }
@@ -668,23 +669,27 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     traced = TracerFixtures.trace(proj, ["fx_probe"])
     assert {:ok, 0} = traced.result, traced.log
     modules = for e <- probes(traced), do: e["arg"]["module"]
-    assert "sofs" in modules
-    refute "queue" in modules
+    refute "sofs" in modules
+    refute "Elixir.Process" in modules
+    assert "Elixir.Mix.CLI" in modules
 
     assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
 
     assert reason ==
-             "compile-time probe of whether a module is loaded: sofs via erlang:function_exported/3"
+             "compile-time probe of whether a module is loaded: Elixir.Mix.CLI via erlang:function_exported/3"
   end
 
-  # Round 4, the ruling on R2-6: Mix's own modules loaded before the first
-  # dependency's compile on every way a user compiles one (measured per
-  # toolchain, `NccWorker.Tracer.MixBase`) count as loaded for the user:
-  # elixir_make's `function_exported?(Mix, :ensure_application!, 1)` passes.
+  # Round 4, the ruling on R2-6, measured at a dependency's mix.exs since
+  # round 5: the modules every way a user compiles a dependency has loaded
+  # by then (`NccWorker.Tracer.MixBase`) count as loaded for the user:
+  # elixir_make's `function_exported?(Mix, :ensure_application!, 1)` and
+  # oban's `function_exported?(Process, :set_label, 1)` pass.
   # Mix.CLI, loaded by the mix command but not under Mix.install, is outside
   # the list: its loaded-now probe refuses.
   for {expr, verdict} <- [
         {"function_exported?(Mix, :ensure_application!, 1)", :pass},
+        # oban 2.24's executor.ex (R3-4).
+        {"function_exported?(Process, :set_label, 1)", :pass},
         {"function_exported?(Mix.CLI, :main, 1)", :skip}
       ] do
     @expr expr

@@ -1,9 +1,11 @@
 defmodule NccWorker.Tracer.MixBase do
   @moduledoc """
-  Mix's own modules that are loaded before the first dependency's compile
-  runs any package code, on every way a user compiles a dependency, per
-  toolchain (otp-probe round 4, the ruling on R2-6): measured, not listed by
-  hand, by `priv/mix_base/measure.exs`, whose output (`priv/mix_base/<pair>.txt`)
+  The modules every way a user compiles a dependency has loaded by the
+  earliest point package code runs, the evaluation of the first
+  dependency's `mix.exs`, per toolchain (otp-probe round 4, the ruling on
+  R2-6; measured at `mix.exs` and for every module, not only Mix's, since
+  round 5, R3-4 and R3-8): measured, not listed by hand, by
+  `priv/mix_base/measure.exs`, whose output (`priv/mix_base/<pair>.txt`)
   is checked in and embedded here at compile time (the worker is an
   escript, which carries no `priv`).
 
