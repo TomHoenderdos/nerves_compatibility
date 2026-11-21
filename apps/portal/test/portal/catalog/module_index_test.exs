@@ -30,14 +30,17 @@ defmodule Portal.Catalog.ModuleIndexTest do
     out
   end
 
+  # As in production (round 6, R5-1): `hex_latest_version` is a nomination
+  # column, NULL for almost every package. The latest release comes from the
+  # Hex registry (`registry:`), never from the catalog.
   defp packages!(rows) do
     now = NaiveDateTime.utc_now()
 
     rows =
-      for {name, version, recent} <- rows,
+      for {name, _version, recent} <- rows,
           do: %{
             name: name,
-            hex_latest_version: version,
+            hex_latest_version: nil,
             hex_downloads_recent: recent,
             inserted_at: now,
             updated_at: now
@@ -45,6 +48,8 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
     Repo.insert_all("catalog_packages", rows)
   end
+
+  defp registry(versions), do: fn -> {:ok, versions} end
 
   defp sha(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
@@ -68,12 +73,15 @@ defmodule Portal.Catalog.ModuleIndexTest do
       {"money_tiny", "0.1.0", 12}
     ])
 
+    latest = Map.new(tarballs, fn {{n, v}, _} -> {n, v} end)
+
     opts = [
+      registry: registry(latest),
       tarball: fn n, v -> Map.fetch(tarballs, {n, v}) end,
       outer_checksum: fn n, v -> {:ok, sha(Map.fetch!(tarballs, {n, v}))} end
     ]
 
-    %{opts: opts, tarballs: tarballs}
+    %{opts: opts, tarballs: tarballs, latest: latest}
   end
 
   defp absent(module, declared, apps \\ nil),
@@ -113,6 +121,30 @@ defmodule Portal.Catalog.ModuleIndexTest do
     assert ModuleIndex.refusal([], []) == nil
     assert ModuleIndex.refusal(nil, []) == nil
     assert ModuleIndex.refusal([%{"kind" => "truncated"}], []) =~ "declared-absent probes"
+  end
+
+  # Round 6, R5-1, the reviewer's production-shaped case: money's
+  # `hex_latest_version` is NULL, as for 4,990 of the 5,008 candidates.
+  # The index still fetches money's latest release from the registry, and
+  # the bitcrowd_ecto `Money` record refuses.
+  test "a candidate whose catalog latest version is NULL is still indexed", %{opts: opts} do
+    assert Repo.query!(
+             "SELECT count(*) FROM catalog_packages WHERE hex_latest_version IS NOT NULL"
+           ).rows ==
+             [[0]]
+
+    assert %{to_fetch: 4} = ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
+    assert %{indexed: 4, complete: true} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
+    assert ModuleIndex.refusal([money()], ["ecto"]) =~ "also defined by money"
+  end
+
+  test "a registry that cannot be read is a failed run, and the index stays incomplete",
+       %{opts: opts} do
+    down = Keyword.put(opts, :registry, fn -> {:error, :hex_registry_unavailable} end)
+    assert %{complete: false, error: :hex_registry_unavailable} = ModuleIndex.refresh(down)
+    refute ModuleIndex.complete?()
+    assert ModuleIndex.refusal([money()], []) =~ "module index not complete"
   end
 
   # The reviewer's scratch case 1 (R3-1): an index holding only jason,
@@ -181,17 +213,17 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
   test "a dry run counts what a run would fetch and writes nothing", %{opts: opts} do
     assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
-             %{to_fetch: 4, unchanged: 0, below_threshold: 1}
+             %{to_fetch: 4, unchanged: 0, below_threshold: 1, not_in_registry: 0}
 
     refute ModuleIndex.complete?()
     assert %{runs: 0} = ModuleIndex.status()
     ModuleIndex.refresh(failing(opts, "amqp"))
 
     assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
-             %{to_fetch: 1, unchanged: 3, below_threshold: 1}
+             %{to_fetch: 1, unchanged: 3, below_threshold: 1, not_in_registry: 0}
   end
 
-  test "at most 4 downloads at a time, whatever is asked", %{opts: opts} do
+  test "at most 4 downloads at a time, whatever is asked", %{opts: opts, latest: latest} do
     counter = :counters.new(2, [])
     for i <- 1..10, do: packages!([{"many_#{i}", "1.0.0", 2_000}])
     stub = tarball(%{"lib/m.ex" => "defmodule Many do\nend\n"})
@@ -210,7 +242,10 @@ defmodule Portal.Catalog.ModuleIndexTest do
       lookup.(n, v)
     end
 
+    many = Map.new(1..10, &{"many_#{&1}", "1.0.0"})
+
     opts = [
+      registry: registry(Map.merge(latest, many)),
       tarball: counted,
       outer_checksum: fn
         "many_" <> _, _v -> {:ok, sha(stub)}
@@ -241,12 +276,12 @@ defmodule Portal.Catalog.ModuleIndexTest do
     assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
   end
 
-  test "a newer latest release replaces a package's modules", %{opts: opts} do
+  test "a newer latest release replaces a package's modules", %{opts: opts, latest: latest} do
     ModuleIndex.refresh(opts)
     newer = tarball(%{"lib/money.ex" => "defmodule MoneyTwo do\nend\n"})
-    Repo.query!("UPDATE catalog_packages SET hex_latest_version = '2.0.0' WHERE name = 'money'")
 
     opts = [
+      registry: registry(Map.put(latest, "money", "2.0.0")),
       tarball: fn
         "money", "2.0.0" -> {:ok, newer}
         n, v -> opts[:tarball].(n, v)

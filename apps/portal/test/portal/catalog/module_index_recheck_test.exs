@@ -48,14 +48,14 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
     Repo.insert_all("catalog_packages", [
       %{
         name: "money",
-        hex_latest_version: "1.14.0",
+        hex_latest_version: nil,
         hex_downloads_recent: 398_436,
         inserted_at: now,
         updated_at: now
       },
       %{
         name: "ex_money",
-        hex_latest_version: "5.24.2",
+        hex_latest_version: nil,
         hex_downloads_recent: 302_825,
         inserted_at: now,
         updated_at: now
@@ -87,6 +87,7 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
 
     %{
       opts: [
+        registry: fn -> {:ok, %{"money" => "1.14.0", "ex_money" => "5.24.2"}} end,
         tarball: fn n, _v -> {:ok, tarballs[n]} end,
         outer_checksum: fn n, _v -> {:ok, sha.(tarballs[n])} end
       ]

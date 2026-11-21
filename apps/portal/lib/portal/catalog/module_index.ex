@@ -31,7 +31,8 @@ defmodule Portal.Catalog.ModuleIndex do
       them itself.
 
   **Complete or nothing (round 5, R3-1).** A run (`refresh/1`) is a
-  generation of its own. It reads the latest release of every candidate
+  generation of its own. It reads the latest release, as the Hex registry
+  lists it (round 6, R5-1), of every candidate
   (`hex_downloads_recent >= min_recent/0`), its tarball checked against the
   registry's outer checksum, and takes the union of the modules its sources
   define (`Compatibility.HexModules`: literal definitions, leex and yecc
@@ -203,8 +204,8 @@ defmodule Portal.Catalog.ModuleIndex do
 
   Safe to start by hand on a host short on memory (round 4):
 
-    * `dry_run: true` reads nothing from Hex and writes nothing: it returns
-      `%{to_fetch, unchanged, below_threshold}`;
+    * `dry_run: true` reads only the registry and writes nothing: it
+      returns `%{to_fetch, unchanged, below_threshold, not_in_registry}`;
     * at most `max_concurrency/0` (4) packages are fetched and parsed at
       once (`:concurrency` may lower it, never raise it), each with its
       tarball in memory only while it is read (at most 16 MiB), and killed
@@ -214,24 +215,73 @@ defmodule Portal.Catalog.ModuleIndex do
       stored and the next run fetches only the rest (and confirms the rest
       without a fetch).
 
-  Options: `:tarball` and `:outer_checksum` (`fn name, version -> {:ok,
+  Each candidate's latest release is the Hex registry's
+  (`Portal.HexRegistry.snapshot/1`, read once at the run's start), never
+  `catalog_packages.hex_latest_version`; a registry that cannot be read is a
+  failed run that changes nothing. The dry run reads the registry too.
+
+  Options: `:registry` (`fn -> {:ok, %{name => latest version}} | {:error,
+  why} end`), `:tarball` and `:outer_checksum` (`fn name, version -> {:ok,
   value} | {:error, why} end`, default `Portal.HexDeps`), `:limit`,
   `:concurrency`, `:dry_run`, `:recheck`.
   """
   @spec refresh(keyword()) :: %{atom() => term()}
   def refresh(opts \\ []) do
-    rows = candidates(Keyword.get(opts, :limit, 100_000))
+    registry = Keyword.get(opts, :registry, &registry/0)
 
-    {todo, unchanged} =
-      Enum.split_with(rows, fn [_name, version, indexed] -> version != indexed end)
+    case registry.() do
+      {:ok, latest} ->
+        rows = candidates(Keyword.get(opts, :limit, 100_000), latest)
+        {listed, unlisted} = Enum.split_with(rows, fn [_name, version, _indexed] -> version end)
+        {todo, unchanged} = Enum.split_with(listed, fn [_name, v, indexed] -> v != indexed end)
 
-    if Keyword.get(opts, :dry_run, false) do
-      %{to_fetch: length(todo), unchanged: length(unchanged), below_threshold: below_threshold()}
-    else
-      {:ok, generation} = start_run(length(rows))
-      result = run(generation, rows, opts)
-      finish(generation, rows, result, opts)
+        if Keyword.get(opts, :dry_run, false) do
+          %{
+            to_fetch: length(todo),
+            unchanged: length(unchanged),
+            below_threshold: below_threshold(),
+            not_in_registry: length(unlisted)
+          }
+        else
+          {:ok, generation} = start_run(length(listed))
+          :ok = store_candidates(rows, generation)
+          result = run(generation, listed, opts)
+          finish(generation, listed, result, opts)
+        end
+
+      {:error, why} ->
+        Logger.warning(
+          "module index: the Hex registry could not be read: #{inspect(why, limit: 5)}"
+        )
+
+        %{complete: false, error: why}
     end
+  end
+
+  # The latest release of every package the registry lists, by name
+  # (`Portal.HexRegistry`: `/names` joined with `/versions`, signed by hex.pm).
+  defp registry do
+    case Portal.HexRegistry.snapshot() do
+      {:ok, entries} -> {:ok, Map.new(entries, &{&1.name, &1.latest_version})}
+      {:error, _} = error -> error
+    end
+  end
+
+  # Every candidate with the registry's latest version at this run's start
+  # (NULL: the registry does not list it), for `complete?/0`.
+  defp store_candidates(rows, generation) do
+    rows
+    |> Enum.chunk_every(1_000)
+    |> Enum.each(fn chunk ->
+      Repo.insert_all(
+        "catalog_module_index_candidates",
+        Enum.map(chunk, fn [name, version, _] ->
+          %{package: name, version: version, generation: generation}
+        end),
+        on_conflict: {:replace, [:version, :generation]},
+        conflict_target: [:package]
+      )
+    end)
   end
 
   @doc "Starts a run of `candidates` packages: its generation, which makes the index incomplete until it finishes complete."
@@ -286,8 +336,8 @@ defmodule Portal.Catalog.ModuleIndex do
       Repo.query!(
         """
         SELECT count(*) FROM catalog_module_index_packages i
-        JOIN catalog_packages p ON p.name = i.package
-        WHERE i.package = ANY($1) AND i.generation = $2 AND i.version = p.hex_latest_version
+        JOIN catalog_module_index_candidates c ON c.package = i.package
+        WHERE i.package = ANY($1) AND i.generation = $2 AND i.version = c.version
         """,
         [names, generation]
       )
@@ -320,30 +370,31 @@ defmodule Portal.Catalog.ModuleIndex do
     latest != generation
   end
 
-  defp candidates(limit) do
+  # Every package with at least `min_recent/0` recent downloads, most
+  # downloaded first, as `[name, registry latest version or nil, indexed
+  # version or nil]`. Never `hex_latest_version`, a nomination column
+  # (round 6, R5-1).
+  defp candidates(limit, latest) do
     %{rows: rows} =
       Repo.query!(
         """
-        SELECT p.name, p.hex_latest_version, i.version
+        SELECT p.name, i.version
         FROM catalog_packages p
         LEFT JOIN catalog_module_index_packages i ON i.package = p.name
-        WHERE coalesce(p.hex_downloads_recent, 0) >= $1 AND p.hex_latest_version IS NOT NULL
+        WHERE coalesce(p.hex_downloads_recent, 0) >= $1
         ORDER BY p.hex_downloads_recent DESC, p.name
         LIMIT $2
         """,
         [@min_recent, limit]
       )
 
-    rows
+    for [name, indexed] <- rows, do: [name, Map.get(latest, name), indexed]
   end
 
   defp below_threshold do
     %{rows: [[n]]} =
       Repo.query!(
-        """
-        SELECT count(*) FROM catalog_packages
-        WHERE coalesce(hex_downloads_recent, 0) < $1 AND hex_latest_version IS NOT NULL
-        """,
+        "SELECT count(*) FROM catalog_packages WHERE coalesce(hex_downloads_recent, 0) < $1",
         [@min_recent]
       )
 
