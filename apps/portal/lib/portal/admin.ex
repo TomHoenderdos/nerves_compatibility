@@ -666,6 +666,24 @@ defmodule Portal.Admin do
     end
   end
 
+  @doc """
+  Turns relocated builds (`Portal.Precompiled.Relocated`) on or off: the
+  `relocated_enabled` setting under which they are listed under a version's
+  `relocated` object and their files served. Off withdraws every one at the
+  next batch; the rows already stored stay, unserved.
+  """
+  @spec set_relocated_enabled(boolean(), %{username: String.t()}) ::
+          {:ok, Portal.Settings.Setting.t()} | {:error, term()}
+  def set_relocated_enabled(enabled, actor) when is_boolean(enabled) do
+    with {:ok, setting} <- Portal.Settings.save(%{relocated_enabled: enabled}) do
+      Logger.warning(
+        "Relocated builds turned #{if enabled, do: "on", else: "off"} by #{actor.username}"
+      )
+
+      {:ok, setting}
+    end
+  end
+
   defp remote_mode(mode) when mode in ~w(auto on off), do: {:ok, String.to_existing_atom(mode)}
   defp remote_mode(_mode), do: :error
 

@@ -19,7 +19,9 @@ defmodule Portal.Reports.Requeue do
        before 0.8.0 (or one that names no version) for a version with a
        counted foreign priv build, or of kino (foreign priv spec 4.4, item
        5): that client never reads those builds, so a rebuild changes
-       nothing for it.
+       nothing for it. Likewise `skipped:relocated_client`: one from a client
+       before 0.9.0 for a version with a counted relocated build
+       (`Portal.Precompiled.Relocated`).
     1. The tuple: `(package, version, system, system_version)` for a report
        with a Nerves system, `(package, version, toolchain)` for a host report
        (`Portal.Toolchains.from_versions/2` of its Elixir and OTP), and
@@ -104,6 +106,8 @@ defmodule Portal.Reports.Requeue do
   @codes ["not_built_version", "not_built_target", "closure_mismatch"]
   # The first client that reads a version's `foreign_priv` object.
   @foreign_priv_client Version.parse!("0.8.0")
+  # The first client that reads a version's `relocated` object.
+  @relocated_client Version.parse!("0.9.0")
   @incomplete ~w(available scheduled executing retryable)
   @judged ~w(pass fail skipped)
   # Only rows of a variant this release knows are its verdicts.
@@ -284,6 +288,7 @@ defmodule Portal.Reports.Requeue do
   # Everything the database alone decides, before Hex is asked.
   defp precheck(report, line, known) do
     with :ok <- old_client_foreign(report, line),
+         :ok <- old_client_relocated(report, line),
          {:ok, key} <- key(report, line),
          :ok <- known(known, line.package),
          :ok <- buildable(key) do
@@ -301,6 +306,37 @@ defmodule Portal.Reports.Requeue do
   end
 
   defp old_client_foreign(_report, _line), do: :ok
+
+  # A client before 0.9.0 never reads a version's relocated builds.
+  defp old_client_relocated(report, %{reason_code: "not_built_" <> _} = line) do
+    if before?(report.client, @relocated_client) and
+         relocated_version?(line.package, line.version),
+       do: {:skip, "relocated_client"},
+       else: :ok
+  end
+
+  defp old_client_relocated(_report, _line), do: :ok
+
+  defp before?(client, first) when is_binary(client) do
+    case Version.parse(client) do
+      {:ok, version} -> Version.compare(version, first) == :lt
+      :error -> true
+    end
+  end
+
+  defp before?(_client, _first), do: true
+
+  defp relocated_version?(package, version) do
+    Repo.exists?(
+      from(t in "catalog_toolchain_builds",
+        join: p in "catalog_packages",
+        on: p.id == t.package_id,
+        where:
+          p.name == ^package and t.version == ^version and
+            t.relocation_run_id == t.run_id and is_nil(t.revoked_at)
+      )
+    )
+  end
 
   defp before_080?(client) when is_binary(client) do
     case Version.parse(client) do

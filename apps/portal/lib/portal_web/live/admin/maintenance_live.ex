@@ -114,6 +114,7 @@ defmodule PortalWeb.Admin.MaintenanceLive do
       host_native_enabled: Portal.Settings.get().host_native_enabled,
       deterministic_enabled: Portal.Settings.get().deterministic_builds_enabled,
       foreign_priv_enabled: Portal.Settings.get().foreign_priv_enabled,
+      relocated_enabled: Portal.Settings.get().relocated_enabled,
       worlds: Portal.Toolchains.worlds(),
       world_top_packages: Portal.Toolchains.world_top_packages(),
       rows: nil
@@ -251,6 +252,23 @@ defmodule PortalWeb.Admin.MaintenanceLive do
              :info,
              "Deterministic builds turned #{if enabled, do: "on", else: "off"}."
            )
+           |> load_panels()}
+
+        {:error, reason} ->
+          {:noreply, socket |> put_flash(:error, AdminMessages.error(reason)) |> load_panels()}
+      end
+    end)
+  end
+
+  def handle_event("toggle_relocated", params, socket) do
+    as_admin(socket, fn socket, user ->
+      enabled = params["enabled"] == "true"
+
+      case Portal.Admin.set_relocated_enabled(enabled, user) do
+        {:ok, _setting} ->
+          {:noreply,
+           socket
+           |> put_flash(:info, "Relocated builds turned #{if enabled, do: "on", else: "off"}.")
            |> load_panels()}
 
         {:error, reason} ->
@@ -966,6 +984,37 @@ defmodule PortalWeb.Admin.MaintenanceLive do
               {if @toolchains.foreign_priv_enabled,
                 do: "Turn foreign priv builds off",
                 else: "Turn foreign priv builds on"}
+            </button>
+          </div>
+
+          <div
+            id="relocated-builds"
+            class="mt-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div>
+              <h3 class="font-semibold">Relocated builds</h3>
+              <p class="mt-1 text-sm leading-6 text-base-content/70">
+                <span id="relocated-state">
+                  Relocated builds are {if @toolchains.relocated_enabled, do: "on", else: "off"}.
+                </span>
+                Builds whose beams hold their build's deps or build path, rewritten to the
+                project's own paths at install by clients 0.9.0 and later. Off withdraws every
+                one at the next batch.
+              </p>
+            </div>
+            <button
+              type="button"
+              id="relocated-toggle"
+              phx-click="toggle_relocated"
+              phx-value-enabled={to_string(not @toolchains.relocated_enabled)}
+              class={[
+                "btn btn-sm",
+                if(@toolchains.relocated_enabled, do: "btn-ghost", else: "btn-primary")
+              ]}
+            >
+              {if @toolchains.relocated_enabled,
+                do: "Turn relocated builds off",
+                else: "Turn relocated builds on"}
             </button>
           </div>
 

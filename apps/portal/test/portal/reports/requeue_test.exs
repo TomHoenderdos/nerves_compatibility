@@ -139,6 +139,38 @@ defmodule Portal.Reports.RequeueTest do
     refute decision(other) == "skipped:foreign_priv_client"
   end
 
+  # S4: a client before 0.9.0 never reads a version's `relocated` object.
+  test "a not_built miss from a client before 0.9.0 for a relocated version triggers nothing" do
+    record = %{
+      "deps" => "/work/proj/deps",
+      "build" => "/work/proj/_build/host",
+      "files" => [
+        %{
+          "path" => "ebin/fine.beam",
+          "occurrences" => [
+            %{
+              "chunk" => "LitT",
+              "index" => 0,
+              "term" => [],
+              "kind" => "binary",
+              "parts" => ["", "deps", "/fine/c_include"]
+            }
+          ]
+        }
+      ]
+    }
+
+    Portal.PrecompiledFixtures.ingest_toolchain_build("fine", "0.2.0", relocation: record)
+
+    old = miss!("fine", "0.2.0", body: %{"client" => "0.8.0"})
+    assert :ok = requeue(old)
+    assert decision(old) == "skipped:relocated_client"
+
+    new = miss!("fine", "0.2.0", body: %{"client" => "0.9.0"})
+    assert :ok = requeue(new)
+    refute decision(new) == "skipped:relocated_client"
+  end
+
   test "an unknown package is skipped and nothing is asked of Hex" do
     Process.delete({Portal.Test.FakeHexDeps, :releases})
     id = miss!("never_seen", "1.0.0")

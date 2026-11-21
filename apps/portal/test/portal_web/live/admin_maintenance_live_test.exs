@@ -469,6 +469,30 @@ defmodule PortalWeb.AdminMaintenanceLiveTest do
     end
   end
 
+  describe "relocated builds" do
+    test "the toggle turns relocated builds on and off", %{conn: conn} do
+      {view, _html} = live_maintenance(conn)
+
+      refute Portal.Settings.get().relocated_enabled
+      assert view |> element("#relocated-state") |> render() =~ "off"
+
+      view |> element("#relocated-toggle") |> render_click()
+      assert Portal.Settings.get().relocated_enabled
+      assert view |> element("#relocated-state") |> render() =~ "on"
+
+      view |> element("#relocated-toggle") |> render_click()
+      refute Portal.Settings.get().relocated_enabled
+    end
+
+    test "a demoted admin cannot turn it on", %{conn: conn, admin: admin} do
+      {view, _html} = live_maintenance(conn)
+      demote!(admin)
+
+      view |> element("#relocated-toggle") |> render_click()
+      refute Portal.Settings.get().relocated_enabled
+    end
+  end
+
   describe "world builds" do
     test "the toggle turns world builds on and off and the counts show beside the backlog",
          %{conn: conn} do
