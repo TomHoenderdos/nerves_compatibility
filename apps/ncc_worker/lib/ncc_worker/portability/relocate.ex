@@ -192,15 +192,8 @@ defmodule NccWorker.Portability.Relocate do
        else: {:ok, others}
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   defp beam_occurrences(path, slots) do
-    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_beam_bytes <-
-           File.lstat(path),
-         {:ok, bytes} <- File.read(path) do
-      Relocation.occurrences(bytes, slots)
-    else
-      _ -> :error
-    end
+    with {:ok, bytes} <- read_file(path), do: Relocation.occurrences(bytes, slots)
   end
 
   @doc """
@@ -312,27 +305,32 @@ defmodule NccWorker.Portability.Relocate do
   end
 
   defp decide(verdict, held, second, slots, digests) do
-    other = Map.get(second, :relocate)
+    case second_problem(held, second, digests) do
+      nil -> prove(verdict, held, second.relocate, slots)
+      why -> refused(verdict, why)
+    end
+  end
 
+  defp second_problem(held, second, digests) do
     cond do
       get_in(second, [:observations, "trace_stats", "judge_compile"]) != "finished" ->
-        refused(verdict, "the second build did not finish")
+        "the second build did not finish"
 
-      not is_map(other) ->
-        why = Map.get(second, :relocate_refused) || second.reason || "pass"
-        refused(verdict, "the second build refused (#{why})")
-
-      other.apps != held.apps ->
-        refused(verdict, "the second build held other apps")
-
-      other.passed.status != :pass or facts(other.passed) != facts(held.passed) ->
-        refused(verdict, "the second build's pass differs")
-
-      not same_digest?(digests) ->
-        refused(verdict, "the first build changed while the second ran")
+      not is_map(Map.get(second, :relocate)) ->
+        "the second build refused (#{Map.get(second, :relocate_refused) || second.reason || "pass"})"
 
       true ->
-        prove(verdict, held, other, slots)
+        held_problem(held, second.relocate, digests)
+    end
+  end
+
+  defp held_problem(held, other, digests) do
+    cond do
+      other.apps != held.apps -> "the second build held other apps"
+      other.passed.status != :pass -> "the second build's pass differs"
+      facts(other.passed) != facts(held.passed) -> "the second build's pass differs"
+      not same_digest?(digests) -> "the first build changed while the second ran"
+      true -> nil
     end
   end
 
@@ -377,23 +375,31 @@ defmodule NccWorker.Portability.Relocate do
   defp read_ebin(ebin) when is_binary(ebin) do
     with {:ok, names} <- File.ls(ebin),
          true <- length(names) <= @max_files do
-      Enum.reduce_while(Enum.sort(names), {:ok, %{}}, fn name, {:ok, acc} ->
-        path = Path.join(ebin, name)
-
-        with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_beam_bytes <-
-               File.lstat(path),
-             {:ok, bytes} <- File.read(path) do
-          {:cont, {:ok, Map.put(acc, name, bytes)}}
-        else
-          _ -> {:halt, :error}
-        end
-      end)
+      Enum.reduce_while(Enum.sort(names), {:ok, %{}}, &read_named(ebin, &1, &2))
     else
       _ -> :error
     end
   end
 
   defp read_ebin(_ebin), do: :error
+
+  defp read_named(ebin, name, {:ok, acc}) do
+    case read_file(Path.join(ebin, name)) do
+      {:ok, bytes} -> {:cont, {:ok, Map.put(acc, name, bytes)}}
+      :error -> {:halt, :error}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_file(path) do
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_beam_bytes <-
+           File.lstat(path),
+         {:ok, bytes} <- File.read(path) do
+      {:ok, bytes}
+    else
+      _ -> :error
+    end
+  end
 
   # The first build's refusal, as it was, with why it stayed one.
   defp refused(verdict, why),

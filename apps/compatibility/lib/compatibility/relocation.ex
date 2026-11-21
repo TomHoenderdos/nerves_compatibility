@@ -109,12 +109,11 @@ defmodule Compatibility.Relocation do
     names = a |> Map.keys() |> Enum.sort()
 
     if names == b |> Map.keys() |> Enum.sort() do
-      Enum.reduce_while(names, {:ok, %{}}, fn name, {:ok, acc} ->
-        case prove_file(name, Map.fetch!(a, name), from, Map.fetch!(b, name), to) do
-          :same -> {:cont, {:ok, acc}}
-          {:ok, occs} -> {:cont, {:ok, Map.put(acc, name, occs)}}
-          {:refuse, why} -> {:halt, {:refuse, "#{name}: #{why}"}}
-        end
+      names
+      |> flat_map_ok(&prove_named(&1, a, from, b, to))
+      |> then(fn
+        {:ok, proven} -> {:ok, Map.new(proven)}
+        refuse -> refuse
       end)
     else
       {:refuse, "the second build's ebin holds other files"}
@@ -122,6 +121,36 @@ defmodule Compatibility.Relocation do
   end
 
   def prove_ebin(_a, _from, _b, _to), do: {:refuse, "no ebin"}
+
+  defp prove_named(name, a, from, b, to) do
+    case prove_file(name, Map.fetch!(a, name), from, Map.fetch!(b, name), to) do
+      :same -> {:ok, []}
+      {:ok, occs} -> {:ok, [{name, occs}]}
+      {:refuse, why} -> {:refuse, "#{name}: #{why}"}
+    end
+  end
+
+  # `fun` over `items`, its `{:ok, list}` results joined in order; the first
+  # other result is the result.
+  defp flat_map_ok(items, fun) do
+    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+      case fun.(item) do
+        {:ok, found} -> {:cont, {:ok, acc ++ found}}
+        other -> {:halt, other}
+      end
+    end)
+  end
+
+  # `fun` folded over `items` from `{:ok, acc}`; the first other result is
+  # the result.
+  defp fold_ok(items, acc, fun) do
+    Enum.reduce_while(items, {:ok, acc}, fn item, {:ok, acc} ->
+      case fun.(item, acc) do
+        {:ok, acc} -> {:cont, {:ok, acc}}
+        other -> {:halt, other}
+      end
+    end)
+  end
 
   defp prove_file(name, a, from, b, to) do
     cond do
@@ -289,12 +318,7 @@ defmodule Compatibility.Relocation do
     needles = needles(slots)
 
     chunks
-    |> Enum.reduce_while({:ok, []}, fn {id, data}, {:ok, acc} ->
-      case scan_chunk(id, data, chunks, slots, needles) do
-        {:ok, found} -> {:cont, {:ok, acc ++ found}}
-        {:refuse, _} = refuse -> {:halt, refuse}
-      end
-    end)
+    |> flat_map_ok(fn {id, data} -> scan_chunk(id, data, chunks, slots, needles) end)
     |> then(fn
       {:ok, occs} when length(occs) > @max_occurrences -> {:refuse, "too many paths"}
       other -> other
@@ -323,17 +347,14 @@ defmodule Compatibility.Relocation do
     with {:ok, entries} <- literals(data) do
       entries
       |> Enum.with_index()
-      |> Enum.reduce_while({:ok, []}, fn {etf, i}, {:ok, acc} ->
-        if contains?(etf, needles) do
-          case term_occurrences(etf, slots, needles, "LitT", i) do
-            {:ok, found} -> {:cont, {:ok, acc ++ found}}
-            refuse -> {:halt, refuse}
-          end
-        else
-          {:cont, {:ok, acc}}
-        end
-      end)
+      |> flat_map_ok(&literal_entry(&1, slots, needles))
     end
+  end
+
+  defp literal_entry({etf, i}, slots, needles) do
+    if contains?(etf, needles),
+      do: term_occurrences(etf, slots, needles, "LitT", i),
+      else: {:ok, []}
   end
 
   defp attr_occurrences(data, slots, needles) do
@@ -361,12 +382,12 @@ defmodule Compatibility.Relocation do
     end
   end
 
+  defp decode(<<131, 80, _::binary>>), do: {:refuse, "a compressed term"}
+
   # Misc.BinToTerm, reviewed: only a literal or attribute term that holds a
   # slot value is decoded, at most 4 MiB and never compressed; it may make
   # atoms (the worker's own run VM) and nothing in it is ever called.
   # sobelow_skip ["Misc.BinToTerm"]
-  defp decode(<<131, 80, _::binary>>), do: {:refuse, "a compressed term"}
-
   defp decode(etf) when byte_size(etf) <= @max_term_bytes do
     {:ok, :erlang.binary_to_term(etf)}
   rescue
@@ -418,14 +439,8 @@ defmodule Compatibility.Relocation do
 
   defp leaves(_term, _path, _needles), do: {:ok, []}
 
-  defp all_leaves(indexed, path, needles) do
-    Enum.reduce_while(indexed, {:ok, []}, fn {item, i}, {:ok, acc} ->
-      case leaves(item, path ++ [i], needles) do
-        {:ok, found} -> {:cont, {:ok, acc ++ found}}
-        refuse -> {:halt, refuse}
-      end
-    end)
-  end
+  defp all_leaves(indexed, path, needles),
+    do: flat_map_ok(indexed, fn {item, i} -> leaves(item, path ++ [i], needles) end)
 
   defp deep_contains?(term, needles), do: match?({:ok, [_ | _]}, leaves(term, [], needles))
 
@@ -523,22 +538,26 @@ defmodule Compatibility.Relocation do
   defp compact_u(n) when n < 2048, do: <<div(n, 256)::3, 1::2, 0::3, rem(n, 256)::8>>
 
   defp atom_occurrences(data, chunks, slots, needles) do
-    if contains?(data, needles) do
-      with {:ok, {_format, names}} <- atoms(data) do
-        named = names_in_code(chunks)
+    if contains?(data, needles),
+      do: atom_paths(data, chunks, slots, needles),
+      else: {:ok, []}
+  end
 
-        names
-        |> Enum.with_index(1)
-        |> Enum.filter(fn {name, _} -> contains?(name, needles) end)
-        |> Enum.reduce_while({:ok, []}, fn {name, i}, {:ok, acc} ->
-          if i == 1 or MapSet.member?(named, i),
-            do: {:halt, {:refuse, "a path in a module or function name"}},
-            else: {:cont, {:ok, acc ++ [atom_occurrence(i, name, slots)]}}
-        end)
-      end
-    else
-      {:ok, []}
+  defp atom_paths(data, chunks, slots, needles) do
+    with {:ok, {_format, names}} <- atoms(data) do
+      named = names_in_code(chunks)
+
+      names
+      |> Enum.with_index(1)
+      |> Enum.filter(fn {name, _} -> contains?(name, needles) end)
+      |> flat_map_ok(&named_atom(&1, named, slots))
     end
+  end
+
+  defp named_atom({name, i}, named, slots) do
+    if i == 1 or MapSet.member?(named, i),
+      do: {:refuse, "a path in a module or function name"},
+      else: {:ok, [atom_occurrence(i, name, slots)]}
   end
 
   defp atom_occurrence(i, name, slots),
@@ -670,11 +689,12 @@ defmodule Compatibility.Relocation do
     with :ok <- known_chunks(by_chunk),
          {:ok, chunks} <- rewrite(chunks, "LitT", by_chunk, &rewrite_literals(&1, &2, from, to)),
          {:ok, chunks} <- rewrite(chunks, "AtU8", by_chunk, &rewrite_atoms(&1, &2, from, to)),
-         {:ok, chunks} <- rewrite(chunks, "Line", by_chunk, &rewrite_lines(&1, &2, from, to)),
-         new = md5(chunks),
-         chunks = put_uniq(chunks, new),
-         {:ok, chunks} <- rewrite_attr(chunks, Map.get(by_chunk, "Attr", []), from, to, old, new) do
-      {:ok, chunks}
+         {:ok, chunks} <- rewrite(chunks, "Line", by_chunk, &rewrite_lines(&1, &2, from, to)) do
+      new = md5(chunks)
+
+      chunks
+      |> put_uniq(new)
+      |> rewrite_attr(Map.get(by_chunk, "Attr", []), from, to, old, new)
     end
   end
 
@@ -710,24 +730,19 @@ defmodule Compatibility.Relocation do
   defp rewrite_entries(entries, by_index, from, to) do
     entries
     |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {etf, i}, {:ok, acc} ->
-      case Map.get(by_index, i) do
-        nil ->
-          {:cont, {:ok, [etf | acc]}}
-
-        occs ->
-          case rewrite_term(etf, occs, from, to) do
-            {:ok, term} -> {:cont, {:ok, [:erlang.term_to_binary(term, @literal_opts) | acc]}}
-            refuse -> {:halt, refuse}
-          end
-      end
-    end)
-    |> then(fn
-      {:ok, acc} when length(acc) == length(entries) -> {:ok, Enum.reverse(acc)}
-      {:ok, _} -> {:refuse, "an occurrence past the literal table"}
-      refuse -> refuse
-    end)
+    |> flat_map_ok(&rewrite_entry(&1, by_index, from, to))
     |> check_indices(by_index, length(entries))
+  end
+
+  defp rewrite_entry({etf, i}, by_index, from, to) do
+    case Map.get(by_index, i) do
+      nil ->
+        {:ok, [etf]}
+
+      occs ->
+        with {:ok, term} <- rewrite_term(etf, occs, from, to),
+             do: {:ok, [:erlang.term_to_binary(term, @literal_opts)]}
+    end
   end
 
   defp check_indices({:ok, _} = ok, by_index, count) do
@@ -739,15 +754,11 @@ defmodule Compatibility.Relocation do
   defp check_indices(refuse, _by_index, _count), do: refuse
 
   defp rewrite_term(etf, occs, from, to) do
-    with {:ok, term} <- decode(etf) do
-      Enum.reduce_while(occs, {:ok, term}, fn occ, {:ok, term} ->
-        case update_in_term(term, occ["term"], &replace(&1, occ, from, to)) do
-          {:ok, term} -> {:cont, {:ok, term}}
-          refuse -> {:halt, refuse}
-        end
-      end)
-    end
+    with {:ok, term} <- decode(etf), do: fold_ok(occs, term, &rewrite_at(&1, &2, from, to))
   end
+
+  defp rewrite_at(occ, term, from, to),
+    do: update_in_term(term, occ["term"], &replace(&1, occ, from, to))
 
   # The value at `path` replaced by `fun`'s result.
   defp update_in_term(term, [], fun), do: fun.(term)
@@ -804,6 +815,10 @@ defmodule Compatibility.Relocation do
   defp as_kind("binary", s), do: {:ok, s}
   defp as_kind("charlist", s), do: {:ok, String.to_charlist(s)}
 
+  # DOS.StringToAtom, reviewed: an atom the beam itself holds, at the other
+  # paths, which loading the relocated beam would make anyway; at most one
+  # per recorded occurrence, and at most 255 characters.
+  # sobelow_skip ["DOS.StringToAtom"]
   defp as_kind("atom", s) do
     if String.length(s) <= 255,
       do: {:ok, String.to_atom(s)},
@@ -918,15 +933,10 @@ defmodule Compatibility.Relocation do
   end
 
   defp rewrite_attrs(attrs, occs, from, to) do
-    Enum.reduce_while(occs, {:ok, attrs}, fn occ, {:ok, attrs} ->
-      if occ["index"] == 0 do
-        case update_in_term(attrs, occ["term"], &replace(&1, occ, from, to)) do
-          {:ok, attrs} -> {:cont, {:ok, attrs}}
-          refuse -> {:halt, refuse}
-        end
-      else
-        {:halt, {:refuse, "an occurrence past the attributes"}}
-      end
+    fold_ok(occs, attrs, fn occ, attrs ->
+      if occ["index"] == 0,
+        do: rewrite_at(occ, attrs, from, to),
+        else: {:refuse, "an occurrence past the attributes"}
     end)
   end
 

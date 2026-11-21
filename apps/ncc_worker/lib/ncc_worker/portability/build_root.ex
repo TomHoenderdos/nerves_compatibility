@@ -109,17 +109,19 @@ defmodule NccWorker.Portability.BuildRoot do
     with :ok <- ebin_dir(ebin) do
       ebin
       |> files("*.beam")
-      |> Enum.reduce_while({:ok, [], []}, fn path, {:ok, refusing, observed} ->
-        name = Path.basename(path, ".beam")
-
-        case check_beam(path, roots, closure_file?, dir?) do
-          {:ok, []} -> {:cont, {:ok, refusing, observed}}
-          {:ok, list} -> {:cont, {:ok, refusing, [{name, list} | observed]}}
-          {:refuse, _} -> {:cont, {:ok, [name | refusing], observed}}
-          {:error, _} = error -> {:halt, error}
-        end
-      end)
+      |> Enum.reduce_while({:ok, [], []}, &judged_beam(&1, &2, roots, closure_file?, dir?))
       |> recompile_refusals(ebin)
+    end
+  end
+
+  defp judged_beam(path, {:ok, refusing, observed}, roots, closure_file?, dir?) do
+    name = Path.basename(path, ".beam")
+
+    case check_beam(path, roots, closure_file?, dir?) do
+      {:ok, []} -> {:cont, {:ok, refusing, observed}}
+      {:ok, list} -> {:cont, {:ok, refusing, [{name, list} | observed]}}
+      {:refuse, _} -> {:cont, {:ok, [name | refusing], observed}}
+      {:error, _} = error -> {:halt, error}
     end
   end
 

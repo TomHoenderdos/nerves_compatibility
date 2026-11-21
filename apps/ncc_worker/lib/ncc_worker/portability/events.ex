@@ -550,18 +550,21 @@ defmodule NccWorker.Portability.Events do
   # mix.exs is evaluated (`Context.absent_from_tree?/3`: a wildcard over
   # `guides/` the package left out), is decided by the same check: absent
   # when checked, absent on the user's side. A missing path under any
-  # dependency's priv refuses first (`Context.missing_under_priv?/2`).
+  # dependency's priv refuses first (`Context.missing_under_priv?/2`). A
+  # relocation's holder beam read by another window is a holder call first.
   defp readable(e, ctx, path, owner) do
     real = Context.resolve(ctx, path, owner)
 
-    holder = Context.holder_ebin_app(ctx, real)
+    case Context.holder_ebin_app(ctx, real) do
+      holder when holder != nil and holder != owner -> root_holder(e, ctx, owner)
+      _ -> readable_real(e, ctx, path, owner, real)
+    end
+  end
 
+  defp readable_real(e, ctx, path, owner, real) do
     cond do
       Context.missing_under_priv?(ctx, real) ->
         {:refuse, host_read(e, path)}
-
-      holder != nil and holder != owner ->
-        root_holder(e, ctx, owner)
 
       Context.readable?(ctx, real) or absent_in_mix_exs?(e, ctx, owner, real) ->
         tree_read(e, ctx, real)
