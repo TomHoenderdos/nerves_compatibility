@@ -3119,11 +3119,14 @@ defmodule NccWorker.Portability do
   # `:unverified`): every release of the lock but a closure dependency Mix
   # builds itself (`"mix"`) whose verified tarball holds a
   # `rebar.config.script`, `:reviewed` when it is a `ReviewedScripts`
-  # release and `:unreviewed` otherwise. `:unverified` (it may hold one, or
-  # one that is not what was reviewed): a tarball that cannot be verified or
-  # read, a script member that is no regular file (review N5: Mix follows a
-  # link), or a `rebar.config.script` on disk under the dependencies' dir
-  # whose tarball holds none. Public for tests.
+  # release whose tree on disk was exactly its verified tarball's before the
+  # compile (the tree check, `ctx.trees`: Mix evaluates the files there,
+  # review S4) and `:unreviewed` when it is no reviewed release.
+  # `:unverified` (it may hold one, or one that is not what was reviewed): a
+  # tarball that cannot be verified or read, a script member that is no
+  # regular file (review N5: Mix follows a link), a `rebar.config.script` on
+  # disk under the dependencies' dir whose tarball holds none, or a reviewed
+  # release whose tree check is not "ok". Public for tests.
   @spec script_releases(Context.t()) :: [map()]
   def script_releases(%Context{hex: {home, releases}} = ctx) do
     for app <- releases |> Map.keys() |> Enum.sort(),
@@ -3140,12 +3143,21 @@ defmodule NccWorker.Portability do
   defp script_release(ctx, app, %{name: name, version: version} = release, bytes) do
     case ReviewedScripts.script_members(bytes) do
       {:ok, :scripted} ->
-        sum = Map.get(release, :checksum)
+        entry = %{app: app, release: "#{name} #{version}"}
 
-        status =
-          if ReviewedScripts.reviewed?(name, version, sum), do: :reviewed, else: :unreviewed
+        cond do
+          not ReviewedScripts.reviewed?(name, version, Map.get(release, :checksum)) ->
+            Map.put(entry, :status, :unreviewed)
 
-        %{app: app, release: "#{name} #{version}", status: status}
+          match?({:ok, _}, Map.get(ctx.trees, app)) ->
+            Map.put(entry, :status, :reviewed)
+
+          true ->
+            Map.merge(entry, %{
+              status: :unverified,
+              why: "its tree was not its verified tarball's"
+            })
+        end
 
       {:ok, :none} ->
         if script_on_disk?(ctx, app),

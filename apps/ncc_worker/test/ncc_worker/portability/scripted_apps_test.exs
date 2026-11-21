@@ -61,6 +61,8 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
 
     ctx = %Context{
       deps_path: deps_path,
+      # The tree check before the compile (review S4).
+      trees: %{"gproc" => {:ok, %{}}},
       hex: {home, releases},
       deps: %{
         "gproc" => dep.("rebar3"),
@@ -90,5 +92,25 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
              %{app: "r3_dep", release: "r3_dep 0.1.0", status: :unreviewed},
              %{app: "unknown_dep", release: "unknown_dep 0.1.0", status: :unreviewed}
            ]
+
+    # Review S4: a reviewed release counts only when its tree on disk was its
+    # verified tarball's before the compile; Mix evaluates the files there.
+    for tree <- [{:unverified, "tarball has links"}, {:differs, "modified file x"}, nil] do
+      trees = if tree, do: %{"gproc" => tree}, else: %{}
+
+      [gproc] =
+        ctx
+        |> Map.put(:trees, trees)
+        |> Portability.script_releases()
+        |> Enum.filter(&(&1.app == "gproc"))
+
+      assert %{
+               status: :unverified,
+               release: "gproc 1.2.0",
+               why: "its tree was not its verified tarball's"
+             } =
+               gproc,
+             inspect(tree)
+    end
   end
 end
