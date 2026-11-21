@@ -360,10 +360,18 @@ defmodule Portal.Catalog.ModuleIndex do
   end
 
   defp run(generation, rows, opts) do
+    # Not cached: a run reads each package's registry entry once, and the
+    # 5,008 decoded entries would hold about 90 MB in `Portal.HexDeps`'s
+    # table for an hour.
     tarball =
-      Keyword.get(opts, :tarball, &Portal.HexDeps.tarball(&1, &2, max_bytes: @max_tarball_bytes))
+      Keyword.get(
+        opts,
+        :tarball,
+        &Portal.HexDeps.tarball(&1, &2, max_bytes: @max_tarball_bytes, cache: false)
+      )
 
-    checksum = Keyword.get(opts, :outer_checksum, &Portal.HexDeps.outer_checksum/2)
+    checksum =
+      Keyword.get(opts, :outer_checksum, &Portal.HexDeps.outer_checksum(&1, &2, cache: false))
 
     concurrency =
       opts |> Keyword.get(:concurrency, @max_concurrency) |> min(@max_concurrency) |> max(1)
