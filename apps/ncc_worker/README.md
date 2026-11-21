@@ -602,22 +602,29 @@ holds. It is new exposure, for relocated builds and such dependents only.
 (`NccWorker.Portability.Differential`) for the toolchain compile, a pinned toolchain compile and the deterministic
 sibling (never a firmware target's or a host-native build's judge). A compile-time read of the scheduler count
 (`system_info(schedulers_online | schedulers)`) or of HOME (`init:get_argument(home)`) anywhere, or of the plain
-arguments outside every window (Mix evaluating a rebar3 dependency's `rebar.config.script`), is observed as
-`varied_reads` instead of refused, and `File.exists?("")` (a stat of the empty path, `enoent` on every host) is
-ignored. A verdict that would pass with any varied read is settled by two variant builds of the closure, each at a
-build root of its own (of the first's length where one fits) after a gap of a little over a second: `low` with
-`ERL_ZFLAGS=+S 1:1`, a short HOME under `/tmp` and no extra plain arguments, `high` with `+S 251:251` (a prime), a longer HOME and a Mix
-user's command words after the task. A plain-arguments read first needs the script check
-(`NccWorker.Portability.ScriptCheck`): every scripted rebar3 dependency of the closure evaluated from its verified
-tarball in fresh VMs, with no arguments, the traced compile's, the command words and every string literal of its
-scripts, and each literal alone, must give one config but for `deps`. The package's app in each variant must be the
-first build's (`NccWorker.Portability.DifferentialBeams`: the same files, every beam chunk the same but `CInf`,
-`Dbgi` and `ExCk`, a build root of the same length read as the first's, `FunT`'s `old_uniq` and `Attr`'s `vsn`
-allowed to differ). Then the pass carries `compile_observations.differential` (`reads`, `variants`, `scripts`) and
-`trace_stats.differential` `"same"`; a different app, a variant that refused or another script config refuses with
-the first read's own refusal followed by what differed (`"differs"`); a variant that did not finish is transient
-(`"not_finished"`). It bumps no judge revision, like `foreign_priv`: without the flag nothing here changes, and
-`compile_observations` carries no `varied_reads` list.
+arguments outside every window in the shape Mix's evaluation of a rebar3 dependency's `rebar.config.script` has (a
+dispatcher stack, no user frame, `erl_eval` first, and the tracer's `rebar_script` flag: nothing but script code
+between the read and `Mix.Rebar.eval_script/2`), is observed as `varied_reads` instead of refused, and
+`File.exists?("")` (a stat of the empty path, `enoent` on every host) is ignored. A verdict that would pass with any
+varied read is settled by two variant builds of the closure, each at a fresh build root of a random name made
+exclusively (of the first's length where one fits, and still empty once the container is swept) after a gap of a
+little over a second: `low` with `ERL_ZFLAGS=+S 1:1`, a short HOME under `/tmp` and no extra plain arguments, `high`
+with `+S 251:251` (a prime: parity and a power-of-two test differ from `low`'s), a long HOME and a Mix user's command
+words (`iex`'s `+iex` and `--no-halt` included) after the task. A plain-arguments read first needs the script check
+(`NccWorker.Portability.ScriptCheck`), one wall budget of at most five minutes and a third of the run's time left:
+Mix VMs in the run's own project (`elixir -pa <ebin> -S mix ncc.script_eval <words>`, Mix, Mix.Project and Hex
+loaded, `Mix.Dep.load_and_cache/0` evaluating every script) must reproduce, with no words, the `mix.rebar.config` the
+first build wrote for every scripted dependency of the closure, and give one config but for `deps` with the command
+words and every string literal of its scripts, and each literal alone. Each variant must pass the judge, read nothing
+the first build did not (no compile input, config item, varied read, env or config read it lacks, by what each
+names), and write the first build's app (`NccWorker.Portability.DifferentialBeams`: the same files, every beam chunk
+the same but `CInf`, `Dbgi` and `ExCk`, a build root of the same length read as the first's, `FunT`'s `old_uniq` and
+`Attr`'s `vsn` allowed to differ). Then the pass carries `compile_observations.differential` (`reads`, `variants`,
+`scripts`) and `trace_stats.differential` `"same"`; a different app, a variant that refused or read more, or another
+script config refuses with the first read's own refusal followed by what differed (`"differs"`); a variant that did
+not finish is transient (`"not_finished"`). Every verdict judged with the flag carries
+`trace_stats.differential_flag` `"on"`. It bumps no judge revision, like `foreign_priv`: without the flag nothing
+here changes, and `compile_observations` carries no `varied_reads` list.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
