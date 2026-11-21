@@ -362,6 +362,20 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       GenServer.stop(other)
     end
 
+    # Re-review H6: a job that finds the lock busy gives up at the same age
+    # as one that carries over.
+    test "a job that finds the lock busy gives up carry_over_hours after it was queued" do
+      {:ok, other} = Postgrex.start_link(session_config())
+      Postgrex.query!(other, lock_sql(), lock_args())
+      args = %{"package" => "certifi", "version" => "2.19.0"}
+      old = DateTime.add(DateTime.utc_now(), -49 * 3600, :second)
+
+      assert {:cancel, "release fast path for certifi 2.19.0 gave up: locked"} =
+               ReleaseFastPath.perform(%Oban.Job{args: args, inserted_at: old})
+
+      GenServer.stop(other)
+    end
+
     # Re-review G1: inside `Repo.checkout/2`, finite or not, a statement gets
     # no deadline of its own (DBConnection sets one only at checkout), so a
     # blocked statement held the lock, the `:intake` slot and the connection
