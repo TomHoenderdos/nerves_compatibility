@@ -206,7 +206,10 @@ defmodule NccWorker.FileArchiver do
   # for a "toolchain" scope, so a stray key on another run archives nothing.
   defp collect_toolchain_manifest(%{scope: "toolchain"} = result, project_dir, package_name)
        when is_binary(package_name) do
-    case get_in(result, [:toolchain_build, :file_manifest]) do
+    build = Map.get(result, :toolchain_build) || %{}
+
+    # A relocated pass lists its files under `relocated_file_manifest`.
+    case Map.get(build, :file_manifest) || Map.get(build, :relocated_file_manifest) do
       nil ->
         []
 

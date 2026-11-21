@@ -165,10 +165,14 @@ defmodule NccWorker.Worker do
   @type toolchain_build :: %{
           # Relocatable builds (S4, `NccWorker.Portability.Relocate`): only on
           # a "pass" whose own beams bake the deps or build path, judged with
-          # `judge.relocate`: the build's `deps` and `build` paths and, per
-          # beam to rewrite, `%{"path" => "ebin/<file>", "occurrences" =>
-          # [...]}` (`Compatibility.Relocation`). Absent otherwise.
+          # `judge.relocate`: the build's `deps` and `build` paths, the
+          # second build's (`second`) and, per beam to rewrite,
+          # `%{"path" => "ebin/<file>", "occurrences" => [...]}`
+          # (`Compatibility.Relocation`). Absent otherwise.
           optional(:relocation) => map(),
+          # Beside `relocation` only: the build's files, which `file_manifest`
+          # (then nil) would list for any other pass.
+          optional(:relocated_file_manifest) => map(),
           status: String.t(),
           reason: String.t() | nil,
           elixir: String.t(),
@@ -3085,12 +3089,24 @@ defmodule NccWorker.Worker do
             foreign_priv: Map.get(portability, :foreign_priv),
             foreign_priv_rule: Map.get(portability, :foreign_priv_rule)
         }
-        |> put_present(:relocation, Map.get(portability, :relocation))
+        |> relocated(Map.get(portability, :relocation))
 
       {:skip, reason} ->
         %{build | status: "skipped", reason: reason}
     end
   end
+
+  # A relocated pass (`NccWorker.Portability.Relocate`) lists its files under
+  # `relocated_file_manifest`, never `file_manifest`: a portal before S4
+  # reads only the latter, and stores such a pass with no files.
+  defp relocated(build, %{} = record) do
+    build
+    |> Map.put(:relocation, record)
+    |> Map.put(:relocated_file_manifest, build.file_manifest)
+    |> Map.put(:file_manifest, nil)
+  end
+
+  defp relocated(build, _record), do: build
 
   # The priv files a passing trace says the package's own compile wrote
   # (paths below `priv`), which the static rules then take without a
@@ -3173,7 +3189,14 @@ defmodule NccWorker.Worker do
     verdict
     |> Map.merge(%{status: :skip, reason: PortabilityReasons.could_not_judge()})
     |> Map.put(:observations, Map.put(observations, "problems", problems))
-    |> Map.drop([:compile_env, :compile_inputs, :foreign_priv, :foreign_priv_rule, :relocation])
+    |> Map.drop([
+      :compile_env,
+      :compile_inputs,
+      :foreign_priv,
+      :foreign_priv_rule,
+      :relocation,
+      :relocated_file_manifest
+    ])
   end
 
   # The host compile's own wall time (its `deps.get` included) next to the

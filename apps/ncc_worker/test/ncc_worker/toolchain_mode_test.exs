@@ -1763,13 +1763,31 @@ defmodule NccWorker.ToolchainModeTest do
 
     verdict = Map.put(@traced_pass, :relocation, record)
 
-    assert %{status: "pass", relocation: ^record} =
+    # The umbrella review's B3: a relocated pass lists its files under
+    # `relocated_file_manifest` only, so a portal before S4 stores a pass
+    # with no files.
+    assert %{status: "pass", relocation: ^record, file_manifest: nil} =
+             build =
              Worker.toolchain_build(project, "sample", passing_host(), @toolchain, verdict)
 
-    refute Map.has_key?(
-             Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass),
-             :relocation
-           )
+    assert %{"ebin" => [_ | _]} = build.relocated_file_manifest
+    assert {:skip, _} = NccWorker.Deterministic.eligible(build)
+
+    # The archiver copies its files as it copies a plain pass's.
+    archive = Path.join(work_dir, "files")
+    plain = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+
+    assert {:ok, %{files_archived: n}} =
+             FileArchiver.archive_manifest_files(archive, result(plain), work_dir)
+
+    File.rm_rf!(archive)
+
+    assert {:ok, %{files_archived: ^n}} =
+             FileArchiver.archive_manifest_files(archive, result(build), work_dir)
+
+    plain = Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @traced_pass)
+    refute Map.has_key?(plain, :relocation)
+    refute Map.has_key?(plain, :relocated_file_manifest)
 
     refute Map.has_key?(
              Worker.toolchain_build(project, "sample", passing_host(), @toolchain, @refused),

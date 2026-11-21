@@ -560,12 +560,18 @@ names only as dependency tuples is not its native build. It bumps no judge revis
 compile; any other value leaves them off. A verdict refused only by R2's baked path (the package's own, or a closure
 dependency's taint that is its own R2 refusal) is held when every occurrence is of the build's deps or build path and
 `Compatibility.Relocation` can reach it. The project is then copied to a fresh temp dir with other names for both
-(`<root>/second/proj/vendored`, `.../out/host`) and traced again, with call patterns on each holder module (a module
+(`Compatibility.Relocation.second_layout/1`) and traced again, with call patterns on each holder module (a module
 whose beams hold the path) once its window has closed. A later window calling a holder or reading its `ebin` is
 tainted (`holder_calls`), and refuses in the package's own window. Every held app's `ebin` must prove: relocated to the
 second build's paths, each beam is the second build's chunk for chunk but `CInf`, `Dbgi` and `Docs`. A pass that held
-the package carries `toolchain_build.relocation` (the build's `deps` and `build` paths and, per beam to rewrite, every
-occurrence). One that held only dependencies is a plain pass. `trace_stats.relocate` says `"relocated"`,
+the package carries `toolchain_build.relocation` (the build's `deps` and `build` paths, the second build's as
+`second`, and, per beam to rewrite, every occurrence) and lists its files under `toolchain_build.relocated_file_manifest`
+with `file_manifest` nil, so a portal before S4 stores it with no files. It gets no deterministic sibling. One that held
+only dependencies is a plain pass, once its own `ebin` proved at the two roots too: a value its compile took from a
+held dependency refuses. The second build's root (`Compatibility.Relocation.second_layout/1`) differs from the first in
+length and depth, a space, upper case, a dot, a dash, digits, the underscore, the project dir's name and the order of
+the deps and build paths; a value derived from the path that is equal at both roots is the residual the client's
+envelope limits. `trace_stats.relocate` says `"relocated"`,
 `"dependencies"` or `"refused: <why>"`, and in the last case the verdict is the first build's refusal, unchanged. No
 judge revision: without the flag every verdict is today's, byte for byte. The portal sends the flag while its node has
 `NCC_JUDGE_RELOCATE=1` (`Portal.Builder.judge_input/1`), stores a pass that carries `relocation` as a pass with its

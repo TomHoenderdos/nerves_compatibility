@@ -49,6 +49,7 @@ defmodule NccWorker.Deterministic do
   @env_writes_cap 50
 
   @not_passed "the build without the option did not pass"
+  @relocated "the build is relocated"
   @reads_option "the build's compile reads or sets ERL_COMPILER_OPTIONS"
 
   @doc "Whether the run's input asks for a sibling: exactly `true`."
@@ -80,6 +81,10 @@ defmodule NccWorker.Deterministic do
   @doc false
   # Public for tests.
   @spec eligible(map()) :: :ok | {:skip, String.t()}
+  # A relocated build (`NccWorker.Portability.Relocate`) gets no sibling:
+  # nothing relocates one, and the portal lists none beside it.
+  def eligible(%{relocation: %{}}), do: {:skip, @relocated}
+
   def eligible(%{status: "pass", compile_inputs: inputs} = normal) when is_list(inputs) do
     writes = get_in(normal, [:compile_observations, "env_writes"]) || []
 
