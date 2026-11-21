@@ -72,6 +72,7 @@ defmodule NccWorker.Portability.Context do
     ensured: %{},
     trees: %{},
     hook_scripts: %{},
+    rebar_cache: nil,
     drivers: %{},
     foreign_priv: nil,
     holders: %{},
@@ -104,6 +105,7 @@ defmodule NccWorker.Portability.Context do
           ensured: %{{term(), String.t(), String.t()} => integer()},
           trees: %{String.t() => Trees.tree()},
           hook_scripts: %{String.t() => String.t()},
+          rebar_cache: String.t() | nil,
           deps_path: String.t() | nil,
           drivers: %{String.t() => String.t()},
           foreign_priv: map() | nil,
@@ -129,7 +131,11 @@ defmodule NccWorker.Portability.Context do
       taken only when the build env left its variable unset; without it no
       reviewed hook is let through;
     * `:deps_path`, the dir the compile read the dependencies from (default
-      `<project_dir>/deps`; a firmware target's `deps_<target>`).
+      `<project_dir>/deps`; a firmware target's `deps_<target>`);
+    * `:rebar_cache`, rebar3's cache dir of the compile, which holds the
+      tarballs of the plugins it installed
+      (`NccWorker.Portability.RebarPlugins`); without it no installed
+      plugin can be judged.
 
   A dependency whose tarball is missing or does not match its lock entry has
   no file list, so none of its source files is readable.
@@ -154,6 +160,7 @@ defmodule NccWorker.Portability.Context do
       preloaded: preloaded(start["preloaded"]),
       trees: trees(Keyword.get(opts, :trees)),
       hook_scripts: trees(Keyword.get(opts, :hook_scripts)),
+      rebar_cache: rebar_cache(Keyword.get(opts, :rebar_cache)),
       deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")),
       drivers: drivers(report.sentinels),
       holders: holders(Keyword.get(opts, :holders)),
@@ -209,6 +216,9 @@ defmodule NccWorker.Portability.Context do
   end
 
   def holder_ebin_app(_ctx, _real), do: nil
+
+  defp rebar_cache(dir) when is_binary(dir) and dir != "", do: dir
+  defp rebar_cache(_dir), do: nil
 
   # The process each window's sentinel fired in: the driver's, which
   # compiles every dependency in turn (`Mix.Tasks.Deps.Compile.compile_single/3`),

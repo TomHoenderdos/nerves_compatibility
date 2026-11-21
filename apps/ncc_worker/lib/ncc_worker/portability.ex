@@ -155,6 +155,7 @@ defmodule NccWorker.Portability do
     PrivRepro,
     Probes,
     Rebar,
+    RebarPlugins,
     Relocate,
     Trees
   }
@@ -572,6 +573,10 @@ defmodule NccWorker.Portability do
         declassified: declassified,
         trees: trees,
         hook_scripts: hooks,
+        rebar_cache:
+          rebar_cache(
+            env ++ Keyword.get(opts, :extra_env, []) ++ Keyword.get(opts, :late_env, [])
+          ),
         deps_path: deps,
         build_path: build_path(project_dir, env)
       ] ++
@@ -2250,7 +2255,44 @@ defmodule NccWorker.Portability do
         |> Map.put(:reviewed, reviewed_hooks(ctx, report, app))
         |> Map.put(:native?, match?(%{native?: true}, Map.get(ctx.deps, app)))
 
-      Rebar.check_sources(own, inherited, mix_rebar_config(ctx, app))
+      mix_config = mix_rebar_config(ctx, app)
+
+      own
+      |> Rebar.check_sources(inherited, mix_config)
+      |> installed_plugins(ctx, dest, Rebar.named_plugins(own, mix_config))
+    end
+  end
+
+  # The static rules passed: every plugin rebar3 installed for the app must
+  # be a reviewed release (`RebarPlugins`), every reviewed one it names too.
+  defp installed_plugins(result, ctx, dest, named)
+       when result == :ok or elem(result, 0) == :inputs do
+    case RebarPlugins.check(dest, ctx.rebar_cache, named) do
+      :ok -> result
+      other -> other
+    end
+  end
+
+  defp installed_plugins(result, _ctx, _dest, _named), do: result
+
+  # rebar3's cache dir of a compile with `env` (`rebar_dir:global_cache_dir/1`):
+  # `REBAR_CACHE_DIR`, else `$HOME/.cache/rebar3`, each from `env` or, when
+  # `env` does not name it, this VM's environment, which the compile
+  # inherits. A name `env` unsets (`nil`) is unset.
+  @doc false
+  @spec rebar_cache([{String.t(), String.t() | nil}]) :: String.t() | nil
+  def rebar_cache(env) do
+    get = fn name ->
+      case List.keyfind(env, name, 0) do
+        {^name, value} -> value
+        nil -> System.get_env(name)
+      end
+    end
+
+    case {get.("REBAR_CACHE_DIR"), get.("HOME")} do
+      {dir, _home} when is_binary(dir) and dir != "" -> dir
+      {_dir, home} when is_binary(home) and home != "" -> Path.join([home, ".cache", "rebar3"])
+      _ -> nil
     end
   end
 

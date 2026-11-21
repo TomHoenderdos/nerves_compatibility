@@ -2032,6 +2032,33 @@ defmodule NccWorker.Portability.JudgeTest do
       assert taint == %{}
     end
 
+    # rebar3 installs a dependency's plugins under its own `_build` and
+    # keeps their tarballs in its cache: a release the table does not pin
+    # taints, and a named plugin not installed could not be judged.
+    test "a dependency's reviewed plugin is held to the pinned releases", %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{plugins, [rebar3_ex_doc]}.\n")
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      cache = Path.join(Path.dirname(proj), "rebar3-cache")
+      opts = rebar_opts(proj, ["dep"]) ++ [rebar_cache: cache]
+
+      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r, opts)
+      assert "dep: rebar3 plugin rebar3_ex_doc is named but not installed" in obs["problems"]
+
+      dir = Path.join(proj, "deps/dep/_build/default/plugins/rebar3_ex_doc")
+      File.mkdir_p!(Path.join(dir, "ebin"))
+
+      File.write!(
+        Path.join(dir, "hex_metadata.config"),
+        ~s({<<"name">>,<<"rebar3_ex_doc">>}.\n{<<"version">>,<<"0.3.99">>}.\n)
+      )
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (rebar3 build runs plugin " <>
+                   "rebar3_ex_doc 0.3.99, a release not reviewed)"
+             } = judge(proj, r, opts)
+    end
+
     test "a dependency whose mix.rebar.config is missing could not be judged", %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
       r = rebar_report(proj, "dep", %{"dep" => child([])})

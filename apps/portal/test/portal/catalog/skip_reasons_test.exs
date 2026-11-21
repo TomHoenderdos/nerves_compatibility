@@ -55,6 +55,18 @@ defmodule Portal.Catalog.SkipReasonsTest do
     assert SkipReasons.classify("rebar3 build runs provider_hooks") ==
              c(:build_hooks, "provider_hooks")
 
+    # A plugin release that is not a reviewed one is a plugins refusal.
+    assert SkipReasons.classify(
+             "rebar3 build runs plugin rebar3_hex 7.6.0 from a Hex tarball that is not " <>
+               "the reviewed release"
+           ) == c(:build_hooks, "plugins")
+
+    assert %{class: :build_hooks, detail: "plugins", blocker: "otel_http"} =
+             SkipReasons.classify(
+               "closure dependency observed the host: otel_http (rebar3 build runs plugin " <>
+                 "rebar3_ex_doc 0.4.0, a release not reviewed)"
+             )
+
     assert SkipReasons.classify("calls a NIF or port driver") == c(:native_code)
     assert SkipReasons.classify("compile-time native library load: /x/y.so").class == :native_code
 

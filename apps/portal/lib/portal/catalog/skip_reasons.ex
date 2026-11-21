@@ -156,6 +156,8 @@ defmodule Portal.Catalog.SkipReasons do
   defp own(@natively_built <> mfa), do: {:native_code, first_token(mfa)}
   defp own(@native_lib <> _path), do: {:native_code, "native library load"}
   defp own(@native_side <> _why), do: {:native_code, "native build not set apart"}
+  defp own("rebar3 build runs plugin " <> _release), do: {:build_hooks, "plugins"}
+  defp own("rebar3 build runs a plugin " <> _dir), do: {:build_hooks, "plugins"}
   defp own("rebar3 build runs " <> key), do: {:build_hooks, key}
 
   defp own("rebar3 build evaluates rebar.config.script"),

@@ -724,12 +724,16 @@ of these skips the build:
   traced VM, outside every window) and by that `mix.rebar.config`, which holds its result; a rebar3 parent's script
   could not be judged. One reviewed compile hook is let through: quic's `sh c_src/build_nif.sh` (a no-op unless
   `QUIC_BUILD_NIF=1`), only when that script in the verified tarball and on disk before the compile has a reviewed
-  sha256 and the build env left `QUIC_BUILD_NIF` unset, with no traced write of it (`Rebar.reviewed_hooks/0`). A plugin
-  from Hex whose every release's `init/1` only registers providers runs in the traced child VM instead (rebar3_hex,
-  rebar3_ex_doc, rebar3_lint, rebar3_proper, coveralls, covertool: `Rebar`'s `@reviewed_plugins`), and its code's reads,
-  writes and network use are judged like any compile code; any other plugin, or one from git, still refuses, since
-  rebar3 resolves a plugin and its dependencies from its own registry cache and no lock or trace pins what its
-  `init/1` does. A shell compile hook of a natively built app is its native build, judged by the native rules (crc32cer's
+  sha256 and the build env left `QUIC_BUILD_NIF` unset, with no traced write of it (`Rebar.reviewed_hooks/0`). A reviewed
+  plugin from Hex (rebar3_hex, rebar3_ex_doc, rebar3_lint, rebar3_proper, coveralls, covertool: `Rebar`'s
+  `@reviewed_plugins`) runs in the traced child VM instead, and its code's reads, writes and network use are judged like
+  any compile code. rebar3 resolves a plugin and its dependencies from its own registry cache and no lock names them, so
+  every release it installed under the app's `_build/*/plugins` must be one reviewed to only register providers, pinned
+  by version and Hex outer checksum (`NccWorker.Portability.RebarPlugins.pins/0`, 200 releases): its cached tarball in
+  rebar3's cache (`REBAR_CACHE_DIR` or `$HOME/.cache/rebar3`) hashes to the pin and its dir holds exactly that tarball's
+  files plus its own compiled `ebin`. Any other release refuses (`rebar3 build runs plugin <name> <version>, a release not
+  reviewed`), a named plugin not installed or a release that cannot be read is "portability could not be judged", and
+  any other plugin, or one from git, still refuses. A shell compile hook of a natively built app is its native build, judged by the native rules (crc32cer's
   `make nif`); `mkdir -p ebin` (pbkdf2) reads nothing and writes no file and is let through; a hook on a namespaced provider (`{{hex, publish}, Script}`) never runs in `bare compile`; rebar3's own
   `escriptize` as a post-compile provider hook (cuttlefish) is let through. OTP's `pubkey_os_cacerts:on_load/0` reading
   `os:type/0` when rebar3's TLS loads it is ignored;

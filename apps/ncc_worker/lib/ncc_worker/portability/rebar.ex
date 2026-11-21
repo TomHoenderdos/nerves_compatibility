@@ -41,12 +41,12 @@ defmodule NccWorker.Portability.Rebar do
   its own registry cache resolves (no lock names it), and runs each one's
   `init/1` (`rebar_plugins:top_level_install/1`, without provider
   overrides) in the traced child VM, where what the plugin's code reads,
-  writes or fetches is judged like any compile code. A reviewed plugin's
-  `init/1` only registers providers in every release, so the release a
-  user's rebar3 picks changes nothing about the compile. A git source, a
-  `{pkg, Name}` source, or any other plugin still refuses: its release and
-  its dependencies' are the user's rebar3 cache's, and what its `init/1`
-  does to rebar3's state no trace sees.
+  writes or fetches is judged like any compile code. What its `init/1`
+  does to rebar3's state no trace sees, so the release that ran, and every
+  dependency release it pulled, must be one reviewed to only register
+  providers: `NccWorker.Portability.RebarPlugins` pins them by version and
+  Hex outer checksum (`named_plugins/2` names what must be installed). A
+  git source, a `{pkg, Name}` source, or any other plugin still refuses.
 
   A shell compile hook of a natively built app (`sources`' `native?:`, the
   judge's native list) is part of its native build, which the native rules
@@ -124,12 +124,8 @@ defmodule NccWorker.Portability.Rebar do
   alias NccWorker.Portability.HexFiles
 
   @hook_keys ~w(pre_hooks post_hooks provider_hooks plugins)
-  # The plugins whose every Hex release's `init/1` only registers providers
-  # (`rebar_state:add_provider/2`), which `rebar3 bare compile` never runs,
-  # read release by release on 2026-11-21: rebar3_hex (its `hex` namespace,
-  # 7.1.0), rebar3_ex_doc (34 releases, `ex_doc`), rebar3_lint (43, `lint`),
-  # rebar3_proper (19, `proper`), coveralls (8, `rebar3_coveralls` from its
-  # app env's `providers`) and covertool (8, `covertool generate`).
+  # The plugins let through by name; the releases that may run are
+  # `NccWorker.Portability.RebarPlugins.pins/0`.
   @reviewed_plugins ~w(rebar3_hex rebar3_ex_doc rebar3_lint rebar3_proper coveralls covertool)
   # Compile hook commands that read nothing and write no file, by their exact
   # text: pbkdf2 2.0.0 makes its own `ebin` dir, in its source dir, before
@@ -222,6 +218,45 @@ defmodule NccWorker.Portability.Rebar do
       end
     end
   end
+
+  @doc """
+  The reviewed plugins (`@reviewed_plugins`) that `sources`' config and the
+  `mix.rebar.config` rebar3 read (a path, or anything else for none) name in
+  their active sections: what rebar3 installs for the app, which
+  `NccWorker.Portability.RebarPlugins` then finds installed. A config that
+  cannot be read names none (`check_sources/3` refuses it).
+  """
+  @spec named_plugins(sources(), String.t() | term()) :: [String.t()]
+  def named_plugins(%{config: own}, mix_config) do
+    from_mix =
+      with path when is_binary(path) <- mix_config,
+           {:ok, text} <- read_file(path),
+           {:ok, terms} <- HexFiles.parse(text) do
+        terms
+      else
+        _ -> []
+      end
+
+    own_terms =
+      case parse_own(own) do
+        {:ok, terms} -> terms
+        _ -> []
+      end
+
+    for terms <- [own_terms, from_mix],
+        section <- active_sections(terms),
+        {{:atom, "plugins"}, plugins} <- List.wrap(section),
+        is_list(plugins),
+        plugin <- plugins,
+        name = plugin_name(plugin),
+        name in @reviewed_plugins,
+        uniq: true,
+        do: name
+  end
+
+  defp plugin_name({:atom, name}), do: name
+  defp plugin_name({{:atom, name}, _requirement}), do: name
+  defp plugin_name(_plugin), do: nil
 
   defp inputs(:ok), do: {:ok, []}
   defp inputs({:inputs, items}), do: {:ok, items}
