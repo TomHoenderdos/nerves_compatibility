@@ -41,7 +41,9 @@ config :portal, Portal.Builder,
   memory: "8g",
   # What `Portal.Builder.hex_cache_mode/1` would read off a current worker
   # image, without asking docker; the integration test asks for real.
-  hex_cache_image_label: "seeded"
+  hex_cache_image_label: "seeded",
+  # Likewise the relocate label (`Portal.Builder.gate_relocation/1`).
+  relocate_image_label: "1"
 
 config :portal, :artifact_store, path: Path.join(test_tmp, "artifacts")
 

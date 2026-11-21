@@ -85,6 +85,10 @@ RUN set -eux; \
 # its worker seeds a per-run HEX_HOME from the mount (NccWorker.HexCache),
 # where an older one writes the mount itself (Compatibility.Builder.Argv).
 LABEL ncc.hex-cache=seeded
+# S4: this image pre-creates /home/ncc-relocate and /Users (below) and its
+# worker reads NCC_INPUT.judge.relocate; the host binds the two and sends
+# relocate only for a labelled image (Compatibility.Builder.Argv).
+LABEL ncc.relocate=1
 
 # Create every directory the portal bind-mounts. The container runs
 # --read-only; runc creates mount points before the root goes read-only, so

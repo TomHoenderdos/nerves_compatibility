@@ -53,6 +53,10 @@ RUN mix local.hex ${HEX_VERSION} --force && \
 
 # See the main Dockerfile: this image's worker seeds a per-run HEX_HOME too.
 LABEL ncc.hex-cache=seeded
+# S4: this image pre-creates /home/ncc-relocate and /Users (below) and its
+# worker reads NCC_INPUT.judge.relocate; the host binds the two and sends
+# relocate only for a labelled image (Compatibility.Builder.Argv).
+LABEL ncc.relocate=1
 
 # Every directory the portal bind-mounts, created here because the container
 # runs --read-only (see the main Dockerfile); /home/ncc-relocate and /Users

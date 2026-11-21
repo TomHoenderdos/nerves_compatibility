@@ -563,7 +563,8 @@ dependency's taint that is its own R2 refusal) is held when every occurrence is 
 patterns on each holder module (a module whose beams hold the path) once its window has closed: the second root
 (`Compatibility.Relocation.second_layout/2`) under `/home/ncc-relocate/.cache/mix/installs`, and the third
 (`third_layout/2`) under `/Users`, both for every hold, each a per-run scratch dir the portal binds there for such a
-job (`Compatibility.Relocation.bases/0`, pre-created in both images). The second is under `/home/` but outside the
+job (`Compatibility.Relocation.bases/0`, pre-created in both images, which carry the label `ncc.relocate=1`; the portal
+sends `relocate` and the binds only to a labelled image, and never to a pinned build). The second is under `/home/` but outside the
 container's `HOME` (`/home/nerves`), one of the roots R2 searches. The three roots differ in length and depth, case, spaces, project dir name and the order of the deps and build
 paths, and hold between them a home's `.cache/mix/installs`, `Library`, `Projects`, `projects`, `src`, `code`, `app`,
 `nix/store`, a dot-dir, `@` and `~`. A later window calling a holder, reading its `ebin` or its md5, attributes or

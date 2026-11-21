@@ -48,6 +48,7 @@ defmodule Compatibility.Builder.Argv do
   @type hex_cache_mode :: :readonly | :rw | :legacy
 
   @hex_cache_label "ncc.hex-cache"
+  @relocate_label "ncc.relocate"
 
   @runtime_flag "--runtime=runsc"
 
@@ -262,6 +263,25 @@ defmodule Compatibility.Builder.Argv do
   def hex_cache_mode(_label, true), do: :rw
   def hex_cache_mode("seeded", false), do: :readonly
   def hex_cache_mode(_label, false), do: :legacy
+
+  @doc """
+  The image label that says the image pre-creates the relocation mount
+  points (`/home/ncc-relocate`, `/Users`, `Compatibility.Relocation.bases/0`)
+  and its worker reads `NCC_INPUT.judge.relocate`. Both worker Dockerfiles
+  set it to `1`.
+  """
+  @spec relocate_label() :: String.t()
+  def relocate_label, do: @relocate_label
+
+  @doc """
+  Whether an image whose `relocate_label/0` reads `label` (`nil` when absent)
+  may run a build that relocates: only `"1"`. An older image has neither
+  mount point on its read-only root, so a job on it is sent no `relocate`
+  and gets no relocation binds (the umbrella re-review's T1).
+  """
+  @spec relocate_ready?(String.t() | nil) :: boolean()
+  def relocate_ready?("1"), do: true
+  def relocate_ready?(_label), do: false
 
   defp build_cache_mount(nil), do: []
 

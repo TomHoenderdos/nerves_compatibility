@@ -924,7 +924,10 @@ What it lists:
   Two portal settings, both off by default and both on the admin Maintenance page, so turning
   either on is a setting, not a deploy: `relocate_builds_enabled` sends `judge.relocate` to the
   worker (`Portal.Builder` then also binds per-run scratch dirs at `/home/ncc-relocate` and
-  `/Users`, which both worker images pre-create, for the other two roots), and
+  `/Users`, which both worker images pre-create, for the other two roots), but only for a job
+  whose image carries the label `ncc.relocate=1` (a job on an older image builds without
+  relocation, the setting notwithstanding) and never for a pinned build, which ingest would store
+  as a skip; and
   `relocated_enabled` serves what such builds made. Every toolchain row's
   `compile_observations.trace_stats.relocate` says how it was judged: `"off"`, `"on"` (nothing
   held), `"relocated"`, `"dependencies"` or `"refused: <why>"`. With `relocate_builds_enabled` on

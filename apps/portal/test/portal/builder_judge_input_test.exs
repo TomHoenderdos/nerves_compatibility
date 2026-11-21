@@ -112,6 +112,97 @@ defmodule Portal.BuilderJudgeInputTest do
         do: assert(Builder.judge_input(mode) == nil, inspect(mode))
   end
 
+  # The umbrella re-review's T2: a pinned build that held would be thrown
+  # away at ingest (`@pinned_relocated`), so it is never sent relocate and
+  # skips the two extra compiles.
+  test "a pinned toolchain job is never sent relocate", %{previous: previous} do
+    Application.put_env(
+      :portal,
+      Builder,
+      Keyword.drop(previous, [:judge_makefile_rule2, :judge_native_side])
+    )
+
+    {:ok, _} =
+      Portal.Settings.save(%{foreign_priv_enabled: true, relocate_builds_enabled: true})
+
+    assert Builder.judge_input("toolchain", %{}) == %{"foreign_priv" => true, "relocate" => true}
+
+    assert Builder.judge_input("toolchain", %{pins: %{"decimal" => "2.1.1"}}) == %{
+             "foreign_priv" => true
+           }
+
+    {:ok, _} = Portal.Settings.save(%{foreign_priv_enabled: false})
+    assert Builder.judge_input("toolchain", %{pins: %{"decimal" => "2.1.1"}}) == nil
+  end
+
+  # The umbrella re-review's T1: the two binds need their mount points in
+  # the image (`ncc.relocate=1`, as `/hex-cache` needs `ncc.hex-cache`). A
+  # job on an older image builds without relocation, setting or not: no
+  # `relocate` in its input and no bind.
+  describe "the relocate image label" do
+    @relocating %{
+      run_id: "r-label",
+      image_name: "ncc-worker:local",
+      image_digest: "sha256:x",
+      mode: "toolchain",
+      systems_filter: nil,
+      judge: %{"relocate" => true, "foreign_priv" => true},
+      memory: "4g",
+      hex_cache_mode: :readonly
+    }
+
+    defp label!(previous, label) do
+      parent = self()
+
+      Application.put_env(
+        :portal,
+        Builder,
+        Keyword.put(previous, :relocate_image_label, fn ref ->
+          send(parent, {:inspected, ref})
+          label
+        end)
+      )
+    end
+
+    defp args(job),
+      do: Builder.build_docker_args(job, "/scratch/work", "/scratch/out", "/scratch/files")
+
+    test "a labelled image keeps relocate and gets both binds", %{previous: previous} do
+      label!(previous, {:ok, "1"})
+      job = Builder.gate_relocation(@relocating)
+      assert_received {:inspected, "ncc-worker:local"}
+      assert job.judge == %{"relocate" => true, "foreign_priv" => true}
+      assert Builder.worker_input(job)["judge"]["relocate"] == true
+      assert "type=bind,source=/scratch/users,target=/Users" in args(job)
+      assert "type=bind,source=/scratch/relocate-home,target=/home/ncc-relocate" in args(job)
+    end
+
+    test "an older image, or one docker cannot inspect, builds without relocation", %{
+      previous: previous
+    } do
+      for label <- [{:ok, nil}, {:ok, ""}, {:ok, "0"}, :error] do
+        label!(previous, label)
+        job = Builder.gate_relocation(@relocating)
+        assert job.judge == %{"foreign_priv" => true}, inspect(label)
+        refute Map.has_key?(Builder.worker_input(job)["judge"], "relocate")
+        refute Enum.any?(args(job), &String.contains?(&1, "/Users")), inspect(label)
+        refute Enum.any?(args(job), &String.contains?(&1, "ncc-relocate")), inspect(label)
+      end
+
+      label!(previous, {:ok, nil})
+      only = Builder.gate_relocation(%{@relocating | judge: %{"relocate" => true}})
+      assert only.judge == nil
+    end
+
+    test "a job not sent relocate is not inspected", %{previous: previous} do
+      label!(previous, {:ok, nil})
+      job = %{@relocating | judge: %{"foreign_priv" => true}}
+      assert Builder.gate_relocation(job) == job
+      assert Builder.gate_relocation(%{job | judge: nil}) == %{job | judge: nil}
+      refute_received {:inspected, _}
+    end
+  end
+
   # A toolchain job that may relocate gets its two scratch dirs, at
   # /home/ncc-relocate and /Users; no other.
   test "a job sent relocate gets /home/ncc-relocate and /Users mounts of its own scratch" do

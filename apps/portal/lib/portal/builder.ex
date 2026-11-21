@@ -237,25 +237,61 @@ defmodule Portal.Builder do
   apart from its beams, and rule 2's finer target and native-tool
   reading, `NccWorker.Portability`), and `"relocate" => true` while the
   `relocate_builds_enabled` setting is on (relocatable builds,
-  `NccWorker.Portability.Relocate`; such a job also gets a `/Users` mount
-  of its own scratch, `build_docker_args/4`); nil when none, which the
-  worker reads as off. Remote builds never run
-  toolchain builds, so the builder API sends none.
+  `NccWorker.Portability.Relocate`; such a job also gets two binds of its
+  own scratch, `build_docker_args/4`, when its image carries the relocate
+  label, `gate_relocation/1`), but never for a pinned build (`args.pins`):
+  ingest stores a pinned build that held as a skip, so its two extra
+  compiles would be thrown away (the umbrella re-review's T2); nil when
+  none, which the worker reads as off. Remote builds never run toolchain
+  builds, so the builder API sends none.
   """
-  @spec judge_input(String.t() | nil) :: map() | nil
-  def judge_input("toolchain") do
+  @spec judge_input(String.t() | nil, map()) :: map() | nil
+  def judge_input(mode, args \\ %{})
+
+  def judge_input("toolchain", args) do
     %{}
     |> put_on("makefile_rule2", config(:judge_makefile_rule2, false) == true)
     |> put_on("foreign_priv", Portal.Precompiled.ForeignPriv.enabled?())
     |> put_on("native_side", config(:judge_native_side, false) == true)
-    |> put_on("relocate", Portal.Settings.get().relocate_builds_enabled == true)
-    |> case do
-      options when map_size(options) == 0 -> nil
-      options -> options
-    end
+    |> put_on(
+      "relocate",
+      Portal.Settings.get().relocate_builds_enabled == true and Map.get(args, :pins) == nil
+    )
+    |> none_as_nil()
   end
 
-  def judge_input(_mode), do: nil
+  def judge_input(_mode, _args), do: nil
+
+  defp none_as_nil(options) when map_size(options) == 0, do: nil
+  defp none_as_nil(options), do: options
+
+  @doc """
+  `job` as it may run on its image (the umbrella re-review's T1): a job
+  sent `relocate` keeps it, and with it the two relocation binds
+  (`build_docker_args/4`), only when the image it runs carries
+  `ncc.relocate=1` (`Compatibility.Builder.Argv.relocate_ready?/1`), read
+  as the Hex cache label is (`hex_cache_mode/1`: once per digest-pinned
+  image, per build for a tag). Otherwise, an image from before the label
+  or one docker cannot inspect, `relocate` is dropped and the build runs
+  without relocation, the setting notwithstanding: that image has no mount
+  point for either bind on its read-only root. Any other job is returned
+  as it is, uninspected. `:relocate_image_label` (a fixed label, or
+  `fn ref -> {:ok, label} | :error end`) replaces the inspect in tests.
+  """
+  @spec gate_relocation(map()) :: map()
+  def gate_relocation(%{judge: %{"relocate" => true} = judge} = job) do
+    ready? =
+      case image_label(image_ref(job), :relocate) do
+        {:ok, label} -> Argv.relocate_ready?(label)
+        :error -> false
+      end
+
+    if ready?,
+      do: job,
+      else: %{job | judge: judge |> Map.delete("relocate") |> none_as_nil()}
+  end
+
+  def gate_relocation(job), do: job
 
   defp put_on(options, key, true), do: Map.put(options, key, true)
   defp put_on(options, _key, _on), do: options
@@ -494,7 +530,7 @@ defmodule Portal.Builder do
       nerves_packages: Map.get(args, :nerves_packages),
       system_abi: Map.get(args, :system_abi),
       egress_probe: Map.get(args, :egress_probe),
-      judge: judge_input(mode),
+      judge: judge_input(mode, args),
       firmware_inputs: firmware_inputs_input(mode),
       memory: Map.get(args, :memory),
       build_concurrency: Map.get(args, :build_concurrency)
@@ -518,6 +554,7 @@ defmodule Portal.Builder do
          # reason to mount the cache read-write.
          {:ok, hex_cache_mode} <- hex_cache_mode(job),
          job = Map.put(job, :hex_cache_mode, hex_cache_mode),
+         job = gate_relocation(job),
          :ok <-
            ensure_directories(
              [
@@ -1302,22 +1339,24 @@ defmodule Portal.Builder do
     else
       ref = image_ref(job)
 
-      case hex_cache_label(ref) do
+      case image_label(ref, :hex_cache) do
         {:ok, label} -> {:ok, Argv.hex_cache_mode(label, false)}
         :error -> {:error, {:hex_cache_label, ref}}
       end
     end
   end
 
-  defp hex_cache_label(ref) do
-    key = {__MODULE__, :hex_cache_label, ref}
+  # `which` is `:hex_cache` (`Argv.hex_cache_label/0`) or `:relocate`
+  # (`Argv.relocate_label/0`).
+  defp image_label(ref, which) do
+    key = {__MODULE__, which, ref}
 
     case String.contains?(ref, "@sha256:") && :persistent_term.get(key, :unknown) do
       {:ok, _label} = known ->
         known
 
       pinned ->
-        ref |> read_hex_cache_label() |> keep_answer(key, pinned == :unknown)
+        ref |> read_image_label(which) |> keep_answer(key, pinned == :unknown)
     end
   end
 
@@ -1331,17 +1370,24 @@ defmodule Portal.Builder do
   defp keep_answer({:ok, _label} = answer, _key, false), do: answer
   defp keep_answer(_failed, _key, _keep?), do: :error
 
-  defp read_hex_cache_label(ref) do
-    case config(:hex_cache_image_label, &inspect_hex_cache_label/1) do
+  defp read_image_label(ref, :hex_cache),
+    do: read_label(ref, :hex_cache_image_label, Argv.hex_cache_label())
+
+  defp read_image_label(ref, :relocate),
+    do: read_label(ref, :relocate_image_label, Argv.relocate_label())
+
+  defp read_label(ref, config_key, label) do
+    case config(config_key, &inspect_label(&1, label)) do
       fun when is_function(fun, 1) -> fun.(ref)
       value -> {:ok, value}
     end
   end
 
-  # One argv, no shell; `ref` is the configured image and its digest.
+  # One argv, no shell; `ref` is the configured image and its digest, and
+  # `label` one of `Argv`'s fixed label names.
   # sobelow_skip ["CI.System"]
-  defp inspect_hex_cache_label(ref) do
-    format = "{{index .Config.Labels \"#{Argv.hex_cache_label()}\"}}"
+  defp inspect_label(ref, label) do
+    format = "{{index .Config.Labels \"#{label}\"}}"
 
     case docker_cmd(["image", "inspect", "--format", format, ref]) do
       {:ok, out, 0} -> {:ok, String.trim(out)}

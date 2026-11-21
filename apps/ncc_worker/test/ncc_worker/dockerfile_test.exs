@@ -56,6 +56,16 @@ defmodule NccWorker.DockerfileTest do
     assert File.read!(@toolchain_dockerfile) =~ ~r/^LABEL ncc\.hex-cache=seeded$/m
   end
 
+  # S4, the umbrella re-review's T1: the host sends relocate, and binds the
+  # two extra roots' bases, only for an image that says it has their mount
+  # points (`Compatibility.Builder.Argv.relocate_label/0`).
+  test "both images carry the relocate label", %{text: text} do
+    label = Compatibility.Builder.Argv.relocate_label()
+    assert label == "ncc.relocate"
+    assert text =~ ~r/^LABEL ncc\.relocate=1$/m
+    assert File.read!(@toolchain_dockerfile) =~ ~r/^LABEL ncc\.relocate=1$/m
+  end
+
   # CI builds the amd64 and arm64 images in separate jobs: a floating tag
   # could resolve to a different base for each. The multi-arch index digest
   # names one base for both, with its version tag kept for reading.
