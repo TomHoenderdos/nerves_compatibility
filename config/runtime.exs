@@ -397,13 +397,23 @@ if portal_available? do
 
   # The release fast path (`Portal.Workers.ReleaseFastPath`), parsed the
   # same way: `NCC_RELEASE_FAST_PATH=0` offers no release and cancels a
-  # queued one; the daily drift run goes on.
+  # queued one; the daily drift run goes on. `NCC_RELEASE_FAST_PATH_BUDGET`
+  # caps its rebuilds incomplete at once; anything but a non-negative
+  # integer leaves the compile-time default alone.
   case System.get_env("NCC_RELEASE_FAST_PATH") do
     v when v in ["1", "true", "yes"] ->
       config :portal, Portal.Workers.ReleaseFastPath, enabled: true
 
     v when v in ["0", "false", "no"] ->
       config :portal, Portal.Workers.ReleaseFastPath, enabled: false
+
+    _ ->
+      :ok
+  end
+
+  case Integer.parse(System.get_env("NCC_RELEASE_FAST_PATH_BUDGET", "")) do
+    {budget, ""} when budget >= 0 ->
+      config :portal, Portal.Workers.ReleaseFastPath, budget: budget
 
     _ ->
       :ok

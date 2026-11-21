@@ -1017,6 +1017,32 @@ defmodule Portal.Workers.ToolchainSweepTest do
       assert "wanted" in (all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["package"]))
     end
 
+    # A release fast path burst (`Portal.Workers.ReleaseFastPath`) has its
+    # own budget; counting it here kept the guard tripped for as long as the
+    # burst lasted, and no new release was queued meanwhile.
+    test "fast-path rebuilds do not count toward the threshold", %{previous: previous} do
+      one_toolchain(previous, sweep_skip_when_queued: 2)
+
+      for i <- 1..3 do
+        %{
+          package: "fast#{i}",
+          version: "1.0.0",
+          toolchain: "1.19/28",
+          builder_version: 1,
+          reason: "release_fast_path"
+        }
+        |> ToolchainBuild.new(priority: 2)
+        |> Oban.insert!()
+      end
+
+      queue_filler!(1)
+      run!("wanted", "1.0.0")
+
+      assert :ok = perform_job(ToolchainSweep, %{})
+
+      assert "wanted" in (all_enqueued(worker: ToolchainBuild) |> Enum.map(& &1.args["package"]))
+    end
+
     test "sweep_skip_when_queued defaults to max_per_run", %{previous: previous} do
       one_toolchain(Keyword.delete(previous, :sweep_skip_when_queued), max_per_run: 5)
 

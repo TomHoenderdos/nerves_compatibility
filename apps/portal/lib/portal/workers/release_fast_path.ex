@@ -25,18 +25,36 @@ defmodule Portal.Workers.ReleaseFastPath do
 
   `Portal.Workers.ClosureDrift.rebuild_dependents/2` for the package: the
   daily run's judge, for the builds that lock the package only. Each
-  drifted build is rebuilt at priority 1, ahead of named variants,
-  refreshes and the daily drift, behind new `with` builds, with
-  `reason: "release_fast_path"`, at most `max_per_release/0`. The build it
-  replaces is kept in `earlier_builds`, as for a daily drift. Then it forces
-  a toolchain sweep (`Portal.Workers.ToolchainSweep.enqueue/0`), so the
-  package's own build of the release is queued without waiting out the
-  sweep's top-up guard, once the update check has nominated it.
+  drifted build is rebuilt at priority 2, with the named config variants:
+  behind new `with` and `without` builds (0 and 1), ahead of refreshes,
+  reopens, pinned builds and the daily drift (3). It carries
+  `reason: "release_fast_path"`. The build it replaces is kept in
+  `earlier_builds`, as for a daily drift. The package's own build of the
+  release is the toolchain sweep's, which leaves these rebuilds out of its
+  top-up guard (`Portal.Workers.ToolchainSweep`), so it keeps queueing new
+  releases every 15 minutes whatever the fast path has queued.
+
+  ## The budget
+
+  At most `budget/0` of these rebuilds are incomplete at once, across every
+  release (`NCC_RELEASE_FAST_PATH_BUDGET`, 1,000 by default), and one run
+  of a job queues at most `max_per_release/0` of them, so two releases in
+  one hour share it. A run that has no room, or that stopped at its share
+  with candidates left, snoozes for an hour: the remainder carries over to
+  the next hour rather than being dropped. A full budget is checked before
+  anything is read. Each run judges afresh, so a rebuild that ran since is
+  no longer drift, and the release finishes once nothing it moved is left
+  behind. After `max_snoozes/0` hours it gives up and leaves the rest to the
+  daily drift.
 
   ## Enablement
 
   On by default. `NCC_RELEASE_FAST_PATH=0` switches it off at runtime: no
-  release is offered and a queued job is cancelled.
+  release is offered and a queued or snoozed job is cancelled.
+
+  A run holds an `:intake` slot while it judges, a few minutes for a
+  release with a thousand dependents and at most `ClosureDrift.budget_ms/0`;
+  a snoozed job holds none.
   """
 
   use Oban.Worker,
@@ -49,32 +67,73 @@ defmodule Portal.Workers.ReleaseFastPath do
   alias Portal.Catalog.ClosureDrift, as: Drift
   alias Portal.Repo
   alias Portal.Toolchains
-  alias Portal.Workers.{ClosureDrift, ToolchainSweep}
+  alias Portal.Workers.ClosureDrift
 
-  @priority 1
+  @priority 2
   @reason "release_fast_path"
+  @carry_over_seconds 3600
+  @incomplete ~w(available scheduled executing retryable)
+
+  @doc "The `reason` its rebuilds carry, which the toolchain sweep's guard leaves out."
+  @spec reason() :: String.t()
+  def reason, do: @reason
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"package" => package, "version" => version}}) do
+  def perform(%Oban.Job{args: %{"package" => package, "version" => version}} = job) do
     if enabled?() do
-      with {:ok, summary} <-
-             ClosureDrift.rebuild_dependents(package,
-               priority: @priority,
-               reason: @reason,
-               max: max_per_release()
-             ) do
-        _ = ToolchainSweep.enqueue()
-
-        Logger.info(
-          "Release fast path: #{package} #{version}: #{summary.drifted} builds drifted, " <>
-            "#{summary.enqueued} queued, #{summary.pending} already queued"
-        )
-
-        {:ok, summary}
+      case min(budget() - in_flight(), max_per_release()) do
+        room when room > 0 -> rebuild(job, package, version, room)
+        _none -> carry_over(job, "no room in the budget")
       end
     else
       {:cancel, "the release fast path is off"}
     end
+  end
+
+  defp rebuild(job, package, version, room) do
+    with {:ok, summary} <-
+           ClosureDrift.rebuild_dependents(package,
+             priority: @priority,
+             reason: @reason,
+             max: room
+           ) do
+      Logger.info(
+        "Release fast path: #{package} #{version}: #{summary.drifted} builds drifted, " <>
+          "#{summary.enqueued} queued, #{summary.pending} already queued"
+      )
+
+      if summary[:capped],
+        do: carry_over(job, "#{summary.enqueued} queued, more left"),
+        else: {:ok, summary}
+    end
+  end
+
+  # The rest of the release waits an hour; a snooze holds no `:intake` slot
+  # and counts no attempt.
+  defp carry_over(%Oban.Job{args: args, meta: meta}, why) do
+    if Map.get(meta || %{}, "snoozed", 0) >= max_snoozes() do
+      {:cancel, "release fast path for #{args["package"]} #{args["version"]} gave up: #{why}"}
+    else
+      {:snooze, @carry_over_seconds}
+    end
+  end
+
+  # The fast-path rebuilds not yet finished, counted up to the budget.
+  defp in_flight do
+    %{rows: [[count]]} =
+      Repo.query!(
+        """
+        SELECT count(*) FROM (
+          SELECT 1 FROM oban_jobs
+          WHERE worker = 'Portal.Workers.ToolchainBuild' AND state::text = ANY($1)
+            AND args->>'reason' = $2
+          LIMIT $3
+        ) j
+        """,
+        [@incomplete, @reason, budget()]
+      )
+
+    count
   end
 
   # The builds that lock each offered package at another version than its
@@ -168,6 +227,17 @@ defmodule Portal.Workers.ReleaseFastPath do
   @spec enabled?() :: boolean()
   def enabled?, do: Keyword.get(config(), :enabled, true) == true
 
+  @doc """
+  At most this many fast-path rebuilds incomplete at once, across releases
+  (`NCC_RELEASE_FAST_PATH_BUDGET`).
+  """
+  @spec budget() :: non_neg_integer()
+  def budget, do: Keyword.get(config(), :budget, 1_000)
+
+  @doc "How many hours a release's remainder carries over before it is left to the daily drift."
+  @spec max_snoozes() :: non_neg_integer()
+  def max_snoozes, do: Keyword.get(config(), :max_snoozes, 48)
+
   @doc "How many packages' builds must lock a release behind for it to be offered."
   @spec min_dependents() :: pos_integer()
   def min_dependents, do: Keyword.get(config(), :min_dependents, 10)
@@ -176,9 +246,9 @@ defmodule Portal.Workers.ReleaseFastPath do
   @spec window_hours() :: pos_integer()
   def window_hours, do: Keyword.get(config(), :window_hours, 3)
 
-  @doc "At most this many rebuilds per release."
+  @doc "At most this many rebuilds per run of a release's job; the rest carries over."
   @spec max_per_release() :: non_neg_integer()
-  def max_per_release, do: Keyword.get(config(), :max_per_release, 2_000)
+  def max_per_release, do: Keyword.get(config(), :max_per_release, 500)
 
   defp config, do: Application.get_env(:portal, __MODULE__, [])
 end

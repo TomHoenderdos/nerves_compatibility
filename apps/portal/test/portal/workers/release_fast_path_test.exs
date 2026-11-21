@@ -3,6 +3,7 @@ defmodule Portal.Workers.ReleaseFastPathTest do
   use Portal.DataCase, async: false
   use Oban.Testing, repo: Portal.Repo
 
+  import Ecto.Query
   import Portal.PrecompiledFixtures
 
   alias Portal.Workers.{ReleaseFastPath, ToolchainBuild, ToolchainSweep}
@@ -117,37 +118,59 @@ defmodule Portal.Workers.ReleaseFastPathTest do
   end
 
   describe "perform/1" do
-    test "rebuilds the builds that lock the package ahead of the daily drift, and forces a sweep" do
-      [dependent, other] = [name(), name()]
-      locking!(dependent, "certifi", "2.18.0")
-      locking!(other, "jason", "1.0.0")
+    # `names` 0.4.0 on hex, each locking `certifi` 2.18.0 while 2.19.0 is out.
+    defp certifi_release(names) do
+      for name <- names, do: locking!(name, "certifi", "2.18.0")
 
       Process.put(
         :hex_answer,
         {:ok,
-         [
-           entry("certifi", ["2.18.0", "2.19.0"], ~U[2026-11-12 00:00:00Z]),
-           entry("jason", ["1.0.0", "1.1.0"], ~U[2026-11-12 00:00:00Z]),
-           entry(dependent, ["0.4.0"], ~U[2026-11-01 00:00:00Z]),
-           entry(other, ["0.4.0"], ~U[2026-11-01 00:00:00Z])
-         ]}
+         [entry("certifi", ["2.18.0", "2.19.0"], ~U[2026-11-12 00:00:00Z])] ++
+           for(name <- names, do: entry(name, ["0.4.0"], ~U[2026-11-01 00:00:00Z]))}
       )
 
-      Process.put(
-        {Portal.Test.FakeHexDeps, :releases},
-        %{
-          dependent => [release("0.4.0", [{"certifi", "~> 2.18"}])],
-          other => [release("0.4.0", [{"jason", "~> 1.0"}])],
-          "certifi" => [release("2.18.0", []), release("2.19.0", [])],
-          "jason" => [release("1.0.0", []), release("1.1.0", [])]
-        }
+      put_releases(
+        Map.new(names, &{&1, [release("0.4.0", [{"certifi", "~> 2.18"}])]})
+        |> Map.put("certifi", [release("2.18.0", []), release("2.19.0", [])])
       )
+    end
+
+    defp put_releases(releases) do
+      current = Process.get({Portal.Test.FakeHexDeps, :releases}, %{})
+      Process.put({Portal.Test.FakeHexDeps, :releases}, Map.merge(current, releases))
+    end
+
+    # The builds of `jobs` ran: their jobs are done, and each row records the
+    # attempt, as a rebuild that landed or failed does.
+    defp ran!(jobs) do
+      ids = Enum.map(jobs, & &1.id)
+      Portal.Repo.update_all(from(j in Oban.Job, where: j.id in ^ids), set: [state: "completed"])
+      names = Enum.map(jobs, & &1.args["package"])
+
+      Portal.Repo.query!(
+        """
+        UPDATE catalog_toolchain_builds t SET attempted_at = now() AT TIME ZONE 'utc'
+        FROM catalog_packages p WHERE p.id = t.package_id AND p.name = ANY($1)
+        """,
+        [names]
+      )
+    end
+
+    defp fast_path_builds,
+      do:
+        all_enqueued(worker: ToolchainBuild)
+        |> Enum.filter(&(&1.args["reason"] == "release_fast_path"))
+
+    test "rebuilds the builds that lock the package at priority 2, and forces no sweep" do
+      [dependent, other] = [name(), name()]
+      certifi_release([dependent])
+      locking!(other, "jason", "1.0.0")
 
       assert {:ok, %{enqueued: 1}} =
                perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
 
       assert [job] = all_enqueued(worker: ToolchainBuild)
-      assert job.priority == 1
+      assert job.priority == 2
 
       assert %{
                "package" => ^dependent,
@@ -155,10 +178,83 @@ defmodule Portal.Workers.ReleaseFastPathTest do
                "drift" => [%{"dep" => "certifi", "to" => "2.19.0"}]
              } = job.args
 
-      assert [%{args: %{"force" => true}}] = all_enqueued(worker: ToolchainSweep)
+      assert all_enqueued(worker: ToolchainSweep) == []
+    end
+
+    test "two big releases in one hour share the budget, and what does not fit carries over" do
+      Application.put_env(:portal, ReleaseFastPath,
+        enabled: true,
+        budget: 3,
+        max_per_release: 2
+      )
+
+      certifi_names = for _ <- 1..3, do: name()
+      certifi_release(certifi_names)
+
+      jason_names = for _ <- 1..3, do: name()
+      for name <- jason_names, do: locking!(name, "jason", "1.0.0")
+
+      {:ok, registry} = Process.get(:hex_answer)
+
+      Process.put(
+        :hex_answer,
+        {:ok,
+         registry ++
+           [entry("jason", ["1.0.0", "1.1.0"], ~U[2026-11-12 00:00:00Z])] ++
+           for(name <- jason_names, do: entry(name, ["0.4.0"], ~U[2026-11-01 00:00:00Z]))}
+      )
+
+      put_releases(
+        Map.new(jason_names, &{&1, [release("0.4.0", [{"jason", "~> 1.0"}])]})
+        |> Map.put("jason", [release("1.0.0", []), release("1.1.0", [])])
+      )
+
+      # certifi takes its share of the budget and comes back for the rest.
+      assert {:snooze, 3600} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
+      assert length(fast_path_builds()) == 2
+
+      # jason gets what is left of the budget, and comes back too.
+      assert {:snooze, 3600} =
+               perform_job(ReleaseFastPath, %{"package" => "jason", "version" => "1.1.0"})
+
+      assert length(fast_path_builds()) == 3
+
+      # A full budget queues nothing and reads nothing.
+      assert {:snooze, 3600} =
+               perform_job(ReleaseFastPath, %{"package" => "jason", "version" => "1.1.0"})
+
+      assert length(fast_path_builds()) == 3
+
+      # Once the queued builds have run, the remainder carries over: each
+      # release queues what is left and finishes.
+      first = fast_path_builds()
+      ran!(first)
+
+      assert {:ok, %{enqueued: 1}} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
+      assert {:ok, %{enqueued: 2}} =
+               perform_job(ReleaseFastPath, %{"package" => "jason", "version" => "1.1.0"})
+
+      rebuilt = for job <- first ++ fast_path_builds(), do: job.args["package"]
+      assert Enum.sort(rebuilt) == Enum.sort(certifi_names ++ jason_names)
+    end
+
+    test "a carried-over release gives up after max_snoozes" do
+      Application.put_env(:portal, ReleaseFastPath, enabled: true, budget: 0, max_snoozes: 2)
+      args = %{"package" => "certifi", "version" => "2.19.0"}
+
+      assert {:snooze, 3600} =
+               ReleaseFastPath.perform(%Oban.Job{args: args, meta: %{"snoozed" => 1}})
+
+      assert {:cancel, _} =
+               ReleaseFastPath.perform(%Oban.Job{args: args, meta: %{"snoozed" => 2}})
     end
 
     test "does nothing while switched off" do
+      certifi_release([name()])
       Application.put_env(:portal, ReleaseFastPath, enabled: false)
 
       assert {:cancel, _} =

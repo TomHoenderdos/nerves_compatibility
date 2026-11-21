@@ -175,7 +175,8 @@ defmodule Portal.Workers.ClosureDrift do
   release fast path's (`Portal.Workers.ReleaseFastPath`): the same judge
   and the same kept build, with its own `:priority`, `:reason` and cap
   (`:max`), and no firmware phase. Returns the summary `run/1` does,
-  without `firmware`. Option `:dry_run` as for `run/1`.
+  without `firmware`, and with `capped: true` when it stopped at the cap
+  with candidates left. Option `:dry_run` as for `run/1`.
   """
   @spec rebuild_dependents(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def rebuild_dependents(dep, opts) when is_binary(dep) do
@@ -239,7 +240,7 @@ defmodule Portal.Workers.ClosureDrift do
 
     Enum.reduce_while(candidates, summary, fn
       _candidate, %{enqueued: enqueued} = acc when enqueued >= max ->
-        {:halt, acc}
+        {:halt, Map.put(acc, :capped, true)}
 
       candidate, acc ->
         if out_of_time?(context.deadline),

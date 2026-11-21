@@ -9,7 +9,8 @@ defmodule Portal.Workers.ToolchainSweep do
   The backlog runs tens of thousands deep and the builders drain several times
   `max_per_run/0` a day, so the cron runs every 15 minutes. An unforced run
   first counts the `Portal.Workers.ToolchainBuild` jobs already `available`,
-  `scheduled` or `retryable`. At `Portal.Toolchains.sweep_skip_when_queued/0`
+  `scheduled` or `retryable`, except the release fast path's
+  (`Portal.Workers.ReleaseFastPath`), which has its own budget. At `Portal.Toolchains.sweep_skip_when_queued/0`
   or more, it logs one line and returns without touching the backlog query or
   the Hex registry. This is what makes the frequent cron cheap: the expensive
   part of a run only happens when the queue actually needs topping up. The
@@ -115,6 +116,7 @@ defmodule Portal.Workers.ToolchainSweep do
   alias Portal.Repo
   alias Portal.Toolchains
   alias Portal.Toolchains.MemoryRouting
+  alias Portal.Workers.ReleaseFastPath
   alias Portal.Workers.ToolchainBuild
 
   # Oban states in which a ToolchainBuild job is still backlog: not yet run,
@@ -147,12 +149,17 @@ defmodule Portal.Workers.ToolchainSweep do
   # skips to it, `limit: 1` asks for no more), one indexed scan bounded by the
   # threshold rather than a full count of a backlog that can run into the
   # thousands.
+  #
+  # The release fast path's rebuilds are left out: they have their own
+  # budget (`Portal.Workers.ReleaseFastPath`), and counting a burst of them
+  # here would stop the sweep queueing any new release until it drained.
   defp queue_topped_up? do
     threshold = Toolchains.sweep_skip_when_queued()
 
     from(j in Oban.Job,
       where: j.worker == "Portal.Workers.ToolchainBuild",
       where: j.state in @queued_states,
+      where: fragment("(?->>'reason') IS DISTINCT FROM ?", j.args, ^ReleaseFastPath.reason()),
       offset: ^(threshold - 1),
       limit: 1
     )
