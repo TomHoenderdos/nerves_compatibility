@@ -3075,29 +3075,49 @@ defmodule NccWorker.Portability do
   # dependencies, and every locked release outside the closure line, whose
   # manager the trace does not name (Mix evaluates every dependency's
   # script when it loads the project, outside every window).
-  defp varied(%{ctx: ctx, decided: decided, scope: scope}) do
+  defp varied(%{ctx: ctx, decided: decided}) do
     reads =
       for {owner, {:observe, "varied_reads", item}} <- decided,
           do: Map.put(item, "owner", owner_name(owner))
 
+    build = Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build
+    plain? = Enum.any?(reads, &(&1["read"] == "plain_args"))
+
     scripts =
-      if Enum.any?(reads, &(&1["read"] == "plain_args")), do: scripted(ctx, scope), else: []
+      if plain? and is_binary(build), do: scripted_apps(ctx, Path.dirname(build)), else: []
 
     %{
       reads: Enum.uniq(reads),
-      build: Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build,
+      build: build,
       trees: ctx.trees,
       scripts: scripts
     }
   end
 
-  defp scripted(%Context{hex: {home, releases}} = ctx, _scope) do
+  @doc false
+  # The verified tarballs, with a `rebar.config.script`, of the locked
+  # releases whose script Mix may have evaluated in the traced VM: every
+  # closure dependency Mix does not build itself (a manager other than
+  # "mix", an unknown one included: review L1), and a release outside the
+  # closure only when the first build compiled it (its `mix.rebar.config`
+  # under `lib`, the first build's `<root>/lib`): one it did not compile
+  # reaches no file the package's closure builds. Public for tests.
+  @spec scripted_apps(Context.t(), String.t()) :: [{String.t(), binary()}]
+  # sobelow_skip ["Traversal.FileModule"]
+  def scripted_apps(%Context{hex: {home, releases}} = ctx, lib) do
     for app <- releases |> Map.keys() |> Enum.sort(),
-        not Context.dep?(ctx, app) or Context.manager(ctx, app) == "rebar3",
+        checked_script?(ctx, app, lib),
         bytes = Context.release_tarball(home, releases, app),
         is_binary(bytes),
         match?({:ok, %{script?: true}}, Rebar.tarball_sources(bytes)),
         do: {app, bytes}
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp checked_script?(ctx, app, lib) do
+    if Context.dep?(ctx, app),
+      do: Context.manager(ctx, app) != "mix",
+      else: File.regular?(Path.join([lib, app, "mix.rebar.config"]))
   end
 
   # Judge revision 21: what the package's own compile did in its own build

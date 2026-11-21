@@ -353,6 +353,10 @@ defmodule NccWorker.Portability.DifferentialTest do
 
     check = fn [{"gproc", "tarball"}], opts ->
       assert opts[:env]
+      # Review B2: evaluated in the run's project, anchored on the first
+      # build's mix.rebar.config files under its build root.
+      assert opts[:project_dir] == Path.join(ctx.dir, "proj")
+      assert opts[:build_root] == ctx.root
       send(self(), :script_check)
       {:ok, ["gproc"]}
     end

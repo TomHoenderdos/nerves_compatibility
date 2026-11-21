@@ -2,74 +2,64 @@ defmodule NccWorker.Portability.ScriptCheck do
   @moduledoc """
   The script check of a differential build (`NccWorker.Portability.Differential`):
   whether a rebar3 dependency's `rebar.config.script` gives the same config
-  whatever plain arguments its VM was started with.
+  whatever plain arguments Mix's VM was started with.
 
   Mix evaluates the script in its own VM when it loads the dependencies
-  (`Mix.Rebar.load_config/1`), so the script sees that VM's plain
-  arguments: `[mix, task | args]` for a user. A script tests them against
-  literals of its own (gproc's `lists:member("doc", Args)`), which no list
-  of command words can guess. So each script is evaluated as Mix evaluates
-  it, in fresh VMs, on a copy of its dependency's verified tarball tree:
-  with no extra arguments, with the traced compile's own (`-pa x -S mix
-  ncc.trace_compile`), with the command words of a Mix user's line and
-  every string literal of the dependency's `rebar.config.script` and
-  `*.script` files at once, and with each literal alone (at most
-  `@max_literals`). Every evaluation's config must be the first's, entry by
-  entry (by key, hashed in the evaluating VM), but for `deps`: a rebar3
-  dependency's `deps` never reaches its own compile (`rebar3 bare compile`
-  fetches and builds nothing; Mix hands it the code path of the tree the
-  user's lock resolved), and gproc's `"doc"` adds a git `edown` there alone.
+  (`Mix.Rebar.load_config/1` from `Mix.Dep.Loader`), so the script sees
+  that VM's plain arguments (`[mix, task | args]` for a user, `["--no-halt",
+  "+iex", "-S", "mix", ...]` under `iex -S mix`), and Mix, Mix.Project and
+  Hex loaded (tls_certificate_check's script branches on that). A script
+  tests the arguments against literals of its own (gproc's
+  `lists:member("doc", Args)`), which no list of command words can guess.
 
-  The script is package code: it runs in its own VM under `timeout(1)`, in
-  a scratch copy this module removes, and nothing it prints is trusted
-  beyond the key and hash lines it is asked for, read under a cap. Its
-  side effects outside the copy are what the variant builds' sweeps and the
-  first build's digest check are for. Never raises.
+  So the check runs the same kind of VM in the run's own project: `elixir
+  -pa <ebin> -S mix ncc.script_eval <words>`, the build's env with a fresh
+  build path of its own, cwd the project; the task
+  (`Elixir.Mix.Tasks.Ncc.ScriptEval`, `src/`) calls `Mix.Dep.load_and_cache/0`
+  as the traced compile's driver does and writes, per app asked, the config
+  Mix writes as its `mix.rebar.config`, hashed whole, and a hash per
+  top-level key but `deps`. The evaluations:
+
+    * no words after the task, as the traced compile has none: every app's
+      config must be exactly the `mix.rebar.config` the first build wrote
+      (`<build_root>/lib/<app>/mix.rebar.config`, review B2), else the
+      check's VM is not the build's and the check refuses; an app with no
+      such file refuses too;
+    * the command words of a Mix user's line (`words/0`, `iex`'s included)
+      and every string literal of the apps' `rebar.config.script` and
+      `*.script` files at once, then each literal alone (at most
+      `@max_literals` in all): every config must be the first
+      evaluation's, key by key, but for `deps`. A rebar3 dependency's
+      `deps` never reaches its own compile (`rebar3 bare compile` fetches
+      and builds nothing; Mix hands it the code path of the tree the user's
+      lock resolved), and gproc's `"doc"` adds a git `edown` there alone.
+
+  The scripts are package code: they run in VMs under `timeout(1)`, the
+  task's instructions and output in a fresh dir this module makes
+  exclusively and removes, and nothing they print is trusted beyond the
+  lines asked for, read under a cap. Their side effects outside it are
+  what the variant builds' sweeps, tree checks and the first build's digest
+  check are for. Never raises.
   """
 
   alias NccWorker.Portability.Rebar
 
+  @task :"Elixir.Mix.Tasks.Ncc.ScriptEval"
   @max_literals 24
   @max_literal_bytes 64
   @max_files 10_000
   @max_script_bytes 1024 * 1024
   @max_out_bytes 1024 * 1024
   @timeout_sec 60
-  @trace_args ~w(-pa x -S mix ncc.trace_compile)
   # Mix task words a Mix user's command line holds that rebar3 scripts test
-  # their arguments against, as rebar3 command names.
+  # their arguments against, as rebar3 command names, and what `iex -S mix`
+  # puts there (review B2).
   @words ~w(compile test deps.compile deps.get release docs run xref dialyzer eunit ct
-            escript.build phx.server prod --force)
+            escript.build phx.server prod --force iex +iex --no-halt)
   # A whole Erlang string literal, escapes included, so one with an escape
   # is skipped as one rather than read from its middle.
   @literal ~r/"((?:[^"\\\n]|\\.)*)"/
   @plain ~r/\A[\x20-\x21\x23-\x5b\x5d-\x7e]{1,64}\z/
-
-  @eval """
-  config = Mix.Rebar.load_config(File.cwd!())
-
-  grouped =
-    config
-    |> Enum.reject(&match?({:deps, _}, &1))
-    |> Enum.group_by(fn
-      entry when is_tuple(entry) and tuple_size(entry) > 0 and is_atom(elem(entry, 0)) ->
-        Atom.to_string(elem(entry, 0))
-
-      entry when is_tuple(entry) and tuple_size(entry) > 0 ->
-        inspect(elem(entry, 0), limit: 5)
-
-      other ->
-        inspect(other, limit: 5)
-    end)
-
-  lines =
-    for {key, entries} <- Enum.sort(grouped) do
-      hash = :crypto.hash(:sha256, :erlang.term_to_binary(entries, [:deterministic]))
-      [key, ?\\t, Base.encode16(hash), ?\\n]
-    end
-
-  File.write!(System.fetch_env!("NCC_SCRIPT_OUT"), lines)
-  """
 
   @type result :: {:ok, [String.t()]} | {:differs, String.t(), String.t()} | {:error, String.t()}
 
@@ -80,27 +70,67 @@ defmodule NccWorker.Portability.ScriptCheck do
   @doc """
   Checks each `{app, tarball}` (the verified Hex tarball's bytes) whose
   tarball holds a `rebar.config.script`; `{:ok, apps}` names those checked.
-  `opts`: `env:` and `extra_env:`, the build's, which every evaluation
-  runs in.
+  `opts`: `env:` and `extra_env:`, the build's, which every evaluation runs
+  in; `project_dir:`, the run's project; `build_root:`, the first build's
+  `MIX_BUILD_PATH`, which holds its `mix.rebar.config` files.
   """
   @spec run([{String.t(), binary()}], keyword()) :: result()
   def run(scripts, opts) do
-    with {:ok, timeout} <- executable("timeout"),
-         {:ok, elixir} <- executable("elixir") do
-      env = Keyword.get(opts, :env, []) ++ Keyword.get(opts, :extra_env, [])
-      Enum.reduce_while(scripts, {:ok, []}, &checked(&1, &2, {timeout, elixir}, env))
+    with {:ok, scripted} <- scripted(scripts) do
+      if scripted == [], do: {:ok, []}, else: check(scripted, opts)
     end
   rescue
     e -> {:error, "script check failed: " <> Exception.message(e)}
   end
 
-  defp checked({app, bytes}, {:ok, done}, exes, env) do
-    case check(app, bytes, exes, env) do
-      :skip -> {:cont, {:ok, done}}
-      :ok -> {:cont, {:ok, done ++ [app]}}
-      other -> {:halt, other}
+  # The apps whose tarball holds a script, with their literals.
+  defp scripted(scripts) do
+    Enum.reduce_while(scripts, {:ok, []}, fn {app, bytes}, {:ok, acc} ->
+      case contents(bytes) do
+        {:ok, %{"rebar.config.script" => _} = files} ->
+          {:cont, {:ok, acc ++ [{app, literals(files)}]}}
+
+        {:ok, _files} ->
+          {:cont, {:ok, acc}}
+
+        {:error, why} ->
+          {:halt, {:error, "#{app}: #{why}"}}
+      end
+    end)
+  end
+
+  defp check(scripted, opts) do
+    apps = Enum.map(scripted, &elem(&1, 0))
+
+    with {:ok, anchors} <- anchors(apps, Keyword.fetch!(opts, :build_root)),
+         {:ok, timeout} <- executable("timeout"),
+         {:ok, elixir} <- executable("elixir") do
+      literals =
+        scripted |> Enum.flat_map(&elem(&1, 1)) |> Enum.uniq() |> Enum.take(@max_literals)
+
+      in_scratch(apps, fn paths ->
+        evaluate(apps, anchors, literals, paths, {timeout, elixir}, opts)
+      end)
     end
   end
+
+  # Each app's first-build `mix.rebar.config`, sha256 in hex.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp anchors(apps, build_root) do
+    Enum.reduce_while(apps, {:ok, %{}}, fn app, {:ok, acc} ->
+      path = Path.join([build_root, "lib", app, "mix.rebar.config"])
+
+      with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_out_bytes <-
+             File.lstat(path),
+           {:ok, bytes} <- File.read(path) do
+        {:cont, {:ok, Map.put(acc, app, sha(bytes))}}
+      else
+        _ -> {:halt, {:differs, app, "no mix.rebar.config of the first build to reproduce"}}
+      end
+    end)
+  end
+
+  defp sha(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
   defp executable(name) do
     case System.find_executable(name) do
@@ -109,26 +139,153 @@ defmodule NccWorker.Portability.ScriptCheck do
     end
   end
 
-  # `dir` is a fresh directory this function names under the temp dir, and
-  # the only one it removes.
+  # A fresh dir made exclusively under the temp dir, holding the task's
+  # beam and instructions (`ebin/`), its output and an empty build path;
+  # the only dir this module removes.
   # sobelow_skip ["Traversal.FileModule"]
-  defp check(app, bytes, exes, env) do
-    with {:ok, files} <- contents(bytes),
-         true <- Map.has_key?(files, "rebar.config.script") do
-      dir = Path.join(System.tmp_dir!(), "ncc-sc#{System.unique_integer([:positive])}")
+  defp in_scratch(apps, fun) do
+    base =
+      Path.join(
+        System.tmp_dir!(),
+        "ncc-sc-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      )
 
-      try do
-        tree = Path.join(dir, "tree")
-        :ok = write_tree(tree, files)
-        script = Path.join(dir, "eval.exs")
-        File.write!(script, @eval)
-        evaluate(app, literals(files), {dir, tree, script}, exes, env)
-      after
-        File.rm_rf(dir)
+    case File.mkdir(base) do
+      :ok ->
+        try do
+          ebin = Path.join(base, "ebin")
+          build = Path.join(base, "build")
+          out = Path.join(base, "out")
+          File.mkdir!(ebin)
+          File.mkdir!(build)
+          File.write!(Path.join(ebin, "#{@task}.beam"), object_code!(@task))
+          instructions = %{apps: apps, out: out}
+          File.write!(Path.join(ebin, "script_eval.etf"), :erlang.term_to_binary(instructions))
+          fun.(%{ebin: ebin, build: build, out: out})
+        after
+          File.rm_rf(base)
+        end
+
+      {:error, why} ->
+        {:error, "no fresh scratch dir: #{inspect(why)}"}
+    end
+  end
+
+  defp object_code!(module) do
+    case :code.get_object_code(module) do
+      {^module, binary, _file} -> binary
+      :error -> module |> :code.which() |> List.to_string() |> File.read!()
+    end
+  end
+
+  defp evaluate(apps, anchors, literals, paths, exes, opts) do
+    runs =
+      [{"command words and literals", @words ++ literals}] ++
+        Enum.map(literals, &{inspect(&1), [&1]})
+
+    with {:ok, first} <- eval(paths, exes, opts, []),
+         :ok <- anchored(apps, anchors, first) do
+      Enum.reduce_while(runs, {:ok, apps}, fn {what, words}, ok ->
+        case eval(paths, exes, opts, words) do
+          {:ok, other} ->
+            case same_keys(apps, first, other) do
+              :ok -> {:cont, ok}
+              {:differs, app, key} -> {:halt, {:differs, app, "#{key} differs with #{what}"}}
+            end
+
+          {:error, why} ->
+            {:halt, {:error, "#{why} (#{what})"}}
+        end
+      end)
+    end
+  end
+
+  # The evaluation with no words must give each app exactly its first
+  # build's `mix.rebar.config`.
+  defp anchored(apps, anchors, first) do
+    case Enum.find(apps, &(get_in(first, [&1, :full]) != Map.fetch!(anchors, &1))) do
+      nil ->
+        :ok
+
+      app ->
+        {:differs, app,
+         "the check's evaluation does not reproduce the first build's mix.rebar.config"}
+    end
+  end
+
+  defp same_keys(apps, first, other) do
+    Enum.find_value(apps, :ok, fn app ->
+      a = get_in(first, [app, :keys]) || %{}
+      b = get_in(other, [app, :keys]) || %{}
+
+      case (Map.keys(a) ++ Map.keys(b))
+           |> Enum.uniq()
+           |> Enum.sort()
+           |> Enum.find(&(a[&1] != b[&1])) do
+        nil -> nil
+        key -> {:differs, app, key}
       end
+    end)
+  end
+
+  # sobelow_skip ["CI.System", "Traversal.FileModule"]
+  defp eval(%{ebin: ebin, build: build, out: out}, {timeout, elixir}, opts, words) do
+    _ = File.rm(out)
+
+    env =
+      (Keyword.get(opts, :env, []) ++ Keyword.get(opts, :extra_env, []))
+      |> List.keystore("MIX_BUILD_PATH", 0, {"MIX_BUILD_PATH", build})
+
+    argv = [
+      "--kill-after=5",
+      "#{@timeout_sec}",
+      elixir,
+      "-pa",
+      ebin,
+      "-S",
+      "mix",
+      "ncc.script_eval" | words
+    ]
+
+    case System.cmd(timeout, argv,
+           cd: Keyword.fetch!(opts, :project_dir),
+           env: env,
+           stderr_to_stdout: true
+         ) do
+      {_out, 0} -> read_out(out)
+      {_out, status} -> {:error, "evaluation exited #{status}"}
+    end
+  end
+
+  # `app => %{full: hash, keys: %{key => hash}}`, from the task's lines.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_out(out) do
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_out_bytes <-
+           File.lstat(out),
+         {:ok, text} <- File.read(out) do
+      text |> String.split("\n", trim: true) |> Enum.reduce_while({:ok, %{}}, &line/2)
     else
-      false -> :skip
-      {:error, why} -> {:error, "#{app}: #{why}"}
+      _ -> {:error, "evaluation wrote no config"}
+    end
+  end
+
+  defp line(line, {:ok, acc}) do
+    case String.split(line, "\t") do
+      [app, "full", hash] ->
+        {:cont, {:ok, Map.update(acc, app, %{full: hash, keys: %{}}, &Map.put(&1, :full, hash))}}
+
+      [app, "key", key, hash] ->
+        {:cont,
+         {:ok,
+          Map.update(
+            acc,
+            app,
+            %{full: nil, keys: %{key => hash}},
+            &put_in(&1, [:keys, key], hash)
+          )}}
+
+      _ ->
+        {:halt, {:error, "evaluation wrote something else"}}
     end
   end
 
@@ -153,15 +310,6 @@ defmodule NccWorker.Portability.ScriptCheck do
     _ -> {:error, "verified tarball unreadable"}
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
-  defp write_tree(tree, files) do
-    Enum.each(files, fn {rel, body} ->
-      path = Path.join(tree, rel)
-      File.mkdir_p!(Path.dirname(path))
-      File.write!(path, body)
-    end)
-  end
-
   @doc false
   # The string literals of the scripts in `files` (`rel => bytes`): plain
   # printable ones without escapes, sorted, at most `@max_literals`.
@@ -181,69 +329,4 @@ defmodule NccWorker.Portability.ScriptCheck do
   end
 
   defp script?(rel), do: rel == "rebar.config.script" or String.ends_with?(rel, ".script")
-
-  defp evaluate(app, literals, paths, exes, env) do
-    runs =
-      [{"no arguments", []}, {"the traced compile's", @trace_args}] ++
-        [{"command words and literals", @words ++ literals}] ++
-        Enum.map(literals, &{inspect(&1), [&1]})
-
-    Enum.reduce_while(runs, nil, fn {what, args}, first ->
-      case eval(paths, exes, env, args) do
-        {:ok, config} when first == nil ->
-          {:cont, config}
-
-        {:ok, ^first} ->
-          {:cont, first}
-
-        {:ok, config} ->
-          {:halt, {:differs, app, "#{differing(first, config)} differs with #{what}"}}
-
-        {:error, why} ->
-          {:halt, {:error, "#{app}: #{why} (#{what})"}}
-      end
-    end)
-    |> case do
-      %{} -> :ok
-      other -> other
-    end
-  end
-
-  defp differing(a, b) do
-    (Map.keys(a) ++ Map.keys(b))
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> Enum.find(&(Map.get(a, &1) != Map.get(b, &1)))
-  end
-
-  # sobelow_skip ["Traversal.FileModule"]
-  defp eval({dir, tree, script}, {timeout, elixir}, env, args) do
-    out = Path.join(dir, "out-#{System.unique_integer([:positive])}")
-    argv = ["--kill-after=5", "#{@timeout_sec}", elixir, script | args]
-
-    case System.cmd(timeout, argv,
-           cd: tree,
-           env: env ++ [{"NCC_SCRIPT_OUT", out}],
-           stderr_to_stdout: true
-         ) do
-      {_out, 0} -> read_out(out)
-      {_out, status} -> {:error, "evaluation exited #{status}"}
-    end
-  end
-
-  # sobelow_skip ["Traversal.FileModule"]
-  defp read_out(out) do
-    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_out_bytes <-
-           File.lstat(out),
-         {:ok, text} <- File.read(out) do
-      lines = String.split(text, "\n", trim: true)
-      parsed = for line <- lines, [key, hash] <- [String.split(line, "\t")], do: {key, hash}
-
-      if length(parsed) == length(lines),
-        do: {:ok, Map.new(parsed)},
-        else: {:error, "evaluation wrote something else"}
-    else
-      _ -> {:error, "evaluation wrote no config"}
-    end
-  end
 end

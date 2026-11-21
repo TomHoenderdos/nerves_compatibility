@@ -20,9 +20,11 @@ defmodule NccWorker.Portability.Differential do
       for good: the two are not settled together;
     * `settle/6` (`NccWorker.Portability.run/3`) first runs the script
       check when a read was of the plain arguments
-      (`NccWorker.Portability.ScriptCheck`: every scripted rebar3
-      dependency's config is the same under the arguments its own literals
-      name, but for `deps`); with no such dependency the read refuses;
+      (`NccWorker.Portability.ScriptCheck`: in Mix VMs in the run's
+      project, every scripted dependency's config reproduces the first
+      build's `mix.rebar.config` and stays the same under the arguments
+      its own literals and a Mix user's words name, but for `deps`); with
+      no such dependency the read refuses;
     * then two variant builds, each the traced judge compile of the
       package's closure at a build root of its own (of the first build
       root's length where one fits, so a root in a literal reads as the
@@ -143,7 +145,7 @@ defmodule NccWorker.Portability.Differential do
   defp decide(verdict, held, project_dir, package, opts, run, digest) do
     before = digest.(held.build)
 
-    with :ok <- scripts(held, opts),
+    with :ok <- scripts(held, project_dir, opts),
          :ok <- variants(held, project_dir, package, opts, run),
          :ok <- unchanged(before, digest.(held.build)) do
       pass(verdict, held)
@@ -155,7 +157,7 @@ defmodule NccWorker.Portability.Differential do
   end
 
   # The script check, when a read was of the plain arguments.
-  defp scripts(held, opts) do
+  defp scripts(held, project_dir, opts) do
     cond do
       not Enum.any?(held.reads, &(&1["read"] == "plain_args")) ->
         :ok
@@ -166,7 +168,11 @@ defmodule NccWorker.Portability.Differential do
       true ->
         check = Keyword.get(opts, :script_check, &ScriptCheck.run/2)
 
-        case check.(held.scripts, Keyword.take(opts, [:env, :extra_env])) do
+        check_opts =
+          Keyword.take(opts, [:env, :extra_env]) ++
+            [project_dir: project_dir, build_root: first_root(held.build)]
+
+        case check.(held.scripts, check_opts) do
           {:ok, _apps} ->
             :ok
 
