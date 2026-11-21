@@ -618,9 +618,10 @@ that raises in a Mix project and a `:wx_object` viewer under Mix.install. The tr
 the OTP and Elixir installs that it did not load and that was not loaded before it started, and names the application
 on the event (`otp_app`); every probe function counts, the loaded-now ones included. From a dependency's `mix.exs`
 it refuses whatever the dependency lists (` in mix.exs`): `compile.all` asks its `application/0` on the code path the
-previous dependency's compile left (easel 0.3.4's `Code.ensure_compiled(:wx)`). In a firmware target's trace only
-that `mix.exs` case refuses: `mix firmware` prunes as the builder did. The refusal withdraws (R1), taints every
-dependent (R3), and bumps no judge revision: it only refuses more.
+previous dependency's compile left (easel 0.3.4's `Code.ensure_compiled(:wx)`). A firmware target's trace is judged
+the same: `mix firmware` prunes, but pruning decides only what can be newly found, and a module or application an
+earlier dependency's compile loaded stays visible to every later compile in the VM. The refusal withdraws (R1),
+taints every dependent (R3), and bumps no judge revision: it only refuses more.
 
 Revision 21, with item 1 on: a target read in a doc file of the package under
 test (`*.md`, `*.markdown`, `*.txt`, `LICENSE*`; fledex's README naming `MIX_TARGET`) no longer makes the package

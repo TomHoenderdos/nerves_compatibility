@@ -117,9 +117,11 @@ defmodule NccWorker.Portability.Probes do
   when `compile.all` asks its `application/0`, so easel 0.3.4's
   `Code.ensure_compiled(:wx)` there depends on the compile order), so a
   probe from one refuses whatever its application lists (` in mix.exs`).
-  Only that one in a firmware target's trace (`Context` `firmware`): its
-  build is installed only by `mix firmware`, a Mix project, which prunes
-  as the builder did. A probe the code server makes inside another, the
+  A firmware target's trace is judged the same: `mix firmware` prunes as
+  the builder does, but pruning decides only what can be newly found, and
+  a module or application an earlier compile in the same VM loaded stays
+  visible to every later one (Mix loads every closure application of each
+  dependency it compiles, and nothing unloads code). A probe the code server makes inside another, the
   type checker's outside a window with a nested compile (as above), and
   the lookup `@behaviour m` makes in a module body, whose answer Elixir's
   `Module.preprocess_attribute/2` drops (the tracer's `attribute`), are no
@@ -291,9 +293,6 @@ defmodule NccWorker.Portability.Probes do
 
       is_binary(Context.mix_exs(ctx, event, owner)) ->
         {:refuse, otp_probe(app, event) <> " in mix.exs"}
-
-      ctx.firmware ->
-        :ignore
 
       Context.dep?(ctx, owner) and app in path_of(ctx, owner) ->
         :ignore

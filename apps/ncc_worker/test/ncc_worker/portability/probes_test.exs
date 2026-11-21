@@ -491,29 +491,6 @@ defmodule NccWorker.Portability.ProbesTest do
       assert Probes.decide(in_lib, c, "pkg") == :ignore
     end
 
-    # `mix firmware` prunes the code path as the builder did: off the path,
-    # the answer is the consumer's. A mix.exs still runs on whatever path
-    # the previous dependency's compile left.
-    test "in a firmware target's trace, only a mix.exs probe refuses", %{tmp_dir: dir} do
-      c = %{ctx(dir, %{"pkg" => ["kernel"]}) | firmware: true}
-
-      for mfa <- ~w(code:ensure_loaded/1 code:which/1 erlang:function_exported/3),
-          owner <- ["pkg", :outside],
-          do: assert(Probes.decide(otp("wx", "wx", mfa: mfa), c, owner) == :ignore)
-
-      File.mkdir_p!(Path.join(dir, "deps/pkg"))
-      dest = Context.realpath(Path.join(dir, "deps/pkg"))
-      File.write!(Path.join(dest, "mix.exs"), "")
-      c = put_in(c.deps["pkg"].dest, dest)
-      event = Map.put(otp("wx", "wx"), "user", %{"file" => Path.join(dest, "mix.exs")})
-
-      assert {:refuse, "compile-time probe of an OTP application" <> _} =
-               Probes.decide(event, c, "pkg")
-    end
-
-    # `@behaviour :wx_object`: Elixir's `Module.preprocess_attribute/2`
-    # calls `Code.ensure_compiled/1` and drops the answer; only the
-    # checker's warnings see the behaviour after that.
     test "the attribute lookup @behaviour makes is no concern", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => []})
       event = otp("wx_object", "wx", arg: %{"attribute" => true})

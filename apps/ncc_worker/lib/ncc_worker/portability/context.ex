@@ -7,9 +7,7 @@ defmodule NccWorker.Portability.Context do
   tracer loaded before anything compiled (`preloaded`), the windows
   package code started a nested compile in (`nested`), and, for the VM
   whose events are being decided, its `code:ensure_loaded/1` probes
-  (`ensured`, `NccWorker.Portability.Probes.ensured/1`), and whether the
-  trace is a firmware target's (`firmware`), whose build only `mix
-  firmware`, a Mix project, installs.
+  (`ensured`, `NccWorker.Portability.Probes.ensured/1`).
 
   Every app here is an OTP app name, as the trace's closure line carries
   them. The `package` given to `build/4` may be a Hex name that is not its
@@ -73,8 +71,7 @@ defmodule NccWorker.Portability.Context do
     hook_scripts: %{},
     drivers: %{},
     foreign_priv: nil,
-    holders: %{},
-    firmware: false
+    holders: %{}
   ]
 
   @type dep :: %{
@@ -104,8 +101,7 @@ defmodule NccWorker.Portability.Context do
           hook_scripts: %{String.t() => String.t()},
           deps_path: String.t() | nil,
           drivers: %{String.t() => String.t()},
-          foreign_priv: map() | nil,
-          firmware: boolean()
+          foreign_priv: map() | nil
         }
 
   @max_hops 40

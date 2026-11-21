@@ -106,10 +106,10 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
     assert reason == @refusal <> "mnesia via Code.ensure_loaded?/1"
 
-    # Judged as a firmware target's trace, whose build only `mix firmware`
-    # (a Mix project, pruned as here) installs, the probe is no concern.
+    # A firmware target's trace refuses it too: `mix firmware` prunes, but
+    # what an earlier compile loaded stays visible (below).
     firmware = TracerFixtures.judge(proj, "fx_probe", traced, [], target: "rpi4")
-    assert %{status: :pass} = firmware, inspect(Map.take(firmware, [:reason, :observations]))
+    assert %{status: :skip, reason: ^reason} = firmware
 
     # The event shapes the judge reads (pinned on this toolchain): the
     # package's probe, and the code server's own module_loaded/1 inside it.
@@ -130,6 +130,36 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     File.rm_rf!(Path.join(proj, "_build"))
     compile(proj)
     assert built_value(proj) == "true"
+  end
+
+  # Why a pruned Mix project (`mix firmware` included) is no stand-in for
+  # the builder: pruning decides only what can be newly found. fx_a lists
+  # mnesia and loads it; fx_probe, compiled after it in the same VM, finds
+  # it loaded although its own path is pruned. Built alone, as the builder
+  # builds it, fx_probe finds nothing.
+  test "an earlier dependency's load is visible to a pruned compile", %{tmp_dir: dir} do
+    probe = TracerFixtures.attr_module("FxProbe", "Code.ensure_loaded?(:mnesia)")
+
+    alone =
+      TracerFixtures.project(Path.join(dir, "alone"), ["fx_probe"], %{
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => probe}}
+      })
+
+    both =
+      TracerFixtures.project(Path.join(dir, "both"), ["fx_a", "fx_probe"], %{
+        "fx_a" => %{
+          extra_applications: [:mnesia],
+          files: %{
+            "lib/fx_a.ex" => TracerFixtures.attr_module("FxA", "Code.ensure_loaded?(:mnesia)")
+          }
+        },
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => probe}}
+      })
+
+    compile(alone)
+    compile(both)
+    assert built_value(alone) == "false"
+    assert built_value(both) == "true"
   end
 
   test "a probe of an OTP application the package lists passes", %{tmp_dir: dir} do
