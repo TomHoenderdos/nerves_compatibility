@@ -418,6 +418,21 @@ defmodule NccWorker.Tracer.StackTest do
              f(Module.Types.Apply, :export, 6)
            ])
 
+    # The checker formatting an undefined-module warning's hint.
+    hint = f(UndefinedFunctionError, :hint_for_missing_module, 3)
+    tc_hint = [UndefinedFunctionError | tc]
+    assert :ncc_tracer_stack.checker([hint, f(Module.Types.Apply, :format, 2)], &(&1 in tc_hint))
+    refute :ncc_tracer_stack.checker([hint, f(Module.Types.Apply, :format, 2)], &(&1 in tc))
+
+    refute :ncc_tracer_stack.checker(
+             [
+               hint,
+               f(UndefinedFunctionError, :message, 1),
+               f(:elixir_compiler_3, :__MODULE__, 1)
+             ],
+             &(&1 in tc_hint)
+           )
+
     refute checker?.([f(Code, :ensure_loaded?, 1), f(:elixir_compiler_3, :__MODULE__, 1)])
     refute checker?.([f(:code, :ensure_loaded, 1)])
     refute checker?.([])

@@ -313,8 +313,12 @@ attribute_lookup([{M1, F1, A1, _}, {M2, F2, A2, _} | _], IsToolchain) ->
 attribute_lookup(_Stack, _IsToolchain) -> false.
 
 %% The toolchain frames a lookup is made through on its way from the type
-%% checker: the code server's loading functions and the error handlers.
--define(LOOKUP_THROUGH, [code, error_handler, 'Elixir.Kernel.ErrorHandler', 'Elixir.Code']).
+%% checker: the code server's loading functions and the error handlers, and
+%% UndefinedFunctionError's hint, which lists and loads modules on the code
+%% path while the checker formats an undefined-module warning
+%% (Module.Types.Apply, Elixir 1.19 and 1.20).
+-define(LOOKUP_THROUGH, [code, error_handler, 'Elixir.Kernel.ErrorHandler', 'Elixir.Code',
+                         'Elixir.UndefinedFunctionError']).
 
 %% Whether the first frame past the wrappers and LOOKUP_THROUGH is Elixir's
 %% type checker (Module.ParallelChecker, a Module.Types module), each frame

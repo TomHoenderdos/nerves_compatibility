@@ -223,6 +223,69 @@ defmodule NccWorker.Tracer.ChannelsTest do
     assert {:install, %{what: :get_path}} = classify(:code, :get_path, [])
   end
 
+  # The probes outside probe_mfas/0, always patterned: where a file is on
+  # the code path, what the path holds, and what the application controller
+  # knows of an application (loading, keys, running).
+  test "code path and application probes" do
+    patterns = :ncc_tracer_channels.patterns()
+
+    for mfa <- [
+          {:code, :where_is_file, 1},
+          {:code, :where_is_file, 2},
+          {:code, :all_available, 0},
+          {:application_controller, :load_application, 1},
+          {:application_controller, :get_key, 2},
+          {:application_controller, :get_all_key, 1},
+          {:application_controller, :is_running, 1},
+          {:application_controller, :start_application, 2},
+          {:application_controller, :start_application_request, 2},
+          {:application_controller, :get_application_module, 1},
+          {:application_controller, :which_applications, 0},
+          {:application_controller, :which_applications, 1}
+        ],
+        do: assert(mfa in patterns, inspect(mfa))
+
+    assert {:probe, %{module: "mnesia"}} == classify(:code, :where_is_file, [~c"mnesia.beam"])
+
+    assert {:probe, %{module: "Elixir.Foo"}} ==
+             classify(:code, :where_is_file, ["Elixir.Foo.beam"])
+
+    assert {:app_probe, %{app: "mnesia"}} == classify(:code, :where_is_file, [~c"mnesia.app"])
+
+    assert {:install, %{what: :where_is_file, file: "include/x.hrl"}} ==
+             classify(:code, :where_is_file, [~c"include/x.hrl"])
+
+    assert {:install, %{what: :where_is_file}} ==
+             classify(:code, :where_is_file, [[~c"/p"], ~c"mnesia.beam"])
+
+    assert {:install, %{what: :all_available}} == classify(:code, :all_available, [])
+
+    for {f, args} <- [
+          load_application: [:mnesia],
+          get_key: [:mnesia, :vsn],
+          get_all_key: [:mnesia],
+          is_running: [:mnesia],
+          start_application: [:mnesia, :temporary],
+          start_application_request: [:mnesia, :temporary]
+        ],
+        do: assert({:app_probe, %{app: "mnesia"}} == classify(:application_controller, f, args))
+
+    assert {:app_probe, %{app: "fx"}} ==
+             classify(:application_controller, :load_application, [{:application, :fx, []}])
+
+    assert {:app_probe, %{app: ~s(<<"x">>)}} ==
+             classify(:application_controller, :get_key, ["x", :vsn])
+
+    assert {:probe, %{module: "mnesia_lib"}} ==
+             classify(:application_controller, :get_application_module, [:mnesia_lib])
+
+    assert {:install, %{what: :which_applications}} ==
+             classify(:application_controller, :which_applications, [])
+
+    assert {:install, %{what: :which_applications}} ==
+             classify(:application_controller, :which_applications, [5000])
+  end
+
   test "listing the loaded modules is its own channel, always patterned" do
     patterns = :ncc_tracer_channels.patterns()
 

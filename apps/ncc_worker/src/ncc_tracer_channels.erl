@@ -63,6 +63,20 @@ patterns() ->
      {socket, open, 2}, {socket, open, 3}, {socket, open, 4},
      {code, root_dir, 0}, {code, lib_dir, 0}, {code, lib_dir, 1}, {code, lib_dir, 2},
      {code, priv_dir, 1}, {code, get_path, 0}, {application, loaded_applications, 0},
+     %% Where a file is on the code path and what the path holds, and what
+     %% the application controller knows of an application (whether it is
+     %% loaded or running, its keys, which module is whose): every answer is
+     %% the code path's or what earlier compiles loaded, which Mix prunes
+     %% and Mix.install does not (NccWorker.Portability.Probes). Not
+     %% probe_mfas/0: these are rare outside Mix's own frames.
+     {code, where_is_file, 1}, {code, where_is_file, 2}, {code, all_available, 0},
+     {application_controller, load_application, 1}, {application_controller, get_key, 2},
+     {application_controller, get_all_key, 1}, {application_controller, is_running, 1},
+     {application_controller, start_application, 2},
+     {application_controller, start_application_request, 2},
+     {application_controller, get_application_module, 1},
+     {application_controller, which_applications, 0},
+     {application_controller, which_applications, 1},
      {crypto, supports, 0}, {crypto, supports, 1}, {crypto, info_lib, 0},
      {crypto, info, 0}, {crypto, info_fips, 0},
      %% erlang:load_nif/2 is kept, but it is not reliably call-traceable (no
@@ -380,6 +394,16 @@ classify(M, F, Args) ->
     end.
 
 specific(code, F, [_]) when F =:= unstick_mod; F =:= unstick_dir -> {integrity, #{}};
+specific(code, where_is_file, [File]) -> where_is_file(File);
+specific(code, where_is_file, [_Path, _File]) -> {install, #{what => where_is_file}};
+specific(application_controller, F, [App | _])
+  when F =:= load_application; F =:= get_key; F =:= get_all_key; F =:= is_running;
+       F =:= start_application; F =:= start_application_request ->
+    {app_probe, #{app => app_name(App)}};
+specific(application_controller, get_application_module, [M]) ->
+    {probe, #{module => term_name(M)}};
+specific(application_controller, which_applications, _) ->
+    {install, #{what => which_applications}};
 %% Before the install channel's by_module(code, ...) clauses, which would
 %% take code:which/1 for a lib_dir-like read.
 specific(code, F, [M]) when F =:= ensure_loaded; F =:= is_loaded; F =:= which;
@@ -443,6 +467,23 @@ specific(os, unsetenv, [Name]) -> {env_write, (written(error))#{name => chars(Na
 specific(_M, _F, _Args) -> unknown.
 
 mix_target() -> {mix_state, #{'fun' => <<"target">>}}.
+
+%% code:where_is_file/1 of a module's beam or an application's .app, by
+%% its bare file name, is a probe of that module or application; of any
+%% other file a read of the code path.
+where_is_file(File) ->
+    Name = chars(File),
+    Plain = is_binary(Name) andalso filename:basename(Name) =:= Name,
+    case Plain andalso filename:extension(Name) of
+        <<".beam">> -> {probe, #{module => filename:rootname(Name)}};
+        <<".app">> -> {app_probe, #{app => filename:rootname(Name)}};
+        _ -> {install, #{what => where_is_file, file => Name}}
+    end.
+
+%% An application's name, also from the {application, Name, Props}
+%% descriptor load_application/1 takes.
+app_name({application, Name, _Props}) -> term_name(Name);
+app_name(App) -> term_name(App).
 
 generic(M, F, Args) ->
     case {lists:member({M, F}, ?READS), lists:member({M, F}, ?WRITES)} of

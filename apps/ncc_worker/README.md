@@ -614,7 +614,14 @@ of an OTP application outside the closure: <app> via <function>` unless that app
 closure's `.app` lists, as for a module the trace loaded). Mix compiles a dependency on a code path pruned to its
 closure's applications (`Mix.Tasks.Compile.All`, `prune_code_paths`), Mix.install does not (`prune_code_paths: false`,
 which every dependency inherits), so the two compile different code: vega_lite 0.1.11's `VegaLite.WxViewer` is a stub
-that raises in a Mix project and a `:wx_object` viewer under Mix.install. The tracer watches every module on disk under
+that raises in a Mix project and a `:wx_object` viewer under Mix.install. The same rule covers what the application
+controller knows of an application (`Application.load/1`, `spec/1,2`, `ensure_loaded/1`, `ensure_all_started/1`,
+`start/1`, traced as `application_controller`'s `load_application/1`, `get_key/2`, `get_all_key/1`, `is_running/1` and
+`start_application/2`, and `:code.where_is_file/1` of an `<app>.app`); for an application that is no installed OTP or
+Elixir one it refuses as `compile-time probe of a dependency outside the closure: <app> via <function>`.
+`:code.where_is_file/1` of a `<module>.beam` is a module probe; of any other file, and `:code.all_available/0`,
+`:application.which_applications/0,1`, it is a host read, but for Record.extract/2's `from:` lookup and the type
+checker's undefined-module hint. The tracer watches every module on disk under
 the OTP and Elixir installs that it did not load and that was not loaded before it started, and names the application
 on the event (`otp_app`); every probe function counts, the loaded-now ones included. From a dependency's `mix.exs`
 it refuses whatever the dependency lists (` in mix.exs`): `compile.all` asks its `application/0` on the code path the

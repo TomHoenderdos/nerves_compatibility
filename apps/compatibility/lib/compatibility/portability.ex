@@ -28,7 +28,8 @@ defmodule Compatibility.Portability do
     "foreign priv write refused: ",
     "compile-time read of kino's asset archives: ",
     "native build not set apart: ",
-    "compile-time probe of an OTP application outside the closure: "
+    "compile-time probe of an OTP application outside the closure: ",
+    "compile-time probe of a dependency outside the closure: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
@@ -53,7 +54,8 @@ defmodule Compatibility.Portability do
     "compile-time priv write not reproducible: ",
     "bakes the build path: ",
     "compile-time read of kino's asset archives: ",
-    "compile-time probe of an OTP application outside the closure: "
+    "compile-time probe of an OTP application outside the closure: ",
+    "compile-time probe of a dependency outside the closure: "
   ]
 
   # The oldest judge revision (`NccWorker.Portability.judge_revision/1`)
@@ -125,6 +127,7 @@ defmodule Compatibility.Portability do
   @foreign_priv_read "compile-time read of kino's asset archives: "
   @native_side "native build not set apart: "
   @otp_probe "compile-time probe of an OTP application outside the closure: "
+  @dependency_probe "compile-time probe of a dependency outside the closure: "
 
   @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
@@ -403,6 +406,16 @@ defmodule Compatibility.Portability do
   """
   @spec otp_probe() :: String.t()
   def otp_probe, do: @otp_probe
+
+  @doc """
+  The same for a module or application that is no installed OTP or Elixir
+  one (a Hex package's): under Mix.install every installed dependency is on
+  the code path, and in a Mix project a module an earlier dependency's
+  compile loaded stays loaded, so a probe of one the prober's closure does
+  not hold answers differently there than on the builder. It withdraws.
+  """
+  @spec dependency_probe() :: String.t()
+  def dependency_probe, do: @dependency_probe
 
   @doc "Whether `reason` is a trace refusal (and not a rule 1 reason or could-not-judge)."
   @spec refusal?(term()) :: boolean()

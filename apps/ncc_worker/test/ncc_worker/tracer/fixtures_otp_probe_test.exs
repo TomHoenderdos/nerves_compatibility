@@ -230,6 +230,123 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert BuildIdentity.differences(published(proj), untraced) == []
   end
 
+  # The probe forms outside the module probes (round-1 review, F2): each
+  # builds `false` pruned and `true` unpruned with mnesia unlisted, and
+  # refuses with the function the package called. Application.spec/2's
+  # answer is whatever an earlier compile loaded (the next test).
+  @forms [
+    {":code.where_is_file(~c\"mnesia.app\") != :non_existing", "application_controller",
+     "code:where_is_file/1", "mnesia"},
+    {":code.where_is_file(~c\"mnesia.beam\") != :non_existing", nil, "code:where_is_file/1",
+     "mnesia"},
+    {"Enum.any?(:code.all_available(), &(elem(&1, 0) == ~c\"mnesia\"))", nil, :host_read, nil},
+    {"match?(:ok, Application.load(:mnesia))", nil, "application_controller:load_application/1",
+     "mnesia"},
+    {"Application.spec(:mnesia, :vsn) != nil", nil, "Application.spec/2", "mnesia"},
+    {"match?({:ok, _}, Application.ensure_all_started(:mnesia))", nil,
+     "application_controller:is_running/1", "mnesia"}
+  ]
+
+  for {{expr, _, via, app}, i} <- Enum.with_index(@forms) do
+    @expr expr
+    @via via
+    @app app
+    test "probe form #{i}: #{expr} refuses", %{tmp_dir: dir} do
+      proj = probe_fixture(dir, [], @expr)
+      traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+      assert {:ok, 0} = traced.result, traced.log
+      assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
+
+      case @via do
+        :host_read -> assert reason =~ "compile-time host read: code:all_available/0 in ", reason
+        via -> assert reason == @refusal <> "#{@app} via #{via}"
+      end
+    end
+  end
+
+  # Record.extract/2's `from:` asks the code path for the file first; the
+  # read of it that follows is judged as a read (here a relative path an
+  # epp server opens, which refuses as it always did).
+  test "Record.extract's code path lookup is no concern", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{
+          files: %{
+            "src/fx.hrl" => "-record(fx, {a = 1, b}).\n",
+            "lib/fx_probe.ex" => """
+            defmodule FxProbe do
+              require Record
+              Record.defrecord(:fx, Record.extract(:fx, from: "src/fx.hrl"))
+              def x, do: fx()
+            end
+            """
+          }
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    verdict = TracerFixtures.judge(proj, "fx_probe", traced)
+    reasons = [verdict.reason | Enum.map(verdict.observations["refusals"], & &1["reason"])]
+    refute Enum.any?(reasons, &(is_binary(&1) and &1 =~ "where_is_file")), inspect(reasons)
+
+    assert [where] =
+             Enum.filter(traced.report.events, &(&1["mfa"] == "code:where_is_file/1"))
+
+    assert where["first"]["module"] == "Elixir.Record.Extractor"
+    assert where["first"]["function"] == "from_file"
+    assert where["first_kind"] == "toolchain"
+  end
+
+  test "an application spec answers what an earlier dependency's compile loaded",
+       %{tmp_dir: dir} do
+    probe = TracerFixtures.attr_module("FxProbe", "Application.spec(:mnesia, :vsn) != nil")
+
+    alone =
+      TracerFixtures.project(Path.join(dir, "alone"), ["fx_probe"], %{
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => probe}}
+      })
+
+    # fx_a only lists mnesia: Mix's AppLoader loads the application to
+    # compile fx_a, and fx_probe after it sees it loaded.
+    both =
+      TracerFixtures.project(Path.join(dir, "both"), ["fx_a", "fx_probe"], %{
+        "fx_a" => %{
+          extra_applications: [:mnesia],
+          files: %{"lib/fx_a.ex" => TracerFixtures.attr_module("FxA", "1")}
+        },
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => probe}}
+      })
+
+    compile(alone)
+    compile(both)
+    assert built_value(alone) == "false"
+    assert built_value(both) == "true"
+  end
+
+  test "application probes of the package's own and listed applications pass", %{tmp_dir: dir} do
+    expr =
+      "{Application.spec(:fx_probe, :vsn), Application.spec(:mnesia, :vsn) != nil, " <>
+        "Application.spec(:elixir, :description), match?(:ok, Application.ensure_loaded(:mnesia))}"
+
+    proj = probe_fixture(dir, [:mnesia], expr)
+    compile(proj)
+    untraced = published(proj)
+    File.rm_rf!(Path.join(proj, "_build"))
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    assert BuildIdentity.differences(published(proj), untraced) == []
+
+    verdict = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+    apps =
+      for %{"channel" => "app_probe", "arg" => %{"app" => app}} <- traced.report.events,
+          do: app
+
+    assert "mnesia" in apps and "fx_probe" in apps, inspect(apps)
+  end
+
   # Whether a module is loaded now: untraced and pruned, nothing loads
   # mnesia; under Mix.install another compile may have.
   test "a loaded-now probe of an OTP application the package does not list is refused",

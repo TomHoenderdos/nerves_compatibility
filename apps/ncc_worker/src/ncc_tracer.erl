@@ -369,6 +369,7 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
     put(preloaded, Preloaded),
     Installed = installed(Role, Before, Preloaded),
     put(installed, Installed),
+    put(installed_apps, installed_apps(Role)),
     Calls = app_calls(Preloaded),
     put(app_calls, Calls),
     %% Never a probe or call pattern without a module to filter it to: an
@@ -429,6 +430,8 @@ reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 %% (checker_pool_frames/0, first_kind and caller_kind), the wrappers strip/3
 %% skips (ncc_tracer_stack:wrappers/0), the code-loading shapes' modules
 %% (code_load/5), the @behaviour lookup's frames (attribute_lookup/1),
+%% Record.Extractor and UndefinedFunctionError (whose code path reads the
+%% judge lets through by name),
 %% the epp server whose
 %% predefined-macro reads the judge ignores, and erlang (the judge's
 %% big_binary_to_int/2 caller). Sticky modules are no exception:
@@ -440,7 +443,8 @@ canary_patterns() ->
              || {M, _F, _A} <- ncc_tracer_channels:path_os_frames()
                     ++ ncc_tracer_channels:os_family_callers()
                     ++ ncc_tracer_channels:checker_pool_frames()]
-        ++ [M || {M, _F, _A} <- ncc_tracer_stack:attribute_lookup_frames()],
+        ++ [M || {M, _F, _A} <- ncc_tracer_stack:attribute_lookup_frames()]
+        ++ ['Elixir.Record.Extractor', 'Elixir.UndefinedFunctionError'],
     Shapes = [M || Shape <- ncc_tracer_stack:code_loading_shapes(
                                erlang:system_info(otp_release)),
                    {M, _F, _A} <- Shape],
@@ -677,6 +681,15 @@ installed_modules(Before, Preloaded) ->
                        not lists:member(M, ?LOADED_BY_MIX),
                        not is_map_key(atom_to_binary(M), Preloaded)]).
 
+%% The installed OTP and Elixir applications off every compile's path, as
+%% #{App => true}: an application probe of one is named `otp_app`.
+installed_apps(main) ->
+    maps:from_keys([App || Lib <- [filename:join(code:root_dir(), "lib") | elixir_lib()],
+                           File <- filelib:wildcard("*/ebin/*.app", Lib),
+                           App <- [list_to_binary(filename:basename(File, ".app"))],
+                           not lists:member(App, ?ON_EVERY_PATH)], true);
+installed_apps(child) -> #{}.
+
 elixir_lib() ->
     case code:lib_dir(elixir) of
         Dir when is_list(Dir) -> [filename:dirname(Dir)];
@@ -693,6 +706,14 @@ probed({probe, #{module := Module} = Arg}, Stack) ->
                  otp_app => maps:get(Module, get(installed), null),
                  attribute => attribute_lookup(Stack),
                  checker => checker(Stack)}};
+probed({app_probe, #{app := App} = Arg}, _Stack) ->
+    Otp = case is_map_key(App, get(installed_apps)) of
+              true -> App;
+              false -> null
+          end,
+    {app_probe, Arg#{otp_app => Otp}};
+probed({install, #{what := all_available} = Arg}, Stack) ->
+    {install, Arg#{checker => checker(Stack)}};
 probed({app_call, Arg}, Stack) ->
     {app_call, Arg#{checker => checker(Stack), caller_app => caller_app(caller(Stack))}};
 probed(Class, _Stack) -> Class.

@@ -544,6 +544,99 @@ defmodule NccWorker.Portability.ProbesTest do
     end
   end
 
+  # What the application controller knows of an application (loaded,
+  # its keys, running, started, loaded now): Mix loads every closure
+  # application of a dependency before compiling it (Mix.AppLoader), and
+  # nothing unloads one, so the answer for an application off the owner's
+  # path is whatever earlier compiles loaded, and under Mix.install whatever
+  # the whole install holds.
+  describe "an application probe" do
+    defp app_probe(app, opts \\ []) do
+      %{
+        "channel" => "app_probe",
+        "mfa" => Keyword.get(opts, :mfa, "application_controller:get_key/2"),
+        "arg" => Map.merge(%{"app" => app}, Keyword.get(opts, :arg, %{})),
+        "caller" => Keyword.get(opts, :caller, frame("Elixir.Application", "spec", 2))
+      }
+    end
+
+    test "of an application on the owner's path is no concern", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "mnesia"], "child" => ["kernel"]})
+      c = put_in(c.deps["pkg"].children, ["child"])
+
+      for app <- ~w(pkg child mnesia kernel stdlib elixir logger),
+          mfa <- ~w(application_controller:get_key/2 application_controller:load_application/1),
+          do: assert(Probes.decide(app_probe(app, mfa: mfa), c, "pkg") == :ignore, app)
+    end
+
+    test "of any other application refuses, an OTP one by its own reason", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+
+      assert Probes.decide(app_probe("mnesia", arg: %{"otp_app" => "mnesia"}), c, "pkg") ==
+               {:refuse,
+                "compile-time probe of an OTP application outside the closure: " <>
+                  "mnesia via Application.spec/2"}
+
+      assert Probes.decide(app_probe("phoenix_html"), c, "pkg") ==
+               {:refuse,
+                "compile-time probe of a dependency outside the closure: " <>
+                  "phoenix_html via Application.spec/2"}
+
+      load =
+        app_probe("mnesia",
+          mfa: "application_controller:load_application/1",
+          caller: frame("application", "load1", 2),
+          arg: %{"otp_app" => "mnesia"}
+        )
+
+      assert {:refuse, why} = Probes.decide(load, c, "pkg")
+      assert why =~ "mnesia via application_controller:load_application/1"
+      assert {:refuse, _} = Probes.decide(app_probe("mnesia"), c, :outside)
+    end
+
+    test "from a closure dependency's mix.exs refuses, listed or not", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "mnesia"]})
+      File.mkdir_p!(Path.join(dir, "deps/pkg"))
+      dest = Context.realpath(Path.join(dir, "deps/pkg"))
+      File.write!(Path.join(dest, "mix.exs"), "")
+      c = put_in(c.deps["pkg"].dest, dest)
+
+      event =
+        "mnesia"
+        |> app_probe(arg: %{"otp_app" => "mnesia"})
+        |> Map.put("user", %{"file" => Path.join(dest, "mix.exs")})
+
+      assert {:refuse, why} = Probes.decide(event, c, "pkg")
+      assert String.ends_with?(why, " in mix.exs")
+
+      # Of an application on every path it stays no concern.
+      assert Probes.decide(Map.put(app_probe("elixir"), "user", event["user"]), c, "pkg") ==
+               :ignore
+    end
+
+    test "is unreadable without an application name", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => []})
+      assert {:unjudged, _} = Probes.decide(%{"channel" => "app_probe", "arg" => %{}}, c, "pkg")
+    end
+  end
+
+  test "a where_is_file of a module's beam is a path probe", %{tmp_dir: dir} do
+    c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
+    on_path = otp_event("mnesia_lib", "mnesia", "code:where_is_file/1")
+    assert {:refuse, _} = Probes.decide(on_path, c, "pkg")
+    c = ctx(dir, %{"pkg" => ["kernel", "mnesia"]})
+    assert Probes.decide(on_path, c, "pkg") == :ignore
+  end
+
+  defp otp_event(module, app, mfa) do
+    %{
+      "channel" => "probe",
+      "mfa" => mfa,
+      "arg" => %{"module" => module, "otp_app" => app},
+      "caller" => frame("elixir_compiler_1", "__MODULE__", 1)
+    }
+  end
+
   test "a malformed probe is not judged", %{tmp_dir: dir} do
     c = ctx(dir, %{"pkg" => []})
     assert {:unjudged, _} = Probes.decide(%{"channel" => "probe", "arg" => %{}}, c, "pkg")

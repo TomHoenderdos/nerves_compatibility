@@ -17,7 +17,8 @@ defmodule Compatibility.PortabilityTest do
           "compile-time priv write not reproducible: priv/assets/x.tar.gz differs",
           "foreign priv write refused: two writers of kino priv/assets/X",
           "compile-time read of kino's asset archives: file:read_file/1 /x",
-          "compile-time probe of an OTP application outside the closure: wx via Code.ensure_loaded?/1"
+          "compile-time probe of an OTP application outside the closure: wx via Code.ensure_loaded?/1",
+          "compile-time probe of a dependency outside the closure: phoenix_html via Application.spec/2"
         ] do
       assert Portability.refusal?(reason), reason
     end
@@ -39,7 +40,8 @@ defmodule Compatibility.PortabilityTest do
                "compile-time priv write not reproducible: ",
                "bakes the build path: ",
                "compile-time read of kino's asset archives: ",
-               "compile-time probe of an OTP application outside the closure: "
+               "compile-time probe of an OTP application outside the closure: ",
+               "compile-time probe of a dependency outside the closure: "
              ])
 
     for reason <- [

@@ -513,6 +513,46 @@ defmodule NccWorker.Portability.EventsTest do
              )
   end
 
+  # The code path read code:where_is_file/1 makes for a file that is no
+  # beam or .app, and code:all_available/0, refuse as host reads, but for
+  # two toolchain callers: Record.extract/2's `from:` lookup, whose file
+  # is read next and judged as a read, and the type checker formatting an
+  # undefined-module warning's hint, whose text reaches only its warnings.
+  test "code path reads: where_is_file and all_available", %{ctx: ctx} do
+    where = fn first, kind ->
+      "install"
+      |> ev("code:where_is_file/1", %{"what" => "where_is_file", "file" => "src/x.hrl"},
+        first: first
+      )
+      |> Map.put("first_kind", kind)
+    end
+
+    extractor = {"Elixir.Record.Extractor", "from_file", 1}
+    assert :ignore = Events.decide(where.(extractor, "toolchain"), ctx, "pkg")
+    assert {:refuse, _} = Events.decide(where.(extractor, "user"), ctx, "pkg")
+
+    assert {:refuse, _} =
+             Events.decide(where.({"Elixir.Record.Extractor", "x", 1}, "toolchain"), ctx, "pkg")
+
+    assert {:refuse, _} = Events.decide(where.("Elixir.Pkg", "user"), ctx, "pkg")
+
+    all = fn checker ->
+      ev("install", "code:all_available/0", %{"what" => "all_available", "checker" => checker},
+        first: {"Elixir.UndefinedFunctionError", "hint_for_missing_module", 3}
+      )
+    end
+
+    assert :ignore = Events.decide(all.(true), ctx, "pkg")
+    assert {:refuse, _} = Events.decide(all.(false), ctx, "pkg")
+
+    assert {:refuse, _} =
+             Events.decide(Map.update!(all.(true), "arg", &Map.delete(&1, "checker")), ctx, "pkg")
+
+    nested = %{ctx | nested: %{"pkg" => "Elixir.Code:with_diagnostics/2"}}
+    assert {:refuse, why} = Events.decide(all.(true), nested, "pkg")
+    assert why =~ "nested compile (Elixir.Code:with_diagnostics/2)"
+  end
+
   test "file reads resolve against the window's dependency", %{ctx: ctx} do
     assert :ignore =
              Events.decide(

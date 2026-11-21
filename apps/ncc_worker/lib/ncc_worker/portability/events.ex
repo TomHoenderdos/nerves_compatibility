@@ -175,7 +175,7 @@ defmodule NccWorker.Portability.Events do
   # below and the tracer's drop must name the same first frames.
   @path_frames :ncc_tracer_channels.path_os_frames()
   @host_channels ~w(env programs network crypto native)
-  @probe_channels ~w(probe app_call loaded_modules)
+  @probe_channels ~w(probe app_probe app_call loaded_modules)
   # Host reads R4 may allow when made from a dependency's mix.exs. Of the
   # `programs` channel only the lookup: running a program (`os:cmd`,
   # `open_port`, so `System.cmd` and `Port.open`) does things the trace
@@ -365,7 +365,7 @@ defmodule NccWorker.Portability.Events do
        when fun in @mix_paths,
        do: {:observe, "mix_project_paths", summary(event)}
 
-  defp channel("install", event, ctx, _owner), do: install(event, ctx)
+  defp channel("install", event, ctx, owner), do: install(event, ctx, owner)
   defp channel("file_read", event, ctx, owner), do: file_read(event, ctx, owner)
   defp channel("file_write", event, ctx, owner), do: file_write(event, ctx, owner)
   defp channel("native_closure", event, ctx, owner), do: native_closure(event, ctx, owner)
@@ -513,14 +513,45 @@ defmodule NccWorker.Portability.Events do
 
   defp caller?(_e, _mfa), do: false
 
-  defp install(%{"arg" => %{"what" => what, "app" => app} = arg} = e, ctx)
+  defp install(%{"arg" => %{"what" => what, "app" => app} = arg} = e, ctx, _owner)
        when what in ["lib_dir", "priv_dir"] and is_binary(app) do
     if arg["toolchain_app"] == true or Context.dep?(ctx, app),
       do: :ignore,
       else: {:refuse, host_read(e)}
   end
 
-  defp install(e, _ctx), do: {:refuse, host_read(e)}
+  # Record.extract/2's `from:` asks the code path for the file before it
+  # reads it from where it is (Record.Extractor.from_file/1); the read that
+  # follows is judged as a read.
+  defp install(
+         %{
+           "arg" => %{"what" => "where_is_file"},
+           "first" => %{
+             "module" => "Elixir.Record.Extractor",
+             "function" => "from_file",
+             "arity" => 1
+           },
+           "first_kind" => "toolchain"
+         },
+         _ctx,
+         _owner
+       ),
+       do: :ignore
+
+  # The type checker formatting an undefined-module warning lists the
+  # modules on the code path for its hint (the tracer's `checker`): only
+  # its warnings see that, unless the window holds a nested compile.
+  defp install(%{"arg" => %{"what" => "all_available", "checker" => true}} = e, ctx, owner) do
+    case Map.fetch(ctx.nested, owner) do
+      :error ->
+        :ignore
+
+      {:ok, nested} ->
+        {:refuse, host_read(e) <> ", in a window with a nested compile (#{nested})"}
+    end
+  end
+
+  defp install(e, _ctx, _owner), do: {:refuse, host_read(e)}
 
   # Item 5a: the link reads erl_prim_loader:real_path/4 makes of every path
   # prefix while OTP loads a module into the calling process, flagged by the

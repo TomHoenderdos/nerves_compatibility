@@ -128,6 +128,25 @@ defmodule NccWorker.Portability.Probes do
   concern: inky_host_dev 1.0.0's `@behaviour :wx_object` without wx
   listed compiles the same beams pruned or not.
 
+  The same holds for what the application controller knows of an
+  application (channel `app_probe`: `application_controller`'s
+  `load_application/1`, `get_key/2`, `get_all_key/1`, `is_running/1`,
+  `start_application/2` and `start_application_request/2`, reached by
+  `Application.load/1`, `spec/1,2`, `ensure_loaded/1`, `ensure_all_started/1`
+  and `start/1`; and `code:where_is_file/1` of an `<app>.app`): Mix's
+  AppLoader loads every closure application of a dependency before it
+  compiles it and nothing unloads one, so for an application off the
+  owner's path the answer is whatever earlier compiles loaded, and under
+  Mix.install whatever the install holds. Such a probe is no concern for an
+  application on every path or on the owner's path (the package's own
+  included); from a dependency's `mix.exs` it refuses whatever it lists, and
+  otherwise it refuses, an installed OTP or Elixir application's (`otp_app`)
+  with the OTP reason above, any other's with `compile-time probe of a
+  dependency outside the closure: <app> via <function>`.
+  `code:where_is_file/1` of a `<module>.beam` is a path probe of that module,
+  and `application_controller:get_application_module/1` (which application
+  holds a module) one too.
+
   An event this module cannot read could not be judged.
   """
 
@@ -137,7 +156,8 @@ defmodule NccWorker.Portability.Probes do
 
   @base ~w(kernel stdlib elixir)
   @tracer_app "ncc_tracer"
-  @path_probes ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1)
+  @path_probes ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1 code:where_is_file/1
+                  application_controller:get_application_module/1)
   @probe_functions ~w(ensure_loaded is_loaded which module_status get_object_code)
   @always ~w(kernel stdlib elixir compiler logger)
   # On the path of every compile Mix makes of an Elixir project's
@@ -147,7 +167,7 @@ defmodule NccWorker.Portability.Probes do
   # (`otp_app`).
   @every_path ~w(kernel stdlib compiler erts elixir mix iex ex_unit logger)
   # Elixir's modules whose functions probe for the package.
-  @elixir_wrappers ~w(Code Kernel)
+  @elixir_wrappers ~w(Code Kernel Application)
   # The stacks the tracer judged (`NccWorker.Portability.Events`).
   @extents ~w(frame dispatcher truncated lineage)
 
@@ -195,6 +215,23 @@ defmodule NccWorker.Portability.Probes do
     case app(arg, module, ctx) do
       nil -> outside(event, arg, ctx, owner)
       app -> decide(event, module, app, ctx, owner)
+    end
+  end
+
+  def decide(%{"channel" => "app_probe", "arg" => %{"app" => app} = arg} = event, ctx, owner)
+      when is_binary(app) do
+    cond do
+      app in @every_path ->
+        :ignore
+
+      is_binary(Context.mix_exs(ctx, event, owner)) ->
+        {:refuse, app_probe(app, arg, event) <> " in mix.exs"}
+
+      Context.dep?(ctx, owner) and app in path_of(ctx, owner) ->
+        :ignore
+
+      true ->
+        {:refuse, app_probe(app, arg, event)}
     end
   end
 
@@ -312,6 +349,10 @@ defmodule NccWorker.Portability.Probes do
   defp attribute_lookup?(_event), do: false
 
   defp otp_probe(app, event), do: Reasons.otp_probe() <> "#{app} via #{via(event)}"
+
+  # An installed OTP or Elixir application's (`otp_app`), or any other's.
+  defp app_probe(app, %{"otp_app" => app}, event), do: otp_probe(app, event)
+  defp app_probe(app, _arg, event), do: Reasons.dependency_probe() <> "#{app} via #{via(event)}"
 
   # The Elixir function the package called (`Code.ensure_loaded?/1`), when
   # the probe's caller is one; else the probe itself.
