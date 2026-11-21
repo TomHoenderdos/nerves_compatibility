@@ -464,6 +464,18 @@ defmodule NccWorker.Portability.NativeSideTest do
     assert %{status: :skip} = Portability.judge(ctx.proj, "pkg", r, @native, opts)
   end
 
+  # Review M1: the set-apart rests on a dependent being unable to read the
+  # dependency's build dir, which holds for the native list only.
+  test "a dependency the native list leaves out is not set apart", ctx do
+    opts = Keyword.put(ctx.opts, :built_check, false) ++ @on
+    v = Portability.judge(ctx.proj, "pkg", report(ctx.proj, tool_run()), ["elixir_make"], opts)
+    assert %{status: :skip, reason: reason} = v
+
+    assert reason ==
+             "closure dependency observed the host: dep (native build not set apart: " <>
+               "not on the native list)"
+  end
+
   test "a firmware target's trace is unchanged by the option", ctx do
     plain = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ [target: "rpi4"])
     on = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ [target: "rpi4"] ++ @on)

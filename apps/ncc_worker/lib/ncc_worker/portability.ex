@@ -2546,7 +2546,8 @@ defmodule NccWorker.Portability do
   # `native_side: true`. The tool's activity in this dependency's window was
   # set apart (`sided/5`), so what it decided must be shown to stop at the
   # native files: the dependency's beams, which a dependent compiles
-  # against, must be its own sources' alone. Mix built it (the tool is a
+  # against, must be its own sources' alone. It is on the native list (its
+  # build dir unreadable to a dependent), Mix built it (the tool is a
   # Mix compiler), no NIF of a closure dependency was mapped by its window's
   # close (its own module bodies ran no native code; a library of OTP's
   # own, the download's `crypto`, may be), its source tree is exactly its
@@ -2560,6 +2561,9 @@ defmodule NccWorker.Portability do
     manager = Context.manager(ctx, app)
 
     cond do
+      not native?(ctx, app) ->
+        side_refusal("not on the native list")
+
       manager != "mix" ->
         side_refusal("built by #{manager || "an unknown manager"}, not Mix")
 
@@ -2581,6 +2585,12 @@ defmodule NccWorker.Portability do
   end
 
   defp side_refusal(why), do: Reasons.native_side() <> why
+
+  # On the native list (`Context`: its build dir unreadable to every other
+  # compile, which is what keeps the native build's output from a
+  # dependent). A dependency the list leaves out has a readable build dir,
+  # so a file `make` wrote there could reach a dependent (review M1).
+  defp native?(ctx, app), do: Context.dep?(ctx, app) and ctx.deps[app].native? == true
 
   # The first library mapped at the close of `app`'s window that lies under
   # a closure dependency's build or source dir (`MappedLibs` lets one
