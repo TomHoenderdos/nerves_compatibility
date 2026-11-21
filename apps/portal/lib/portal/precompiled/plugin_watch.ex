@@ -31,8 +31,8 @@ defmodule Portal.Precompiled.PluginWatch do
     * Every selector of published files leaves out a toolchain, pinned or
       host-native build whose run ran a watched package (`served_clause/1` in
       SQL, `withheld_runs/1` in Elixir), and the watch is part of every
-      manifest fingerprint (`fingerprint/0`), so a change renders the batch
-      again. Deterministic siblings are served only beside their build.
+      manifest fingerprint (`fingerprint_sql/0`), so a change renders the
+      batch again. Deterministic siblings are served only beside their build.
 
   Reviewing a new release: the S5 design note's "Reviewing a new plugin
   release". Once a release that adds it to `Compatibility.RebarPlugins`
@@ -152,12 +152,16 @@ defmodule Portal.Precompiled.PluginWatch do
     Map.new(rows, fn [package, versions] -> {package, versions} end)
   end
 
-  @doc "The watch as text, for the manifest fingerprints: empty while nothing is watched."
-  @spec fingerprint() :: String.t()
-  def fingerprint do
-    Enum.map_join(watched(), ";", fn {package, versions} ->
-      package <> ":" <> Enum.join(versions, ",")
-    end)
+  @doc """
+  A subquery of one row and one column, `watch`: the watch as text for the
+  manifest fingerprints (`Portal.Catalog.precompiled_fingerprints/0`), NULL
+  while nothing is watched, so a fingerprint is then what it was before.
+  Literal SQL only.
+  """
+  @spec fingerprint_sql() :: String.t()
+  def fingerprint_sql do
+    "SELECT string_agg(package || ':' || array_to_string(unreviewed, ','), ';' " <>
+      "ORDER BY package) AS watch FROM rebar3_plugin_watch"
   end
 
   @doc "The ones of `run_ids` whose run ran a watched package."

@@ -1321,9 +1321,11 @@ defmodule Portal.Catalog do
                 THEN '|foreign' ELSE '' END ||
            CASE WHEN rpk.package_id IS NOT NULL
                  AND EXISTS (SELECT 1 FROM settings st WHERE st.relocated_enabled)
-                THEN '|relocated' ELSE '' END
+                THEN '|relocated' ELSE '' END ||
+           coalesce('|plugins:' || pw.watch, '')
   FROM catalog_packages p
   CROSS JOIN setting_changes sc
+  CROSS JOIN (#{PluginWatch.fingerprint_sql()}) pw
   LEFT JOIN runs ON runs.package_id = p.id
   LEFT JOIN results ON results.package_id = p.id
   LEFT JOIN result_files rf ON rf.package_id = p.id
@@ -1351,8 +1353,8 @@ defmodule Portal.Catalog do
   manifests it vouches for: a write in between then only makes the next
   fingerprint differ. The withheld package list (`Portal.Precompiled.Withheld`)
   is part of every fingerprint, so a change to it renders every package again,
-  and so is the rebar3 plugin watch while it holds anything
-  (`Portal.Precompiled.PluginWatch.fingerprint/0`).
+  and so is the rebar3 plugin watch while it holds anything, in the same
+  query (`Portal.Precompiled.PluginWatch.fingerprint_sql/0`).
   The settings a manifest depends on (`host_native_enabled`,
   `deterministic_builds_enabled`, `foreign_priv_enabled`,
   `relocated_enabled`) are in it through a count of their changes.
@@ -1361,17 +1363,9 @@ defmodule Portal.Catalog do
   def precompiled_fingerprints do
     %{rows: rows} = Repo.query!(@precompiled_fingerprints_sql, [], timeout: :timer.minutes(2))
     withheld = Enum.join(Withheld.packages(), ",")
-    plugins = PluginWatch.fingerprint()
 
-    Map.new(rows, fn [name, fingerprint] ->
-      {name, fingerprint <> "|withheld:" <> withheld <> plugin_part(plugins)}
-    end)
+    Map.new(rows, fn [name, fingerprint] -> {name, fingerprint <> "|withheld:" <> withheld} end)
   end
-
-  # The plugin watch (`Portal.Precompiled.PluginWatch`), only while it holds
-  # anything: a fingerprint is what it was before while nothing is watched.
-  defp plugin_part(""), do: ""
-  defp plugin_part(plugins), do: "|plugins:" <> plugins
 
   # `Withheld.records_config_reads?/1` for the toolchain build aliased
   # `table`, NULL-safe: rule 1 next to a `compile_env` list, written by the
