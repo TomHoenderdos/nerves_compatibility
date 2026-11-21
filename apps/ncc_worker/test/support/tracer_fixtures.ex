@@ -95,7 +95,8 @@ defmodule NccWorker.TracerFixtures do
     do: NccWorker.Portability.judge(proj, package, traced.report, native, opts)
 
   @doc """
-  A Hex release of path dependency `app` (version 0.1.0) whose tarball, in
+  A Hex release of path dependency `app` (version 0.1.0, or a `{"version",
+  v}` term in `meta`) whose tarball, in
   the Hex cache `home`, lists `files`: the verified file list a real Hex
   dependency's source reads are judged against. Returns the lock entry for
   `releases:`. The tarball holds `VERSION`, `metadata.config` and, when
@@ -109,8 +110,15 @@ defmodule NccWorker.TracerFixtures do
   def hex_release(home, app, files, contents \\ %{}, meta \\ []) do
     dir = Path.join(home, "packages/hexpm")
     File.mkdir_p!(dir)
-    tar = Path.join(dir, "#{app}-0.1.0.tar")
-    terms = [{"name", app}, {"version", "0.1.0"}, {"files", files}] ++ meta
+
+    {version, meta} =
+      case List.keytake(meta, "version", 0) do
+        {{"version", version}, rest} -> {version, rest}
+        nil -> {"0.1.0", meta}
+      end
+
+    tar = Path.join(dir, "#{app}-#{version}.tar")
+    terms = [{"name", app}, {"version", version}, {"files", files}] ++ meta
 
     meta =
       Enum.map_join(terms, "", fn term ->
@@ -120,7 +128,7 @@ defmodule NccWorker.TracerFixtures do
     entries = [{~c"VERSION", "3"}, {~c"metadata.config", meta}] ++ contents_entry(contents)
     :ok = :erl_tar.create(String.to_charlist(tar), entries)
     sum = :sha256 |> :crypto.hash(File.read!(tar)) |> Base.encode16(case: :lower)
-    {app, %{name: app, version: "0.1.0", checksum: sum}}
+    {app, %{name: app, version: version, checksum: sum}}
   end
 
   defp contents_entry(contents) when map_size(contents) == 0, do: []

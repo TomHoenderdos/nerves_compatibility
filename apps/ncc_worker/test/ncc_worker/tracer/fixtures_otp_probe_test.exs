@@ -594,6 +594,79 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
            )
   end
 
+  # Round-2 ruling 2: a plug pipeline. Plug.Builder's init_module_plug/4
+  # calls `plug.init(opts)` and then asks `function_exported?(plug, :call,
+  # 2)` (plug 1.5.0 and later, reviewed): the direct call loaded the module
+  # on both sides. Here `plug` is a stand-in with that body, a Hex release
+  # in the run's cache; an unreviewed plug release refuses the same probe.
+  test "plug's pipeline asks about a module plug it just called", %{tmp_dir: dir} do
+    home = Path.join(dir, "hex")
+
+    builder = """
+    defmodule Plug.Builder do
+      def init_module_plug(plug, opts, guards, :compile) do
+        initialized_opts = plug.init(opts)
+
+        if function_exported?(plug, :call, 2) do
+          {:module, plug, initialized_opts, guards}
+        else
+          raise ArgumentError, "\#{inspect(plug)} plug must implement call/2"
+        end
+      end
+    end
+    """
+
+    proj =
+      TracerFixtures.project(Path.join(dir, "p"), ["fx_probe"], %{
+        "plug" => %{files: %{"lib/plug/builder.ex" => builder}},
+        "fx_mod_plug" => %{
+          files: %{
+            "lib/fx_mod_plug.ex" =>
+              "defmodule FxModPlug do\n  def init(o), do: o\n  def call(c, _), do: c\nend\n"
+          }
+        },
+        "fx_probe" => %{
+          deps: ["plug", "fx_mod_plug"],
+          files: %{
+            "lib/fx_probe.ex" =>
+              TracerFixtures.attr_module(
+                "FxProbe",
+                "Plug.Builder.init_module_plug(FxModPlug, [], true, :compile)"
+              )
+          }
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"])
+    assert {:ok, 0} = traced.result, traced.log
+
+    assert Enum.any?(
+             probes(traced),
+             &(&1["arg"]["module"] == "Elixir.FxModPlug" and
+                 &1["mfa"] == "erlang:function_exported/3" and
+                 &1["caller"]["function"] == "init_module_plug")
+           )
+
+    judge = fn version ->
+      {app, release} =
+        TracerFixtures.hex_release(home, "plug", ["lib", "mix.exs"], %{}, [{"version", version}])
+
+      TracerFixtures.judge(proj, "fx_probe", traced, [],
+        releases: %{app => release},
+        hex_home: home
+      )
+    end
+
+    verdict = judge.("1.20.4")
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+    assert %{status: :skip, reason: reason} = judge.("1.4.5")
+
+    assert reason ==
+             "compile-time probe of whether a module is loaded: Elixir.FxModPlug via " <>
+               "erlang:function_exported/3"
+  end
+
   # The compiler's own lookups of a module nothing defines (a remote call,
   # an alias in a def body) decide only its warnings: no concern.
   test "the compiler's lookups of a missing module pass", %{tmp_dir: dir} do
