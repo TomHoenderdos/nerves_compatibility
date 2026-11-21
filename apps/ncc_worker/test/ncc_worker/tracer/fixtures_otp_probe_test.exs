@@ -606,41 +606,32 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     end
   end
 
-  # Round-2 ruling 2: a Spark-like DSL. The DSL module's body asks whether
-  # an extension of the same package exports add_extensions/0, with no
-  # ensure first: own modules are compiled by the same parallel compile on
-  # both sides, so it passes.
-  test "a loaded-now probe of the package's own module passes (Spark's DSL)", %{tmp_dir: dir} do
-    body = """
-    defmodule FxDsl.Ext do
-      def add_extensions, do: []
-    end
+  # Round 3, R2-2 (the reviewer's E1): an own module's loaded-now probe.
+  # FxProbe.A is loaded at the probe only when FxProbe.Q's body called it
+  # first, which the parallel compiler's schedule decides: the same sources
+  # build `false` on 1 or 2 schedulers and `true` on more. It refuses. A
+  # Spark-like DSL's `function_exported?(extension, :add_extensions, 0)`
+  # with no call first refuses the same way.
+  test "a loaded-now probe of the package's own module refuses (schedule-dependent)",
+       %{tmp_dir: dir} do
+    files = %{
+      "lib/a.ex" => "defmodule FxProbe.A do\n  Process.sleep(300)\n  def f, do: 1\nend\n",
+      "lib/b.ex" => "defmodule FxProbe.B do\n  Process.sleep(900)\n  def g, do: 1\nend\n",
+      "lib/fx_probe.ex" =>
+        "defmodule FxProbe do\n  Process.sleep(500)\n  @x function_exported?(FxProbe.A, :f, 0)\n  def x, do: @x\nend\n",
+      "lib/q.ex" => "defmodule FxProbe.Q do\n  @y FxProbe.A.f()\n  def y, do: @y\nend\n"
+    }
 
-    defmodule FxDsl do
-      @default_extensions Enum.flat_map([FxDsl.Ext], fn module ->
-                            if function_exported?(module, :add_extensions, 0),
-                              do: [module | module.add_extensions()],
-                              else: [module]
-                          end)
-      def x, do: @default_extensions
-    end
-    """
-
-    proj =
-      TracerFixtures.project(dir, ["fx_probe"], %{
-        "fx_probe" => %{files: %{"lib/fx_dsl.ex" => body}}
-      })
-
+    proj = TracerFixtures.project(dir, ["fx_probe"], %{"fx_probe" => %{files: files}})
     traced = TracerFixtures.trace(proj, ["fx_probe"])
     assert {:ok, 0} = traced.result, traced.log
     verdict = TracerFixtures.judge(proj, "fx_probe", traced)
-    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
 
-    assert Enum.any?(
-             probes(traced),
-             &(&1["arg"]["module"] == "Elixir.FxDsl.Ext" and
-                 &1["mfa"] == "erlang:function_exported/3")
-           )
+    assert %{status: :skip, reason: reason} = verdict
+
+    assert reason ==
+             "compile-time probe of whether a module is loaded: Elixir.FxProbe.A via " <>
+               "erlang:function_exported/3"
   end
 
   # Round-2 ruling 2: a plug pipeline. Plug.Builder's init_module_plug/4

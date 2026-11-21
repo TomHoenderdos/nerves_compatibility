@@ -747,11 +747,13 @@ defmodule NccWorker.Portability.ProbesTest do
       assert Probes.decide(exported, c, "pkg") == :ignore
     end
 
-    # Round-2 ruling 2. The owner's own module: it does not exist before
-    # the owner's compile on either side, so whether it is loaded is that
-    # compile's doing, which the user's compile repeats (Spark's
-    # `function_exported?(extension, :add_extensions, 0)`).
-    test "of the owner's own module by a loaded-now probe is no concern", %{tmp_dir: dir} do
+    # Round 3, R2-2: the owner's own module is no exception. Whether it is
+    # loaded at the probe is whether another file's compile-time code called
+    # into it first, which the parallel compiler's schedule decides (the
+    # reviewer's E1). Only an auto-load or ensure-load in the same process
+    # first (`ensured`) makes the answer the same.
+    test "of the owner's own module by a loaded-now probe refuses unless ensured",
+         %{tmp_dir: dir} do
       c =
         dir
         |> ctx(%{"pkg" => ["kernel"], "dep" => ["kernel"]})
@@ -759,12 +761,24 @@ defmodule NccWorker.Portability.ProbesTest do
 
       c = put_in(c.deps["pkg"].children, ["dep"])
       exported = &hex(&1, mfa: "erlang:function_exported/3", caller: frame("Elixir.Pkg", "f", 0))
-      assert Probes.decide(exported.("Elixir.Pkg.Ext"), c, "pkg") == :ignore
-      # Another closure dependency's module: an earlier compile in the VM
-      # loaded it on the builder, maybe not on the user's side.
-      assert {:refuse, _} = Probes.decide(exported.("Elixir.Dep.Ext"), c, "pkg")
-      # dep's own module, in dep's window.
-      assert Probes.decide(exported.("Elixir.Dep.Ext"), c, "dep") == :ignore
+
+      assert Probes.decide(exported.("Elixir.Pkg.Ext"), c, "pkg") ==
+               {:refuse,
+                "compile-time probe of whether a module is loaded: Elixir.Pkg.Ext via " <>
+                  "erlang:function_exported/3"}
+
+      assert {:refuse, _} = Probes.decide(exported.("Elixir.Dep.Ext"), c, "dep")
+
+      # An auto-load (the error handler's code:ensure_loaded/1) in the same
+      # process first.
+      loaded = hex("Elixir.Pkg.Ext") |> at("<0.10.0>", 100)
+      c = %{c | ensured: Probes.ensured([{"pkg", loaded}])}
+
+      assert Probes.decide(exported.("Elixir.Pkg.Ext") |> at("<0.10.0>", 200), c, "pkg") ==
+               :ignore
+
+      assert {:refuse, _} =
+               Probes.decide(exported.("Elixir.Pkg.Ext") |> at("<0.11.0>", 200), c, "pkg")
     end
 
     # Round-2 ruling 2. A reviewed call site that calls the module directly

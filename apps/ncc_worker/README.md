@@ -634,7 +634,7 @@ unfetched package owns no known module, so its probe refuses; `trace_stats.decla
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path
 application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier
 dependency used URI), refuses as `compile-time probe of whether a module is loaded: ` unless the same process
-ensure-loaded it first, the module is the package's own, or the probe follows a reviewed call site's own direct call
+ensure-loaded it first (the package's own modules included: whether one is loaded is the parallel compiler's schedule), or the probe follows a reviewed call site's own direct call
 of the module (plug's `Plug.Builder.init_module_plug/4` in 1.5.0 to 1.20.4, phoenix_live_view's tag engine in 1.2.0 to 1.2.15; a newer release refuses until it is reviewed). Only a
 module loaded before the tracer started, or by Mix in every compile, is never traced. The collector writes no probe
 the judge would ignore (a toolchain function's, or one the code server makes inside another), and a toolchain

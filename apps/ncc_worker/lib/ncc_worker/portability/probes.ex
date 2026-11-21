@@ -184,11 +184,12 @@ defmodule NccWorker.Portability.Probes do
   earlier dependency's compile used URI). The package's own loaded-now
   probe of such a module therefore refuses as `compile-time probe of
   whether a module is loaded: <module> via <function>`, unless the same
-  process ensure-loaded it earlier (`ensured`), the module is the owner's
-  own (it exists on neither side before the owner's compile), or the probe
-  comes right after a reviewed call site's own direct call of the module
+  process ensure-loaded it earlier (`ensured`), or the probe comes right
+  after a reviewed call site's own direct call of the module
   (`@reviewed_direct_calls`: plug's `init_module_plug/4`, LiveView's tag
-  engine). A module loaded before the tracer started, or by Mix in every
+  engine). The owner's own module is no exception: whether another file's
+  compile-time code called into it first is the parallel compiler's
+  schedule (round 3, R2-2). A module loaded before the tracer started, or by Mix in every
   compile, is loaded either way and never traced.
 
   An event this module cannot read could not be judged.
@@ -466,18 +467,16 @@ defmodule NccWorker.Portability.Probes do
   # earlier (`ensured`).
   # Only the package's own probe (`by_package`): a toolchain function's
   # check of a module it is about to use (EEx's of its engine) is judged as
-  # before. And not of the owner's own module (round 2, ruling 2): it does
-  # not exist before the owner's compile on either side, so whether it is
-  # loaded is that compile's doing, which the user's compile of the same
-  # sources repeats (Spark's `function_exported?(extension,
-  # :add_extensions, 0)`). Nor right after a reviewed call site's own direct
-  # call of the module (`@reviewed_direct_calls`).
+  # before. Not right after a reviewed call site's own direct call of the
+  # module (`@reviewed_direct_calls`). The owner's own module is no
+  # exception (round 3, R2-2): whether another file's compile-time code
+  # called into it before the probe is the parallel compiler's schedule, so
+  # the same sources build differently on 2 and on 4 schedulers.
   defp found_or_ensured(event, ctx, owner) do
     module = event["arg"]["module"]
 
     if event["mfa"] in @path_probes or event["arg"]["by_package"] != true or
-         ensured?(event, ctx, owner) or Map.get(ctx.modules, module) == owner or
-         reviewed_direct_call?(event, ctx, owner),
+         ensured?(event, ctx, owner) or reviewed_direct_call?(event, ctx, owner),
        do: :ignore,
        else: {:refuse, Reasons.loaded_probe() <> "#{module} via #{via(event)}"}
   end
