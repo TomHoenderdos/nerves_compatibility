@@ -258,6 +258,36 @@ defmodule Portal.HostNativeTest do
       assert reason == "refused at ingest: records no compile inputs"
     end
 
+    # Round 5, R3-2: a declared-absent probe of a module another popular
+    # package defines refuses here too (`Portal.Catalog.ModuleIndex`); with
+    # no complete index, every recorded probe does.
+    test "a declared-absent probe the module index refuses is refused, with no files" do
+      {tarball, origins, blobs} = downloader()
+      name = unique()
+
+      record = %{
+        "kind" => "module_absent",
+        "module" => "Elixir.Money",
+        "declared" => ["ex_money"],
+        "declared_apps" => ["ex_money"],
+        "via" => "Code.ensure_loaded?/1"
+      }
+
+      result =
+        put_in(
+          result(name, tarball, origins),
+          ["host_native_build", "compile_observations"],
+          %{"declared_absent" => [record]}
+        )
+
+      assert {:ok, %{status: :fail, reason: reason, file_manifest: nil}} =
+               Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
+
+      assert reason ==
+               "refused at ingest: compile-time probe of a dependency outside the closure: " <>
+                 "Elixir.Money via Code.ensure_loaded?/1 (module index not complete)"
+    end
+
     test "a result naming another triple than the job is refused whole" do
       name = unique()
       tarball = hex_tarball(%{})

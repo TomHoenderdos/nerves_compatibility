@@ -29,7 +29,8 @@ defmodule Portal.HostNative.Ingest do
     4. the ELF facts (`Portal.Precompiled.ElfFacts`): every library the
        files need and the symbol versions they need from it, read here.
 
-  A refusal stores the build as `fail` with no files; Hex being unreachable
+  A declared-absent probe that `Portal.Catalog.ModuleIndex.refusal/2`
+  refuses is refused too. A refusal stores the build as `fail` with no files; Hex being unreachable
   or a blob not yet in the files dir is an error the ingest job retries. The
   identity is the job's (`package`, `version`, `toolchain`, `triple`,
   `builder_version`), and a result naming another is refused whole.
@@ -179,6 +180,7 @@ defmodule Portal.HostNative.Ingest do
   # Steps 1 to 4: `{:ok, needs}`, `{:refused, reason}` or `{:error, reason}`.
   defp verify(build, opts) do
     with :ok <- inputs_recorded(build["compile_inputs"]),
+         :ok <- declared_absent(build),
          {:ok, entries} <- entries(build["file_manifest"]),
          :ok <- outside_priv(entries, opts.files_dir),
          {:ok, priv} <- read_priv(entries, opts.files_dir),
@@ -198,6 +200,19 @@ defmodule Portal.HostNative.Ingest do
   # before 0.6.0 have none): a pass without it is not served.
   defp inputs_recorded(inputs) when is_list(inputs), do: :ok
   defp inputs_recorded(_inputs), do: {:refused, "records no compile inputs"}
+
+  # A probe the judge passed because only a declared, absent dependency
+  # defines the module, which another popular package defines too
+  # (`Portal.Catalog.ModuleIndex`, otp-probe round 5, R3-2).
+  defp declared_absent(build) do
+    items = get_in(build, ["compile_observations", "declared_absent"])
+    lock = if is_map(build["deps_lock"]), do: Map.keys(build["deps_lock"]), else: []
+
+    case Portal.Catalog.ModuleIndex.refusal(if(is_list(items), do: items), lock) do
+      nil -> :ok
+      reason -> {:refused, reason}
+    end
+  end
 
   defp entries(%{} = manifest) do
     entries =
