@@ -443,8 +443,19 @@ defmodule NccWorker.Portability do
     |> PrivRepro.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> Relocate.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> Differential.settle(project_dir, package, opts, &run/3, &build_digest/1)
+    |> put_differential_flag(opts)
     |> put_stat("wall_ms", System.monotonic_time(:millisecond) - started)
     |> put_transient()
+  end
+
+  # `trace_stats["differential_flag"]`: `"on"` on every verdict a job sent
+  # `differential: true` was judged with, whatever came of it (the
+  # requeue's pilot check reads it); absent otherwise, a variant's own
+  # included.
+  defp put_differential_flag(verdict, opts) do
+    if Keyword.get(opts, :differential) == true,
+      do: put_stat(verdict, "differential_flag", "on"),
+      else: verdict
   end
 
   # The digest the tracer takes of a build dir when its window closes, taken

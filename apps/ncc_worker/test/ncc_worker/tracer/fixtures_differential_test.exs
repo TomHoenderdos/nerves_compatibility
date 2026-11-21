@@ -219,7 +219,17 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
              ctx.off
 
     assert ctx.off.observations["trace_stats"]["differential"] == nil
+    refute Map.has_key?(ctx.off.observations["trace_stats"], "differential_flag")
     refute Map.has_key?(ctx.off.observations, "varied_reads")
+  end
+
+  # The flag's own record on every verdict judged with it, whatever came of
+  # it, for the requeue's pilot check.
+  test "a verdict judged with the flag says so", ctx do
+    for {app, v} <- ctx.verdicts,
+        do: assert(v.observations["trace_stats"]["differential_flag"] == "on", app)
+
+    assert ctx.gate.observations["trace_stats"]["differential_flag"] == "on"
   end
 
   test "a count baked into a function refuses, naming the read", ctx do
