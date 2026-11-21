@@ -1,4 +1,4 @@
-.PHONY: build build-clean build-toolchains toolchain-tags toolchain-pairs check-code-loading-shapes dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration test-report-e2e format clean help all
+.PHONY: build build-clean build-toolchains toolchain-tags toolchain-pairs check-code-loading-shapes dev test test-integration test-portability-goldens test-remote-e2e test-remote-integration test-report-e2e test-relocate-e2e format clean help all
 
 WORKER_IMAGE := ncc-worker:local
 
@@ -45,6 +45,7 @@ help:
 	@echo "  test-remote-e2e  Run a real ncc_agent process against the portal with a fake docker"
 	@echo "  test-remote-integration  Same against the real worker container (needs Docker)"
 	@echo "  test-report-e2e  Run the precompiled client's report command against the portal"
+	@echo "  test-relocate-e2e  Install a relocated build at the real roots with the client"
 	@echo "  format           Format the umbrella projects"
 	@echo "  clean            Remove generated umbrella build artifacts"
 
@@ -119,6 +120,11 @@ test-remote-integration:
 # PRECOMPILED_CLIENT_DIR names a precompiled checkout.
 test-report-e2e:
 	mix test apps/portal/test/portal_web/precompiled_report_client_e2e_test.exs --only e2e
+
+# S4: a relocated build at the worker's real roots, installed by the client
+# in PRECOMPILED_CLIENT_DIR into a child project.
+test-relocate-e2e:
+	mix test apps/portal/test/portal_web/precompiled_relocated_client_e2e_test.exs --only e2e
 
 format:
 	mix format
