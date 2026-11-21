@@ -554,8 +554,11 @@ defmodule NccWorker.Portability.Differential do
   defp identity(item) when is_map(item), do: Map.drop(item, @value_keys)
   defp identity(item), do: item
 
+  # A read by its site, never its module: a module body's is
+  # `elixir_compiler_<n>`, numbered in the order the parallel compiler ran
+  # the bodies, which another scheduler count changes.
   defp read_identity(read) when is_map(read),
-    do: Map.take(read, ~w(owner read mfa arg module file line))
+    do: Map.take(read, ~w(owner read mfa arg file line))
 
   defp read_identity(read), do: read
 

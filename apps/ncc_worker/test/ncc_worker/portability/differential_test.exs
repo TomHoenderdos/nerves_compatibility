@@ -241,6 +241,25 @@ defmodule NccWorker.Portability.DifferentialTest do
     assert v.reason =~ "read what the first did not: home in pkg"
   end
 
+  # A module body's read is made by `elixir_compiler_<n>`, numbered in the
+  # order the parallel compiler happened to run the bodies, which another
+  # scheduler count changes (super_worker 0.11.0): the site is its file and
+  # line.
+  test "a varied read at the same site in another module body is the same read", ctx do
+    site = fn n ->
+      Map.merge(@sched, %{"module" => "elixir_compiler_#{n}", "file" => "lib/pkg.ex", "line" => 2})
+    end
+
+    held = held(ctx, [site.(8)])
+    same = %{"pkg.app" => "{application,pkg,[]}.\n", "x.beam" => "same"}
+    v = settle(held, ctx, variant(same, held_variant(%{reads: [site.(7)]})))
+    assert v.status == :pass, inspect(v.reason)
+
+    moved = Map.put(site.(7), "line", 3)
+    v = settle(held, ctx, variant(same, held_variant(%{reads: [moved]})))
+    assert v.reason =~ "read what the first did not: schedulers in pkg"
+  end
+
   # Only the varied value itself may differ: an env input of the same name
   # with another value (HOME, read by name) is the same input.
   test "the same inputs with other values pass", ctx do
