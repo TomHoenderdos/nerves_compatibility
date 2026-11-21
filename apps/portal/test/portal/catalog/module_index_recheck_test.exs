@@ -211,6 +211,60 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
              [[nil]]
   end
 
+  # Round 6, R5-7: the undo clears only its own withholding; a dry run
+  # writes nothing.
+  test "the undo leaves a host-native revocation made by something else alone, and a dry run writes nothing",
+       %{opts: opts} do
+    {:ok, id} = Ingestion.ensure_package_id("hn_like")
+
+    insert_hn = fn revoked_at ->
+      %{rows: [[row]]} =
+        Repo.query!(
+          """
+          INSERT INTO catalog_host_native_builds
+            (id, package_id, version, toolchain, triple, builder_version, status, compile_observations,
+             deps_lock, revoked_at, inserted_at, updated_at)
+          VALUES (gen_random_uuid(), $1, '1.0.0', '1.20/29', 'aarch64-linux-gnu', 1, 'pass', $2, '{}',
+                  $3, now(), now())
+          RETURNING id
+          """,
+          [Ecto.UUID.dump!(id), %{"declared_absent" => [@money]}, revoked_at]
+        )
+
+      row
+    end
+
+    ours = insert_hn.(nil)
+    assert %{complete: true, withheld: 1, generation: generation} = ModuleIndex.refresh(opts)
+
+    # Something else revokes ours again after the undo; a second recheck
+    # entry for the same row must not let the undo clear it.
+    assert ModuleIndex.undo_recheck(generation)["host_native_build"] == 1
+    other_at = ~U[2026-11-21 12:00:00.000000Z]
+
+    Repo.query!("UPDATE catalog_host_native_builds SET revoked_at = $2 WHERE id = $1", [
+      ours,
+      other_at
+    ])
+
+    assert ModuleIndex.undo_recheck(generation)["host_native_build"] == 0
+
+    assert Repo.query!("SELECT revoked_at FROM catalog_host_native_builds WHERE id = $1", [ours]).rows ==
+             [[DateTime.to_naive(other_at)]]
+
+    before =
+      Repo.query!("SELECT withheld FROM catalog_module_index_runs WHERE generation = $1", [
+        generation
+      ]).rows
+
+    assert %{withheld: 0} = ModuleIndex.recheck(dry_run: true, generation: generation)
+
+    assert Repo.query!("SELECT withheld FROM catalog_module_index_runs WHERE generation = $1", [
+             generation
+           ]).rows ==
+             before
+  end
+
   test "an incomplete run withholds nothing", %{opts: opts} do
     colliding = served!("bitcrowd_like", %{"declared_absent" => [@money]})
     failing = Keyword.put(opts, :tarball, fn _n, _v -> {:error, :hex_registry_unavailable} end)

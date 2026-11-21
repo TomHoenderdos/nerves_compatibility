@@ -635,12 +635,16 @@ defmodule Portal.Catalog.ModuleIndex do
             do: {kind, Ecto.UUID.load!(id), refusal}
 
       checked = count_with_records()
-      unless dry_run, do: withhold(found, generation)
 
-      Repo.query!("UPDATE catalog_module_index_runs SET withheld = $2 WHERE generation = $1", [
-        generation,
-        if(dry_run, do: nil, else: length(found))
-      ])
+      # A dry run writes nothing, not even the run's count (round 6, R5-7).
+      unless dry_run do
+        withhold(found, generation)
+
+        Repo.query!("UPDATE catalog_module_index_runs SET withheld = $2 WHERE generation = $1", [
+          generation,
+          length(found)
+        ])
+      end
 
       %{
         withheld: length(found),
@@ -692,22 +696,29 @@ defmodule Portal.Catalog.ModuleIndex do
 
   # The table and column names come from @recheck_kinds, never from input.
   # sobelow_skip ["SQL.Query"]
+  # The row's revoked-at and the entry's withheld_at are the same instant,
+  # and the entry is written only when the UPDATE took the row, so the undo
+  # can match its own withholding exactly (round 6, R5-7).
   defp withhold_row({kind, id, refusal}, generation, reason) do
-    {^kind, table, _served, at, reason_col} = List.keyfind(@recheck_kinds, kind, 0)
-    set = if reason_col, do: "#{at} = now(), #{reason_col} = $2", else: "#{at} = now()"
+    {^kind, table, _select, at, reason_col} = List.keyfind(@recheck_kinds, kind, 0)
+    set = if reason_col, do: "#{at} = $3, #{reason_col} = $2", else: "#{at} = $3, id = id"
+    now = DateTime.utc_now()
 
-    Repo.query!(
-      "UPDATE #{table} SET #{set}, updated_at = now() WHERE id = $1 AND #{at} IS NULL",
-      if(reason_col, do: [Ecto.UUID.dump!(id), reason], else: [Ecto.UUID.dump!(id)])
-    )
+    %{num_rows: taken} =
+      Repo.query!(
+        "UPDATE #{table} SET #{set}, updated_at = $3 WHERE id = $1 AND #{at} IS NULL AND $2::text IS NOT NULL",
+        [Ecto.UUID.dump!(id), reason, now]
+      )
 
-    Repo.query!(
-      """
-      INSERT INTO catalog_module_index_withheld (generation, kind, row_id, withheld_at, reason)
-      VALUES ($1, $2, $3, now(), $4) ON CONFLICT DO NOTHING
-      """,
-      [generation, kind, Ecto.UUID.dump!(id), refusal]
-    )
+    if taken == 1 do
+      Repo.query!(
+        """
+        INSERT INTO catalog_module_index_withheld (generation, kind, row_id, withheld_at, reason)
+        VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING
+        """,
+        [generation, kind, Ecto.UUID.dump!(id), now, refusal]
+      )
+    end
   end
 
   @doc """
@@ -729,7 +740,11 @@ defmodule Portal.Catalog.ModuleIndex do
 
   # The table and column names come from @recheck_kinds, never from input.
   # sobelow_skip ["SQL.Query"]
-  defp undo_kind({kind, table, _served, at, reason_col}, generation, reason) do
+  # Only this generation's own withholding: its reason where the table has
+  # one, and always the very instant it revoked the row (a later revocation
+  # by anything else has another), which host-native rows, without a reason
+  # column, rely on.
+  defp undo_kind({kind, table, _select, at, reason_col}, generation, reason) do
     match = if reason_col, do: "AND t.#{reason_col} = $2", else: "AND $2::text IS NOT NULL"
     clear = if reason_col, do: "#{at} = NULL, #{reason_col} = NULL", else: "#{at} = NULL"
 
@@ -739,7 +754,7 @@ defmodule Portal.Catalog.ModuleIndex do
         UPDATE #{table} t SET #{clear}, updated_at = now()
         FROM catalog_module_index_withheld w
         WHERE w.generation = $1 AND w.kind = $3 AND w.row_id = t.id
-          AND t.#{at} IS NOT NULL #{match}
+          AND t.#{at} = w.withheld_at #{match}
         """,
         [generation, reason, kind]
       )
