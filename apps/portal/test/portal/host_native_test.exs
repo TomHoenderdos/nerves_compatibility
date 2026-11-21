@@ -551,8 +551,14 @@ defmodule Portal.HostNativeTest do
       {:ok, %{status: :pass}} = Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
       on!()
       Portal.Precompiled.PluginWatch.refresh(plugin_registry())
-      assert name in Catalog.packages_with_precompiled_files()
 
+      # Marked by its own ingest (review S5 final N1), before any sweep.
+      assert Catalog.precompiled_manifest_v2(name) == nil
+      refute name in Catalog.packages_with_precompiled_files()
+
+      # One an older release ingested is marked by the sweep.
+      Portal.Repo.query!("DELETE FROM rebar3_plugin_runs WHERE package = '*'", [])
+      assert name in Catalog.packages_with_precompiled_files()
       assert :ok = Portal.Precompiled.PluginWatch.mark_unrecorded()
       assert Catalog.precompiled_manifest_v2(name) == nil
       refute name in Catalog.packages_with_precompiled_files()

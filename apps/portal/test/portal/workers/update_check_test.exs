@@ -352,6 +352,34 @@ defmodule Portal.Workers.UpdateCheckTest do
       refute_received {:asked_registry, _}
     end
 
+    # Review S5 final N1: a sweep that fails is an event an alert can take,
+    # and the rest of the run goes on.
+    test "a sweep that fails emits an exception event and the run goes on" do
+      parent = self()
+
+      :telemetry.attach(
+        "uc-sweep-fail",
+        [:portal, :plugin_watch, :mark_unrecorded, :exception],
+        fn _event, measurements, meta, _config ->
+          send(parent, {:sweep_failed, measurements, meta})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach("uc-sweep-fail") end)
+      Portal.Repo.query!("ALTER TABLE rebar3_plugin_runs RENAME TO rebar3_plugin_runs_away", [])
+
+      try do
+        Application.put_env(:portal, UpdateCheck, enabled: false)
+        assert :ok = perform_job(UpdateCheck, %{})
+      after
+        Portal.Repo.query!("ALTER TABLE rebar3_plugin_runs_away RENAME TO rebar3_plugin_runs", [])
+      end
+
+      assert_received {:sweep_failed, %{count: 1}, %{reason: reason}}
+      assert reason =~ "rebar3_plugin_runs"
+    end
+
     test "does nothing at all while disabled" do
       package("alpha", "1.0.0")
       hex_says([{"alpha", "1.1.0"}])

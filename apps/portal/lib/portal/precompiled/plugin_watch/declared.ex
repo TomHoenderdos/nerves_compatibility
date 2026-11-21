@@ -26,6 +26,12 @@ defmodule Portal.Precompiled.PluginWatch.Declared do
       (a package whose Hex name is not its app's, or one gone from Hex): fail
       closed.
 
+  The scan also read every `overrides` entry, top level and in profiles: on
+  main a parent's `{overrides, [{override, X, [{plugins, [rebar3_hex]}]}]}`
+  passes and makes child X run rebar3_hex, so such a parent would be listed
+  for the closure that holds it. None of the 2,939 releases has one; the one
+  `overrides` entry that adds plugins names `pc` (review S5 final N2).
+
   Not listed, since a passing build judged before S5 cannot have run what
   they add: a script that adds only another plugin (yamerl's and director's
   `coveralls`, lbm_kv's `rebar3_proper`) or only edits `project_plugins`

@@ -52,8 +52,16 @@ defmodule Portal.Precompiled.PluginWatch do
   (`Portal.Precompiled.PluginWatch.Declared`), or,
   for an earlier build of unknown origin, when its row's own build ran one.
   An earlier build keeps that fact from the build it was (`entry_fact/1`).
-  The ingest marks at the push, and the update check sweeps every hour, also
-  while it is switched off, for what an older release kept.
+  The ingest marks its own row in its transaction (an earlier build at the
+  push, a host-native or pinned host build when it lands), and the update
+  check sweeps every hour, also while it is switched off, for what an older
+  release wrote. A failed sweep is logged and emits
+  `[:portal, :plugin_watch, :mark_unrecorded, :exception]` (review S5 final
+  N1); the builds it would mark stay served until a sweep succeeds. Only
+  rows an older release wrote depend on it, and withholding every build the
+  sweep could not rule out while it fails would hide every legacy earlier
+  build and pinned host build (2,096 and 496 on 2026-11-21) to protect the
+  2 it marks.
 
   Reviewing a new release: the S5 design note's "Reviewing a new plugin
   release". Once a release that adds it to `Compatibility.RebarPlugins`
@@ -162,29 +170,34 @@ defmodule Portal.Precompiled.PluginWatch do
 
   # A passing host-native build, and a passing pinned build the host built
   # (a firmware target's records no observations: stream S8's).
-  @host_native_sql @insert <>
-                     "SELECT DISTINCT h.run_id, '*', 'unrecorded', NULL, h.package_id " <>
-                     "FROM catalog_host_native_builds h JOIN catalog_packages p ON p.id = h.package_id " <>
-                     "WHERE h.status = 'pass' AND h.revoked_at IS NULL AND h.run_id <> '' AND " <>
-                     (@unrecorded_row
-                      |> String.replace("$X", "h.compile_observations")
-                      |> String.replace("$N", "p.name")
-                      |> String.replace("$V", "h.version")
-                      |> String.replace("$L", "h.deps_lock")) <>
-                     " " <>
-                     String.replace(@unmarked, "$R", "h.run_id") <> "ON CONFLICT DO NOTHING"
+  @host_native_base @insert <>
+                      "SELECT DISTINCT h.run_id, '*', 'unrecorded', NULL, h.package_id " <>
+                      "FROM catalog_host_native_builds h JOIN catalog_packages p ON p.id = h.package_id " <>
+                      "WHERE h.status = 'pass' AND h.revoked_at IS NULL AND h.run_id <> '' AND " <>
+                      (@unrecorded_row
+                       |> String.replace("$X", "h.compile_observations")
+                       |> String.replace("$N", "p.name")
+                       |> String.replace("$V", "h.version")
+                       |> String.replace("$L", "h.deps_lock")) <>
+                      " " <> String.replace(@unmarked, "$R", "h.run_id")
 
-  @pinned_sql @insert <>
-                "SELECT DISTINCT pb.run_id, '*', 'unrecorded', NULL, pb.package_id " <>
-                "FROM catalog_pinned_builds pb JOIN catalog_packages p ON p.id = pb.package_id " <>
-                "WHERE pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.run_id <> '' " <>
-                "AND pb.compile_observations IS NOT NULL AND " <>
-                (@unrecorded_row
-                 |> String.replace("$X", "pb.compile_observations")
-                 |> String.replace("$N", "p.name")
-                 |> String.replace("$V", "pb.version")
-                 |> String.replace("$L", "pb.deps_lock")) <>
-                " " <> String.replace(@unmarked, "$R", "pb.run_id") <> "ON CONFLICT DO NOTHING"
+  @host_native_sql @host_native_base <> "ON CONFLICT DO NOTHING"
+  @host_native_row_sql @host_native_base <> "AND h.id = $3 ON CONFLICT DO NOTHING"
+
+  @pinned_base @insert <>
+                 "SELECT DISTINCT pb.run_id, '*', 'unrecorded', NULL, pb.package_id " <>
+                 "FROM catalog_pinned_builds pb JOIN catalog_packages p ON p.id = pb.package_id " <>
+                 "WHERE pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.run_id <> '' " <>
+                 "AND pb.compile_observations IS NOT NULL AND " <>
+                 (@unrecorded_row
+                  |> String.replace("$X", "pb.compile_observations")
+                  |> String.replace("$N", "p.name")
+                  |> String.replace("$V", "pb.version")
+                  |> String.replace("$L", "pb.deps_lock")) <>
+                 " " <> String.replace(@unmarked, "$R", "pb.run_id")
+
+  @pinned_sql @pinned_base <> "ON CONFLICT DO NOTHING"
+  @pinned_row_sql @pinned_base <> "AND pb.id = $3 ON CONFLICT DO NOTHING"
 
   @doc "The oldest refresh, in hours, the guard trusts."
   @spec max_age_hours() :: pos_integer()
@@ -264,27 +277,41 @@ defmodule Portal.Precompiled.PluginWatch do
 
   @doc """
   Writes the withholding mark for every run with no record that may have
-  run a plugin and that no requeue rebuilds (moduledoc): the earlier builds
-  of the toolchain row `row_id`, or, with `nil`, those of every row and every
-  passing host-native and pinned host build. Idempotent; a run that has a
-  record or a mark is left alone.
+  run a plugin and that no requeue rebuilds (moduledoc). With an ingest's
+  row, in its transaction (fail closed: a failure rolls the ingest back):
+  `{:toolchain, id}` the earlier builds of a toolchain row, `{:host_native,
+  id}` a host-native build, `{:pinned, id}` a pinned host build. With `nil`,
+  the hourly sweep: those of every row, in one transaction, for what an
+  older release wrote. Idempotent; a run that has a record or a mark is left
+  alone.
   """
-  @spec mark_unrecorded(Ecto.UUID.t() | nil) :: :ok
-  def mark_unrecorded(row_id \\ nil) do
+  @spec mark_unrecorded({:toolchain | :host_native | :pinned, Ecto.UUID.t()} | nil) :: :ok
+  def mark_unrecorded(row \\ nil) do
     {names, versions} = Declared.columns()
+    args = [names, versions]
 
     marked =
-      case row_id do
+      case row do
         nil ->
-          args = [names, versions]
           opts = [timeout: 120_000]
 
-          Portal.Repo.query!(@earlier_all_sql, args, opts).num_rows +
-            Portal.Repo.query!(@host_native_sql, args, opts).num_rows +
-            Portal.Repo.query!(@pinned_sql, args, opts).num_rows
+          {:ok, n} =
+            Portal.Repo.transaction(fn ->
+              Portal.Repo.query!(@earlier_all_sql, args, opts).num_rows +
+                Portal.Repo.query!(@host_native_sql, args, opts).num_rows +
+                Portal.Repo.query!(@pinned_sql, args, opts).num_rows
+            end)
 
-        id ->
-          Portal.Repo.query!(@earlier_row_sql, [names, versions, Ecto.UUID.dump!(id)]).num_rows
+          n
+
+        {:toolchain, id} ->
+          Portal.Repo.query!(@earlier_row_sql, args ++ [Ecto.UUID.dump!(id)]).num_rows
+
+        {:host_native, id} ->
+          Portal.Repo.query!(@host_native_row_sql, args ++ [Ecto.UUID.dump!(id)]).num_rows
+
+        {:pinned, id} ->
+          Portal.Repo.query!(@pinned_row_sql, args ++ [Ecto.UUID.dump!(id)]).num_rows
       end
 
     :telemetry.execute([:portal, :plugin_watch, :mark_unrecorded], %{marked: marked}, %{})

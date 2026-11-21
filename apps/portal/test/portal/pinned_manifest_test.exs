@@ -94,13 +94,21 @@ defmodule Portal.PinnedManifestTest do
     %{name: name, sha: sha} = ingested(observations: mark)
     %{name: plain} = ingested(observations: %{"os_type_reads" => []})
     Portal.Precompiled.PluginWatch.refresh(plugin_registry())
-    assert %{"builds_closure" => [_]} = version(name)
+
+    # Marked by its own ingest (review S5 final N1), before any sweep.
+    assert version(name) == nil
+    assert %{"builds_closure" => [_]} = version(plain)
 
     # From before os_type_reads, with a release in its lock that runs
     # rebar3_hex (mimerl 1.0.0, `PluginWatch.Declared`).
     old = unique()
     mimerl = [%{"name" => "mimerl", "hex" => "mimerl", "version" => "1.0.0", "checksum" => @b}]
     {:ok, _row} = ingest(old, pins(old, mimerl), observations: %{"problems" => []})
+    assert version(old) == nil
+
+    # Ones an older release ingested are marked by the sweep.
+    Portal.Repo.query!("DELETE FROM rebar3_plugin_runs WHERE package = '*'", [])
+    assert %{"builds_closure" => [_]} = version(name)
     assert %{"builds_closure" => [_]} = version(old)
 
     assert :ok = Portal.Precompiled.PluginWatch.mark_unrecorded()

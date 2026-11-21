@@ -262,13 +262,22 @@ defmodule Portal.Workers.UpdateCheck do
   end
 
   # The builds with no plugin record that may have run a plugin and that no
-  # requeue rebuilds (`PluginWatch.mark_unrecorded/1`). A failure is logged;
-  # the next run sweeps again.
+  # requeue rebuilds (`PluginWatch.mark_unrecorded/1`). A failure is logged
+  # and emits an exception event (review S5 final N1); the next run sweeps
+  # again.
   defp mark_unrecorded do
     PluginWatch.mark_unrecorded()
   rescue
     e ->
-      Logger.error("rebar3 plugin watch: unrecorded builds not swept: " <> Exception.message(e))
+      reason = Exception.message(e)
+
+      :telemetry.execute(
+        [:portal, :plugin_watch, :mark_unrecorded, :exception],
+        %{count: 1},
+        %{reason: reason}
+      )
+
+      Logger.error("rebar3 plugin watch: unrecorded builds not swept: " <> reason)
   end
 
   # DateTime structs do not sort chronologically under Erlang term ordering.

@@ -476,6 +476,8 @@ defmodule Portal.HostNative.Ingest do
         attrs[:compile_observations]
       )
 
+    :ok = Portal.Precompiled.PluginWatch.mark_unrecorded({:host_native, row.id})
+
     ok
   end
 

@@ -1489,7 +1489,7 @@ defmodule Portal.Catalog.Ingestion do
   # the transaction that kept it (`PluginWatch.mark_unrecorded/1`, review S5
   # S1).
   defp mark_unrecorded_earlier(%ToolchainBuild{earlier_builds: [_ | _]} = row),
-    do: PluginWatch.mark_unrecorded(row.id)
+    do: PluginWatch.mark_unrecorded({:toolchain, row.id})
 
   defp mark_unrecorded_earlier(_row), do: :ok
 
@@ -2020,6 +2020,7 @@ defmodule Portal.Catalog.Ingestion do
     with {:ok, row} <-
            PinnedBuild |> Ash.Changeset.for_create(:upsert, attrs) |> Ash.create(domain: @domain) do
       :ok = PluginWatch.record(row.package_id, opts.run_id, build["compile_observations"])
+      :ok = PluginWatch.mark_unrecorded({:pinned, row.id})
       :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
       :ok = replace_pinned_memberships(row.id, staged)
       with :ok <- Portal.Deterministic.replace(row, sibling), do: {:ok, row}
