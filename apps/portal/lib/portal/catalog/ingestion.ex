@@ -908,8 +908,9 @@ defmodule Portal.Catalog.Ingestion do
   # sobelow_skip ["Traversal.FileModule"]
   defp read_beams(entries, files_dir) do
     entries
-    |> Enum.filter(&match?(%{"path" => "ebin/" <> _}, &1))
-    |> Enum.filter(&(Path.extname(&1["path"]) == ".beam"))
+    |> Enum.filter(
+      &(match?(%{"path" => "ebin/" <> _}, &1) and Path.extname(&1["path"]) == ".beam")
+    )
     |> Enum.reduce_while({:ok, %{}, 0}, fn %{"path" => "ebin/" <> name} = entry,
                                            {:ok, acc, total} ->
       case read_beam(entry, files_dir) do
@@ -929,31 +930,32 @@ defmodule Portal.Catalog.Ingestion do
     end
   end
 
+  # The run's files dir, else the store (a retry after staging moved it);
+  # the path is either joined with a sha checked to be 64 hex digits.
   # sobelow_skip ["Traversal.FileModule"]
   defp read_beam(%{"sha256" => sha}, files_dir) when is_binary(sha) do
-    if sha =~ ~r/\A[0-9a-f]{64}\z/ do
-      [Path.join(files_dir, sha), ArtifactStore.blob_path(sha)]
-      |> Enum.find_value(fn path ->
-        case File.read(path) do
-          {:ok, bytes} -> {:ok, bytes}
-          _ -> nil
-        end
-      end)
-      |> case do
-        {:ok, bytes} ->
-          if Base.encode16(:crypto.hash(:sha256, bytes), case: :lower) == sha,
-            do: {:ok, bytes},
-            else: {:refused, "a beam that does not hash to its sha"}
-
-        nil ->
-          {:error, {:artifacts_unstaged, [sha]}}
-      end
+    with true <- sha =~ ~r/\A[0-9a-f]{64}\z/,
+         {:ok, bytes} <- read_first([Path.join(files_dir, sha), ArtifactStore.blob_path(sha)]) do
+      if Base.encode16(:crypto.hash(:sha256, bytes), case: :lower) == sha,
+        do: {:ok, bytes},
+        else: {:refused, "a beam that does not hash to its sha"}
     else
-      {:refused, "a beam with no valid sha"}
+      false -> {:refused, "a beam with no valid sha"}
+      :none -> {:error, {:artifacts_unstaged, [sha]}}
     end
   end
 
   defp read_beam(_entry, _files_dir), do: {:refused, "a beam with no valid sha"}
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_first([]), do: :none
+
+  defp read_first([path | rest]) do
+    case File.read(path) do
+      {:ok, bytes} -> {:ok, bytes}
+      _ -> read_first(rest)
+    end
+  end
 
   defp relocation_problem(record, build, shaped) do
     cond do

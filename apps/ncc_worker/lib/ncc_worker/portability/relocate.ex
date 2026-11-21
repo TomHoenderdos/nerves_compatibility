@@ -500,28 +500,23 @@ defmodule NccWorker.Portability.Relocate do
     own = Map.get(at_second, held.package, %{})
     relocated? = held.package in held.apps
 
+    record = %{
+      "deps" => held.slots["deps"],
+      "build" => held.slots["build"],
+      "second" => second,
+      "third" => third,
+      "files" =>
+        for {name, occs} <- Enum.sort(own) do
+          %{"path" => "ebin/" <> name, "occurrences" => occs}
+        end
+    }
+
     with {:ok, ebin} <- own_ebin(held),
-         nil <- pass_problem(held, own, at_third, relocated?, ebin) do
-      record = %{
-        "deps" => held.slots["deps"],
-        "build" => held.slots["build"],
-        "second" => second,
-        "third" => third,
-        "files" =>
-          for {name, occs} <- Enum.sort(own) do
-            %{"path" => "ebin/" <> name, "occurrences" => occs}
-          end
-      }
-
-      case Relocation.record_problem(record, Enum.map(Map.keys(ebin), &("ebin/" <> &1))) do
-        nil ->
-          held.passed
-          |> Map.put(:relocation, record)
-          |> put_stat("relocate", if(relocated?, do: "relocated", else: "dependencies"))
-
-        why ->
-          {:refuse, why}
-      end
+         nil <- pass_problem(held, own, at_third, relocated?, ebin),
+         nil <- Relocation.record_problem(record, Enum.map(Map.keys(ebin), &("ebin/" <> &1))) do
+      held.passed
+      |> Map.put(:relocation, record)
+      |> put_stat("relocate", if(relocated?, do: "relocated", else: "dependencies"))
     else
       {:refuse, why} -> {:refuse, why}
       why when is_binary(why) -> {:refuse, why}

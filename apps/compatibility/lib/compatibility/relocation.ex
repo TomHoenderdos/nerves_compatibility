@@ -480,22 +480,20 @@ defmodule Compatibility.Relocation do
     ebin
     |> Enum.filter(fn {name, _} -> Path.extname(name) == ".beam" end)
     |> Enum.sort()
-    |> Enum.find_value(fn {name, bytes} ->
-      case beam_source(bytes) do
-        {:ok, source} ->
-          if not (String.starts_with?(source, dir) and Path.expand(source) == source),
-            do: "#{name}: not compiled from #{inspect(dir)}"
-
-        :none ->
-          "#{name}: not compiled from #{inspect(dir)} (no source)"
-
-        :error ->
-          "#{name}: unreadable compile info"
-      end
-    end)
+    |> Enum.find_value(fn {name, bytes} -> source_problem(name, beam_source(bytes), dir) end)
   end
 
   def compiled_in_problem(_ebin, _deps, _app), do: "no ebin"
+
+  defp source_problem(name, {:ok, source}, dir) do
+    if not (String.starts_with?(source, dir) and Path.expand(source) == source),
+      do: "#{name}: not compiled from #{inspect(dir)}"
+  end
+
+  defp source_problem(name, :none, dir),
+    do: "#{name}: not compiled from #{inspect(dir)} (no source)"
+
+  defp source_problem(name, :error, _dir), do: "#{name}: unreadable compile info"
 
   @max_cinf_bytes 1024 * 1024
 
@@ -503,17 +501,19 @@ defmodule Compatibility.Relocation do
     with {:ok, chunks} <- chunks(bytes),
          data when is_binary(data) and byte_size(data) <= @max_cinf_bytes <- chunk(chunks, "CInf"),
          {:ok, info} when is_list(info) <- safe_term(data) do
-      case for({{:atom, "source"}, value} <- info, do: value) do
-        [value] -> source_text(value)
-        [] -> :none
-        _ -> :error
-      end
+      info |> sources() |> one_source()
     else
       _ -> :error
     end
   rescue
     _ -> :error
   end
+
+  defp sources(info), do: for({{:atom, "source"}, value} <- info, do: value)
+
+  defp one_source([value]), do: source_text(value)
+  defp one_source([]), do: :none
+  defp one_source(_values), do: :error
 
   defp source_text(value) when is_binary(value),
     do: if(String.valid?(value), do: {:ok, value}, else: :error)
