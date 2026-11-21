@@ -104,6 +104,8 @@ defmodule Portal.Workers.ToolchainSweepTest do
         toolchain: Keyword.get(opts, :toolchain, "1.19/28"),
         builder_version: Keyword.get(opts, :builder_version, 1),
         status: status,
+        # A pass lists its files: one with none is rebuilt (`@pass_without_files`).
+        file_manifest: if(status == :pass, do: %{"ebin" => [], "priv" => []}),
         compile_env_rule: Keyword.get(opts, :compile_env_rule, 1),
         run_id: Keyword.get(opts, :run_id, "tc-row"),
         compile_env: Keyword.get(opts, :compile_env, []),

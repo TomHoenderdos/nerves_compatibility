@@ -832,26 +832,30 @@ defmodule Portal.Catalog.Ingestion do
   @relocated_shape "relocated_shape_ok"
   @relocation_refused "relocation refused on the host: "
 
+  # The shape mark is taken off first, so no later gate reads it, whatever
+  # the branch.
   defp gate_relocation(%{"status" => "pass", "relocation" => record} = build, opts) do
+    {shaped, build} = Map.pop(build, @relocated_shape)
+
     cond do
       Map.has_key?(opts, :pins) ->
         build
         |> Map.delete("relocation")
         |> skip_variant(@pinned_relocated)
 
-      problem = relocation_problem(record, build) ->
+      problem = relocation_problem(record, build, shaped) ->
         build |> Map.delete("relocation") |> refused(problem, @relocation_refused)
 
       true ->
-        Map.delete(build, @relocated_shape)
+        build
     end
   end
 
   defp gate_relocation(build, _opts), do: Map.drop(build, ["relocation", @relocated_shape])
 
-  defp relocation_problem(record, build) do
+  defp relocation_problem(record, build, shaped) do
     cond do
-      Map.get(build, @relocated_shape) != true ->
+      shaped != true ->
         "its files are not under relocated_file_manifest"
 
       (build["foreign_priv"] || []) != [] ->

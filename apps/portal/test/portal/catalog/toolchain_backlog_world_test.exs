@@ -85,6 +85,8 @@ defmodule Portal.Catalog.ToolchainBacklogWorldTest do
         variant: Keyword.get(opts, :variant, :with),
         config_variant: "default",
         status: status,
+        # A pass lists its files: one with none is rebuilt (`@pass_without_files`).
+        file_manifest: if(status == :pass, do: %{"ebin" => [], "priv" => []}),
         reason: Keyword.get(opts, :reason),
         deps_lock: Keyword.get(opts, :deps_lock, @lock),
         optional_deps: %{"added" => []},

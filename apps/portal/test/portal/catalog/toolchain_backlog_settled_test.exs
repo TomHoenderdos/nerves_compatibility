@@ -193,6 +193,8 @@ defmodule Portal.Catalog.ToolchainBacklogSettledTest do
       variant: variant,
       config_variant: config_variant,
       status: status,
+      # A pass lists its files: one with none is rebuilt (`@pass_without_files`).
+      file_manifest: if(status == :pass, do: %{"ebin" => [], "priv" => []}),
       reason: Keyword.get(opts, :reason),
       deps_lock: Keyword.get(opts, :deps_lock, %{}),
       optional_deps: Keyword.get(opts, :optional_deps, %{"added" => []}),

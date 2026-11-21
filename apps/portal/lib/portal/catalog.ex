@@ -1680,6 +1680,16 @@ defmodule Portal.Catalog do
        <= CASE WHEN t.transient_attempts > 0 THEN $3::timestamp ELSE $4::timestamp END)
   """
 
+  # A pass row that serves nothing: no `file_manifest` and no relocation
+  # record of its own run (`Portal.Precompiled.Relocated.counted/1`). Only a
+  # release before S4 writes one, when it ingests a relocated result (it
+  # reads `file_manifest` alone, nil there, and leaves the relocation
+  # columns); the worker writes no other pass without files. Rebuilt when
+  # due, as any other reopened pass.
+  @pass_without_files """
+  (t.file_manifest IS NULL AND NOT coalesce(t.relocation_run_id = t.run_id, false))
+  """
+
   # A skipped row the verdict before rule 2 refused for a reason rule 2 no
   # longer has (precompiled portability spec, section 7): a runtime program
   # call, executable lookup or shell, or the `:os.type`/`system_architecture`
@@ -1838,6 +1848,7 @@ defmodule Portal.Catalog do
               coalesce(t.optional_deps ->> 'reason', '') IN ('deps_get_failed', 'timeout')
               OR NOT #{records_config_reads.("t")}
               OR t.transient_attempts > 0
+              OR #{@pass_without_files}
             )
             AND #{@reopen_due}
           )

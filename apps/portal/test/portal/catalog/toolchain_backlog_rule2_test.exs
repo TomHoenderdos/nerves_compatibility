@@ -105,6 +105,8 @@ defmodule Portal.Catalog.ToolchainBacklogRule2Test do
       builder_version: 1,
       variant: Keyword.get(opts, :variant, :with),
       status: status,
+      # A pass lists its files: one with none is rebuilt (`@pass_without_files`).
+      file_manifest: if(status == :pass, do: %{"ebin" => [], "priv" => []}),
       reason: Keyword.get(opts, :reason),
       deps_lock: Keyword.get(opts, :deps_lock, %{}),
       compile_env_rule: Keyword.get(opts, :compile_env_rule, if(marked?, do: 1)),
