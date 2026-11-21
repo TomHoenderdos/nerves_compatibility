@@ -2598,14 +2598,14 @@ defmodule Portal.Catalog.Ingestion do
          dependency_scans, log_path, log_tail, failure_category, carried_from_run_id, deps_lock,
          unpublished_at, compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
          toolchain_pkg, toolchain_version, otp_full, published_variants, build_root,
-         rebar3_plugins, inserted_at, updated_at)
+         rebar3_plugins, firmware_judge, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.compile_inputs, s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
              s.unpublished_reason, s.native, s.portable, s.elf_needs, s.toolchain_pkg,
              s.toolchain_version, s.otp_full, s.published_variants, s.build_root,
-             s.rebar3_plugins, now() AT TIME ZONE 'utc',
+             s.rebar3_plugins, s.firmware_judge, now() AT TIME ZONE 'utc',
              now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
@@ -2709,7 +2709,8 @@ defmodule Portal.Catalog.Ingestion do
         published_variants: variants,
         build_root: build_root(sys["build_root"]),
         declared_absent: if(system_pkg == "pure_elixir", do: record_list(sys["declared_absent"])),
-        rebar3_plugins: rebar3_plugins(sys["rebar3_plugins"], {package_name, version})
+        rebar3_plugins: rebar3_plugins(sys["rebar3_plugins"], {package_name, version}),
+        firmware_judge: firmware_judge(sys["firmware_judge"])
       })
       |> Ash.create(domain: @domain)
 
@@ -2740,6 +2741,22 @@ defmodule Portal.Catalog.Ingestion do
   # but a map is dropped rather than stored as a verdict.
   defp build_root(%{} = build_root), do: build_root
   defp build_root(_), do: nil
+
+  # A firmware target's judge verdict (`NccWorker.FirmwareInputs`), kept only
+  # whole: a known status, a string or nil reason, and classes the worker
+  # knows. Anything else stores nothing, which reads as unjudged and never as
+  # a refusal; extra keys are stripped.
+  @judge_statuses ["pass", "skipped", "unjudged"]
+  @judge_classes ["plugins_hooks", "probe", "taint"]
+
+  defp firmware_judge(%{"status" => status, "reason" => reason, "classes" => classes})
+       when status in @judge_statuses and (is_binary(reason) or is_nil(reason)) and
+              is_list(classes) do
+    if Enum.all?(classes, &(&1 in @judge_classes)),
+      do: %{"status" => status, "reason" => reason, "classes" => classes}
+  end
+
+  defp firmware_judge(_judge), do: nil
 
   # A firmware target's rebar3 plugin record (`NccWorker.FirmwarePlugins`),
   # all or nothing like `deps_lock/1`: the container that wrote it ran the

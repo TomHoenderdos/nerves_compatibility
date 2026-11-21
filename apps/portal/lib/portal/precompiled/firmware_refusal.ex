@@ -1,7 +1,10 @@
 defmodule Portal.Precompiled.FirmwareRefusal do
   @moduledoc """
   Withdraws a firmware target's older builds once a newer run of the same
-  package version refused that target's build for a baked build path.
+  package version refused that target's build for a baked build path, or
+  its firmware judge did (`firmware_judge` "skipped", `NccWorker.FirmwareInputs`:
+  a compile-time probe, a rebar3 plugin or hook, or a dependency's taint by
+  one).
 
   The worker judges every passing firmware target's files by the baked build
   path rule (`NccWorker.FirmwareBuildRoot`) and writes the verdict as the
@@ -14,7 +17,9 @@ defmodule Portal.Precompiled.FirmwareRefusal do
 
   A refusal is a system result with a `build_root` (stored by ingest, kept
   by carried copies) whose own `status` is not `"pass"`, or one of whose
-  judged `variants` is not `"pass"`, in an unrevoked run (and, for a carried
+  judged `variants` is not `"pass"`, or with a `firmware_judge` whose
+  `status` is `"skipped"` (an `"unjudged"` one is no refusal), in an
+  unrevoked run (and, for a carried
   copy, an unrevoked building run). It withdraws every passing result of the
   same package, version and `system_pkg` that has files, is not withdrawn
   yet, and was built strictly before it. Built means the `finished_at` of
@@ -76,12 +81,14 @@ defmodule Portal.Precompiled.FirmwareRefusal do
       AND EXISTS (SELECT 1 FROM catalog_artifact_memberships m WHERE m.system_result_id = o.id)
       AND frun.revoked_at IS NULL
       AND (f.carried_from_run_id IS NULL OR fb.revoked_at IS NULL)
-      AND jsonb_typeof(f.build_root) = 'object'
-      AND (coalesce(f.build_root->>'status', '') <> 'pass'
-           OR (jsonb_typeof(f.build_root->'variants') = 'object'
-               AND EXISTS (SELECT 1 FROM jsonb_each(f.build_root->'variants') v
-                           WHERE jsonb_typeof(v.value) <> 'object'
-                              OR coalesce(v.value->>'status', '') <> 'pass')))
+      AND ((jsonb_typeof(f.build_root) = 'object'
+            AND (coalesce(f.build_root->>'status', '') <> 'pass'
+                 OR (jsonb_typeof(f.build_root->'variants') = 'object'
+                     AND EXISTS (SELECT 1 FROM jsonb_each(f.build_root->'variants') v
+                                 WHERE jsonb_typeof(v.value) <> 'object'
+                                    OR coalesce(v.value->>'status', '') <> 'pass'))))
+           OR (jsonb_typeof(f.firmware_judge) = 'object'
+               AND f.firmware_judge->>'status' = 'skipped'))
       AND coalesce(fb.finished_at, frun.finished_at) >
           coalesce(ob.finished_at, orun.finished_at)
   )

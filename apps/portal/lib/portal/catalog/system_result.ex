@@ -112,7 +112,8 @@ defmodule Portal.Catalog.SystemResult do
         :published_variants,
         :build_root,
         :declared_absent,
-        :rebar3_plugins
+        :rebar3_plugins,
+        :firmware_judge
       ])
     end
 
@@ -307,6 +308,16 @@ defmodule Portal.Catalog.SystemResult do
     # not pass, an older worker, a malformed record). A record only: nothing
     # reads it to serve or withhold. Carried copies keep it.
     attribute :rebar3_plugins, {:array, :map} do
+      public?(true)
+    end
+
+    # A firmware target's judge verdict as the worker wrote it
+    # (`NccWorker.FirmwareInputs`: `status` "pass", "skipped" or "unjudged",
+    # `reason`, `classes`). Only a passing target that published files when
+    # the judge ran has one; nil reads as unjudged. A "skipped" one withdraws
+    # older runs' builds of the same version and target
+    # (`Portal.Precompiled.FirmwareRefusal`). Carried copies keep it.
+    attribute :firmware_judge, :map do
       public?(true)
     end
 

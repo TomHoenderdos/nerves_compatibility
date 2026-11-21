@@ -68,6 +68,21 @@ defmodule Portal.Precompiled.FirmwareRefusalTest do
       end
 
     rpi4 =
+      case Keyword.fetch(opts, :judge) do
+        {:ok, judge} ->
+          rpi4
+          |> Map.put("firmware_judge", judge)
+          |> then(fn r ->
+            if judge["status"] == "skipped",
+              do: Map.put(r, "beam_scan", %{"footprint" => %{}}),
+              else: r
+          end)
+
+        :error ->
+          rpi4
+      end
+
+    rpi4 =
       if Keyword.get(opts, :variant, false) do
         Map.put(rpi4, "published_variants", [
           %{
@@ -164,6 +179,34 @@ defmodule Portal.Precompiled.FirmwareRefusalTest do
     assert refusal.build_root["status"] == "skipped"
     assert refusal.status == :pass
     assert is_nil(refusal.unpublished_at)
+  end
+
+  test "a newer run's firmware judge refusal withdraws an older run's build of the version and target" do
+    old = run!("1.4.0", "2026-11-01T10:00:00Z", "old-beam")
+    assert [_] = served_rpi4("1.4.0")
+
+    judge = %{
+      "status" => "skipped",
+      "reason" => "rebar3 build runs plugins",
+      "classes" => ["plugins_hooks"]
+    }
+
+    new = run!("1.4.0", "2026-11-02T10:00:00Z", "new-beam", judge: judge)
+
+    assert served_rpi4("1.4.0") == []
+    assert rpi4_of(old).unpublished_reason == SystemResult.superseded_by_refusal()
+    assert rpi4_of(new).firmware_judge == judge
+  end
+
+  test "a firmware judge pass or unjudged verdict withdraws nothing" do
+    for status <- ["pass", "unjudged"] do
+      version = "1.6.#{System.unique_integer([:positive])}"
+      old = run!(version, "2026-11-01T10:00:00Z", "old-beam-" <> version)
+      judge = %{"status" => status, "reason" => nil, "classes" => []}
+      _ = run!(version, "2026-11-02T10:00:00Z", "new-beam-" <> version, judge: judge)
+
+      assert is_nil(rpi4_of(old).unpublished_at), status
+    end
   end
 
   test "another version's build is left alone" do

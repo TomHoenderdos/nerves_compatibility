@@ -26,6 +26,12 @@ defmodule Portal.Catalog.IngestionFirmwarePluginsTest do
     rpi4 = fixture["systems"]["nerves_system_rpi4"]
     rpi4 = if plugins == :absent, do: rpi4, else: Map.put(rpi4, "rebar3_plugins", plugins)
 
+    rpi4 =
+      case Keyword.fetch(opts, :judge) do
+        {:ok, judge} -> Map.put(rpi4, "firmware_judge", judge)
+        :error -> rpi4
+      end
+
     systems =
       fixture["systems"]
       |> Map.put("nerves_system_rpi4", rpi4)
@@ -109,12 +115,66 @@ defmodule Portal.Catalog.IngestionFirmwarePluginsTest do
     assert log =~ "rebar3_plugins malformed"
   end
 
-  test "a carried copy keeps the record" do
-    _full = run!([@release])
+  describe "firmware_judge" do
+    defp judged!(judge) do
+      fixture = @fixture |> File.read!() |> Jason.decode!()
+      rpi4 = Map.put(fixture["systems"]["nerves_system_rpi4"], "firmware_judge", judge)
+
+      result =
+        Map.merge(fixture, %{
+          "run_id" => "fw-judge-#{System.unique_integer([:positive])}",
+          "package" => %{"name" => "jason", "version" => "1.4.0"},
+          "systems" => Map.put(fixture["systems"], "nerves_system_rpi4", rpi4)
+        })
+
+      {:ok, run} =
+        Ingestion.ingest(result, %{
+          package: "jason",
+          version: "1.4.0",
+          run_id: result["run_id"],
+          image_digest: "sha256:precompiled",
+          files_dir: System.tmp_dir!(),
+          scan_request_id: nil,
+          log: "log"
+        })
+
+      rpi4_of(run)
+    end
+
+    test "stores the target's verdict" do
+      judge = %{
+        "status" => "skipped",
+        "reason" => "rebar3 build runs plugins",
+        "classes" => ["plugins_hooks"]
+      }
+
+      assert judged!(judge).firmware_judge == judge
+
+      pass = %{"status" => "pass", "reason" => nil, "classes" => []}
+      assert judged!(pass).firmware_judge == pass
+    end
+
+    test "anything but a verdict of a known status is not stored, and the ingest succeeds" do
+      for bad <- [
+            %{"status" => "maybe", "reason" => nil, "classes" => []},
+            %{"status" => "pass", "reason" => 7, "classes" => []},
+            %{"status" => "skipped", "reason" => "x", "classes" => "probe"},
+            %{"status" => "skipped", "reason" => "x", "classes" => ["other"]},
+            "skipped"
+          ] do
+        assert judged!(bad).firmware_judge == nil, inspect(bad)
+      end
+    end
+  end
+
+  test "a carried copy keeps the record and the judge's verdict" do
+    judge = %{"status" => "unjudged", "reason" => "firmware judge budget spent", "classes" => []}
+    _full = run!([@release], judge: judge)
     partial = run!(:absent, scope: "targets", systems: ["host"], at: "2026-11-02T10:00:00Z")
 
     copy = rpi4_of(partial)
     assert copy.carried_from_run_id
     assert copy.rebar3_plugins == [@release]
+    assert copy.firmware_judge == judge
   end
 end

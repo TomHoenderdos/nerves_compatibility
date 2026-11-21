@@ -406,6 +406,7 @@ defmodule PortalWeb.Builder.JobController do
         argus: lease.args["argus"],
         firmware_world: lease.args["firmware_world"],
         firmware_inputs: Portal.Builder.firmware_inputs_input(lease.args["mode"]),
+        firmware_judge: Portal.Builder.firmware_judge_input(lease.args["mode"]),
         deterministic:
           Portal.Builder.deterministic_input(lease.args["mode"], %{
             deterministic: lease.args["deterministic"]

@@ -257,6 +257,11 @@ if portal_available? do
     # `NCC_INPUT.firmware_inputs: false`, local and remote alike, with no
     # image change. Anything else, or unset, keeps it on.
     firmware_inputs: if(System.get_env("NCC_FIRMWARE_INPUTS") == "0", do: false),
+    # `0` turns off the firmware judge (`NccWorker.FirmwareInputs`, stream
+    # S8: every passing target traced for probes, rebar3 plugins and hooks):
+    # firmware builds get `NCC_INPUT.firmware_judge: false`, local and remote
+    # alike, with no image change. Anything else, or unset, keeps it on.
+    firmware_judge: if(System.get_env("NCC_FIRMWARE_JUDGE") == "0", do: false),
     build_cache: System.get_env("NCC_BUILD_CACHE"),
     cpus: System.get_env("NCC_BUILD_CPUS"),
     memory: System.get_env("NCC_BUILD_MEMORY"),
