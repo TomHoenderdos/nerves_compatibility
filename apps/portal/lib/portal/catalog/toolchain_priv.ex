@@ -31,8 +31,10 @@ defmodule Portal.Catalog.ToolchainPriv do
   its times; judge revision 21), and lists
   it in the build's `built_priv`, by its manifest path. Those files, and only
   those, are judged against that list rather than the tarball: the tarball
-  must not carry them at all, and the caps, the native name and magic and the
-  execute bit hold for them as for any other (`Compatibility.StaticPriv.check/3`).
+  must not carry them at all, the caps hold for them, and they must not be
+  native code by name or magic, nor executable unless a script
+  (`Compatibility.StaticPriv.check/3`). Every other file must be its tarball
+  entry byte for byte and mode for mode.
   A missing or nil `built_priv` lists none, as a build from before the list
   does; anything but a list of plain paths under `priv/` refuses the build
   before any file is read.

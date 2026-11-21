@@ -72,12 +72,12 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     File.read!(outer)
   end
 
-  defp entry(path, content),
+  defp entry(path, content, mode \\ 33_188),
     do: %{
       "path" => path,
       "sha256" => sha(content),
       "size" => byte_size(content),
-      "mode" => 33_188
+      "mode" => mode
     }
 
   defp result(name, beam, priv_entries, package_checksum) do
@@ -97,7 +97,11 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
         "compile_env" => [],
         "file_manifest" => %{
           "ebin" => [entry("ebin/#{name}.beam", beam)],
-          "priv" => Enum.map(priv_entries, fn {path, content} -> entry(path, content) end)
+          "priv" =>
+            Enum.map(priv_entries, fn
+              {path, content, mode} -> entry(path, content, mode)
+              {path, content} -> entry(path, content)
+            end)
         }
       }
     }
@@ -175,6 +179,36 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     assert {false, []} = published?(name)
   end
 
+  # Hex unpacks it with its tar mode, the execute bit and native code
+  # included, so it is what every user has.
+  test "an executable or native priv file the tarball ships, mode for mode, is published" do
+    name = unique()
+    beam = "beam-#{name}"
+    script = "#!/bin/sh\nexec \"$@\" #{name}"
+    exe = "MZ" <> <<0x90, 0, 3, 0>> <> name
+    elf = <<0x7F, "ELF", 2, 1, 1, 0>> <> name
+
+    assert {:ok, %{status: :pass}} =
+             ingest(
+               name,
+               beam,
+               [
+                 {"priv/zombie_killer", script, 0o100755},
+                 {"priv/inotifywait.exe", exe},
+                 {"priv/x86_64/nif.so", elf, 0o100755}
+               ],
+               %{
+                 "priv/zombie_killer" => {script, 0o755},
+                 "priv/inotifywait.exe" => exe,
+                 "priv/x86_64/nif.so" => {elf, 0o755}
+               },
+               &opts/3
+             )
+
+    assert {true, shas} = published?(name)
+    assert Enum.sort(shas) == Enum.sort(Enum.map([beam, script, exe, elf], &sha/1))
+  end
+
   test "a priv file the tarball carries byte for byte is published with the build" do
     name = unique()
     beam = "beam-#{name}"
@@ -241,7 +275,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
     assert_nothing_published(name, outcome)
   end
 
-  test "a tarball entry that is executable is refused" do
+  test "a priv file without the execute bit its tarball entry has is refused" do
     name = unique()
     script = "echo #{name}"
 
@@ -351,22 +385,35 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
   # all the same, with the same rules, on files the tarball carries byte for
   # byte.
   describe "refused on the host even when the worker reported the build portable" do
-    test "native code by its magic" do
+    # The manifest's mode is the container's word: it must be the tarball's.
+    test "a priv file whose mode is not the tarball entry's" do
       name = unique()
-      elf = <<0x7F, "ELF", 2, 1, 1, 0>> <> name
+      script = "#!/bin/sh\necho #{name}"
 
       outcome =
-        ingest(name, "beam-#{name}", [{"priv/x.dat", elf}], %{"priv/x.dat" => elf}, &opts/3)
+        ingest(
+          name,
+          "beam-#{name}",
+          [{"priv/run.sh", script, 0o100755}],
+          %{"priv/run.sh" => script},
+          &opts/3
+        )
 
       assert_nothing_published(name, outcome)
     end
 
-    test "native code by its name" do
+    test "a setuid bit, even when the tarball entry has it" do
       name = unique()
-      lib = "not really native #{name}"
+      tool = "#!/bin/sh\n#{name}"
 
       outcome =
-        ingest(name, "beam-#{name}", [{"priv/nif.so", lib}], %{"priv/nif.so" => lib}, &opts/3)
+        ingest(
+          name,
+          "beam-#{name}",
+          [{"priv/tool", tool, 0o104755}],
+          %{"priv/tool" => {tool, 0o4755}},
+          &opts/3
+        )
 
       assert_nothing_published(name, outcome)
     end
@@ -598,7 +645,7 @@ defmodule Portal.Catalog.IngestionToolchainPrivTest do
       assert_nothing_published(name, outcome)
     end
 
-    test "is refused as native code even when the tarball carries it" do
+    test "is refused for its key even when the tarball carries it" do
       name = unique()
       beam = "beam-#{name}"
       lib = "not really native #{name}"

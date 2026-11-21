@@ -11,9 +11,10 @@ defmodule NccWorker.StaticPriv do
   `Compatibility.StaticPriv`, which the portal applies again on the host at
   ingest; what is particular to the container is here: the files are read
   under the build's `priv`, or the package's `deps` priv when Mix links it
-  there, and each is a regular file with one link and no execute bit by
-  `lstat`, walked no further than the file cap. Only then are the files and
-  the tarball read, each once, and judged.
+  there, and each is a regular file with one link by `lstat`, walked no
+  further than the file cap. Only then are the files and the tarball read,
+  each once, and judged: an execute bit is the rules' to judge with the rest
+  (the tarball's own mode, or a script the compile wrote).
 
   Anything that cannot be read or judged, the tarball included, is not
   static. Every reason names what failed and differs from the bare "ships
@@ -23,8 +24,8 @@ defmodule NccWorker.StaticPriv do
 
   alias Compatibility.StaticPriv, as: Rules
 
-  # `check/3`'s walk: executables refused, `Rules`' file cap.
-  @static %{exec: false, max_files: Rules.max_files(), max_bytes: Rules.max_bytes()}
+  # `check/3`'s walk: `Rules`' file cap.
+  @static %{max_files: Rules.max_files(), max_bytes: Rules.max_bytes()}
 
   @doc """
   `:ok` when every file under `priv_dir` (the built package's `priv`) is
@@ -53,16 +54,15 @@ defmodule NccWorker.StaticPriv do
   Every file under `priv_dir` as `%{path, mode, bytes}`, walked and read as
   `check/3` walks and reads them (one link to `source_priv`, `lstat`, one
   link per file, each read no further than its size), for a caller that
-  judges them itself (`NccWorker.HostNative`): an executable file is read
-  rather than refused, and the caps are `max_files:` and `max_bytes:` (all
-  files together). `{:skip, reason}` for anything that cannot be read.
+  judges them itself (`NccWorker.HostNative`), with the caps `max_files:`
+  and `max_bytes:` (all files together). `{:skip, reason}` for anything that
+  cannot be read.
   """
   @spec read(Path.t(), Path.t(), keyword()) ::
           {:ok, [%{path: String.t(), mode: non_neg_integer(), bytes: binary()}]}
           | {:skip, String.t()}
   def read(priv_dir, source_priv, opts) do
     caps = %{
-      exec: true,
       max_files: Keyword.fetch!(opts, :max_files),
       max_bytes: Keyword.fetch!(opts, :max_bytes)
     }
@@ -149,9 +149,7 @@ defmodule NccWorker.StaticPriv do
         walk(root, relative, acc, caps)
 
       {:ok, %File.Stat{type: :regular, links: 1, mode: mode, size: size}} ->
-        if executable?(mode) and not caps.exec,
-          do: {:skip, "ships an executable priv file (priv/#{relative})"},
-          else: {:ok, [%{path: relative, size: size, mode: mode} | acc]}
+        {:ok, [%{path: relative, size: size, mode: mode} | acc]}
 
       {:ok, %File.Stat{type: :regular}} ->
         {:skip, "ships a hard-linked priv file (priv/#{relative})"}
@@ -167,9 +165,6 @@ defmodule NccWorker.StaticPriv do
   defp join("", name), do: name
   defp join(relative, name), do: relative <> "/" <> name
 
-  defp executable?(mode), do: Rules.executable?(mode)
-
-  defp too_many(%{exec: false}), do: rules(Rules.too_many())
   defp too_many(caps), do: {:skip, "ships more than #{caps.max_files} priv files"}
 
   # Each file once, no more than its `lstat` size: one that grew since is not

@@ -561,10 +561,12 @@ What it lists:
   skipped, whatever the reason, since it may be one of them): two builds whose `deps` differ by those
   dependencies, so a project that locks them and one that does not each
   find theirs. A toolchain build's files include the package's `priv` when it
-  is static data: regular, non-executable files the package's own Hex tarball
-  carries byte for byte, none of them native code (by name or by ELF, Mach-O,
-  PE or `ar` magic), at most 500 files and 10 MiB in all, from a package with
-  no native sources. The builder judges this inside its container, and the
+  is static data: regular files the package's own Hex tarball carries byte
+  for byte and mode for mode (no setuid, setgid or sticky bit), at most 500
+  files and 10 MiB in all, from a package with no native sources. Hex unpacks
+  every entry with its tar mode, so an execute bit, or native code the
+  tarball ships verbatim (since 2026-11-21), is what every user has; its
+  `mode` is published as below. The builder judges this inside its container, and the
   portal judges it again on the host at ingest, with the same rules, against
   the tarball it fetches itself: its SHA-256 must be the outer checksum the
   signed Hex registry lists, which must also be the build's
@@ -576,8 +578,10 @@ What it lists:
   a `.tar` or `.tar.gz`, the same but for its members' times and the gzip
   header's time and OS byte (judge revision 21; the first build's bytes are
   published). Such a file is never in the tarball: the tarball must not
-  carry its path at all, it passes the same native-code, executable and cap
-  rules as any other, and the build lists it in its `built_priv`, by its
+  carry its path at all, it must not be native code (by name or by ELF,
+  Mach-O, PE or `ar` magic), it may carry an execute bit only as a script
+  (bytes that start with `#!`), it counts against the caps, and the build
+  lists it in its `built_priv`, by its
   manifest path, so the portal checks it against that list rather than the
   tarball. A build that fails publishes none of its files, beams included.
   A package whose `priv` is anything else gets a `skipped` toolchain build.

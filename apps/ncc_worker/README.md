@@ -1012,11 +1012,13 @@ processes running that could not be killed, or a build whose files no longer has
 fails the run (exit `10`). Nothing about the build itself changes either way.
 
 A package that ships `priv` files is portable only when they are static data (`NccWorker.StaticPriv`): every file
-under `_build/host/lib/<package>/priv` (or `deps/<package>/priv`, the only link target followed there) is a regular file with one link, executable neither there nor in the
-tarball, carried byte for byte at `priv/<path>` in the `contents.tar.gz` of the package's own Hex tarball, and not
-native code by name (`.so`, `.dylib`, `.dll`, `.a`, `.o`, `.node`) or magic (ELF, Mach-O, PE, `ar`), with at most
-500 files and 10 MiB in all; the beam rules and the native-source check (`c_src`, `native`, `zig_src`, `go_src`
-and the rest) still apply first and after. The tarball is the one `deps.get` left in the run's Hex cache, used only
+under `_build/host/lib/<package>/priv` (or `deps/<package>/priv`, the only link target followed there) is a regular
+file with one link, carried byte for byte at `priv/<path>` in the `contents.tar.gz` of the package's own Hex tarball,
+with that entry's permission bits and no setuid, setgid or sticky bit, with at most 500 files and 10 MiB in all; the
+beam rules and the native-source check (`c_src`, `native`, `zig_src`, `go_src` and the rest) still apply first and
+after. Hex unpacks every entry with its tar mode, so an execute bit or native code the tarball ships verbatim
+(mix_test_watch's `zombie_killer`, file_system's `inotifywait.exe`) is what every user's own compile has, and passes;
+a manifest publishes it 0755 (any execute bit) or 0644. The tarball is the one `deps.get` left in the run's Hex cache, used only
 while its SHA-256 is the outer checksum the lock names; the source dir is never the reference, since a compile hook
 can write there too. It is read once, and the bytes hashed are the bytes judged. A file that fails names itself in
 the skip reason, and a tarball that is missing or cannot be read skips the package as `"ships priv files that could
@@ -1031,8 +1033,9 @@ One kind of priv file passes without being in the tarball: one the package's own
 the package's own compile alone wrote it and a second traced build wrote it the same (byte for byte, or a tar archive but for its times; judge revision
 21). `BuildSelection.static_rules/4` takes that list as `built_priv:`; rule 1 never does. Such a file is static only
 when the tarball does not carry its path at all (one the compile wrote over a file the release ships skips as
-`"ships a priv file its compile wrote over one its Hex tarball carries (priv/<path>)"`), and the caps, the native name
-and magic and the execute bit hold for it as for any other. A file not on the list is judged against the tarball as
+`"ships a priv file its compile wrote over one its Hex tarball carries (priv/<path>)"`); it is held to the caps, must not
+be native code by name (`.so`, `.dylib`, `.dll`, `.a`, `.o`, `.node`) or magic (ELF, Mach-O, PE, `ar`), and may carry an
+execute bit only as a script (bytes that start with `#!`). A file not on the list is judged against the tarball as
 before, and the tarball is still needed: only the tarball can say a file is not in it.
 
 `result.json` has `"scope": "toolchain"`, `"systems": {}`, the usual top-level `deps_lock`, `package_checksum`, `declared` and

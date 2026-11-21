@@ -1,10 +1,11 @@
 defmodule NccWorker.BuildSelectionPrivTest do
   # A toolchain build publishes a package's priv files to every OS and
-  # architecture. Static data is the same everywhere; native code is not, and
-  # neither is anything the build itself produced. So a priv file is portable
-  # only when it is a regular, non-executable, non-native file that the
-  # package's own Hex tarball carries byte for byte. Anything else, or anything
-  # that cannot be judged, keeps the package non-portable.
+  # architecture. A file the package's own Hex tarball ships is the same for
+  # every user, whatever it holds, since Hex unpacks it with its tar mode;
+  # anything the build itself produced is not. So a priv file is portable
+  # only when it is a regular file that the tarball carries byte for byte and
+  # mode for mode. Anything else, or anything that cannot be judged, keeps
+  # the package non-portable.
   use ExUnit.Case, async: true
 
   alias NccWorker.BuildSelection
@@ -106,6 +107,19 @@ defmodule NccWorker.BuildSelectionPrivTest do
 
   defp prefix({path, spec}), do: {"priv/" <> path, spec}
 
+  # `files` as the package's own compile wrote them (the trace's
+  # `built_priv:`), with a tarball that carries none of them.
+  defp built_judge(root, files) do
+    built = project(root)
+    built_priv(built, files)
+    tarball = hex_tarball(root, %{})
+
+    BuildSelection.static_rules(root, "sample", scan(map_size(files)),
+      tarball: tarball,
+      built_priv: Map.keys(files)
+    )
+  end
+
   @png <<0x89, "PNG", 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, "IHDR", 0, 0, 0, 1>>
 
   describe "static priv data from the package's own tarball" do
@@ -123,14 +137,66 @@ defmodule NccWorker.BuildSelectionPrivTest do
       files = %{"data/big.bin" => :binary.copy("a", 10 * @mib)}
       assert judge(root, files) == :ok
     end
+
+    # mix_test_watch's `zombie_killer`, ts_chatterbox's `index.html`.
+    test "an executable file with the tarball entry's mode", %{tmp_dir: root} do
+      script = "#!/usr/bin/env bash\nexec \"$@\"\n"
+
+      assert judge(root, %{"zombie_killer" => {script, 0o755}, "index.html" => {"<p>", 0o775}}) ==
+               :ok
+    end
+
+    # Hex unpacks native code it ships like any other file: file_system's
+    # `inotifywait.exe`, ex_sqlean's dylibs.
+    test "native code it ships verbatim, whatever it is called", %{tmp_dir: root} do
+      for {{name, bytes}, i} <-
+            Enum.with_index([
+              {"x.dat", <<0x7F, "ELF", 2, 1, 1, 0, 0::64>>},
+              {"blob.bin", <<0xCF, 0xFA, 0xED, 0xFE, 0::256>>},
+              {"fat.bin", <<0xCA, 0xFE, 0xBA, 0xBE, 0::256>>},
+              {"inotifywait.exe", "MZ" <> <<0x90, 0, 3, 0, 0::256>>},
+              {"lib.a", "!<arch>\n" <> "member/ 0 0 0 644 4 `\n"},
+              {"darwin-arm64/bloom.dylib", {<<0xCF, 0xFA, 0xED, 0xFE, 0::64>>, 0o755}},
+              {"nif.so", "not really native"}
+            ]) do
+        dir = Path.join(root, "native-#{i}")
+        File.mkdir_p!(dir)
+        assert judge(dir, %{name => bytes}) == :ok, name
+      end
+    end
   end
 
   describe "what keeps a package non-portable" do
-    # Native code under any name: the magic is checked on every file.
-    test "an ELF binary, whatever it is called", %{tmp_dir: root} do
-      assert {:skip, _} = judge(root, %{"x.dat" => <<0x7F, "ELF", 2, 1, 1, 0, 0::64>>})
+    test "a mode that is not the tarball entry's", %{tmp_dir: root} do
+      assert {:skip, "ships a priv file whose mode differs from its Hex tarball's (priv/run.sh)"} =
+               judge(root, %{},
+                 built: %{"run.sh" => {"#!/bin/sh", 0o775}},
+                 tarball: %{"run.sh" => {"#!/bin/sh", 0o755}}
+               )
     end
 
+    test "native code the build made, however it got there", %{tmp_dir: root} do
+      for {{name, bytes}, i} <-
+            Enum.with_index([
+              {"x.dat", <<0x7F, "ELF", 2, 1, 1, 0, 0::64>>},
+              {"nif.so", "not really native"}
+            ]) do
+        dir = Path.join(root, "built-#{i}")
+        File.mkdir_p!(dir)
+        assert {:skip, _} = judge(dir, %{}, built: %{name => bytes}, tarball: %{}), name
+      end
+    end
+
+    test "native code that differs from the tarball's", %{tmp_dir: root} do
+      assert {:skip, "ships a priv file that differs from its Hex tarball's (priv/nif.so)"} =
+               judge(root, %{},
+                 built: %{"nif.so" => <<0x7F, "ELF", 2>>},
+                 tarball: %{"nif.so" => <<0x7F, "ELF", 1>>}
+               )
+    end
+  end
+
+  describe "native magic and names, kept for what the build made" do
     test "Mach-O, thin in both widths and byte orders, and fat", %{tmp_dir: root} do
       for {magic, i} <-
             Enum.with_index([
@@ -144,27 +210,35 @@ defmodule NccWorker.BuildSelectionPrivTest do
         dir = Path.join(root, "macho-#{i}")
         File.mkdir_p!(dir)
 
-        assert {:skip, _} = judge(dir, %{"blob.bin" => magic <> <<0::256>>}),
+        assert {:skip, "ships native code in priv (priv/blob.bin)"} =
+                 built_judge(dir, %{"blob.bin" => magic <> <<0::256>>}),
                "magic #{Base.encode16(magic)}"
       end
     end
 
     test "a PE executable", %{tmp_dir: root} do
-      assert {:skip, _} = judge(root, %{"tool.bin" => "MZ" <> <<0x90, 0, 3, 0, 0::256>>})
+      assert {:skip, "ships native code in priv" <> _} =
+               built_judge(root, %{"tool.bin" => "MZ" <> <<0x90, 0, 3, 0, 0::256>>})
     end
 
     test "a static archive", %{tmp_dir: root} do
-      assert {:skip, _} = judge(root, %{"lib.bin" => "!<arch>\n" <> "member/ 0 0 0 644 4 `\n"})
+      assert {:skip, "ships native code in priv" <> _} =
+               built_judge(root, %{"lib.bin" => "!<arch>\n" <> "member/ 0 0 0 644 4 `\n"})
     end
 
     test "a native library by its name, whatever is in it", %{tmp_dir: root} do
       for {name, i} <- Enum.with_index(~w(nif.so nif.dylib nif.dll nif.a nif.o addon.node)) do
         dir = Path.join(root, "name-#{i}")
         File.mkdir_p!(dir)
-        assert {:skip, _} = judge(dir, %{name => "not really native"}), name
+
+        assert {:skip, "ships native code in priv" <> _} =
+                 built_judge(dir, %{name => "not really native"}),
+               name
       end
     end
+  end
 
+  describe "what else keeps a package non-portable" do
     test "an executable bit on the built file", %{tmp_dir: root} do
       assert {:skip, _} =
                judge(root, %{"run.sh" => "echo hi"},
@@ -342,11 +416,16 @@ defmodule NccWorker.BuildSelectionPrivTest do
                {:skip, "ships native code in priv (priv/assets/x.bin)"}
     end
 
-    test "an executable file it wrote does not pass", %{tmp_dir: root} do
+    test "an executable file it wrote that is not a script does not pass", %{tmp_dir: root} do
       files = %{"assets/run.sh" => {"echo hi", 0o755}}
 
       assert static(root, files, %{}, built_priv: ["assets/run.sh"]) ==
                {:skip, "ships an executable priv file (priv/assets/run.sh)"}
+    end
+
+    test "a script it wrote passes with its execute bit", %{tmp_dir: root} do
+      files = %{"bin/run.sh" => {"#!/bin/sh\necho hi\n", 0o755}}
+      assert static(root, files, %{}, built_priv: ["bin/run.sh"]) == :ok
     end
 
     test "without the tarball nothing passes", %{tmp_dir: root} do

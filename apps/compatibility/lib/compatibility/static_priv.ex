@@ -13,16 +13,23 @@ defmodule Compatibility.StaticPriv do
 
   A priv file is static only when it is:
 
-    * not executable (its own mode)
     * in the tarball's `contents.tar.gz` at `priv/<path>`, exactly once, as a
-      regular entry that is not executable
+      regular entry
     * byte for byte that entry
-    * not native code by name (`.so`, `.dylib`, `.dll`, `.a`, `.o`, `.node`,
-      a versioned `.so.N`) or by magic (ELF, Mach-O thin in both widths and
-      byte orders, fat in both byte orders, PE, `ar`)
+    * of that entry's mode (its permission bits, `mode &&& 0o7777`), with no
+      setuid, setgid or sticky bit
 
   and the files hold at most 500 files and 10 MiB together, which bounds what
-  is read and what a client downloads.
+  is read and what a client downloads. Hex unpacks every entry with its tar
+  header's mode, so such a file is what every user's own compile has: its
+  execute bit, and native code it ships verbatim (file_system's
+  `inotifywait.exe`, a package's prebuilt dylibs), are the same on every OS
+  and architecture. A manifest publishes the mode as 0755 when it has any
+  execute bit and 0644 otherwise (`Portal.Catalog.publish_mode/1`), so what
+  a client installs has the execute bits the user's own unpack gives. Native code is told by name (`.so`, `.dylib`, `.dll`,
+  `.a`, `.o`, `.node`, a versioned `.so.N`) or by magic (ELF, Mach-O thin in
+  both widths and byte orders, fat in both byte orders, PE, `ar`); only a
+  file the build made is refused for it.
 
   One kind of file is static without being in the tarball: one the package's
   own compile wrote into its own build `priv`, such as the asset archives
@@ -34,9 +41,11 @@ defmodule Compatibility.StaticPriv do
   no tarball entry to compare against, so the rule for it is the other way
   round: it must not be in the tarball at all, since a compile that wrote over
   a file the release ships has made the release's word about that file
-  meaningless, whatever the bytes. Everything else still holds for it: the
-  caps, the native name, the execute bit and the native magic on its own
-  bytes. Being listed says nothing about a file that is not, and a list that
+  meaningless, whatever the bytes. It is held to the caps, and it must not be
+  native code, by its name or by the magic of its own bytes. It may carry an
+  execute bit only as a script, bytes that start with `#!`, and no setuid,
+  setgid or sticky bit. Being
+  listed says nothing about a file that is not, and a list that
   is not one of paths refuses every file. The tarball is still needed, since
   only the tarball can say a file is not in it.
 
@@ -112,8 +121,6 @@ defmodule Compatibility.StaticPriv do
   def check(files, tarball, built \\ []) do
     with {:ok, built} <- built_paths(built),
          :ok <- within_caps(Enum.map(files, &{&1.path, byte_size(&1.bytes)})),
-         :ok <- no_native_names(Enum.map(files, & &1.path)),
-         :ok <- not_executable(files),
          {:ok, entries} <- tarball_entries(tarball, Enum.map(files, & &1.path)) do
       Enum.find_value(files, :ok, &refused(judge(&1, entries, built)))
     end
@@ -146,14 +153,23 @@ defmodule Compatibility.StaticPriv do
   end
 
   # A file the package's own compile wrote: the tarball, which was asked for
-  # its path like any other's, must not have it at all.
-  defp written_by_compile(%{path: path, bytes: bytes}, entries) do
-    if Map.has_key?(entries, "priv/" <> path) do
-      {:error,
-       "ships a priv file its compile wrote over one its Hex tarball carries (priv/#{path})",
-       path: path}
-    else
-      native_magic(bytes, path)
+  # its path like any other's, must not have it at all, and the build made
+  # it, so it must not be native code, and an execute bit makes it a script.
+  defp written_by_compile(%{path: path, bytes: bytes, mode: mode}, entries) do
+    cond do
+      Map.has_key?(entries, "priv/" <> path) ->
+        {:error,
+         "ships a priv file its compile wrote over one its Hex tarball carries (priv/#{path})",
+         path: path}
+
+      native_name?(path) or native_magic?(bytes) ->
+        native(path)
+
+      executable?(mode) and not String.starts_with?(bytes, "#!") ->
+        executable(path)
+
+      true ->
+        plain_mode(mode, path)
     end
   end
 
@@ -205,25 +221,13 @@ defmodule Compatibility.StaticPriv do
     Path.extname(name) in @native_extensions or Regex.match?(~r/\.so(\.\d+)+\z/, name)
   end
 
-  defp no_native_names(paths) do
-    case Enum.find(paths, &native_name?/1) do
-      nil -> :ok
-      path -> native(path)
-    end
-  end
-
   defp native(path), do: {:error, "ships native code in priv (priv/#{path})", path: path}
 
   @doc "Whether a file mode has any execute bit."
   @spec executable?(non_neg_integer()) :: boolean()
   def executable?(mode), do: (mode &&& 0o111) != 0
 
-  defp not_executable(files) do
-    case Enum.find(files, &executable?(&1.mode)) do
-      nil -> :ok
-      %{path: path} -> executable(path)
-    end
-  end
+  defp perm(mode), do: mode &&& 0o7777
 
   defp executable(path), do: {:error, "ships an executable priv file (priv/#{path})", path: path}
 
@@ -389,15 +393,14 @@ defmodule Compatibility.StaticPriv do
   defp unchecked,
     do: {:error, "ships priv files that could not be checked against its Hex tarball", []}
 
-  defp same_as_tarball(%{path: path, bytes: bytes}, entries) do
+  defp same_as_tarball(%{path: path, bytes: bytes} = file, entries) do
     case Map.fetch(entries, "priv/" <> path) do
       :error ->
         {:error, "ships a priv file its Hex tarball does not carry (priv/#{path})", path: path}
 
-      {:ok, {:regular, mode, expected}} when is_binary(expected) ->
-        with :ok <- not_executable_in_tarball(mode, path),
-             :ok <- same_bytes(bytes, expected, path) do
-          native_magic(bytes, path)
+      {:ok, {:regular, shipped, expected}} when is_binary(expected) ->
+        with :ok <- same_bytes(bytes, expected, path) do
+          same_mode(file.mode, shipped, path)
         end
 
       {:ok, {_type, _mode, _bytes}} ->
@@ -406,8 +409,22 @@ defmodule Compatibility.StaticPriv do
     end
   end
 
-  defp not_executable_in_tarball(mode, path) do
-    if executable?(mode), do: executable(path), else: :ok
+  # The mode Hex unpacks the entry with is the mode the file must have.
+  defp same_mode(mode, shipped, path) do
+    if perm(mode) == perm(shipped),
+      do: plain_mode(mode, path),
+      else:
+        {:error, "ships a priv file whose mode differs from its Hex tarball's (priv/#{path})",
+         path: path}
+  end
+
+  # A manifest publishes no mode with these bits, nor does a client install one.
+  defp plain_mode(mode, path) do
+    if (mode &&& 0o7000) == 0,
+      do: :ok,
+      else:
+        {:error, "ships a priv file with a setuid, setgid or sticky bit (priv/#{path})",
+         path: path}
   end
 
   defp same_bytes(same, same, _path), do: :ok
@@ -417,9 +434,7 @@ defmodule Compatibility.StaticPriv do
      path: path, expected: sha256(expected), actual: sha256(bytes)}
   end
 
-  defp native_magic(bytes, path) do
-    if Enum.any?(@native_magics, &String.starts_with?(bytes, &1)), do: native(path), else: :ok
-  end
+  defp native_magic?(bytes), do: Enum.any?(@native_magics, &String.starts_with?(bytes, &1))
 
   @doc "The lowercase hex SHA-256 of `bytes`."
   @spec sha256(iodata()) :: String.t()
