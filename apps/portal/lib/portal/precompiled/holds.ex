@@ -255,7 +255,9 @@ defmodule Portal.Precompiled.Holds do
     {:ok, result}
   end
 
-  # The rows of `table` the hold was taken from, `{table, id}` each.
+  # The rows of `table` the hold was taken from, `{table, id}` each. The
+  # SQL is fixed at compile time, `table` one of `@tables` (`sql/2`).
+  # sobelow_skip ["SQL.Query"]
   defp release(table, reason, at) do
     %{rows: others} = Repo.query!(sql(@drop_other_sql, table), [reason, at])
     %{rows: newest} = Repo.query!(sql(@release_sql, table), [reason, at])
@@ -271,6 +273,8 @@ defmodule Portal.Precompiled.Holds do
   every undo that puts firmware builds back.
   """
   @spec reapply([{String.t(), term()}]) :: :ok
+  # `row.table` is one of `@tables`: `served/1` names only those.
+  # sobelow_skip ["SQL.Query"]
   def reapply(touched) do
     touched
     |> served()
@@ -330,6 +334,8 @@ defmodule Portal.Precompiled.Holds do
         }
   end
 
+  # The table names are the two literals below.
+  # sobelow_skip ["SQL.Query"]
   defp counts(touched) do
     {results, pinned} = Enum.split_with(touched, &(elem(&1, 0) == "catalog_system_results"))
 

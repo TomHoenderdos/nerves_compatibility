@@ -188,6 +188,8 @@ defmodule Portal.Precompiled.FirmwareRefusal do
   def withdraw_superseded(package_id, version) when is_binary(package_id) and is_binary(version),
     do: run(Ecto.UUID.dump!(package_id), version)
 
+  # Both statements are module attributes, fixed at compile time.
+  # sobelow_skip ["SQL.Query"]
   defp run(package_id, version) do
     at = DateTime.utc_now()
 
