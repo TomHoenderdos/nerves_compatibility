@@ -351,6 +351,59 @@ defmodule Portal.Workers.IngestIdentityTest do
   # dependencies, and a client is served the one that matches its own lock.
   # The variant is part of what the job asked to build: a result for the
   # other variant would publish files built against another dependency set.
+  # A pass build whose files never reach the files dir (`artifacts_unstaged`)
+  # fails its ingest on every attempt. With no row written, the sweep queued
+  # the same build again on every run: 427 discarded ingests for five
+  # packages in 12 hours on production.
+  describe "a toolchain ingest that runs out of attempts" do
+    defp unstaged(name) do
+      beam = "unstaged-beam-#{name}"
+      replay(toolchain_result(name, "1.0.0", beam), files_dir_with([]))
+      Portal.Catalog.Ingestion.ensure_package_id(name)
+    end
+
+    defp ingest_attempt(args, attempt),
+      do: Ingest.perform(%Oban.Job{args: args, attempt: attempt, max_attempts: 5})
+
+    test "writes an error row on the last attempt, and nothing before it" do
+      name = unique("tcunstaged")
+      unstaged(name)
+      args = toolchain_args(name, "1.0.0")
+
+      capture_log(fn ->
+        assert {:error, {:artifacts_unstaged, [_]}} = ingest_attempt(args, 4)
+      end)
+
+      assert toolchain_rows_of(name) == []
+
+      capture_log(fn ->
+        assert {:error, {:artifacts_unstaged, [_]}} = ingest_attempt(args, 5)
+      end)
+
+      assert [%{status: :error, version: "1.0.0", toolchain: "1.19/28", reason: reason}] =
+               toolchain_rows_of(name)
+
+      assert reason =~ "ingest failed: "
+      assert reason =~ "artifacts_unstaged"
+    end
+
+    test "keeps a pass row of the same identity" do
+      name = unique("tckept")
+      beam = "beam-#{name}"
+      replay(toolchain_result(name, "1.0.0", beam), files_dir_with([beam]))
+      assert :ok = ingest(toolchain_args(name, "1.0.0"))
+
+      unstaged(name)
+
+      capture_log(fn ->
+        assert {:error, {:artifacts_unstaged, [_]}} =
+                 ingest_attempt(toolchain_args(name, "1.0.0"), 5)
+      end)
+
+      assert [%{status: :pass, attempted_at: %DateTime{}}] = toolchain_rows_of(name)
+    end
+  end
+
   describe "a toolchain build's variant" do
     defp variant_args(name, variant) do
       base = %{

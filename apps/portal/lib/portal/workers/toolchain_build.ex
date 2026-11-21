@@ -383,6 +383,21 @@ defmodule Portal.Workers.ToolchainBuild do
 
   defp pinned_ingest_args(ingest_args, _args), do: ingest_args
 
+  @doc """
+  Records an `error` row for the build a toolchain or pinned ingest job
+  (`Portal.Workers.Ingest`, its `args`) names, once that ingest has spent
+  its attempts. A build whose result never ingests otherwise leaves no row,
+  and the sweep queues the same build again on its next run, every 15
+  minutes, for as long as the ingest keeps failing. The row is written as
+  this worker writes one for a build that spent its attempts: a `pass` or
+  `skipped` row of the identity is kept and only records the attempt, and
+  the sweep's day-old-error rule decides when to try again.
+  """
+  @spec record_ingest_failure(map(), String.t()) :: :ok
+  def record_ingest_failure(args, reason) when is_map(args) and is_binary(reason) do
+    write_row(%Oban.Job{args: args}, :error, reason, args["run_id"], args["image_digest"])
+  end
+
   # Best-effort: the row is what keeps the sweep from re-enqueueing the build
   # tomorrow, not the job's result. Failing to write it is logged and the job's
   # own outcome stands. It runs under the identity's lock, as an ingest does

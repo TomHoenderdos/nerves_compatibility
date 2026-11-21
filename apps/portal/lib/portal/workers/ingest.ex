@@ -467,10 +467,25 @@ defmodule Portal.Workers.Ingest do
 
       {:error, reason} ->
         Logger.error("Toolchain ingestion failed for #{run_id}: #{inspect(reason)}")
-        if job.attempt >= job.max_attempts, do: Builder.cleanup(run_id)
+        out_of_attempts(job, run_id, reason)
         {:error, reason}
     end
   end
+
+  # The last attempt of a toolchain or pinned ingest: the output goes, and
+  # the build gets an `error` row, which is what stops the sweep queueing it
+  # again at once (`Portal.Workers.ToolchainBuild.record_ingest_failure/2`).
+  defp out_of_attempts(%Oban.Job{attempt: attempt, max_attempts: max} = job, run_id, reason)
+       when attempt >= max do
+    Builder.cleanup(run_id)
+
+    Portal.Workers.ToolchainBuild.record_ingest_failure(
+      job.args,
+      "ingest failed: " <> inspect(reason, limit: 5, printable_limit: 200)
+    )
+  end
+
+  defp out_of_attempts(_job, _run_id, _reason), do: :ok
 
   # A pinned build (`Ingestion.ingest_pinned/2`), keyed on the job's pinned
   # identity and checked against the job's own set.
@@ -502,7 +517,7 @@ defmodule Portal.Workers.Ingest do
 
       {:error, reason} ->
         Logger.error("Pinned ingestion failed for #{run_id}: #{inspect(reason)}")
-        if job.attempt >= job.max_attempts, do: Builder.cleanup(run_id)
+        out_of_attempts(job, run_id, reason)
         {:error, reason}
     end
   end
