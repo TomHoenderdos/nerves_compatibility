@@ -53,7 +53,7 @@ defmodule NccWorker.Portability.Differential do
   """
 
   alias Compatibility.Portability, as: Reasons
-  alias NccWorker.Portability.{DifferentialBeams, ForeignPriv, ScriptCheck}
+  alias NccWorker.Portability.{Context, DifferentialBeams, ForeignPriv, ScriptCheck}
 
   @gap_ms 1_100
   @hold_problem "varied host reads wait for differential builds"
@@ -185,7 +185,10 @@ defmodule NccWorker.Portability.Differential do
   # the only one it removes.
   # sobelow_skip ["Traversal.FileModule"]
   defp variant(held, project_dir, package, opts, run, name, values) do
+    # The real path: Mix links a build dir's `include`, `priv` and `src` by
+    # relative paths, which a link above the dir (macOS's `/var`) breaks.
     base = Keyword.get_lazy(opts, :differential_root, &System.tmp_dir!/0)
+    base = Context.realpath(base) || base
     dir = Path.join(base, "ncc-dv#{System.unique_integer([:positive])}#{name}")
     first_root = first_root(held.build)
     root = variant_root(dir, first_root)

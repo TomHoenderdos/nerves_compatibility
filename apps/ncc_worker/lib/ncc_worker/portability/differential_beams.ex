@@ -294,16 +294,23 @@ defmodule NccWorker.Portability.DifferentialBeams do
     end
   end
 
+  # A link names the same target when both resolve, from their own dirs, to
+  # the same path: Mix links a build's `priv` to the dependency's sources by
+  # a relative path, whose `..` count follows the build root's depth.
   # sobelow_skip ["Traversal.FileModule"]
   defp same_link(a, b, rel, sub) do
     case {File.read_link(a), File.read_link(b)} do
       {{:ok, t}, {:ok, u}} ->
-        if substitute(u, sub) == t, do: :ok, else: {:differs, "#{rel}: another link target"}
+        if substitute(target(b, u), sub) == target(a, t),
+          do: :ok,
+          else: {:differs, "#{rel}: another link target"}
 
       _ ->
         {:error, "#{rel}: unreadable link"}
     end
   end
+
+  defp target(link, target), do: Path.expand(target, Path.dirname(link))
 
   defp same_file(a, b, sa, sb, rel, sub) do
     with :ok <- same_mode(sa, sb, rel),

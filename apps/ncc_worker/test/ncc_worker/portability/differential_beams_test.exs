@@ -233,6 +233,15 @@ defmodule NccWorker.Portability.DifferentialBeamsTest do
     File.ln_s!(Path.join(ctx.dir, "deps/pkg/priv"), Path.join(variant, "priv"))
     assert DifferentialBeams.compare_app(first, variant, ctx.roots) == :ok
 
+    # A relative link to the same dir from a root of another depth.
+    deep = app(Path.join(ctx.b, "x/y"), beams)
+    File.ln_s!("../../../../../deps/pkg/priv", Path.join(deep, "priv"))
+
+    assert Path.expand("../../../../../deps/pkg/priv", deep) ==
+             Path.join(ctx.dir, "deps/pkg/priv")
+
+    assert DifferentialBeams.compare_app(first, deep, nil) == :ok
+
     File.rm!(Path.join(variant, "priv"))
     File.ln_s!(Path.join(ctx.dir, "deps/other/priv"), Path.join(variant, "priv"))
 
