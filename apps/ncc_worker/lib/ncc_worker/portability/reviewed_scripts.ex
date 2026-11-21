@@ -124,21 +124,7 @@ defmodule NccWorker.Portability.ReviewedScripts do
     with {:ok, tar} <- Rebar.contents_tar(bytes),
          {:ok, table} when length(table) <= @max_files <-
            :erl_tar.table({:binary, tar}, [:verbose]) do
-      members = for entry <- table, do: {member_name(elem(entry, 0)), elem(entry, 1)}
-      scripts = Enum.filter(members, fn {path, _type} -> script?(path) end)
-
-      case Enum.find(scripts, fn {_path, type} -> type != :regular end) do
-        {path, type} ->
-          {:unverified, "#{path} is a #{type} in its tarball"}
-
-        nil when scripts == [] ->
-          {:ok, :none}
-
-        nil ->
-          if List.keymember?(scripts, "rebar.config.script", 0),
-            do: {:ok, :scripted},
-            else: {:ok, :none}
-      end
+      table |> script_entries() |> judge_scripts()
     else
       _ -> {:unverified, "tarball unreadable"}
     end
@@ -147,6 +133,24 @@ defmodule NccWorker.Portability.ReviewedScripts do
   end
 
   def script_members(_bytes), do: {:unverified, "tarball unreadable"}
+
+  defp script_entries(table) do
+    for entry <- table,
+        path = member_name(elem(entry, 0)),
+        script?(path),
+        do: {path, elem(entry, 1)}
+  end
+
+  defp judge_scripts(scripts) do
+    case Enum.find(scripts, fn {_path, type} -> type != :regular end) do
+      {path, type} -> {:unverified, "#{path} is a #{type} in its tarball"}
+      nil -> {:ok, scripted(scripts)}
+    end
+  end
+
+  # Mix evaluates `rebar.config.script` at the root alone.
+  defp scripted(scripts),
+    do: if(List.keymember?(scripts, "rebar.config.script", 0), do: :scripted, else: :none)
 
   defp member_name(name), do: name |> to_string() |> String.trim_leading("./")
 
