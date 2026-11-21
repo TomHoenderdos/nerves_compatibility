@@ -387,7 +387,8 @@ defmodule Portal.Catalog.ModuleIndex do
   end
 
   # The module names our passing builds of the package wrote (R3-5b), any
-  # version: a module a macro defines, or a leex/yecc file's.
+  # version and every config_variant (each one's modules count): a module a
+  # macro defines, or a leex/yecc file's.
   defp manifest_modules(name) do
     %{rows: rows} =
       Repo.query!(
@@ -446,6 +447,7 @@ defmodule Portal.Catalog.ModuleIndex do
 
   # --- recheck (R3-5a) ---------------------------------------------------------
 
+  # Every served row, of every toolchain config_variant: each is served.
   @recheck_kinds [
     {"toolchain_build", "catalog_toolchain_builds", "t.revoked_at IS NULL AND t.status = 'pass'",
      "revoked_at", "revoked_reason"},
