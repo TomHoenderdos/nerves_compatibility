@@ -20,7 +20,9 @@ defmodule Portal.Catalog.SkipReasons do
       evaluates rebar.config.script", "rebar3 build uses platform_define";
     * R3 taint, `"closure dependency observed the host: <app> (<its own
       reason>)"`, whose inner reason is classified the same way and whose
-      `<app>` is the `blocker`;
+      `<app>` is the `blocker`; a natively built dependency whose native
+      side could not be set apart (`"native build not set apart: <why>"`,
+      `judge.native_side`) is native code;
     * a closure Mix cannot build: `"Package uses gleam build tool"` (a
       full run's Gleam skip, and `NccWorker.Gleam`'s for a toolchain
       build) and `"dependency uses gleam build tool: <apps>"`, whose first
@@ -86,6 +88,7 @@ defmodule Portal.Catalog.SkipReasons do
   @elixir_patch "compile-time Elixir patch dependence: "
   @natively_built "calls natively built dependency at compile time: "
   @native_lib "compile-time native library load: "
+  @native_side "native build not set apart: "
 
   # The mfas whose call is a read of the environment (`Events` puts the
   # variable's name after the mfa when the trace saw it).
@@ -152,6 +155,7 @@ defmodule Portal.Catalog.SkipReasons do
   defp own("calls a NIF or port driver"), do: {:native_code, nil}
   defp own(@natively_built <> mfa), do: {:native_code, first_token(mfa)}
   defp own(@native_lib <> _path), do: {:native_code, "native library load"}
+  defp own(@native_side <> _why), do: {:native_code, "native build not set apart"}
   defp own("rebar3 build runs " <> key), do: {:build_hooks, key}
 
   defp own("rebar3 build evaluates rebar.config.script"),

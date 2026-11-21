@@ -57,6 +57,13 @@ defmodule Portal.Catalog.SkipReasonsTest do
 
     assert SkipReasons.classify("calls a NIF or port driver") == c(:native_code)
     assert SkipReasons.classify("compile-time native library load: /x/y.so").class == :native_code
+
+    # S3 native side: a dependency whose native build could not be set apart.
+    assert SkipReasons.classify(
+             "closure dependency observed the host: exqlite (native build not set apart: " <>
+               "source tree is not its verified tarball's)"
+           ) == %{class: :native_code, detail: "native build not set apart", blocker: "exqlite"}
+
     assert SkipReasons.classify("calls os:cmd/1") == c(:other, "os:cmd/1")
     assert SkipReasons.classify("beam scan incomplete") == c(:could_not_judge)
 

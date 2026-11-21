@@ -533,6 +533,25 @@ no judge revision: `compile_observations.trace_stats.foreign_priv` records `"on"
 when the flag came but the gate stayed shut, and is absent without the flag, so a verdict judged without it is
 today's byte for byte.
 
+`"judge": {"native_side": true}` in `NCC_INPUT` (portal `NCC_JUDGE_NATIVE_SIDE=1`) sets a natively built closure
+dependency's native side apart from its beams on the toolchain judge, for the toolchain compile, a pinned toolchain
+compile and the deterministic sibling. In a closure dependency's window, never the package's, the reviewed native
+build tool's own activity (elixir_make's compiler and cc_precompiler, its precompiler: their host reads, `make`, the
+download, their cache dir and `priv`) is a `native_build` observation instead of a refusal or a compile input, as a
+firmware target's trace already treats it; an integrity call and an env or application-env write from their frame
+still refuse, and a package fun they run is the dependency's own code. Such a dependency is clean only when its beams
+are shown to be its sources' alone: Mix built it, no closure NIF was mapped by its window's close, its source tree is
+exactly its verified tarball's after the compile, every beam in its ebin was compiled from that tree and every
+checksum file the tool evaluates is a literal map; else its taint is `native build not set apart: <why>` (or the
+native library load), which withdraws nothing. A dependent's reads of its beams then follow revision 15's rule (a
+library of OTP's own mapped in its window, a download's `crypto`, allowed); a read of any other file in its ebin, a
+call into it and a read of its `priv` refuse as before. The same flag reads rule 2's target and native-tool grep finer
+(`NccWorker.BuildCache.dep_target_agnostic_rule2?/4`): `erlang:function_exported('Elixir.Mix', F, A)` for an `F`
+other than `target` and a bare `alias Mix` are no target reads, and for the package under test an Erlang `.erl`/`.hrl`
+file runs nothing at compile time unless the package names a parse or core transform, and a native tool its `mix.exs`
+names only as dependency tuples is not its native build. It bumps no judge revision:
+`compile_observations.trace_stats.native_side` records `"on"` or `"off"` on every toolchain verdict.
+
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's
 `contents.tar.gz` members, byte for byte, apart from the root files Hex writes (`.hex`, `hex_metadata.config`) and a
