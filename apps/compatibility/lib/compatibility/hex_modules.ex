@@ -99,15 +99,7 @@ defmodule Compatibility.HexModules do
         {:error, :source_too_large}
 
       String.ends_with?(name, ".ex") ->
-        case elixir_modules(body) do
-          {:ok, modules} ->
-            {:ok, modules, used + byte_size(body)}
-
-          :error ->
-            if String.starts_with?(name, "lib/"),
-              do: {:error, {:unparsed, name}},
-              else: {:ok, [], used}
-        end
+        elixir_source(name, body, used)
 
       String.ends_with?(name, ".erl") ->
         {:ok, erlang_modules(body), used + byte_size(body)}
@@ -117,6 +109,20 @@ defmodule Compatibility.HexModules do
 
       true ->
         {:ok, [], used}
+    end
+  end
+
+  # A `.ex` file outside `lib/` that does not parse defines nothing; one in
+  # `lib/` makes the tarball unreadable.
+  defp elixir_source(name, body, used) do
+    case elixir_modules(body) do
+      {:ok, modules} ->
+        {:ok, modules, used + byte_size(body)}
+
+      :error ->
+        if String.starts_with?(name, "lib/"),
+          do: {:error, {:unparsed, name}},
+          else: {:ok, [], used}
     end
   end
 

@@ -530,24 +530,7 @@ defmodule Portal.Catalog.ModuleIndex do
 
     {:ok, :ok} =
       Repo.transaction(fn ->
-        for {kind, id, refusal} <- found do
-          {^kind, table, _served, at, reason_col} = List.keyfind(@recheck_kinds, kind, 0)
-          set = if reason_col, do: "#{at} = now(), #{reason_col} = $2", else: "#{at} = now()"
-
-          Repo.query!(
-            "UPDATE #{table} SET #{set}, updated_at = now() WHERE id = $1 AND #{at} IS NULL",
-            if(reason_col, do: [Ecto.UUID.dump!(id), reason], else: [Ecto.UUID.dump!(id)])
-          )
-
-          Repo.query!(
-            """
-            INSERT INTO catalog_module_index_withheld (generation, kind, row_id, withheld_at, reason)
-            VALUES ($1, $2, $3, now(), $4) ON CONFLICT DO NOTHING
-            """,
-            [generation, kind, Ecto.UUID.dump!(id), refusal]
-          )
-        end
-
+        Enum.each(found, &withhold_row(&1, generation, reason))
         :ok
       end)
 
@@ -556,6 +539,24 @@ defmodule Portal.Catalog.ModuleIndex do
         Logger.warning(
           "module index: recheck of generation #{generation} withheld #{length(found)} rows"
         )
+  end
+
+  defp withhold_row({kind, id, refusal}, generation, reason) do
+    {^kind, table, _served, at, reason_col} = List.keyfind(@recheck_kinds, kind, 0)
+    set = if reason_col, do: "#{at} = now(), #{reason_col} = $2", else: "#{at} = now()"
+
+    Repo.query!(
+      "UPDATE #{table} SET #{set}, updated_at = now() WHERE id = $1 AND #{at} IS NULL",
+      if(reason_col, do: [Ecto.UUID.dump!(id), reason], else: [Ecto.UUID.dump!(id)])
+    )
+
+    Repo.query!(
+      """
+      INSERT INTO catalog_module_index_withheld (generation, kind, row_id, withheld_at, reason)
+      VALUES ($1, $2, $3, now(), $4) ON CONFLICT DO NOTHING
+      """,
+      [generation, kind, Ecto.UUID.dump!(id), refusal]
+    )
   end
 
   @doc """
@@ -569,25 +570,27 @@ defmodule Portal.Catalog.ModuleIndex do
 
     {:ok, counts} =
       Repo.transaction(fn ->
-        for {kind, table, _served, at, reason_col} <- @recheck_kinds, into: %{} do
-          match = if reason_col, do: "AND t.#{reason_col} = $2", else: "AND $2::text IS NOT NULL"
-          clear = if reason_col, do: "#{at} = NULL, #{reason_col} = NULL", else: "#{at} = NULL"
-
-          %{num_rows: n} =
-            Repo.query!(
-              """
-              UPDATE #{table} t SET #{clear}, updated_at = now()
-              FROM catalog_module_index_withheld w
-              WHERE w.generation = $1 AND w.kind = $3 AND w.row_id = t.id
-                AND t.#{at} IS NOT NULL #{match}
-              """,
-              [generation, reason, kind]
-            )
-
-          {kind, n}
-        end
+        Map.new(@recheck_kinds, &undo_kind(&1, generation, reason))
       end)
 
     counts
+  end
+
+  defp undo_kind({kind, table, _served, at, reason_col}, generation, reason) do
+    match = if reason_col, do: "AND t.#{reason_col} = $2", else: "AND $2::text IS NOT NULL"
+    clear = if reason_col, do: "#{at} = NULL, #{reason_col} = NULL", else: "#{at} = NULL"
+
+    %{num_rows: n} =
+      Repo.query!(
+        """
+        UPDATE #{table} t SET #{clear}, updated_at = now()
+        FROM catalog_module_index_withheld w
+        WHERE w.generation = $1 AND w.kind = $3 AND w.row_id = t.id
+          AND t.#{at} IS NOT NULL #{match}
+        """,
+        [generation, reason, kind]
+      )
+
+    {kind, n}
   end
 end
