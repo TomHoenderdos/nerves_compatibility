@@ -531,8 +531,26 @@ defmodule Compatibility.RelocationTest do
   # derives one such value; at the worker's three roots (under this test's
   # tmp dir) each must refuse at the second root or the third.
   describe "derived values at the worker's three roots" do
+    # The probes below test the path for words such as "/home/" and
+    # "/Users/", so the roots' common prefix must hold none of them. ExUnit's
+    # tmp_dir lies under the checkout, which on a CI runner is under
+    # /home/runner: every probe would then answer alike at all three roots.
+    setup do
+      base = Path.join("/tmp", "ncc-relocation-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(base)
+      # The real path (macOS's /tmp is a link to /private/tmp), so a compile
+      # that cds into a root sees the same prefix it was given.
+      base = File.cd!(base, &File.cwd!/0)
+      on_exit(fn -> File.rm_rf!(base) end)
+
+      for word <- ["/home/", "/Users/", " ", ".cache/mix/installs", "/nix/store/"],
+          do: refute(String.contains?(base, word))
+
+      %{roots_base: base}
+    end
+
     defp at_worker_roots(ctx, name, body) do
-      base = Path.join(ctx.tmp_dir, "r")
+      base = Path.join(ctx.roots_base, "r")
       first = Path.join(base, "work/proj")
       second = Relocation.second_layout(Path.join(base, "home/ncc-relocate"), 7)
       third = Relocation.third_layout(Path.join(base, "Users"), 7)
@@ -615,7 +633,7 @@ defmodule Compatibility.RelocationTest do
     end
 
     test "a length limit between the first root and the others refuses", ctx do
-      limit = byte_size(Path.join(ctx.tmp_dir, "r/work/proj/deps/fx/lib")) + 5
+      limit = byte_size(Path.join(ctx.roots_base, "r/work/proj/deps/fx/lib")) + 5
 
       body = """
       @short byte_size(__DIR__) < #{limit}
