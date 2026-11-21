@@ -8,9 +8,19 @@ defmodule Portal.Repo.Migrations.AddSystemResultDeclaredAbsent do
 
   use Ecto.Migration
 
-  def change do
+  def up do
+    execute("SET LOCAL lock_timeout = '5s'")
+
     alter table(:catalog_system_results) do
-      add :declared_absent, :map
+      add(:declared_absent, :map)
+    end
+  end
+
+  def down do
+    execute("SET LOCAL lock_timeout = '5s'")
+
+    alter table(:catalog_system_results) do
+      remove(:declared_absent)
     end
   end
 end
