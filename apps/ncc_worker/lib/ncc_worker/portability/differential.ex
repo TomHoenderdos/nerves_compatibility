@@ -9,33 +9,36 @@ defmodule NccWorker.Portability.Differential do
   `NccWorker.Portability.Events` observes those reads as `varied_reads`
   instead of refusing them, carrying the refusal each would be: the
   scheduler count (`system_info(schedulers_online | schedulers)`) and HOME
-  (`init:get_argument(home)`) anywhere, the plain arguments only outside
-  every window (Mix evaluating a rebar3 dependency's `rebar.config.script`).
-  Then:
+  (`init:get_argument(home)`) anywhere, the plain arguments only as Mix's
+  evaluation of a rebar3 dependency's `rebar.config.script` reads them
+  (outside every window, the tracer's `rebar_script` flag). Then:
 
     * `hold/2` turns a passing verdict with any of them into a
       could-not-judge that carries what the pass would have said
-      (`differential`), so a caller that judges a trace alone never
-      publishes it. A verdict `PrivRepro` holds as well is could-not-judge
-      for good: the two are not settled together;
+      (`differential`), and what its compile read, so a caller that judges
+      a trace alone never publishes it. A verdict `PrivRepro` holds as well
+      is could-not-judge for good: the two are not settled together;
     * `settle/6` (`NccWorker.Portability.run/3`) first runs the script
       check when a read was of the plain arguments
-      (`NccWorker.Portability.ScriptCheck`: in Mix VMs in the run's
-      project, every scripted dependency's config reproduces the first
-      build's `mix.rebar.config` and stays the same under the arguments
-      its own literals and a Mix user's words name, but for `deps`); with
-      no such dependency the read refuses;
+      (`NccWorker.Portability.ScriptCheck`, one wall budget: in Mix VMs in
+      the run's project, every scripted dependency's config reproduces the
+      first build's `mix.rebar.config` and stays the same under the
+      arguments its own literals and a Mix user's words name, but for
+      `deps`); with no such dependency the read refuses;
     * then two variant builds, each the traced judge compile of the
-      package's closure at a build root of its own (of the first build
-      root's length where one fits, so a root in a literal reads as the
-      first's), after a gap of a little over a second, with its own trace
-      dir, and with the varied values at either end of their domain: `low`
-      with `+S 1:1`, a short HOME (`/tmp/h<4 hex>`, shorter than
-      `/home/nerves`) and no extra plain arguments, `high` with `+S 251:251`
-      (a prime: parity and a power-of-two test differ from 1's), a long HOME
-      and the Mix and rebar3 command words a Mix
-      user's command line can hold (`ScriptCheck.words/0`). Each must pass the judge, its
-      own varied reads held as the first's were;
+      package's closure at a fresh build root of a random name (made
+      exclusively, of the first build root's length where one fits, so a
+      root in a literal reads as the first's, and still empty once the
+      container is swept), after a gap of a little over a second, with its
+      own trace dir, and with the varied values at either end of their
+      domain: `low` with `+S 1:1`, a short HOME (`/tmp/h<4 hex>`, shorter
+      than `/home/nerves`) and no extra plain arguments, `high` with
+      `+S 251:251` (a prime: parity and a power-of-two test differ from
+      1's), a long HOME and the command words a Mix user's line can hold
+      (`ScriptCheck.words/0`). Each must pass the judge, its own varied
+      reads held as the first's were, and read nothing the first build did
+      not (review B1: a compile input, config item, varied read, or env or
+      config read, by what it names, never its value);
     * the package's app in each must be the first build's
       (`NccWorker.Portability.DifferentialBeams.compare_app/3`), and the
       first build must hash the same before the check and after the last
@@ -44,16 +47,20 @@ defmodule NccWorker.Portability.Differential do
   Then the verdict is the pass it held, with `observations["differential"]`
   (the reads, the variants, the scripts checked) and
   `trace_stats["differential"]` `"same"`. A different app, a variant that
-  refused or a script whose config differs refuses: the reason is the first
-  read's own refusal, then what differed, so it stays the host read it was.
-  A variant that did not finish is transient could-not-judge
-  (`"not_finished"`), anything else that could not be judged is
-  `"not_judged"`. Variant dirs are removed either way. Never raises.
+  refused or read more, or a script whose config differs refuses: the
+  reason is the first read's own refusal, then what differed, so it stays
+  the host read it was. A variant that did not finish is transient
+  could-not-judge (`"not_finished"`), anything else that could not be
+  judged is `"not_judged"`. Variant dirs are removed either way. Never
+  raises.
 
   No finite set of values proves a value cannot reach a build: a test
   against one value (`n == 12`) differs only there. Two variants at the
   ends of the domain catch a value copied into the output and every
-  monotone use of it, which is what this route is limited to.
+  monotone use of it, and 1 against a prime catches parity and a
+  power-of-two test. The values move together (low, low; high, high), so a
+  condition pairing one read's low end with another's high end is not
+  tried; nor is a HOME of one exact value or prefix.
   """
 
   alias Compatibility.Portability, as: Reasons
