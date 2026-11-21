@@ -855,8 +855,10 @@ What it lists:
   "relocation": {
     "deps": "/work/proj/deps",
     "build": "/work/proj/_build/host",
-    "second": {"deps": "/tmp/ncc-relocate-<n>/Second Root.d/.../Deps vendored_d",
-               "build": "/tmp/ncc-relocate-<n>/Second Root.d/.../Out.Build-3/Host 4"},
+    "second": {"deps": "/home/nerves/.cache/mix/installs/.../ncc-relocate-<n>/.../app/deps",
+               "build": "/home/nerves/.cache/mix/installs/.../ncc-relocate-<n>/.../app/out.d/host-1"},
+    "third": {"deps": "/Users/Ncc-Relocate <n>/Library/Mobile Documents/.../Deps vendored_d",
+              "build": "/Users/Ncc-Relocate <n>/Library/Mobile Documents/.../Build-3/Host 4"},
     "files": [
       {"path": "ebin/Elixir.Fine.beam",
        "occurrences": [{"chunk": "LitT", "index": 3, "term": [], "kind": "binary",
@@ -867,8 +869,10 @@ What it lists:
 
   `deps` and `build` are the first compile's `Mix.Project.deps_path/0` and `build_path/0`, the
   worker's `/work/proj/deps` and `/work/proj/_build/host`; `second` the second compile's, under
-  `/tmp/ncc-relocate-<n>` (`Compatibility.Relocation.second_layout/1`). The portal stores no
-  record whose roots are not these (`pinned_problem/1`). Each file is a beam of the entry's
+  `/home/nerves/.cache/mix/installs` (`Compatibility.Relocation.second_layout/2`), and `third`
+  the third compile's, under `/Users` (`third_layout/2`), both of run token `<n>`. The portal
+  stores no record whose roots are not these (`pinned_problem/1`), and client 0.9.0 holds every
+  record to the same layout, copied into its own source. Each file is a beam of the entry's
   `ebin`, and each occurrence names its chunk (`LitT`, `AtU8`, `Attr`, `Line`), the literal's
   index from 0, the atom's from 1 or the line table's file name's from 0, the path to the value
   inside the term (element indices of tuples and lists, a proper list's tail at its length, a map
@@ -876,44 +880,56 @@ What it lists:
   the value as a template, text and slot names (`deps`, `build`) in turn, the text UTF-8 and each
   value at most 4 KiB. A record over 256 KiB of JSON is refused.
 
-  The builder (`NccWorker.Portability.Relocate`) builds the package a second time at a root unlike
-  the first in every property a path the client accepts can have: long and deep where the first
-  is short and shallow, with a space, upper case, a dot, a dash and digits where the first has
-  none, an underscore in the deps path where the first has none and none in the build path where
-  the first has one, another project dir name, and the deps path sorted before the build path
-  where the first sorts it after. It keeps the build only when each held app's beams, and the
-  package's own whether it was held or not, relocated to the second build's paths are the second
-  build's chunk for chunk but `CInf`, `Dbgi` and `Docs` (`Compatibility.Relocation.prove/4`); a
-  path in a built binary, a hashed, measured or sliced one, one in a map key, a protocol that
-  holds one, a value a dependent took from a held app (its md5 too) and anything else the rewrite
-  would not reproduce refuse. A dependent's call into a held module, its read of that module's
-  beam, md5, attributes or compile info, taints it. The residual is a value the compile derived
-  from the path that is equal at both roots and at the client's path: the client relocates only to
-  paths inside the envelope the two roots span (below), so a test of a path's length, depth or
-  characters that both roots pass, the path inside the envelope passes too, but a predicate both
-  roots share by chance and the client's path does not (one letter in both roots that the
-  client's path lacks) is not seen. Today R2 refuses every build whose beams hold the path, so
-  this residual is new exposure, for relocated builds only. `Dbgi` keeps the first build's
-  paths: a tool that compiles a module again from its debug info (`:cover` on a dependency, the
-  debugger) sees them, as in every served build.
+  The builder (`NccWorker.Portability.Relocate`) builds the package again at two more roots, the
+  third only when the package's own beams hold the path. The three differ in length and depth,
+  case, spaces, project dir name and the order of the deps and build paths, and hold between
+  them the words user paths hold: a home's `.cache/mix/installs`, `/Users/`, `Library`,
+  `Projects`, `projects`, `src`, `code`, `app`, `nix/store`, a dot-dir, `@` and `~`. It keeps the
+  build only when, at each extra root, each held app's beams, and the package's own whether it
+  was held or not, relocated to that root's paths are that build's chunk for chunk but `CInf`,
+  `Dbgi` and `Docs` (`Compatibility.Relocation.prove_ebin/4`), and every closure app's source and
+  build dirs list the same files as the first build's (a native build tool that split a path at
+  a space and put its output elsewhere refuses, so such a build never passes with a missing
+  file). A path in a built binary, a hashed, measured or sliced one, one in a map key, a protocol
+  that holds one, a value a dependent took from a held app (its md5 too) and anything else the
+  rewrite would not reproduce refuse. A dependent's call into a held module, its read of that
+  module's beam, md5, attributes or compile info, taints it.
 
-  The portal stores a relocated build's files in its own `relocated_file_manifest` column, with
-  `file_manifest` nil, and the worker writes `toolchain_build.relocated_file_manifest` with
-  `file_manifest` nil: a portal before S4 reads `file_manifest` alone, so it lists, serves and
-  keeps as an earlier build nothing of a relocated build. Listed only while the portal's
-  `relocated_enabled` setting is on, and only when every file the entry lists is held; absent
-  otherwise, so a version without relocated builds renders the bytes it always did. The files of
-  a relocated build are served only while the setting is on, and its own package's name on the
-  withheld list withholds it whatever it records.
+  The residual, what the three roots cannot show: a compile-time test of the path against a
+  constant that none of the three roots contains (a prefix such as `/opt/` or `/srv/`, a word no
+  root holds), or any test that answers the same at all three roots and differently at the
+  user's path. The client relocates only to paths inside the envelope the three roots span
+  (below), which bounds tests of a path's length, depth and characters, not tests of which words
+  it holds. Today R2 refuses every build whose beams hold the path, so this residual is new
+  exposure, for relocated builds only. `Dbgi` keeps the first build's paths: a tool that compiles
+  a module again from its debug info (`:cover` on a dependency, the debugger) sees them, as in
+  every served build.
+
+  Two portal settings, both off by default and both on the admin Maintenance page, so turning
+  either on is a setting, not a deploy: `relocate_builds_enabled` sends `judge.relocate` to the
+  worker (`Portal.Builder` then also binds a per-run scratch dir at `/Users` for the third root),
+  and `relocated_enabled` serves what such builds made. The portal stores a relocated build's
+  files in its own `relocated_file_manifest` column, with `file_manifest` nil, and the worker
+  writes `toolchain_build.relocated_file_manifest` with `file_manifest` nil: a portal before S4
+  reads `file_manifest` alone, so it lists, serves and keeps as an earlier build nothing of a
+  relocated build (and its backlog builds such a pass with no files again once it is due).
+  Listed only while `relocated_enabled` is on, and only when every file the entry lists is held;
+  absent otherwise, so a version without relocated builds renders the bytes it always did. The
+  files of a relocated build are served only while the setting is on, and its own package's name
+  on the withheld list withholds it whatever it records. The coverage numbers on `/admin` count a
+  relocated pass apart, not as served.
 
   A client takes one only on OTP 28 or later (`relocated_otp`), on a unix host whose file names
   are UTF-8, when its project's deps path and build path are absolute, normalised and real all
   the way down, no symlink in either (`relocated_paths`), printable ASCII
   (`relocated_path_ascii`), every component spelled exactly as its parent dir lists it, with no
   case folding or Unicode normalisation (`relocated_path_spelling`), and each inside the envelope
-  of the record's two roots for its slot: its characters among theirs, its length and depth
-  between theirs (`relocated_path_envelope`). After staging and verifying the served files it
-  derives every beam's occurrences of the record's paths itself and requires them to be exactly
+  of the record's three roots for its slot: its characters among theirs, its length and depth
+  between their least and greatest (`relocated_path_envelope`). It refuses (`relocation_refused`)
+  a record whose three roots are not the builder's own layout. After staging and verifying the
+  served files it requires every beam's `CInf` `source` to lie in the package's dir under the
+  record's `deps` path, derives every beam's occurrences of the record's paths itself and
+  requires them to be exactly
   the record's (none for a beam it does not name), requires every other file of the entry to hold
   no such path, and rewrites each occurrence to its own paths as its own compile would have
   written it: a changed literal is `term_to_binary(term, [{:minor_version, 2}, :deterministic])`

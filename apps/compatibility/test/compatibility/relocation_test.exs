@@ -320,6 +320,31 @@ defmodule Compatibility.RelocationTest do
       end
     end
 
+    # The client re-review's R1: client 0.9.0 holds every record to the
+    # same roots, copied into its own source (`Precompiled.Relocate`); its
+    # test pins this literal too, so a change here fails there until both
+    # move together.
+    test "pinned_record/1 is the literal client 0.9.0 ships" do
+      first = "/home/nerves/.cache/mix/installs/elixir-1.20.5-erts-16.4.0.2/ncc-relocate-7"
+      second = first <> "/nix/store/src/code/projects/x_y@z~0.d/app"
+
+      third =
+        "/Users/Ncc-Relocate 7/Library/Mobile Documents/ABCDEFGHIJKLMNOPQRSTUVWXYZ/" <>
+          "0123456789/abcdefghijklmnopqrstuvwxyz/Long Relocation.Path-0123456789 " <>
+          "ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz/x/Y/z-0/Projects/" <>
+          "The Relocated.Project-2"
+
+      assert Relocation.pinned_record(7) == %{
+               "deps" => "/work/proj/deps",
+               "build" => "/work/proj/_build/host",
+               "second" => %{"deps" => second <> "/deps", "build" => second <> "/out.d/host-1"},
+               "third" => %{
+                 "deps" => third <> "/Deps vendored_d",
+                 "build" => third <> "/Build-3/Host 4"
+               }
+             }
+    end
+
     test "a record over 256 KiB of JSON is refused" do
       occ = fn i ->
         %{
