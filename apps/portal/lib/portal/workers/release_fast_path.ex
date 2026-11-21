@@ -78,12 +78,15 @@ defmodule Portal.Workers.ReleaseFastPath do
   end
 
   # The builds that lock each offered package at another version than its
-  # newest: one pass over the passing builds for every name at once.
+  # newest: one pass over the passing builds for every name at once. Only
+  # default config builds count the dependents, so a package with named
+  # config variants counts once; the rebuild takes the variants too.
   @dependents_sql """
   SELECT r.name, r.version
   FROM unnest($1::text[], $2::text[]) AS r(name, version)
   JOIN catalog_toolchain_builds t ON t.deps_lock ? r.name
   WHERE t.status = 'pass' AND t.revoked_at IS NULL AND t.builder_version = $3
+    AND t.config_variant = 'default'
     AND t.toolchain = ANY($4::text[])
     AND jsonb_typeof(t.deps_lock) = 'object'
     AND t.deps_lock -> r.name ->> 'version' IS DISTINCT FROM r.version
