@@ -128,8 +128,10 @@ defmodule NccWorker.Portability.Events do
       `Context.differential`): a host read refusal of the scheduler count
       (`system_info(schedulers_online | schedulers)`) or of HOME
       (`init:get_argument(home)`) anywhere, or of the plain arguments
-      outside every window (Mix evaluating a rebar3 dependency's
-      `rebar.config.script`), is observed as `varied_reads`, carrying the
+      outside every window in the shape Mix's evaluation of a rebar3
+      dependency's `rebar.config.script` has (a dispatcher stack, no user
+      frame, erl_eval first, the tracer's `rebar_script` flag), is observed
+      as `varied_reads`, carrying the
       refusal it would be, for `NccWorker.Portability.Differential` to
       settle; a `mix.exs` read stays R4's. A stat of the empty path
       (`File.exists?("")`) is ignored: `enoent` on every host.
@@ -353,9 +355,10 @@ defmodule NccWorker.Portability.Events do
   # variant build changes is observed as `varied_reads` instead, carrying
   # the refusal it would be, for the variants to settle. A dependency's
   # `mix.exs` read stays R4's (its refusal says "in mix.exs"). The scheduler
-  # count and HOME anywhere; the plain arguments only outside every window,
-  # where Mix evaluates a rebar3 dependency's `rebar.config.script` (a
-  # compile can test them against a literal no variant guesses).
+  # count and HOME anywhere; the plain arguments only as Mix's evaluation of
+  # a rebar3 dependency's `rebar.config.script` reads them, outside every
+  # window (a compile, or a helper a mix.exs loads, can test them against a
+  # literal no variant guesses).
   defp varied({:refuse, @host_read_prefix <> _ = reason} = refusal, event, ctx, owner) do
     case ctx.differential && varied_read(event, owner) do
       read when is_binary(read) ->
@@ -376,7 +379,21 @@ defmodule NccWorker.Portability.Events do
   defp varied_read(%{"mfa" => "init:get_argument/1", "arg" => %{"name" => "home"}}, _owner),
     do: "home"
 
-  defp varied_read(%{"mfa" => "init:get_plain_arguments/0"}, :outside), do: "plain_args"
+  # Review B3: only the shape Mix's evaluation of a rebar.config.script has:
+  # a dispatcher stack, no user frame, erl_eval first, and the tracer's
+  # `rebar_script` flag (`:ncc_tracer_stack.rebar_script_read/2`).
+  defp varied_read(
+         %{
+           "mfa" => "init:get_plain_arguments/0",
+           "extent" => "dispatcher",
+           "user" => nil,
+           "first" => %{"module" => "erl_eval"},
+           "arg" => %{"rebar_script" => true}
+         },
+         :outside
+       ),
+       do: "plain_args"
+
   defp varied_read(_event, _owner), do: nil
 
   defp channel("os_identity", event, _ctx, _owner) do

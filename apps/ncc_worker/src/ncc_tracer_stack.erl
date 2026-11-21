@@ -7,7 +7,7 @@
          made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1,
          code_loading/1, code_loading/2, code_loading_shapes/1,
          code_loading_read/4, code_loading_read/5, wrappers/0, attribute_lookup/2,
-         attribute_lookup_frames/0, made_by_package/2]).
+         attribute_lookup_frames/0, made_by_package/2, rebar_script_read/2]).
 
 -include("ncc_code_loading_shapes.hrl").
 
@@ -546,6 +546,27 @@ code_loading_shapes(Release) ->
 %% MFAs. prim_file:get_cwd/0 is never one: no pinned shape has absname/1 on
 %% top. The beam read itself (prim_file:read_file/1) is never one either: it
 %% is judged as a read.
+%% A read made by the code of a rebar.config.script Mix evaluates while it
+%% loads the dependencies (Mix.Rebar.eval_script/2, which runs file:script/2
+%% under File.cd!/2; Elixir 1.19 and 1.20): every frame from the read down to
+%% Mix's eval_script/2 is the toolchain's interpreted script code (erl_eval,
+%% file's script evaluation, a nested file:script/2 of the script's own,
+%% File.cd!/2), and eval_script/2 itself the toolchain's. Any other frame in
+%% between (a fun a list function runs, a helper module) is no such read.
+%% Only a flag: NccWorker.Portability.Events decides (differential builds).
+rebar_script_read([{'Elixir.Mix.Rebar', eval_script, A, _} | _], IsToolchain)
+  when A =:= 2; is_list(A), length(A) =:= 2 ->
+    IsToolchain('Elixir.Mix.Rebar') =:= true;
+rebar_script_read([{M, F, _A, _} | Rest], IsToolchain) ->
+    script_frame(M, F) andalso IsToolchain(M) =:= true andalso
+        rebar_script_read(Rest, IsToolchain);
+rebar_script_read(_Stack, _IsToolchain) -> false.
+
+script_frame(erl_eval, _F) -> true;
+script_frame(file, F) -> lists:member(F, [script, path_script, eval_stream, eval_stream2]);
+script_frame('Elixir.File', 'cd!') -> true;
+script_frame(_M, _F) -> false.
+
 code_loading_read(M, F, Args, Stack) ->
     code_loading_read(M, F, Args, Stack, erlang:system_info(otp_release)).
 

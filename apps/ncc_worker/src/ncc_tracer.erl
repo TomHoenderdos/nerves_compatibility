@@ -1111,7 +1111,8 @@ classified(M, F, Args, {user, _, _, _} = Extent, Info, Stack, St) ->
                 {true, _} -> mix_state_entry(M, F, Args, Extent, Info, Stack, St);
                 {false, true} -> mix_entry(M, F, Args, Extent, Info, Stack, St);
                 {false, false} ->
-                    Class = code_load(probed(channel(M, F, Args, St), Stack), M, F, Args, Stack),
+                    Class = rebar_script(code_load(probed(channel(M, F, Args, St), Stack),
+                                                   M, F, Args, Stack), M, F, Args, Stack),
                     record(Class, Extent, Info, St)
             end
     end.
@@ -1134,6 +1135,17 @@ code_load({Channel, Arg} = Class, M, F, Args, Stack)
         _ -> Class
     end;
 code_load(Class, _M, _F, _Args, _Stack) -> Class.
+
+%% The plain arguments read by the code of a rebar.config.script Mix
+%% evaluates (ncc_tracer_stack:rebar_script_read/2), judged on the full stack
+%% (before frames/4 cuts it): only a flag, which differential builds take
+%% (NccWorker.Portability.Events). A stack this cannot take apart sets none.
+rebar_script({Channel, Arg} = Class, init, get_plain_arguments, [], Stack) when is_map(Arg) ->
+    case (try ncc_tracer_stack:rebar_script_read(Stack, fun toolchain/1) catch _:_ -> false end) of
+        true -> {Channel, Arg#{rebar_script => true}};
+        false -> Class
+    end;
+rebar_script(Class, _M, _F, _Args, _Stack) -> Class.
 
 %% A read of Mix state (ncc_tracer_channels mix_state/3) marks only when Mix
 %% did not make it. A target read is Mix's only when one of the Mix

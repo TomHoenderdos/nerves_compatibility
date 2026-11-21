@@ -2166,8 +2166,8 @@ defmodule NccWorker.Portability.EventsTest do
     # Without the flag nothing changes.
     defp differential(ctx), do: %{ctx | differential: true}
 
-    defp plain_args(owner_extent) do
-      ev("env", "init:get_plain_arguments/0", %{},
+    defp plain_args(owner_extent, arg \\ %{"rebar_script" => true}) do
+      ev("env", "init:get_plain_arguments/0", arg,
         extent: owner_extent,
         first: {"erl_eval", "do_apply", 7},
         user: nil
@@ -2237,6 +2237,43 @@ defmodule NccWorker.Portability.EventsTest do
                  differential(ctx),
                  "pkg"
                )
+    end
+
+    # Review B3: only the shape Mix's evaluation of a rebar.config.script
+    # has (a dispatcher stack, no user frame, erl_eval first, and the
+    # tracer's `rebar_script` flag: Mix.Rebar.eval_script/2 below nothing
+    # but script code). A helper a dependency's mix.exs loads from another
+    # file is owned by no window either, and refuses.
+    test "plain arguments outside every window take only a rebar.config.script's shape",
+         %{ctx: ctx} do
+      ctx = differential(ctx)
+
+      helper = %{
+        "module" => "Elixir.BuildArgs",
+        "function" => "dev?",
+        "arity" => 0,
+        "file" => "build_args.exs",
+        "line" => 3
+      }
+
+      for event <- [
+            ev("env", "init:get_plain_arguments/0", %{"rebar_script" => true},
+              user: helper,
+              first: {"Elixir.BuildArgs", "dev?", 0}
+            ),
+            plain_args("dispatcher", %{}),
+            plain_args("lineage"),
+            plain_args("truncated"),
+            %{plain_args("dispatcher") | "first" => %{"module" => "Elixir.BuildArgs"}},
+            %{plain_args("dispatcher") | "user" => helper}
+          ] do
+        assert {:refuse, "compile-time host read: init:get_plain_arguments/0" <> _} =
+                 Events.decide(event, ctx, :outside),
+               inspect(event)
+      end
+
+      assert {:observe, "varied_reads", _} =
+               Events.decide(plain_args("dispatcher"), ctx, :outside)
     end
 
     test "a read in a dependency's mix.exs stays R4's", %{ctx: ctx, pkg: pkg} do

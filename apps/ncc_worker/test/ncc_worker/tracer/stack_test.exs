@@ -900,4 +900,56 @@ defmodule NccWorker.Tracer.StackTest do
       assert Module.Types.Apply in :ncc_tracer_stack.uncached()
     end
   end
+
+  # Review B3: the plain arguments a rebar.config.script reads while Mix
+  # evaluates it (`Mix.Rebar.eval_script/2`, through `file:script/2`), the
+  # stack measured on Elixir 1.19 and 1.20: only interpreted script code
+  # between the read and Mix's frame.
+  describe "rebar_script_read/2" do
+    @script_top [
+      {:erl_eval, :do_apply, 7},
+      {:erl_eval, :expr, 6},
+      {:erl_eval, :exprs, 6},
+      {:file, :eval_stream2, 6},
+      {:file, :script, 2},
+      {File, :cd!, 2}
+    ]
+    @below [
+      {Mix.Rebar, :eval_script, 2},
+      {File, :cd!, 2},
+      {Mix.Dep.Loader, :rebar_dep, 4},
+      {Mix.Dep.Loader, :load, 3}
+    ]
+    @script_modules [:erl_eval, :file, File, Mix.Rebar, Mix.Dep.Loader]
+
+    defp frames(list), do: Enum.map(list, fn {m, fun, a} -> f(m, fun, a) end)
+
+    defp in_script?(stack, tc \\ &(&1 in @script_modules)),
+      do: :ncc_tracer_stack.rebar_script_read(frames(stack), tc)
+
+    test "the script Mix evaluates, nested file:script/2 included" do
+      assert in_script?(@script_top ++ @below)
+      nested = Enum.take(@script_top, 5) ++ [{:erl_eval, :do_apply, 7}] ++ @script_top
+      assert in_script?(nested ++ @below)
+    end
+
+    test "a frame between the read and Mix's that is no script code is not" do
+      refute in_script?([{:lists, :foreach, 2} | @script_top] ++ @below)
+      refute in_script?([{BuildArgs, :read, 0} | @script_top] ++ @below)
+      refute in_script?(Enum.drop(@script_top, 0) ++ [{Mix.Dep.Loader, :load, 3}])
+      refute in_script?(@script_top)
+      refute in_script?([])
+    end
+
+    test "a package's module of a toolchain name is not" do
+      refute in_script?(@script_top ++ @below, &(&1 in [:erl_eval, :file, File]))
+      refute in_script?(@script_top ++ @below, &(&1 in [:file, File, Mix.Rebar]))
+    end
+
+    test "Mix's frame with its arguments instead of its arity" do
+      [{m, fun, _} | rest] = @below
+      stack = frames(@script_top) ++ [{m, fun, [~c"rebar.config.script", []], []} | frames(rest)]
+      assert :ncc_tracer_stack.rebar_script_read(stack, &(&1 in @script_modules))
+    end
+  end
 end

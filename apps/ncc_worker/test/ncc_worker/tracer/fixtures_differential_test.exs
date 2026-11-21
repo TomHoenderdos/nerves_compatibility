@@ -280,7 +280,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     assert %{status: :pass} = v, log(v)
     assert v.observations["differential"]["scripts"] == ["fx_dv_r3_doc"]
 
-    assert [%{"read" => "plain_args", "owner" => "outside"}] =
+    assert [%{"read" => "plain_args", "owner" => "outside", "arg" => %{"rebar_script" => true}}] =
              v.observations["differential"]["reads"]
   end
 
