@@ -138,14 +138,45 @@ defmodule NccWorker.Portability.Probes do
   compiles it and nothing unloads one, so for an application off the
   owner's path the answer is whatever earlier compiles loaded, and under
   Mix.install whatever the install holds. Such a probe is no concern for an
-  application on every path or on the owner's path (the package's own
-  included); from a dependency's `mix.exs` it refuses whatever it lists, and
+  application on every path, one loaded before the tracer started (the
+  tracer's `loaded_before`: Hex starts ssl and inets, and as with a module
+  loaded then, it is loaded either way) or on the owner's path (the
+  package's own included); from a dependency's `mix.exs` it refuses whatever it lists, and
   otherwise it refuses, an installed OTP or Elixir application's (`otp_app`)
   with the OTP reason above, any other's with `compile-time probe of a
   dependency outside the closure: <app> via <function>`.
   `code:where_is_file/1` of a `<module>.beam` is a path probe of that module,
   and `application_controller:get_application_module/1` (which application
   holds a module) one too.
+
+  A probe the package itself made (the tracer's `by_package`: past the
+  wrappers, `Code`'s and `Kernel`'s probe functions, the code server's and
+  the error handlers' frames and the toolchain's higher-order glue, the
+  first frame is package code) of a module that no installed OTP or Elixir
+  application holds and the tracer did not load is judged against the
+  modules the owner's closure builds (`Context` `modules`, from each
+  dependency's `ebin`). Under Mix.install every installed dependency's
+  `ebin` is on the code path, and in a Mix project a module an earlier
+  dependency's compile-time code loaded stays loaded, so a probe of a module
+  outside the closure answers differently there than on the builder (jose
+  1.11.12's `Code.ensure_loaded?(Poison)`, which compiles `JOSE.Poison` only
+  where poison is visible): it refuses as `compile-time probe of a
+  dependency outside the closure: <module> via <function>`, also when a
+  closure dependency declares the module's package as an optional
+  dependency that this build lacks. From a dependency's `mix.exs` such a
+  probe refuses whatever the closure holds. The toolchain's own lookups of
+  such a module (the expander resolving an import, a struct or a require,
+  the behaviour check) reach only the compile's errors and warnings and are
+  no concern.
+
+  A probe of a module the owner's path holds (an installed application's on
+  it, or a closure dependency's) answers the same pruned or not when it
+  asks whether the module can be found (the path probes); whether it is
+  loaded now depends on what other compile-time code in the same VM called
+  into it, which the user's project decides. The package's own loaded-now
+  probe of such a module therefore refuses as `compile-time probe of
+  whether a module is loaded: <module> via <function>`, unless the same
+  process ensure-loaded it earlier (`ensured`).
 
   An event this module cannot read could not be judged.
   """
@@ -221,7 +252,7 @@ defmodule NccWorker.Portability.Probes do
   def decide(%{"channel" => "app_probe", "arg" => %{"app" => app} = arg} = event, ctx, owner)
       when is_binary(app) do
     cond do
-      app in @every_path ->
+      app in @every_path or arg["loaded_before"] == true ->
         :ignore
 
       is_binary(Context.mix_exs(ctx, event, owner)) ->
@@ -320,26 +351,76 @@ defmodule NccWorker.Portability.Probes do
     end
   end
 
-  # A module of an installed OTP or Elixir application the tracer did not
-  # load (`otp_app`, moduledoc): the trace answers as Mix's pruned path
+  # A module the tracer did not load (moduledoc): one of an installed OTP or
+  # Elixir application (`otp_app`), whoever probed it, or any other the
+  # package probed (`by_package`). The trace answers as Mix's pruned path
   # does, Mix.install as the whole install does.
-  defp outside(event, %{"otp_app" => app}, ctx, owner) when is_binary(app) do
+  defp outside(event, arg, ctx, owner) do
     cond do
-      nested?(event) or app in @every_path or attribute_lookup?(event) ->
+      nested?(event) or attribute_lookup?(event) -> :ignore
+      is_binary(arg["otp_app"]) -> installed_probe(event, arg["otp_app"], ctx, owner)
+      arg["by_package"] == true -> dependency_probe(event, arg["module"], ctx, owner)
+      true -> :ignore
+    end
+  end
+
+  defp installed_probe(event, app, ctx, owner) do
+    cond do
+      app in @every_path ->
         :ignore
 
       is_binary(Context.mix_exs(ctx, event, owner)) ->
         {:refuse, otp_probe(app, event) <> " in mix.exs"}
 
-      Context.dep?(ctx, owner) and app in path_of(ctx, owner) ->
-        :ignore
+      not (Context.dep?(ctx, owner) and app in path_of(ctx, owner)) ->
+        {:refuse, otp_probe(app, event)}
 
       true ->
-        {:refuse, otp_probe(app, event)}
+        found_or_ensured(event, ctx, owner)
     end
   end
 
-  defp outside(_event, _arg, _ctx, _owner), do: :ignore
+  defp dependency_probe(event, module, ctx, owner) do
+    cond do
+      is_binary(Context.mix_exs(ctx, event, owner)) ->
+        {:refuse, dependency(module, event) <> " in mix.exs"}
+
+      not (Context.dep?(ctx, owner) and
+               Map.get(ctx.modules, module) in Context.closure_of(ctx, owner)) ->
+        {:refuse, dependency(module, event)}
+
+      true ->
+        found_or_ensured(event, ctx, owner)
+    end
+  end
+
+  # A module the owner's path holds: whether it can be found, and where,
+  # is the same either way; whether it is loaded now is not (other
+  # compile-time code in the same VM may have called into it, which the
+  # user's project decides), unless the same process ensure-loaded it
+  # earlier (`ensured`).
+  # Only the package's own probe (`by_package`): a toolchain function's
+  # check of a module it is about to use (EEx's of its engine) is judged as
+  # before.
+  defp found_or_ensured(event, ctx, owner) do
+    if event["mfa"] in @path_probes or event["arg"]["by_package"] != true or
+         ensured?(event, ctx, owner),
+       do: :ignore,
+       else: {:refuse, Reasons.loaded_probe() <> "#{event["arg"]["module"]} via #{via(event)}"}
+  end
+
+  defp ensured?(%{"pid" => pid, "ts" => ts, "arg" => %{"module" => module}}, ctx, owner)
+       when is_binary(pid) and is_integer(ts) do
+    case Map.fetch(ctx.ensured, {owner, pid, module}) do
+      {:ok, first} -> first < ts
+      :error -> false
+    end
+  end
+
+  defp ensured?(_event, _ctx, _owner), do: false
+
+  defp dependency(module, event),
+    do: Reasons.dependency_probe() <> "#{module} via #{via(event)}"
 
   # `@behaviour m`'s own lookup, whose answer Elixir drops (the tracer's
   # `attribute`, `:ncc_tracer_stack.attribute_lookup/2`).

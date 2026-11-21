@@ -7,7 +7,8 @@ defmodule NccWorker.Portability.Context do
   tracer loaded before anything compiled (`preloaded`), the windows
   package code started a nested compile in (`nested`), and, for the VM
   whose events are being decided, its `code:ensure_loaded/1` probes
-  (`ensured`, `NccWorker.Portability.Probes.ensured/1`).
+  (`ensured`, `NccWorker.Portability.Probes.ensured/1`), and the modules
+  each closure dependency's build holds (`modules`, from its `ebin`).
 
   Every app here is an OTP app name, as the trace's closure line carries
   them. The `package` given to `build/4` may be a Hex name that is not its
@@ -71,7 +72,8 @@ defmodule NccWorker.Portability.Context do
     hook_scripts: %{},
     drivers: %{},
     foreign_priv: nil,
-    holders: %{}
+    holders: %{},
+    modules: %{}
   ]
 
   @type dep :: %{
@@ -101,7 +103,8 @@ defmodule NccWorker.Portability.Context do
           hook_scripts: %{String.t() => String.t()},
           deps_path: String.t() | nil,
           drivers: %{String.t() => String.t()},
-          foreign_priv: map() | nil
+          foreign_priv: map() | nil,
+          modules: %{String.t() => String.t()}
         }
 
   @max_hops 40
@@ -149,10 +152,22 @@ defmodule NccWorker.Portability.Context do
       hook_scripts: trees(Keyword.get(opts, :hook_scripts)),
       deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")),
       drivers: drivers(report.sentinels),
-      holders: holders(Keyword.get(opts, :holders))
+      holders: holders(Keyword.get(opts, :holders)),
+      modules: modules(listed)
     }
 
     %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
+  end
+
+  # Every module a closure dependency's build holds, as #{module => app},
+  # from the beams in its `ebin` once the compile is done.
+  defp modules(listed) do
+    for %{"app" => app} = dep <- listed,
+        build = install_root(dep["build"]),
+        is_binary(build),
+        beam <- Path.wildcard(Path.join([build, "ebin", "*.beam"])),
+        into: %{},
+        do: {Path.basename(beam, ".beam"), app}
   end
 
   defp trees(trees) when is_map(trees), do: trees

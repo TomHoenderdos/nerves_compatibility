@@ -614,6 +614,15 @@ defmodule NccWorker.Portability.ProbesTest do
                :ignore
     end
 
+    # Loaded before the tracer started (Hex starts ssl and inets): loaded
+    # either way, as a module loaded then is.
+    test "of an application loaded before the trace is no concern", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      event = app_probe("ssl", arg: %{"otp_app" => "ssl", "loaded_before" => true})
+      assert Probes.decide(event, c, "pkg") == :ignore
+      assert {:refuse, _} = Probes.decide(put_in(event["arg"]["loaded_before"], false), c, "pkg")
+    end
+
     test "is unreadable without an application name", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => []})
       assert {:unjudged, _} = Probes.decide(%{"channel" => "app_probe", "arg" => %{}}, c, "pkg")
@@ -635,6 +644,134 @@ defmodule NccWorker.Portability.ProbesTest do
       "arg" => %{"module" => module, "otp_app" => app},
       "caller" => frame("elixir_compiler_1", "__MODULE__", 1)
     }
+  end
+
+  # A probe the package made (the tracer's `by_package`) of a module that is
+  # no installed OTP or Elixir one and that the trace did not load: under
+  # Mix.install every installed dependency is on the code path, and in a
+  # Mix project a module an earlier dependency's compile loaded stays
+  # loaded, so only a module the owner's closure holds answers the same.
+  describe "a package's probe of a dependency's module" do
+    defp hex(module, opts \\ []) do
+      arg = Map.merge(%{"by_package" => true}, Keyword.get(opts, :arg, %{}))
+      probe(module, Keyword.put(opts, :arg, arg))
+    end
+
+    defp with_modules(c, modules), do: %{c | modules: modules}
+
+    test "of a module outside the owner's closure refuses", %{tmp_dir: dir} do
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "child" => ["kernel"], "other" => ["kernel"]})
+        |> with_modules(%{"Elixir.Other" => "other", "Elixir.Child" => "child"})
+
+      assert Probes.decide(hex("Elixir.Phoenix.HTML.Safe"), c, "pkg") ==
+               {:refuse,
+                "compile-time probe of a dependency outside the closure: " <>
+                  "Elixir.Phoenix.HTML.Safe via Code.ensure_loaded?/1"}
+
+      # In the build, but not in the owner's closure.
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Other"), c, "pkg")
+      c = put_in(c.deps["pkg"].children, ["child"])
+      assert Probes.decide(hex("Elixir.Child"), c, "pkg") == :ignore
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Child"), c, :outside)
+    end
+
+    test "of the owner's own module, or a closure dependency's, by a path probe passes",
+         %{tmp_dir: dir} do
+      c = dir |> ctx(%{"pkg" => ["kernel"]}) |> with_modules(%{"Elixir.Pkg.Other" => "pkg"})
+
+      for mfa <- ~w(code:ensure_loaded/1 code:which/1 code:get_object_code/1 code:where_is_file/1),
+          do: assert(Probes.decide(hex("Elixir.Pkg.Other", mfa: mfa), c, "pkg") == :ignore, mfa)
+    end
+
+    # Whether it is loaded now: what other compile-time code in the same VM
+    # ran decides it (a call into a module loads it), and the user's project
+    # decides that, not the builder's.
+    test "of a closure module by a loaded-now probe refuses unless ensured first",
+         %{tmp_dir: dir} do
+      c = dir |> ctx(%{"pkg" => ["kernel"]}) |> with_modules(%{"Elixir.Pkg.Other" => "pkg"})
+
+      for mfa <- ~w(code:is_loaded/1 code:module_status/1 erlang:module_loaded/1
+                    erlang:function_exported/3) do
+        event = hex("Elixir.Pkg.Other", mfa: mfa, caller: frame("Elixir.Pkg", "f", 0))
+
+        assert Probes.decide(event, c, "pkg") ==
+                 {:refuse,
+                  "compile-time probe of whether a module is loaded: Elixir.Pkg.Other via #{mfa}"}
+      end
+
+      loaded = hex("Elixir.Pkg.Other") |> at("<0.10.0>", 100)
+      exported = hex("Elixir.Pkg.Other", mfa: "erlang:function_exported/3") |> at("<0.10.0>", 200)
+      c = %{c | ensured: Probes.ensured([{"pkg", loaded}])}
+      assert Probes.decide(exported, c, "pkg") == :ignore
+    end
+
+    # An installed OTP module on the owner's path is the same: listed, it
+    # can be found, but whether it is loaded is the earlier compiles' doing.
+    test "an on-path OTP module's loaded-now probe refuses unless ensured first",
+         %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel", "mnesia"]})
+
+      exported =
+        otp("mnesia", "mnesia",
+          mfa: "erlang:function_exported/3",
+          caller: frame("Elixir.Pkg", "f", 0),
+          arg: %{"by_package" => true}
+        )
+
+      # A toolchain function's own check is judged as before.
+      toolchain = put_in(exported["arg"]["by_package"], false)
+      assert Probes.decide(toolchain, c, "pkg") == :ignore
+
+      assert Probes.decide(exported, c, "pkg") ==
+               {:refuse,
+                "compile-time probe of whether a module is loaded: mnesia via erlang:function_exported/3"}
+
+      loaded = otp("mnesia", "mnesia") |> at("<0.10.0>", 100)
+      c = %{c | ensured: Probes.ensured([{"pkg", loaded}])}
+      assert Probes.decide(at(exported, "<0.10.0>", 200), c, "pkg") == :ignore
+    end
+
+    test "the compiler's own lookup is no concern", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      lookup = hex("Elixir.Phoenix.HTML.Safe", arg: %{"by_package" => false})
+      assert Probes.decide(lookup, c, "pkg") == :ignore
+
+      assert Probes.decide(Map.update!(lookup, "arg", &Map.delete(&1, "by_package")), c, "pkg") ==
+               :ignore
+    end
+
+    test "from a closure dependency's mix.exs refuses, in the closure or not", %{tmp_dir: dir} do
+      c = dir |> ctx(%{"pkg" => ["kernel"]}) |> with_modules(%{"Elixir.Pkg.Other" => "pkg"})
+      File.mkdir_p!(Path.join(dir, "deps/pkg"))
+      dest = Context.realpath(Path.join(dir, "deps/pkg"))
+      File.write!(Path.join(dest, "mix.exs"), "")
+      c = put_in(c.deps["pkg"].dest, dest)
+      user = %{"file" => Path.join(dest, "mix.exs")}
+
+      for m <- ~w(Elixir.Pkg.Other Elixir.Jason) do
+        assert {:refuse, why} = Probes.decide(Map.put(hex(m), "user", user), c, "pkg")
+
+        assert why ==
+                 "compile-time probe of a dependency outside the closure: #{m} via Code.ensure_loaded?/1 in mix.exs"
+      end
+    end
+
+    test "the type checker's, the code server's nested one and @behaviour's are no concern",
+         %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+      assert Probes.decide(hex("Elixir.Jason", arg: %{"checker" => true}), c, "pkg") == :ignore
+
+      nested =
+        hex("Elixir.Jason",
+          mfa: "erlang:module_loaded/1",
+          caller: frame("code", "ensure_loaded", 1)
+        )
+
+      assert Probes.decide(nested, c, "pkg") == :ignore
+      assert Probes.decide(hex("Elixir.Jason", arg: %{"attribute" => true}), c, "pkg") == :ignore
+    end
   end
 
   test "a malformed probe is not judged", %{tmp_dir: dir} do

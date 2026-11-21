@@ -18,7 +18,8 @@ defmodule Compatibility.PortabilityTest do
           "foreign priv write refused: two writers of kino priv/assets/X",
           "compile-time read of kino's asset archives: file:read_file/1 /x",
           "compile-time probe of an OTP application outside the closure: wx via Code.ensure_loaded?/1",
-          "compile-time probe of a dependency outside the closure: phoenix_html via Application.spec/2"
+          "compile-time probe of a dependency outside the closure: phoenix_html via Application.spec/2",
+          "compile-time probe of whether a module is loaded: Elixir.X via erlang:function_exported/3"
         ] do
       assert Portability.refusal?(reason), reason
     end
@@ -41,7 +42,8 @@ defmodule Compatibility.PortabilityTest do
                "bakes the build path: ",
                "compile-time read of kino's asset archives: ",
                "compile-time probe of an OTP application outside the closure: ",
-               "compile-time probe of a dependency outside the closure: "
+               "compile-time probe of a dependency outside the closure: ",
+               "compile-time probe of whether a module is loaded: "
              ])
 
     for reason <- [

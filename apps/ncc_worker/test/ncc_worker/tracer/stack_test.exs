@@ -441,6 +441,53 @@ defmodule NccWorker.Tracer.StackTest do
     refute :ncc_tracer_stack.checker([cache], fn m -> m in [:code] end)
   end
 
+  # Whether package code made a probe: past the wrappers, the lookup
+  # functions and the toolchain's higher-order glue, the first frame is no
+  # compiler module of the toolchain's.
+  test "made_by_package/2: the package's probe, not the compiler's lookup" do
+    tc = [:code, :error_handler, Kernel.ErrorHandler, Kernel, Protocol, Macro.Env | @toolchain]
+    by_package? = &:ncc_tracer_stack.made_by_package(&1, fn m -> m in tc end)
+    body = f(:elixir_compiler_3, :__MODULE__, 1)
+
+    # Code.ensure_loaded?/1, function_exported?/3 (a BIF: the package's
+    # frame is on top), macro_exported?/3, a direct call's error handler.
+    assert by_package?.([f(Code, :ensure_loaded?, 1), body])
+    assert by_package?.([body])
+    assert by_package?.([f(Kernel, :macro_exported?, 3), body])
+
+    assert by_package?.([
+             f(Kernel.ErrorHandler, :ensure_loaded, 3),
+             f(:error_handler, :undefined_function, 3),
+             f(Pkg, :f, 0)
+           ])
+
+    # Through Enum: `Enum.filter(mods, &Code.ensure_loaded?/1)`.
+    assert by_package?.([f(Code, :ensure_loaded?, 1), f(Enum, :"-filter/2-fun-0-", 2), body])
+    # Any other toolchain frame is its own lookup: deriving a protocol,
+    # resolving an import, checking a behaviour.
+    refute by_package?.([f(Code, :ensure_compiled!, 1), f(Protocol, :derive, 5), body])
+    refute by_package?.([f(Macro.Env, :expand_import, 5), body])
+    # A package callback the compiler dispatched, tail-calling the probe.
+    assert by_package?.([f(:elixir_module, :expand_callback, 6), body])
+    assert by_package?.([])
+    assert by_package?.(:no_stack)
+
+    # The compiler's own lookups: a struct, a require, a macro check.
+    refute by_package?.([f(Code, :ensure_compiled, 2), f(:elixir_expand, :expand, 3), body])
+
+    refute by_package?.([
+             f(:code, :ensure_loaded, 1),
+             f(:elixir_dispatch, :expand_require, 6),
+             body
+           ])
+
+    # A package module named like the compiler's is the package's.
+    assert :ncc_tracer_stack.made_by_package(
+             [f(Code, :ensure_compiled, 2), f(:elixir_expand, :expand, 3)],
+             &(&1 in [Code])
+           )
+  end
+
   # `@behaviour m`: Module.preprocess_attribute/2 calls Code.ensure_compiled/1,
   # which tail-calls ensure_compiled/2, and drops the answer.
   test "attribute_lookup/2: exactly the toolchain's @behaviour lookup" do

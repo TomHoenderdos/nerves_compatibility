@@ -367,17 +367,18 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
         ++ [wanted(Session, MFA, ?NEVER) || MFA <- Canaries],
     Preloaded = preloaded(Before, Role),
     put(preloaded, Preloaded),
-    Installed = installed(Role, Before, Preloaded),
+    {Installed, Skip} = installed(Role, Before, Preloaded),
     put(installed, Installed),
     put(installed_apps, installed_apps(Role)),
+    put(apps_before, maps:from_keys([atom_to_binary(A) || {A, _, _} <- application:loaded_applications()],
+                                    true)),
     Calls = app_calls(Preloaded),
     put(app_calls, Calls),
     %% Never a probe or call pattern without a module to filter it to: an
     %% empty set would trace every call.
-    Watched = maps:from_keys([binary_to_atom(M) || M <- maps:keys(Installed)], true),
     ProbeWanted = [wanted(Session, MFA, MS)
                    || MFA <- ncc_tracer_channels:probe_mfas(),
-                      MS <- [probe_spec(MFA, Preloaded, Watched, Depth)], MS =/= []]
+                      MS <- [probe_spec(Role, MFA, Preloaded, Skip, Depth)], MS =/= []]
         ++ [wanted(Session, {M, '_', '_'}, match_spec(M, Role, Depth))
             || M <- maps:keys(Calls)],
     write(St0, maps:merge((start_line(Role, App, Depth))#{mix_script => script_bin(Script),
@@ -430,8 +431,6 @@ reason_bin(Reason) -> ncc_tracer_channels:term_bin(Reason).
 %% (checker_pool_frames/0, first_kind and caller_kind), the wrappers strip/3
 %% skips (ncc_tracer_stack:wrappers/0), the code-loading shapes' modules
 %% (code_load/5), the @behaviour lookup's frames (attribute_lookup/1),
-%% Record.Extractor and UndefinedFunctionError (whose code path reads the
-%% judge lets through by name),
 %% the epp server whose
 %% predefined-macro reads the judge ignores, and erlang (the judge's
 %% big_binary_to_int/2 caller). Sticky modules are no exception:
@@ -443,8 +442,7 @@ canary_patterns() ->
              || {M, _F, _A} <- ncc_tracer_channels:path_os_frames()
                     ++ ncc_tracer_channels:os_family_callers()
                     ++ ncc_tracer_channels:checker_pool_frames()]
-        ++ [M || {M, _F, _A} <- ncc_tracer_stack:attribute_lookup_frames()]
-        ++ ['Elixir.Record.Extractor', 'Elixir.UndefinedFunctionError'],
+        ++ [M || {M, _F, _A} <- ncc_tracer_stack:attribute_lookup_frames()],
     Shapes = [M || Shape <- ncc_tracer_stack:code_loading_shapes(
                                erlang:system_info(otp_release)),
                    {M, _F, _A} <- Shape],
@@ -637,14 +635,18 @@ app_calls(Preloaded) ->
                     not lists:member(App, [<<"ncc_tracer">> | ?ALWAYS_ON_PATH]),
                     M =/= <<"crypto">>]).
 
-%% Only calls naming a module we loaded, or one of `installed` (Watched,
-%% #{Module => true}: one clause, a map lookup, not a clause per module),
-%% fire.
-probe_spec(MFA, Preloaded, Watched, Depth) ->
-    Msg = [{message, {current_stacktrace, Depth}}],
-    [{probe_head(MFA, binary_to_atom(M)), [], Msg} || M <- maps:keys(Preloaded)]
-        ++ [{probe_head(MFA, '$1'), [{is_map_key, '$1', {const, Watched}}], Msg}
-            || map_size(Watched) > 0].
+%% In the Mix VM a probe of any module fires but one in Skip (#{Module =>
+%% true}: one clause, a map lookup, not a clause per module): a probe of a
+%% module we loaded is judged as such, of an installed application's as
+%% `otp_app`, and the package's of any other (`by_package`) against the
+%% closure (NccWorker.Portability.Probes). In a child VM (rebar3, which
+%% prunes nothing) only a probe of a module we loaded fires.
+probe_spec(main, MFA, _Preloaded, Skip, Depth) ->
+    [{probe_head(MFA, '$1'), [{'not', {is_map_key, '$1', {const, Skip}}}],
+      [{message, {current_stacktrace, Depth}}]}];
+probe_spec(child, MFA, Preloaded, _Skip, Depth) ->
+    [{probe_head(MFA, binary_to_atom(M)), [], [{message, {current_stacktrace, Depth}}]}
+     || M <- maps:keys(Preloaded)].
 
 probe_head({erlang, function_exported, 3}, M) -> [M, '_', '_'];
 probe_head(_MFA, M) -> [M].
@@ -661,14 +663,28 @@ probe_head(_MFA, M) -> [M].
 %% as such). The Mix VM only: rebar3 prunes nothing. Listed in a process of
 %% its own, so the listing's garbage never counts against the collector's
 %% max_heap_size; a listing that fails fails the tracer's start, never
-%% leaves the set empty.
+%% leaves the set empty. With it, the modules no probe of which is traced
+%% (probe_spec/5): those loaded before the tracer started or by Mix anyway,
+%% and those of an installed application on every compile's path, all but
+%% the ones we loaded.
 installed(main, Before, Preloaded) ->
-    {Pid, Ref} = spawn_monitor(fun() -> exit({installed, installed_modules(Before, Preloaded)}) end),
+    {Pid, Ref} = spawn_monitor(fun() ->
+                                       exit({installed, installed_modules(Before, Preloaded),
+                                             skipped(Before, Preloaded)})
+                               end),
     receive
-        {'DOWN', Ref, process, Pid, {installed, Installed}} -> Installed;
+        {'DOWN', Ref, process, Pid, {installed, Installed, Skip}} -> {Installed, Skip};
         {'DOWN', Ref, process, Pid, Reason} -> erlang:error({installed_modules, Reason})
     end;
-installed(child, _Before, _Preloaded) -> #{}.
+installed(child, _Before, _Preloaded) -> {#{}, #{}}.
+
+skipped(Before, Preloaded) ->
+    Libs = [filename:join(code:root_dir(), "lib") | elixir_lib()],
+    Every = [list_to_atom(filename:basename(Beam, ".beam"))
+             || Lib <- Libs, Beam <- filelib:wildcard("*/ebin/*.beam", Lib),
+                lists:member(app_from_path(filename:join(Lib, Beam)), ?ON_EVERY_PATH)],
+    maps:without([binary_to_atom(M) || M <- maps:keys(Preloaded)],
+                 maps:merge(Before, maps:from_keys(Every ++ ?LOADED_BY_MIX, true))).
 
 installed_modules(Before, Preloaded) ->
     Libs = [filename:join(code:root_dir(), "lib") | elixir_lib()],
@@ -705,13 +721,14 @@ probed({probe, #{module := Module} = Arg}, Stack) ->
     {probe, Arg#{app => maps:get(Module, get(preloaded), null),
                  otp_app => maps:get(Module, get(installed), null),
                  attribute => attribute_lookup(Stack),
+                 by_package => made_by_package(Stack),
                  checker => checker(Stack)}};
 probed({app_probe, #{app := App} = Arg}, _Stack) ->
     Otp = case is_map_key(App, get(installed_apps)) of
               true -> App;
               false -> null
           end,
-    {app_probe, Arg#{otp_app => Otp}};
+    {app_probe, Arg#{otp_app => Otp, loaded_before => is_map_key(App, get(apps_before))}};
 probed({install, #{what := all_available} = Arg}, Stack) ->
     {install, Arg#{checker => checker(Stack)}};
 probed({app_call, Arg}, Stack) ->
@@ -743,6 +760,11 @@ installed_app(_M, _Path, _Toolchain) -> null.
 checker(Stack) ->
     try ncc_tracer_stack:checker(Stack, fun toolchain_module/1)
     catch _:_ -> false
+    end.
+
+made_by_package(Stack) ->
+    try ncc_tracer_stack:made_by_package(Stack, fun toolchain_module/1)
+    catch _:_ -> true
     end.
 
 attribute_lookup(Stack) ->

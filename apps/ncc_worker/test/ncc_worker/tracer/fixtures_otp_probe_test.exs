@@ -347,6 +347,106 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert "mnesia" in apps and "fx_probe" in apps, inspect(apps)
   end
 
+  # A package's probe of a module no installed application holds (round-1
+  # review, F3): under Mix.install every installed dependency is on the code
+  # path, and in a Mix project a module an earlier dependency's compile-time
+  # code loaded stays loaded, so only a module the package's closure holds
+  # answers the same.
+  test "a probe of a module only another dependency defines refuses", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_other", "fx_probe"], %{
+        "fx_other" => %{
+          files: %{"lib/fx_other.ex" => "defmodule FxOther do\n  def f, do: 1\nend\n"}
+        },
+        "fx_probe" => %{
+          files: %{
+            "lib/fx_probe.ex" =>
+              TracerFixtures.attr_module("FxProbe", "Code.ensure_loaded?(FxOther)")
+          }
+        }
+      })
+
+    # Unpruned, as Mix.install compiles, fx_probe finds fx_other's module.
+    mix_exs = File.read!(Path.join(proj, "mix.exs"))
+    unpruned!(proj)
+    compile(proj)
+    assert built_value(proj) == "true"
+    File.write!(Path.join(proj, "mix.exs"), mix_exs)
+    File.rm_rf!(Path.join(proj, "_build"))
+
+    # The builder compiles fx_probe's closure alone: nothing defines FxOther.
+    traced = TracerFixtures.trace(proj, ["fx_probe"])
+    assert {:ok, 0} = traced.result, traced.log
+    assert built_value(proj) == "false"
+    assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert reason ==
+             "compile-time probe of a dependency outside the closure: Elixir.FxOther via " <>
+               "Code.ensure_loaded?/1"
+
+    assert [event | _] =
+             Enum.filter(probes(traced), &(&1["arg"]["module"] == "Elixir.FxOther"))
+
+    assert event["arg"]["by_package"] == true
+    assert event["arg"]["otp_app"] == nil
+    assert event["arg"]["app"] == nil
+  end
+
+  # A closure dependency's module can be found the same way pruned or not;
+  # whether it is loaded now is the earlier compiles' doing, unless the same
+  # process ensure-loads it first.
+  for {expr, verdict} <- [
+        {"Code.ensure_loaded?(FxDep)", :pass},
+        {"function_exported?(FxDep, :f, 0)", :skip},
+        {"Code.ensure_loaded?(FxDep) and function_exported?(FxDep, :f, 0)", :pass}
+      ] do
+    @expr expr
+    @verdict verdict
+    test "a closure dependency's module: #{expr}", %{tmp_dir: dir} do
+      proj =
+        TracerFixtures.project(dir, ["fx_probe"], %{
+          "fx_dep" => %{files: %{"lib/fx_dep.ex" => "defmodule FxDep do\n  def f, do: 1\nend\n"}},
+          "fx_probe" => %{
+            deps: ["fx_dep"],
+            files: %{"lib/fx_probe.ex" => TracerFixtures.attr_module("FxProbe", @expr)}
+          }
+        })
+
+      traced = TracerFixtures.trace(proj, ["fx_probe"])
+      assert {:ok, 0} = traced.result, traced.log
+      verdict = TracerFixtures.judge(proj, "fx_probe", traced)
+      assert verdict.status == @verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+      if @verdict == :skip do
+        assert verdict.reason ==
+                 "compile-time probe of whether a module is loaded: Elixir.FxDep via " <>
+                   "erlang:function_exported/3"
+      end
+    end
+  end
+
+  # The compiler's own lookups of a module nothing defines (a remote call,
+  # an alias in a def body) decide only its warnings: no concern.
+  test "the compiler's lookups of a missing module pass", %{tmp_dir: dir} do
+    body = """
+    defmodule FxProbe do
+      alias FxMissing.Sub
+      def x, do: FxMissing.f()
+      def y, do: Sub.g(1)
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{files: %{"lib/fx_probe.ex" => body}}
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    verdict = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+  end
+
   # Whether a module is loaded now: untraced and pruned, nothing loads
   # mnesia; under Mix.install another compile may have.
   test "a loaded-now probe of an OTP application the package does not list is refused",

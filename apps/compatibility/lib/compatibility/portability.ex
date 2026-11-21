@@ -29,7 +29,8 @@ defmodule Compatibility.Portability do
     "compile-time read of kino's asset archives: ",
     "native build not set apart: ",
     "compile-time probe of an OTP application outside the closure: ",
-    "compile-time probe of a dependency outside the closure: "
+    "compile-time probe of a dependency outside the closure: ",
+    "compile-time probe of whether a module is loaded: "
   ]
 
   # R1 (the package's own compile observed the host; R4's `mix.exs` slice
@@ -55,7 +56,8 @@ defmodule Compatibility.Portability do
     "bakes the build path: ",
     "compile-time read of kino's asset archives: ",
     "compile-time probe of an OTP application outside the closure: ",
-    "compile-time probe of a dependency outside the closure: "
+    "compile-time probe of a dependency outside the closure: ",
+    "compile-time probe of whether a module is loaded: "
   ]
 
   # The oldest judge revision (`NccWorker.Portability.judge_revision/1`)
@@ -128,6 +130,7 @@ defmodule Compatibility.Portability do
   @native_side "native build not set apart: "
   @otp_probe "compile-time probe of an OTP application outside the closure: "
   @dependency_probe "compile-time probe of a dependency outside the closure: "
+  @loaded_probe "compile-time probe of whether a module is loaded: "
 
   @doc "Every prefix a trace refusal starts with."
   @spec refusal_prefixes() :: [String.t()]
@@ -416,6 +419,16 @@ defmodule Compatibility.Portability do
   """
   @spec dependency_probe() :: String.t()
   def dependency_probe, do: @dependency_probe
+
+  @doc """
+  A compile-time probe of whether a module the prober's code path holds is
+  loaded now, with no earlier ensure-load of it in the same process:
+  whether it is depends on what other compile-time code in the same VM ran
+  (a call into a module loads it), which the user's project decides, not
+  the builder's. It withdraws.
+  """
+  @spec loaded_probe() :: String.t()
+  def loaded_probe, do: @loaded_probe
 
   @doc "Whether `reason` is a trace refusal (and not a rule 1 reason or could-not-judge)."
   @spec refusal?(term()) :: boolean()

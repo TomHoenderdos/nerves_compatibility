@@ -7,7 +7,7 @@
          made_by_mix/2, made_by_mix_strict/2, target_read_by_mix/2, compiler_frame/1,
          code_loading/1, code_loading/2, code_loading_shapes/1,
          code_loading_read/4, code_loading_read/5, wrappers/0, attribute_lookup/2,
-         attribute_lookup_frames/0]).
+         attribute_lookup_frames/0, made_by_package/2]).
 
 -include("ncc_code_loading_shapes.hrl").
 
@@ -361,6 +361,31 @@ made_by_toolchain(Stack, IsToolchain) when is_list(Stack) ->
         [] -> false
     end;
 made_by_toolchain(_Stack, _IsToolchain) -> false.
+
+%% Whether package code made a probe (NccWorker.Portability.Probes): past
+%% the wrappers, the functions a lookup goes through (?LOOKUP_THROUGH and
+%% Kernel's macro_exported?/3) and the toolchain's higher-order glue, the
+%% first frame is package code, or a dispatcher of package code (a package
+%% callback that tail-called the probe), or there is none (fail closed).
+%% Any other toolchain frame there is the toolchain's own lookup: the
+%% expander resolving an import (Macro.Env), the behaviour check
+%% (Module.Behaviour), a struct or a require, whose answer reaches the
+%% compile's errors and warnings.
+made_by_package(Stack, IsToolchain) when is_list(Stack) ->
+    Skip = fun({M, _, _, _} = F) ->
+                   lists:member(M, ?WRAPPERS)
+                       orelse (IsToolchain(M) andalso
+                                   (lists:member(M, ['Elixir.Kernel' | ?LOOKUP_THROUGH])
+                                    orelse (glue(F) andalso not dispatcher(F))))
+           end,
+    case lists:dropwhile(Skip, Stack) of
+        [{M, F, _, _} = Frame | _] ->
+            not IsToolchain(M)
+                orelse (dispatcher(Frame)
+                        andalso not lists:member({M, base_name(F)}, ?TOOLCHAIN_DISPATCHERS));
+        [] -> true
+    end;
+made_by_package(_Stack, _IsToolchain) -> true.
 
 %% Whether Mix made a call into one of its compile entry points
 %% (ncc_tracer_channels mix_entry/1): the first frame past the wrappers, the

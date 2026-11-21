@@ -621,7 +621,13 @@ controller knows of an application (`Application.load/1`, `spec/1,2`, `ensure_lo
 Elixir one it refuses as `compile-time probe of a dependency outside the closure: <app> via <function>`.
 `:code.where_is_file/1` of a `<module>.beam` is a module probe; of any other file, and `:code.all_available/0`,
 `:application.which_applications/0,1`, it is a host read, but for Record.extract/2's `from:` lookup and the type
-checker's undefined-module hint. The tracer watches every module on disk under
+checker's undefined-module hint. A probe the package itself makes of a module no installed application holds refuses as
+`compile-time probe of a dependency outside the closure: <module> via <function>` unless a dependency of the prober's
+closure builds it: under Mix.install every installed dependency's `ebin` is on the code path (jose 1.11.12 compiles
+`JOSE.Poison` only `if Code.ensure_loaded?(Poison)`). It refuses also when a closure dependency declares the module's
+package as an optional dependency the build lacks. The package's own probe of whether a module of its path is loaded
+now (`function_exported?/3`, `:code.is_loaded/1`) refuses as `compile-time probe of whether a module is loaded: ` unless
+the same process ensure-loaded it first. The tracer watches every module on disk under
 the OTP and Elixir installs that it did not load and that was not loaded before it started, and names the application
 on the event (`otp_app`); every probe function counts, the loaded-now ones included. From a dependency's `mix.exs`
 it refuses whatever the dependency lists (` in mix.exs`): `compile.all` asks its `application/0` on the code path the

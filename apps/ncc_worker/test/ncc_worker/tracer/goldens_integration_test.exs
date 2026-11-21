@@ -315,6 +315,38 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     end
   end
 
+  # A package's probe of a module no dependency of its closure defines
+  # (round-1 review, F3): jose 1.11.12 has no dependencies and compiles
+  # `JOSE.Poison` only `if Code.ensure_loaded?(Poison)`. A Mix project with
+  # poison prunes jose's code path and builds without it; Mix.install with
+  # poison leaves poison's ebin on the path and builds `JOSE.Poison` (both
+  # checked 2026-11-21 on Elixir 1.20.5). The build was served to Mix.install
+  # users with poison.
+  @dependency_probe [
+    {"jose", "1.11.12", "Elixir.Poison", "Code.ensure_loaded?/1"},
+    # Declared optional (phoenix_html), absent from the exclude variant:
+    # refused too. The client's closure check keeps a user with
+    # phoenix_html from this build, so this one costs coverage only.
+    {"chromic_pdf", "1.17.2", "Elixir.Phoenix.HTML.Safe", "Code.ensure_loaded?/1"}
+  ]
+
+  for {package, version, module, via} <- @dependency_probe do
+    @tag package: package, version: version, variant: "exclude", probed: module, via: via
+    test "dependency probe: #{package} #{version} refuses", ctx do
+      %{package: package, version: version, probed: module, via: via} = ctx
+      {golden, stats} = build(ctx, package, version, "exclude")
+      report(ctx, golden, stats)
+
+      reasons =
+        [golden["reason"] | Enum.map(golden["observations"]["refusals"] || [], & &1["reason"])]
+
+      assert golden["status"] == "skipped", inspect(Map.take(golden, ["status", "reason"]))
+
+      assert "compile-time probe of a dependency outside the closure: #{module} via #{via}" in reasons,
+             inspect(reasons)
+    end
+  end
+
   # --- the run -----------------------------------------------------------------
 
   defp build(ctx, package, version, variant, judge \\ nil) do
