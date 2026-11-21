@@ -3,6 +3,7 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
   # recorded a declared-absent probe are re-checked against the new index;
   # a row that now collides is withheld, tagged, with an undo.
   use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
 
   alias Portal.Catalog.{Ingestion, ModuleIndex}
 
@@ -116,6 +117,54 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
 
     assert ModuleIndex.undo_recheck(generation)["toolchain_build"] == 1
     assert revoked(colliding) == {false, nil}
+  end
+
+  # Round 6, R5-5: a build refused only because the index was not complete
+  # is no final skip: after each complete run its toolchain build is queued
+  # again, once.
+  test "a complete run queues again the builds refused while it was not complete",
+       %{opts: opts} do
+    {:ok, id} = Ingestion.ensure_package_id("waiting_pkg")
+    image = hd(Portal.Toolchains.images())
+
+    not_complete =
+      "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
+        "Code.ensure_loaded?/1 (module index not complete)"
+
+    for {variant, reason} <- [{"with", not_complete}, {"without", "calls System.cmd/3"}] do
+      Repo.query!(
+        """
+        INSERT INTO catalog_toolchain_builds
+          (id, package_id, version, toolchain, builder_version, variant, config_variant, status,
+           reason, inserted_at, updated_at)
+        VALUES (gen_random_uuid(), $1, '1.0.0', $2, $3, $4, 'default', 'skipped', $5, now(), now())
+        """,
+        [
+          Ecto.UUID.dump!(id),
+          image.toolchain,
+          Portal.Toolchains.builder_version(),
+          variant,
+          reason
+        ]
+      )
+    end
+
+    assert %{complete: true, requeued: 1} = ModuleIndex.refresh(opts)
+
+    assert_enqueued(
+      worker: Portal.Workers.ToolchainBuild,
+      args: %{
+        package: "waiting_pkg",
+        version: "1.0.0",
+        variant: "with",
+        reason: "module_index_complete"
+      }
+    )
+
+    refute_enqueued(worker: Portal.Workers.ToolchainBuild, args: %{variant: "without"})
+    # The job is unique: a second complete run does not queue it twice.
+    assert %{complete: true} = ModuleIndex.refresh(opts)
+    assert length(all_enqueued(worker: Portal.Workers.ToolchainBuild)) == 1
   end
 
   test "an incomplete run withholds nothing", %{opts: opts} do

@@ -383,7 +383,14 @@ defmodule Portal.Catalog.ModuleIndex do
         do: recheck(generation: generation).withheld,
         else: nil
 
-    Map.merge(result, %{generation: generation, complete: complete, withheld: withheld})
+    requeued = if complete, do: requeue_not_complete(), else: 0
+
+    Map.merge(result, %{
+      generation: generation,
+      complete: complete,
+      withheld: withheld,
+      requeued: requeued
+    })
   end
 
   defp superseded?(generation) do
@@ -516,6 +523,60 @@ defmodule Portal.Catalog.ModuleIndex do
         Enum.map(chunk, &%{module: &1, package: name}),
         on_conflict: :nothing
       )
+    end)
+  end
+
+  # --- builds refused while the index was not complete (R5-5) -------------------
+
+  @not_complete "(module index not complete)"
+
+  @doc """
+  Queues again, once, the toolchain build of every live row at the current
+  builder version that ingest stored `skipped` only because the index was
+  not complete (its reason ends in `#{@not_complete}`; round 6, R5-5), so
+  such a refusal is no final verdict: `refresh/1` calls it after each
+  complete run. The job is unique while it waits, so a later run does not
+  queue it twice; its rebuild is judged by the complete index. Returns how
+  many it queued. Pinned and host-native builds and `pure_elixir` results
+  refused that way are not queued here (see the otp-probe report, round 6).
+  """
+  @spec requeue_not_complete() :: non_neg_integer()
+  def requeue_not_complete do
+    bv = Portal.Toolchains.builder_version()
+    images = Map.new(Portal.Toolchains.images(), &{&1.toolchain, &1.image})
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT p.name, t.version, t.toolchain, t.variant::text, t.config_variant
+        FROM catalog_toolchain_builds t JOIN catalog_packages p ON p.id = t.package_id
+        WHERE t.builder_version = $1 AND t.status = 'skipped' AND t.revoked_at IS NULL
+          AND t.reason LIKE $2
+        """,
+        [bv, "%" <> @not_complete]
+      )
+
+    queue_for = Portal.Toolchains.MemoryRouting.router(rows |> Enum.map(&hd/1) |> Enum.uniq())
+
+    Enum.count(rows, fn [name, version, toolchain, variant, config_variant] ->
+      with image when is_binary(image) <- Map.get(images, toolchain),
+           {:ok, %Oban.Job{conflict?: false}} <-
+             %{
+               package: name,
+               version: version,
+               toolchain: toolchain,
+               image: image,
+               builder_version: bv,
+               variant: variant,
+               config_variant: config_variant,
+               reason: "module_index_complete"
+             }
+             |> Portal.Workers.ToolchainBuild.new(priority: 3, queue: queue_for.(name))
+             |> Oban.insert() do
+        true
+      else
+        _ -> false
+      end
     end)
   end
 
