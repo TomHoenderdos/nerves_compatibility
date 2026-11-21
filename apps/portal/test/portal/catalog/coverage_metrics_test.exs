@@ -117,6 +117,39 @@ defmodule Portal.Catalog.CoverageMetricsTest do
     assert row.compile_percent == 40.0
   end
 
+  # Review R12: a compile a signal killed is no verdict on the package
+  # (`Portal.Catalog`'s killed-compile rule builds it again), so it is not a
+  # compile failure either.
+  test "a compile a signal killed is not a compile failure" do
+    package!("oom", 10)
+
+    build!("oom", "1.0.0",
+      status: :fail,
+      reason: "compile failed: host compile failed: mix compile exited with code 137"
+    )
+
+    package!("cc1plus", 10)
+
+    build!("cc1plus", "1.0.0",
+      status: :fail,
+      reason:
+        "compile failed: host compile failed: mix compile exited with code 1 " <>
+          "(c++: fatal error: Killed signal terminated program cc1plus)"
+    )
+
+    package!("broken", 10)
+
+    build!("broken", "1.0.0",
+      status: :fail,
+      reason: "compile failed: host compile failed: mix compile exited with code 1"
+    )
+
+    registry = for name <- ~w(oom cc1plus broken), do: entry(name, ["1.0.0"])
+
+    assert %{toolchains: [%{packages: 3, compile_failures: 1, compile_percent: +0.0}]} =
+             CoverageMetrics.compute(registry)
+  end
+
   test "an empty registry is all zeros, not an error" do
     assert %{toolchains: [%{packages: 0, download_percent: +0.0, compile_percent: +0.0}]} =
              CoverageMetrics.compute([])

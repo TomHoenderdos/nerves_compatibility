@@ -1736,11 +1736,23 @@ defmodule Portal.Catalog do
   # build host's memory or a watchdog stopped the compile, which says
   # nothing about the package, so unlike every other `fail` it is no
   # verdict. NULL (no reason) reads as a verdict.
-  @killed_compile """
-  coalesce(t.reason ~ '^compile failed: .*exited with code (12[89]|1[3-9][0-9]|2[0-5][0-9])$'
-    OR t.reason ~ '^compile failed: .*exited with code 1 \\(\\S+: fatal error: Killed signal terminated program \\S+\\)$',
+  @killed_compile_template """
+  coalesce($T.reason ~ '^compile failed: .*exited with code (12[89]|1[3-9][0-9]|2[0-5][0-9])$'
+    OR $T.reason ~ '^compile failed: .*exited with code 1 \\(\\S+: fatal error: Killed signal terminated program \\S+\\)$',
     false)
   """
+
+  @killed_compile String.replace(@killed_compile_template, "$T", "t")
+
+  @doc """
+  The SQL boolean for a `fail` toolchain row of alias `table` whose compile a
+  signal killed: no verdict on the package (the backlog builds it again).
+  `Portal.Catalog.CoverageMetrics` leaves such a row out of its compile
+  failures.
+  """
+  @spec killed_compile_sql(String.t()) :: String.t()
+  def killed_compile_sql(table) when is_binary(table),
+    do: String.replace(@killed_compile_template, "$T", table)
 
   # A live row of the identity (see `@toolchain_candidates_sql`'s comment for
   # what is live): `t` is the row; `$PKG`, `$VERSION`, `$VARIANT` and

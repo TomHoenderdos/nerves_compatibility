@@ -24,10 +24,17 @@ defmodule Portal.Catalog.CoverageMetrics do
 
   A package is served by a passing, unrevoked toolchain build of that
   version, of the default config and a `with` or `without` variant, as
-  `Portal.Catalog.Coverage` counts one. It is a compile failure when nothing
-  serves it and a toolchain build of the version failed to compile
-  (`"compile failed: ..."`), or, with no toolchain build of the version at
-  all, the host compile of its newest run failed.
+  `Portal.Catalog.Coverage` counts one, a build whose closure is withheld
+  included. It is a compile failure when nothing serves it and a toolchain
+  build of the version failed to compile (`"compile failed: ..."`, but not
+  one a signal killed, which is no verdict:
+  `Portal.Catalog.killed_compile_sql/1`), or, with no toolchain build of the
+  version at all, the host compile of its newest run failed. That fallback
+  is the firmware project's compile, so it also counts a dependency
+  resolution that failed against the Nerves project's own dependencies,
+  which a plain Mix project would not hit (about 50 packages on
+  2026-11-21), and a host compile a signal killed: both raise the second
+  percentage a little.
 
   Computing it reads the registry and runs one query per toolchain over the
   whole catalog, so the admin Maintenance page shows a stored copy
@@ -79,7 +86,7 @@ defmodule Portal.Catalog.CoverageMetrics do
         WHERE t.package_id = p.id AND t.version = l.version AND t.toolchain = $3
           AND t.config_variant = 'default' AND t.variant = ANY($4::text[])
           AND t.revoked_at IS NULL AND t.status = 'fail'
-          AND t.reason LIKE 'compile failed: %'
+          AND t.reason LIKE 'compile failed: %' AND NOT $KILLED
       ) AS compile_failed,
       EXISTS (
         SELECT 1 FROM catalog_toolchain_builds t
@@ -107,6 +114,11 @@ defmodule Portal.Catalog.CoverageMetrics do
     (SELECT count(*) FROM builds WHERE NOT served AND no_beams)
   FROM counted
   """
+
+  # At run time, so this module needs no compile-time dependency on the
+  # catalog for the killed-compile clause.
+  defp counts_sql,
+    do: String.replace(@counts_sql, "$KILLED", Portal.Catalog.killed_compile_sql("t"))
 
   @doc """
   The metrics for `registry` (`Portal.HexRegistry.snapshot/1` with
@@ -137,7 +149,9 @@ defmodule Portal.Catalog.CoverageMetrics do
 
   defp row(toolchain, names, versions, variants) do
     %{rows: [[packages, downloads, served, served_dl, failures, failure_dl, nothing]]} =
-      Repo.query!(@counts_sql, [names, versions, toolchain, variants], timeout: :timer.minutes(5))
+      Repo.query!(counts_sql(), [names, versions, toolchain, variants],
+        timeout: :timer.minutes(5)
+      )
 
     [downloads, served_dl, failure_dl] = Enum.map([downloads, served_dl, failure_dl], &integer/1)
 
