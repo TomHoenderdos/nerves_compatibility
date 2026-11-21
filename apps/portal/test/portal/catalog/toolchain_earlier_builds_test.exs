@@ -434,6 +434,149 @@ defmodule Portal.Catalog.ToolchainEarlierBuildsTest do
     end
   end
 
+  # Review S5 S1: a build kept as an earlier build is served under its own
+  # run id, which the plugin watch keys on. A replaced build with no plugin
+  # record that may have run a plugin gets the withholding mark for its run,
+  # so the watch cannot miss it; one with a record, or one that ran none, is
+  # served as before.
+  describe "an earlier build that may have run a rebar3 plugin" do
+    alias Portal.Precompiled.PluginWatch
+
+    setup do
+      PluginWatch.refresh(plugin_registry())
+      :ok
+    end
+
+    @pubkey %{"module" => "pubkey_os_cacerts", "function" => "on_load", "arity" => 0}
+    @ran_hex %{"owner" => "dep", "name" => "rebar3_hex", "version" => "7.5.0"}
+
+    # A lock whose second release is `extra` (name and version).
+    defp lock_with(certifi, {name, version}),
+      do: Map.put(lock(certifi), name, %{"version" => version, "checksum" => "x"})
+
+    defp ingest_pair(old_opts, new_opts) do
+      name = name()
+
+      old =
+        ingest_toolchain_build(
+          name,
+          "0.4.0",
+          Keyword.merge([deps_lock: lock("2.18.0")], old_opts)
+        )
+
+      new =
+        ingest_toolchain_build(
+          name,
+          "0.4.0",
+          Keyword.merge([deps_lock: lock("2.19.0")], new_opts)
+        )
+
+      {name, old, new}
+    end
+
+    defp recorded_none,
+      do: [compile_observations: %{"rebar3_plugins" => [], "os_type_reads" => []}]
+
+    test "a replaced build with the plugin mark and no record is withheld" do
+      {name, old, _new} =
+        ingest_pair([compile_observations: %{"os_type_reads" => [@pubkey]}], recorded_none())
+
+      assert PluginWatch.ran(old.run_id) == [{"*", "unrecorded"}]
+      assert served_locks(name) == ["2.19.0"]
+      refute Enum.any?(shas(old.file_manifest), &Catalog.published_sha256?/1)
+    end
+
+    test "a replaced build from before os_type_reads is withheld when its closure declares a plugin" do
+      # mimerl 1.0.0's rebar.config runs rebar3_hex (the 2026-11-21 scan).
+      declared = [deps_lock: lock_with("2.18.0", {"mimerl", "1.0.0"})]
+      {name, old, _new} = ingest_pair(declared, recorded_none())
+
+      assert PluginWatch.ran(old.run_id) == [{"*", "unrecorded"}]
+      assert served_locks(name) == ["2.19.0"]
+
+      # Built after os_type_reads without the mark: rebar3 fetched no plugin.
+      {name, old, _new} =
+        ingest_pair(
+          [
+            deps_lock: lock_with("2.18.0", {"mimerl", "1.0.0"}),
+            compile_observations: %{"os_type_reads" => []}
+          ],
+          recorded_none()
+        )
+
+      assert PluginWatch.ran(old.run_id) == []
+      assert served_locks(name) == ["2.18.0", "2.19.0"]
+
+      # Nothing declares a plugin, and the rebuild ran none.
+      {name, old, _new} = ingest_pair([], recorded_none())
+      assert PluginWatch.ran(old.run_id) == []
+      assert served_locks(name) == ["2.18.0", "2.19.0"]
+
+      # yamerl 0.10.0's script adds only coveralls, which a build judged
+      # before S5 refused: a passing one did not run it.
+      {name, old, _new} =
+        ingest_pair([deps_lock: lock_with("2.18.0", {"yamerl", "0.10.0"})], recorded_none())
+
+      assert PluginWatch.ran(old.run_id) == []
+      assert served_locks(name) == ["2.18.0", "2.19.0"]
+    end
+
+    test "a replaced build with no record is withheld when the rebuild ran a plugin" do
+      ran = [
+        compile_observations: %{"rebar3_plugins" => [@ran_hex], "os_type_reads" => [@pubkey]}
+      ]
+
+      {name, old, new} = ingest_pair([], ran)
+
+      assert PluginWatch.ran(old.run_id) == [{"*", "unrecorded"}]
+      assert PluginWatch.ran(new.run_id) == [{"rebar3_hex", "7.5.0"}]
+      assert served_locks(name) == ["2.19.0"]
+    end
+
+    test "a replaced build with a record is served by the watch alone" do
+      ran = [
+        compile_observations: %{"rebar3_plugins" => [@ran_hex], "os_type_reads" => [@pubkey]}
+      ]
+
+      {name, old, _new} = ingest_pair(ran, ran)
+
+      assert PluginWatch.ran(old.run_id) == [{"rebar3_hex", "7.5.0"}]
+      assert served_locks(name) == ["2.18.0", "2.19.0"]
+
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", ["7.5.0", "9.0.0"]}]))
+      assert served_locks(name) == []
+
+      {name, old, _new} = ingest_pair(recorded_none(), recorded_none())
+      assert PluginWatch.ran(old.run_id) == []
+      assert served_locks(name) == ["2.18.0", "2.19.0"]
+    end
+
+    # Earlier builds kept before this rule (no `plugins` fact on the entry),
+    # and host-native builds, which no requeue rebuilds: the sweep the update
+    # check runs every hour marks the same way.
+    test "the sweep marks an earlier build kept before the rule" do
+      {name, old, new} =
+        ingest_pair([deps_lock: lock_with("2.18.0", {"mimerl", "1.0.0"})], recorded_none())
+
+      Repo.query!("DELETE FROM rebar3_plugin_runs WHERE run_id = $1", [old.run_id])
+
+      Repo.query!(
+        "UPDATE catalog_toolchain_builds SET earlier_builds = " <>
+          "ARRAY(SELECT e - 'plugins' FROM unnest(earlier_builds) e) WHERE id = $1",
+        [Ecto.UUID.dump!(new.id)]
+      )
+
+      assert served_locks(name) == ["2.18.0", "2.19.0"]
+      assert :ok = PluginWatch.mark_unrecorded()
+      assert PluginWatch.ran(old.run_id) == [{"*", "unrecorded"}]
+      assert served_locks(name) == ["2.19.0"]
+
+      # Idempotent.
+      assert :ok = PluginWatch.mark_unrecorded()
+      assert PluginWatch.ran(old.run_id) == [{"*", "unrecorded"}]
+    end
+  end
+
   defp row(name) do
     ToolchainBuild
     |> Ash.Query.filter(package.name == ^name)

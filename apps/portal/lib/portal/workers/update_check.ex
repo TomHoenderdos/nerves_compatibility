@@ -83,7 +83,10 @@ defmodule Portal.Workers.UpdateCheck do
   review; the builds that ran that package are withheld until a release
   that reviews it deploys. A dry run writes nothing. While the check is off
   (or failing) the watch goes stale, and after six hours every build that
-  ran a plugin is withheld.
+  ran a plugin is withheld. Before anything else, every run (also while the
+  check is off, but not a dry run) marks the builds with no plugin record
+  that may have run one (`PluginWatch.mark_unrecorded/1`): that sweep reads
+  only the database.
 
   ## Scope
 
@@ -138,6 +141,9 @@ defmodule Portal.Workers.UpdateCheck do
   def perform(%Oban.Job{args: args} = job) do
     manual? = args["manual"] == true
     dry_run? = args["dry_run"] == true
+
+    # Local, so it runs while the check is off too (review S5 S1).
+    unless dry_run?, do: mark_unrecorded()
 
     if manual? or enabled?() do
       case run(dry_run: dry_run?) do
@@ -253,6 +259,16 @@ defmodule Portal.Workers.UpdateCheck do
     PluginWatch.refresh(registry)
   rescue
     e -> Logger.error("rebar3 plugin watch not refreshed: " <> Exception.message(e))
+  end
+
+  # The builds with no plugin record that may have run a plugin and that no
+  # requeue rebuilds (`PluginWatch.mark_unrecorded/1`). A failure is logged;
+  # the next run sweeps again.
+  defp mark_unrecorded do
+    PluginWatch.mark_unrecorded()
+  rescue
+    e ->
+      Logger.error("rebar3 plugin watch: unrecorded builds not swept: " <> Exception.message(e))
   end
 
   # DateTime structs do not sort chronologically under Erlang term ordering.

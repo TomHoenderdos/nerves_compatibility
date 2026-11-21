@@ -530,6 +530,34 @@ defmodule Portal.HostNativeTest do
       assert name in Catalog.packages_with_precompiled_files()
     end
 
+    # Review S5 S1: a host-native build with no plugin record whose compile
+    # fetched a plugin (the `pubkey_os_cacerts` mark; tokenizers 0.5.2) is
+    # rebuilt by no requeue: the hourly sweep marks it, and it is withheld.
+    test "a build with the plugin mark and no record is withheld by the sweep" do
+      name = unique()
+      {tarball, origins, blobs} = downloader()
+
+      mark = %{
+        "os_type_reads" => [%{"module" => "pubkey_os_cacerts", "function" => "on_load"}]
+      }
+
+      result =
+        put_in(
+          result(name, tarball, origins),
+          ["host_native_build", "compile_observations"],
+          mark
+        )
+
+      {:ok, %{status: :pass}} = Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
+      on!()
+      Portal.Precompiled.PluginWatch.refresh(plugin_registry())
+      assert name in Catalog.packages_with_precompiled_files()
+
+      assert :ok = Portal.Precompiled.PluginWatch.mark_unrecorded()
+      assert Catalog.precompiled_manifest_v2(name) == nil
+      refute name in Catalog.packages_with_precompiled_files()
+    end
+
     test "a revoked build is not served", %{name: name, row: row} do
       on!()
       row |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Catalog)

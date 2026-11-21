@@ -87,6 +87,29 @@ defmodule Portal.PinnedManifestTest do
     assert Catalog.published_sha256?(sha)
   end
 
+  # Review S5 S1: a pinned host build with no plugin record whose compile
+  # fetched a plugin is rebuilt by no requeue: the sweep marks it.
+  test "a pinned build with the plugin mark and no record is withheld by the sweep" do
+    mark = %{"os_type_reads" => [%{"module" => "pubkey_os_cacerts", "function" => "on_load"}]}
+    %{name: name, sha: sha} = ingested(observations: mark)
+    %{name: plain} = ingested(observations: %{"os_type_reads" => []})
+    Portal.Precompiled.PluginWatch.refresh(plugin_registry())
+    assert %{"builds_closure" => [_]} = version(name)
+
+    # From before os_type_reads, with a release in its lock that runs
+    # rebar3_hex (mimerl 1.0.0, `PluginWatch.Declared`).
+    old = unique()
+    mimerl = [%{"name" => "mimerl", "hex" => "mimerl", "version" => "1.0.0", "checksum" => @b}]
+    {:ok, _row} = ingest(old, pins(old, mimerl), observations: %{"problems" => []})
+    assert %{"builds_closure" => [_]} = version(old)
+
+    assert :ok = Portal.Precompiled.PluginWatch.mark_unrecorded()
+    assert version(name) == nil
+    refute Catalog.published_sha256?(sha)
+    assert version(old) == nil
+    assert %{"builds_closure" => [_]} = version(plain)
+  end
+
   test "rule-2 revocation reaches a pinned build, the files route and the fingerprint follow" do
     %{name: name, sha: sha} = ingested()
     before = Catalog.precompiled_fingerprints()[name]

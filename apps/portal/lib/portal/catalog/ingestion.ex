@@ -1428,6 +1428,7 @@ defmodule Portal.Catalog.Ingestion do
            upsert_toolchain_build(result, build, counted, opts, package_id),
          {:ok, toolchain_build} <- maybe_unrevoke(toolchain_build),
          {:ok, toolchain_build} <- record_earlier_builds(toolchain_build, replaced) do
+      :ok = mark_unrecorded_earlier(toolchain_build)
       :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
 
       :ok =
@@ -1482,6 +1483,15 @@ defmodule Portal.Catalog.Ingestion do
       |> Ash.update(domain: @domain)
     end
   end
+
+  # An earlier build is served under its own run id: one with no plugin
+  # record that may have run a plugin gets the withholding mark for it, in
+  # the transaction that kept it (`PluginWatch.mark_unrecorded/1`, review S5
+  # S1).
+  defp mark_unrecorded_earlier(%ToolchainBuild{earlier_builds: [_ | _]} = row),
+    do: PluginWatch.mark_unrecorded(row.id)
+
+  defp mark_unrecorded_earlier(_row), do: :ok
 
   # A row revoked for its withheld closure (`Portal.Catalog.mark_withheld_revoked/2`)
   # whose rebuild records its compile-time config reads

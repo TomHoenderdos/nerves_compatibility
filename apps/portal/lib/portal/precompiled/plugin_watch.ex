@@ -41,19 +41,35 @@ defmodule Portal.Precompiled.PluginWatch do
       packages that ran a plugin it touches. Deterministic siblings are
       served only beside their build.
 
+  A build with no record that may have run a plugin, and that no requeue
+  rebuilds, gets the withholding mark for its run (`mark_unrecorded/1`;
+  review S5 S1): an earlier build a rebuild with another lock kept (its own
+  run id stays served), a host-native build and a pinned host build. It may
+  have run one when its compile fetched a plugin over TLS (the
+  `pubkey_os_cacerts` mark in its `os_type_reads`), when it predates
+  `os_type_reads` and its closure has a release whose config can run
+  `rebar3_hex`, the one plugin a build judged before S5 could run
+  (`Portal.Precompiled.PluginWatch.Declared`), or,
+  for an earlier build of unknown origin, when its row's own build ran one.
+  An earlier build keeps that fact from the build it was (`entry_fact/1`).
+  The ingest marks at the push, and the update check sweeps every hour, also
+  while it is switched off, for what an older release kept.
+
   Reviewing a new release: the S5 design note's "Reviewing a new plugin
   release". Once a release that adds it to `Compatibility.RebarPlugins`
   deploys, the next update check clears the watch and the builds are served
   again; nothing is rebuilt.
 
-  A build made before builds recorded their plugins records none, so the
-  watch cannot see it: such a build ran at most a `rebar3_hex` release
-  (the only plugin the judge let through before).
+  A current toolchain row made before builds recorded their plugins records
+  none, so the watch cannot see it: such a build ran at most a `rebar3_hex`
+  release (the only plugin the judge let through before), and the S5 requeue
+  rebuilds it.
   """
 
   require Logger
 
   alias Compatibility.RebarPlugins
+  alias Portal.Precompiled.PluginWatch.Declared
 
   # The oldest refresh the guard trusts (review S5 R4): the update check runs
   # hourly, so six missed runs.
@@ -83,6 +99,92 @@ defmodule Portal.Precompiled.PluginWatch do
   # The record of a run that ran plugin releases this cannot list: withheld
   # whatever the watch holds (`served_clause/1`).
   @unrecorded {"*", "unrecorded", nil}
+
+  # The worker's cap on `os_type_reads` (`NccWorker.Portability`'s `@caps`):
+  # a full list may have dropped the mark.
+  @max_os_type_reads 50
+
+  # SQL, literal and fixed at compile time. `@mark_of` takes the expression
+  # of a build's `compile_observations` for `$X`: whether its compile
+  # fetched a plugin over TLS.
+  @mark_of "EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN " <>
+             "jsonb_typeof($X->'os_type_reads') = 'array' THEN $X->'os_type_reads' " <>
+             "ELSE '[]'::jsonb END) o WHERE o->>'module' = 'pubkey_os_cacerts')"
+
+  # Whether `os_type_reads` can show the mark's absence: recorded, under
+  # the cap.
+  @reads_known "(CASE WHEN jsonb_typeof($X->'os_type_reads') = 'array' " <>
+                 "THEN jsonb_array_length($X->'os_type_reads') < #{@max_os_type_reads} " <>
+                 "ELSE false END)"
+
+  # Whether the closure of package `$N` version `$V` with lock `$L` holds a
+  # release of `Declared` (`$1` names, `$2` versions).
+  @declared_in "(EXISTS (SELECT 1 FROM unnest($1::text[], $2::text[]) AS d(name, version) " <>
+                 "WHERE d.name = $N AND d.version = $V) OR EXISTS (SELECT 1 FROM " <>
+                 "jsonb_each(CASE WHEN jsonb_typeof($L) = 'object' THEN $L ELSE '{}'::jsonb END) dl " <>
+                 "JOIN unnest($1::text[], $2::text[]) AS d(name, version) " <>
+                 "ON d.name = dl.key AND d.version = dl.value->>'version'))"
+
+  # A build row with observations `$X` and closure `$N`/`$V`/`$L` that has no
+  # record and may have run a plugin.
+  @unrecorded_row "(NOT (coalesce($X, '{}'::jsonb) ? 'rebar3_plugins') AND (" <>
+                    @mark_of <> " OR (NOT " <> @reads_known <> " AND " <> @declared_in <> ")))"
+
+  @insert "INSERT INTO rebar3_plugin_runs (run_id, package, version, sha256, package_id) "
+  @unmarked "AND NOT EXISTS (SELECT 1 FROM rebar3_plugin_runs x WHERE x.run_id = $R) "
+
+  # An earlier build `e` of row `r` of package `p`, by its own fact
+  # (`entry_fact/1`) or, without one, by its row's build and its closure.
+  # Rows of every variant and config_variant alike: each earlier build is
+  # served under its own run id whatever its row's identity.
+  @earlier_sql @insert <>
+                 "SELECT DISTINCT e->>'run_id', '*', 'unrecorded', NULL, r.package_id " <>
+                 "FROM catalog_toolchain_builds r JOIN catalog_packages p ON p.id = r.package_id " <>
+                 "CROSS JOIN LATERAL unnest(r.earlier_builds) AS e " <>
+                 "WHERE cardinality(r.earlier_builds) > 0 " <>
+                 "AND jsonb_typeof(e->'run_id') = 'string' AND e->>'run_id' <> '' " <>
+                 "AND coalesce(e->>'plugins', 'unknown') NOT IN ('recorded', 'none') " <>
+                 "AND (e->>'plugins' = 'mark' " <>
+                 "OR " <>
+                 String.replace(@mark_of, "$X", "r.compile_observations") <>
+                 " OR (CASE WHEN jsonb_typeof(r.compile_observations->'rebar3_plugins') = 'array' " <>
+                 "THEN jsonb_array_length(r.compile_observations->'rebar3_plugins') > 0 " <>
+                 "ELSE false END) " <>
+                 "OR " <>
+                 (@declared_in
+                  |> String.replace("$N", "p.name")
+                  |> String.replace("$V", "r.version")
+                  |> String.replace("$L", "e->'deps_lock'")) <>
+                 ") " <> String.replace(@unmarked, "$R", "e->>'run_id'")
+
+  @earlier_all_sql @earlier_sql <> "ON CONFLICT DO NOTHING"
+  @earlier_row_sql @earlier_sql <> "AND r.id = $3 ON CONFLICT DO NOTHING"
+
+  # A passing host-native build, and a passing pinned build the host built
+  # (a firmware target's records no observations: stream S8's).
+  @host_native_sql @insert <>
+                     "SELECT DISTINCT h.run_id, '*', 'unrecorded', NULL, h.package_id " <>
+                     "FROM catalog_host_native_builds h JOIN catalog_packages p ON p.id = h.package_id " <>
+                     "WHERE h.status = 'pass' AND h.revoked_at IS NULL AND h.run_id <> '' AND " <>
+                     (@unrecorded_row
+                      |> String.replace("$X", "h.compile_observations")
+                      |> String.replace("$N", "p.name")
+                      |> String.replace("$V", "h.version")
+                      |> String.replace("$L", "h.deps_lock")) <>
+                     " " <>
+                     String.replace(@unmarked, "$R", "h.run_id") <> "ON CONFLICT DO NOTHING"
+
+  @pinned_sql @insert <>
+                "SELECT DISTINCT pb.run_id, '*', 'unrecorded', NULL, pb.package_id " <>
+                "FROM catalog_pinned_builds pb JOIN catalog_packages p ON p.id = pb.package_id " <>
+                "WHERE pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.run_id <> '' " <>
+                "AND pb.compile_observations IS NOT NULL AND " <>
+                (@unrecorded_row
+                 |> String.replace("$X", "pb.compile_observations")
+                 |> String.replace("$N", "p.name")
+                 |> String.replace("$V", "pb.version")
+                 |> String.replace("$L", "pb.deps_lock")) <>
+                " " <> String.replace(@unmarked, "$R", "pb.run_id") <> "ON CONFLICT DO NOTHING"
 
   @doc "The oldest refresh, in hours, the guard trusts."
   @spec max_age_hours() :: pos_integer()
@@ -138,6 +240,61 @@ defmodule Portal.Precompiled.PluginWatch do
 
   defp sha(sha) when is_binary(sha), do: if(Regex.match?(@sha, sha), do: sha)
   defp sha(_sha), do: nil
+
+  @doc """
+  What an earlier build keeps of the plugins the build it was ran, from that
+  build's `compile_observations` (review S5 S1): `"recorded"` (it has a
+  record, which the watch serves it by), `"none"` (its compile fetched no
+  plugin: `os_type_reads` recorded, under the cap, without the
+  `pubkey_os_cacerts` mark), `"mark"` (it fetched one and has no record) or
+  `"unknown"`.
+  """
+  @spec entry_fact(term()) :: String.t()
+  def entry_fact(%{"rebar3_plugins" => _record}), do: "recorded"
+
+  def entry_fact(%{"os_type_reads" => reads}) when is_list(reads) do
+    cond do
+      Enum.any?(reads, &match?(%{"module" => "pubkey_os_cacerts"}, &1)) -> "mark"
+      length(reads) < @max_os_type_reads -> "none"
+      true -> "unknown"
+    end
+  end
+
+  def entry_fact(_observations), do: "unknown"
+
+  @doc """
+  Writes the withholding mark for every run with no record that may have
+  run a plugin and that no requeue rebuilds (moduledoc): the earlier builds
+  of the toolchain row `row_id`, or, with `nil`, those of every row and every
+  passing host-native and pinned host build. Idempotent; a run that has a
+  record or a mark is left alone.
+  """
+  @spec mark_unrecorded(Ecto.UUID.t() | nil) :: :ok
+  def mark_unrecorded(row_id \\ nil) do
+    {names, versions} = Declared.columns()
+
+    marked =
+      case row_id do
+        nil ->
+          args = [names, versions]
+          opts = [timeout: 120_000]
+
+          Portal.Repo.query!(@earlier_all_sql, args, opts).num_rows +
+            Portal.Repo.query!(@host_native_sql, args, opts).num_rows +
+            Portal.Repo.query!(@pinned_sql, args, opts).num_rows
+
+        id ->
+          Portal.Repo.query!(@earlier_row_sql, [names, versions, Ecto.UUID.dump!(id)]).num_rows
+      end
+
+    :telemetry.execute([:portal, :plugin_watch, :mark_unrecorded], %{marked: marked}, %{})
+
+    if marked > 0,
+      do:
+        Logger.warning("rebar3 plugin watch: #{marked} unrecorded builds withheld (review S5 S1)")
+
+    :ok
+  end
 
   @doc "The plugin releases run `run_id` ran, as `{package, version}`, sorted."
   @spec ran(String.t()) :: [{String.t(), String.t()}]

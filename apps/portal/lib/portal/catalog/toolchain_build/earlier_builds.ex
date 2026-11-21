@@ -20,8 +20,10 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
 
   ## Shape and cost
 
-  Each entry is the served columns of the replaced row (`entry/1`) and its
-  verdict, newest first, at most `max/0`, at most one per lock and never
+  Each entry is the served columns of the replaced row (`entry/1`), its
+  verdict and what it ran of rebar3 plugins (`"plugins"`, review S5 S1: an
+  entry is served under its own run id, which the plugin watch keys on, and
+  keeps no observations), newest first, at most `max/0`, at most one per lock and never
   the row's own lock. Its files stay memberships of the row
   (`Portal.Catalog.Ingestion` keeps them). Only a passing rebuild keeps
   them: one that does not pass is a verdict on the package's build (a
@@ -126,6 +128,9 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
     |> Map.take(@fields ++ @verdict)
     |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
     |> Map.put("finished_at", row.finished_at && DateTime.to_iso8601(row.finished_at))
+    # What the build ran of rebar3 plugins, which its observations hold and
+    # an entry does not (`Portal.Precompiled.PluginWatch.entry_fact/1`).
+    |> Map.put("plugins", Portal.Precompiled.PluginWatch.entry_fact(row.compile_observations))
   end
 
   @doc """

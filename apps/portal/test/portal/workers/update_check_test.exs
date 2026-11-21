@@ -332,6 +332,26 @@ defmodule Portal.Workers.UpdateCheckTest do
       refute Portal.Precompiled.PluginWatch.stale?()
     end
 
+    # Review S5 S1: the sweep that marks unrecorded builds which may have
+    # run a plugin is local, so it runs even while the check is off.
+    test "marks unrecorded builds that may have run a plugin, also while disabled" do
+      Application.put_env(:portal, UpdateCheck, enabled: false)
+      parent = self()
+
+      :telemetry.attach(
+        "uc-sweep",
+        [:portal, :plugin_watch, :mark_unrecorded],
+        fn _event, measurements, _meta, _config -> send(parent, {:swept, measurements}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach("uc-sweep") end)
+
+      assert :ok = perform_job(UpdateCheck, %{})
+      assert_received {:swept, %{marked: 0}}
+      refute_received {:asked_registry, _}
+    end
+
     test "does nothing at all while disabled" do
       package("alpha", "1.0.0")
       hex_says([{"alpha", "1.1.0"}])
