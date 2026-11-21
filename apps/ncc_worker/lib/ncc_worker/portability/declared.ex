@@ -222,11 +222,11 @@ defmodule NccWorker.Portability.Declared do
   # The names `output` reports fetched, each with a tarball named
   # `<name>-<version>.tar` in its own dir under `out`, copied into `home`'s
   # Hex cache; every other requested name failed.
-  # sobelow_skip ["Traversal.FileModule"]
   @spec collect(String.t(), [String.t()], String.t(), String.t()) :: %{
           fetched: [String.t()],
           failed: [String.t()]
         }
+  # sobelow_skip ["Traversal.FileModule"]
   def collect(output, names, out, home) do
     reported =
       for line <- String.split(output, "\n"),

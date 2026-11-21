@@ -59,9 +59,10 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # declares (websock_adapter's `cowboy_websocket`: cowboy comes only
   # through plug_cowboy; @probe_reasons). A probe of an absent declared
   # optional dependency's module passes (round 2, ruling 1: jason's
-  # `Decimal`, mint's `CAStore`, swoosh's `Plug`), and so does a loaded-now
-  # probe of an own module or right after a reviewed site's direct call
-  # (ruling 2: LiveView's tag engine asking about its tag handler).
+  # `Decimal`, mint's `CAStore`, swoosh's `Plug`; recorded for the portal's
+  # module index, round 3, R2-1), and so does a loaded-now probe right after
+  # a reviewed site's direct call (ruling 2: LiveView's tag engine asking
+  # about its tag handler).
   @expected %{
     {"phoenix", "exclude"} => "refused",
     {"phoenix", "include"} => "pass",
@@ -101,16 +102,19 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
   # What each build the probe rules refuse refuses for first, on this
   # toolchain (Elixir 1.20, OTP 28 and 29: the closure's sources decide it).
-  # phoenix_live_view's own `function_exported?(HTMLEngine, ...)` probes an
-  # own module, and its tag engine's in a dependent's window is a reviewed
-  # direct-call site (round 2, ruling 2): neither refuses.
+  # LiveView's tag engine's `function_exported?` of its tag handler in a
+  # dependent's window is a reviewed direct-call site (round 2, ruling 2)
+  # and passes; an own module's loaded-now probe refuses again (round 3,
+  # R2-2: phoenix_live_dashboard's NavBarComponent).
   @probe_reasons %{
     {"phoenix", "exclude"} =>
       @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
     {"phoenix_live_view", "exclude"} =>
       @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
+    # Round 3, R2-2: an own module's loaded-now probe refuses again.
     {"phoenix_live_dashboard", "exclude"} =>
-      @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
+      "compile-time probe of whether a module is loaded: " <>
+        "Elixir.Phoenix.LiveDashboard.NavBarComponent via erlang:function_exported/3",
     {"polymorphic_embed", "include"} =>
       @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)"
   }
