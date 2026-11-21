@@ -117,6 +117,69 @@ defmodule Portal.Catalog.ModuleIndexTest do
     assert ModuleIndex.refusal([], []) == nil
   end
 
+  # Round 4: the first run, started by hand on the web host.
+  test "a dry run counts what a run would fetch and writes nothing", %{opts: opts} do
+    assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
+             %{to_fetch: 3, unchanged: 0, below_threshold: 1}
+
+    refute ModuleIndex.built?()
+    ModuleIndex.refresh(opts)
+    # tampered failed: it is fetched again next time.
+    assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
+             %{to_fetch: 1, unchanged: 2, below_threshold: 1}
+  end
+
+  test "at most 4 downloads at a time, whatever is asked", %{opts: opts} do
+    me = self()
+    counter = :counters.new(2, [])
+
+    for i <- 1..10, do: packages!([{"many_#{i}", "1.0.0", 2_000}])
+    stub = tarball(%{"lib/m.ex" => "defmodule Many do\nend\n"})
+
+    lookup = fn
+      "many_" <> _, _v -> {:ok, stub}
+      n, v -> opts[:tarball].(n, v)
+    end
+
+    counted = fn n, v ->
+      :counters.add(counter, 1, 1)
+      now = :counters.get(counter, 1)
+      if now > :counters.get(counter, 2), do: :counters.put(counter, 2, now)
+      Process.sleep(50)
+      :counters.sub(counter, 1, 1)
+      send(me, {:fetched, n})
+      lookup.(n, v)
+    end
+
+    opts = [
+      tarball: counted,
+      outer_checksum: fn
+        "many_" <> _, _v -> {:ok, sha(stub)}
+        n, v -> opts[:outer_checksum].(n, v)
+      end,
+      concurrency: 50
+    ]
+
+    assert %{indexed: 12, failed: 1} = ModuleIndex.refresh(opts)
+    assert :counters.get(counter, 2) in 2..4
+  end
+
+  # Each package is stored in its own transaction as soon as it is read, so
+  # a run killed part-way keeps what it stored, and the next run fetches
+  # only the rest.
+  test "a run that stops part-way resumes where it stopped", %{opts: opts} do
+    crash = fn
+      "ex_money", _v -> raise "killed"
+      n, v -> opts[:tarball].(n, v)
+    end
+
+    assert %{indexed: 1, failed: 2} = ModuleIndex.refresh(Keyword.put(opts, :tarball, crash))
+    assert ModuleIndex.definers("Elixir.Money") == ["money"]
+    assert %{to_fetch: 2, unchanged: 1} = ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
+    assert %{indexed: 1, unchanged: 1} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
+  end
+
   test "a newer latest release replaces a package's modules", %{opts: opts} do
     ModuleIndex.refresh(opts)
     newer = tarball(%{"lib/money.ex" => "defmodule MoneyTwo do\nend\n"})

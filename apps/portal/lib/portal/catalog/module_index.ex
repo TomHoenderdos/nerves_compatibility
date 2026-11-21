@@ -40,6 +40,8 @@ defmodule Portal.Catalog.ModuleIndex do
   alias Portal.Repo
 
   @min_recent 1_000
+  @max_concurrency 4
+  @package_timeout_ms 120_000
 
   @doc "The recent-download count from which another package defining a probed module refuses."
   @spec min_recent() :: pos_integer()
@@ -131,19 +133,66 @@ defmodule Portal.Catalog.ModuleIndex do
   Reads the latest release of every package with at least `min_recent/0`
   recent downloads whose indexed release is another one, and replaces its
   modules. A tarball that cannot be fetched, or does not hash to the
-  registry's outer checksum, leaves the package as it was. Options:
-  `:tarball` and `:outer_checksum` (`fn name, version -> {:ok, value} |
-  {:error, why} end`, default `Portal.HexDeps`), `:limit`.
+  registry's outer checksum, leaves the package as it was, to be tried again
+  by the next run.
+
+  Safe to start by hand on a host short on memory (round 4):
+
+    * `dry_run: true` reads nothing from Hex and writes nothing: it returns
+      `%{to_fetch, unchanged, below_threshold}`;
+    * at most `max_concurrency/0` (4) packages are fetched and parsed at
+      once (`:concurrency` may lower it, never raise it), each with its
+      tarball in memory only while it is read (at most
+      `Compatibility.StaticPriv.max_tarball_bytes/0`, parsed under
+      `Compatibility.HexModules`' caps), and killed after 2 minutes;
+    * each package is stored in a transaction of its own as soon as it is
+      read, most downloaded first, so a run that is stopped or restarted
+      keeps what it stored and the next run fetches only the rest.
+
+  Options: `:tarball` and `:outer_checksum` (`fn name, version -> {:ok,
+  value} | {:error, why} end`, default `Portal.HexDeps`), `:limit`,
+  `:concurrency`, `:dry_run`.
   """
-  @spec refresh(keyword()) :: %{
-          indexed: non_neg_integer(),
-          unchanged: non_neg_integer(),
-          failed: non_neg_integer()
-        }
+  @spec refresh(keyword()) :: %{atom() => non_neg_integer()}
   def refresh(opts \\ []) do
+    rows = candidates(Keyword.get(opts, :limit, 100_000))
+
+    {todo, unchanged} =
+      Enum.split_with(rows, fn [_name, version, indexed] -> version != indexed end)
+
+    if Keyword.get(opts, :dry_run, false) do
+      %{to_fetch: length(todo), unchanged: length(unchanged), below_threshold: below_threshold()}
+    else
+      fetch_all(todo, length(unchanged), opts)
+    end
+  end
+
+  @doc "The most packages `refresh/1` fetches and parses at once."
+  @spec max_concurrency() :: pos_integer()
+  def max_concurrency, do: @max_concurrency
+
+  defp fetch_all(todo, unchanged, opts) do
     tarball = Keyword.get(opts, :tarball, &Portal.HexDeps.tarball/2)
     checksum = Keyword.get(opts, :outer_checksum, &Portal.HexDeps.outer_checksum/2)
 
+    concurrency =
+      opts |> Keyword.get(:concurrency, @max_concurrency) |> min(@max_concurrency) |> max(1)
+
+    todo
+    |> Task.async_stream(
+      fn [name, version, _] -> index_release(name, version, tarball, checksum) end,
+      max_concurrency: concurrency,
+      timeout: @package_timeout_ms,
+      on_timeout: :kill_task,
+      ordered: false
+    )
+    |> Enum.reduce(%{indexed: 0, unchanged: unchanged, failed: 0}, fn
+      {:ok, :ok}, acc -> Map.update!(acc, :indexed, &(&1 + 1))
+      _other, acc -> Map.update!(acc, :failed, &(&1 + 1))
+    end)
+  end
+
+  defp candidates(limit) do
     %{rows: rows} =
       Repo.query!(
         """
@@ -154,19 +203,23 @@ defmodule Portal.Catalog.ModuleIndex do
         ORDER BY p.hex_downloads_recent DESC, p.name
         LIMIT $2
         """,
-        [@min_recent, Keyword.get(opts, :limit, 100_000)]
+        [@min_recent, limit]
       )
 
-    Enum.reduce(rows, %{indexed: 0, unchanged: 0, failed: 0}, fn
-      [_name, version, version], acc ->
-        Map.update!(acc, :unchanged, &(&1 + 1))
+    rows
+  end
 
-      [name, version, _old], acc ->
-        case index_release(name, version, tarball, checksum) do
-          :ok -> Map.update!(acc, :indexed, &(&1 + 1))
-          :error -> Map.update!(acc, :failed, &(&1 + 1))
-        end
-    end)
+  defp below_threshold do
+    %{rows: [[n]]} =
+      Repo.query!(
+        """
+        SELECT count(*) FROM catalog_packages
+        WHERE coalesce(hex_downloads_recent, 0) < $1 AND hex_latest_version IS NOT NULL
+        """,
+        [@min_recent]
+      )
+
+    n
   end
 
   defp index_release(name, version, tarball, checksum) do
