@@ -256,8 +256,9 @@ if portal_available? do
     # `NccWorker.Portability.Relocate`): a build refused only for a baked
     # deps or build path is built again at another root. A dependent that
     # passes that way is a plain pass; a build whose own beams need the
-    # rewrite is stored as a skip until a client rewrites them
-    # (`Portal.Catalog.Ingestion`). No judge revision: every node may differ.
+    # rewrite is stored with its record and listed under `relocated` while
+    # the `relocated_enabled` setting is on (`Portal.Precompiled.Relocated`).
+    # No judge revision: every node may differ.
     judge_relocate: if(System.get_env("NCC_JUDGE_RELOCATE") == "1", do: true),
     # `0` turns off the firmware targets' traced compile-input pass
     # (`NccWorker.FirmwareInputs`, judge revision 19): firmware builds get
