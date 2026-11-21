@@ -342,6 +342,8 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
 
     assert ctx.off.observations["trace_stats"]["differential"] == nil
     refute Map.has_key?(ctx.off.observations["trace_stats"], "differential_flag")
+    # Review R8: nor the scheduler count, so flag off is main's verdict.
+    refute Map.has_key?(ctx.off.observations["trace_stats"], "schedulers_online")
     refute Map.has_key?(ctx.off.observations, "varied_reads")
   end
 

@@ -3502,14 +3502,20 @@ defmodule NccWorker.Portability do
       "children" => map_size(report.children),
       "rebar3_untraced_last" => gaps,
       "config_items" => length(facts.config.items),
-      "config_dropped" => facts.config.dropped,
-      "schedulers_online" => schedulers_online(report.start)
+      "config_dropped" => facts.config.dropped
     })
+    |> put_schedulers_stat(facts.ctx.differential, report.start)
     |> put_foreign_stat(facts)
   end
 
-  # The Mix VM's scheduler count, from the tracer's start line; nil without
-  # one (`Differential` holds a variant to it).
+  # The Mix VM's scheduler count, from the tracer's start line (nil without
+  # one), which `Differential` holds a variant to: only with the
+  # differential flag, so a verdict without it is main's (review R8).
+  defp put_schedulers_stat(stats, true, start),
+    do: Map.put(stats, "schedulers_online", schedulers_online(start))
+
+  defp put_schedulers_stat(stats, _off, _start), do: stats
+
   defp schedulers_online(%{"schedulers_online" => n}) when is_integer(n) and n > 0, do: n
   defp schedulers_online(_start), do: nil
 
