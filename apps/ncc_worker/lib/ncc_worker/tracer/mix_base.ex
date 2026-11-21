@@ -10,8 +10,19 @@ defmodule NccWorker.Tracer.MixBase do
   escript, which carries no `priv`).
 
   The paths measured: `mix compile` in a new project with one dependency,
-  `mix deps.compile`, and `Mix.install([dep])` in an `elixir -e` script;
-  the list is their intersection. Livebook's runtime is not measured.
+  `mix deps.compile`, and `Mix.install([dep])` in an `elixir -e` script,
+  each in two environments: as the measuring shell has it, and with
+  Erlang's own resolver (`ERL_INETRC` `{lookup, [file, dns]}`), since
+  `inet_gethost_native` is loaded on the builder image's default setup but
+  not on every user's machine (round 6, R5-3). The list is their
+  intersection. Livebook's runtime is not measured.
+
+  `Version`, `Version.Parser`, `Version.Requirement`, `Kernel.Utils`,
+  `List.Chars` and `List.Chars.BitString` are in the list because the Hex
+  archive loads them: Hex is started before any Hex dependency's `mix.exs`
+  is evaluated, so every compile of a Hex package has them loaded. A
+  project with no Hex archive would not, but it cannot compile a Hex
+  package at all.
 
   The tracer takes a module of this list as loaded for the user too, when
   it was loaded before the tracer started (`NccWorker.Tracer`'s base list):

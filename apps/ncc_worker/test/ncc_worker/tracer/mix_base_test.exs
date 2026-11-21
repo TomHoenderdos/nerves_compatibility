@@ -12,6 +12,9 @@ defmodule NccWorker.Tracer.MixBaseTest do
 
       # Loaded by the mix command, not under Mix.install.
       refute "Elixir.Mix.CLI" in modules, pair
+      # Loaded only with the native resolver, which a user may not run
+      # (round 6, R5-3): measured in both environments.
+      refute "inet_gethost_native" in modules, pair
       assert modules == Enum.sort(modules)
     end
   end

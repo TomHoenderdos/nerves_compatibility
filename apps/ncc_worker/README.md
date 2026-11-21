@@ -649,7 +649,7 @@ loaded before the tracer started is taken as loaded for the user, and never trac
 of the toolchain has it loaded too, or every way a user compiles a dependency has loaded it by the time the first
 dependency's `mix.exs` is evaluated (`mix compile`, `mix deps.compile`, `Mix.install`: every module, not only Mix's),
 measured per toolchain by `priv/mix_base/measure.exs` into the checked-in `priv/mix_base/<pair>.txt`
-(`NccWorker.Tracer.MixBase`, 243 to 245 modules; elixir_make's `function_exported?(Mix, :ensure_application!, 1)` and
+(`NccWorker.Tracer.MixBase`, 243 to 244 modules, each path measured with the default and with Erlang's own resolver; elixir_make's `function_exported?(Mix, :ensure_application!, 1)` and
 oban's `function_exported?(Process, :set_label, 1)` pass, `Mix.CLI` is outside it). Any other is
 traced and judged like a module not loaded yet; so is every module on a toolchain with no measured list. The collector writes no probe
 the judge would ignore (a toolchain function's, or one the code server makes inside another), and a toolchain
