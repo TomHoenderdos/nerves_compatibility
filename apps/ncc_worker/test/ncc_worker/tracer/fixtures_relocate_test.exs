@@ -55,6 +55,23 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
         ),
       "fx_top" =>
         lib("fx_top", "defmodule FxTop do\n  def h, do: FxMid.h()\nend\n", %{deps: ["fx_mid"]}),
+      # The umbrella review's B2: a holder's md5 read at compile time, a
+      # value its relocation changes.
+      "fx_md5" =>
+        lib(
+          "fx_md5",
+          "defmodule FxMd5 do\n  @m FxFine.__info__(:md5)\n  def m, do: @m\nend\n",
+          %{deps: ["fx_fine"]}
+        ),
+      # A value derived from where fx_fine was built, through a channel the
+      # holder patterns do not see: the package's own ebin, compared at the
+      # two roots, must catch it.
+      "fx_len" =>
+        lib(
+          "fx_len",
+          "defmodule FxLen do\n  @n FxFine.__info__(:module) |> :code.which() |> length()\n  def n, do: @n\nend\n",
+          %{deps: ["fx_fine"]}
+        ),
       # membrane_core's shape: a macro module whose quoted code keeps its
       # location (a path R2 allows), and a task module that bakes its dir.
       "fx_macro" =>
@@ -82,7 +99,7 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
         )
     }
 
-    top = ~w(fx_fine fx_quiet fx_hash fx_top fx_strt fx_user)
+    top = ~w(fx_fine fx_quiet fx_hash fx_top fx_strt fx_user fx_md5 fx_len)
     proj = TracerFixtures.project(Path.join(root, "p"), top, deps)
     deps_from_env!(proj)
 
@@ -137,8 +154,18 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
     refute Map.has_key?(v, :relocate)
 
     deps = Path.join(ctx.proj, "deps")
-    assert %{"deps" => ^deps, "build" => build, "files" => [file]} = v.relocation
+
+    assert %{"deps" => ^deps, "build" => build, "files" => [file], "second" => second} =
+             v.relocation
+
     assert build == Path.join(ctx.proj, "_build/host")
+
+    # The second build's roots, the worker's second layout (B1).
+    base = second["deps"] |> String.split("/Second Root.d/") |> hd()
+    assert Map.take(Relocation.second_layout(base), ["deps", "build"]) == second
+
+    assert Relocation.record_problem(v.relocation, ["ebin/Elixir.FxFine.beam", "ebin/fx_fine.app"]) ==
+             nil
 
     assert %{"path" => "ebin/Elixir.FxFine.beam", "occurrences" => [occ]} = file
 
@@ -172,6 +199,22 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
     v = ctx.verdicts["fx_user"]
     assert %{status: :pass, reason: nil} = v, log(ctx, "fx_user")
     assert stat(v) == "dependencies"
+  end
+
+  # The umbrella review's B2: a holder's md5, read at compile time, is a
+  # holder call, and the dependent stays refused.
+  test "a dependent that reads a holder's md5 at compile time stays refused", ctx do
+    v = ctx.verdicts["fx_md5"]
+    assert v.status == :skip, log(ctx, "fx_md5")
+    assert stat(v) =~ "calls a build-path holder at compile time: FxFine.__info__/1"
+  end
+
+  # What the holder patterns do not see, the package's own ebin, compared
+  # at the two roots, refuses.
+  test "a dependent's own beams that differ at the two roots stay refused", ctx do
+    v = ctx.verdicts["fx_len"]
+    assert v.status == :skip, log(ctx, "fx_len")
+    assert stat(v) =~ "fx_len: Elixir.FxLen.beam: Code differs at another root"
   end
 
   test "a package whose compile calls the holder stays refused", ctx do

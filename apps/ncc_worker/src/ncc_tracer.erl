@@ -1085,7 +1085,7 @@ channel(M, F, Args, St) ->
 
 classified_channel(M, F, Args, St) ->
     try ncc_tracer_channels:classify(M, F, Args) of
-        unknown -> native_channel(M, F, St);
+        unknown -> native_channel(M, F, Args, St);
         {Channel, Summary} when is_atom(Channel), is_map(Summary) -> {Channel, Summary};
         _Other -> {unclassified, #{}}
     catch
@@ -1096,13 +1096,28 @@ classified_channel(M, F, Args, St) ->
 %% except the introspection the Elixir compiler itself makes while it expands
 %% a call to such a module (`__info__(:macros)` and friends): that returns
 %% compile metadata, not a value the native build produced.
-native_channel(M, F, St) ->
+native_channel(M, F, Args, St) ->
     Introspection = lists:member(F, ?INTROSPECTION),
     case {is_map_key(M, St#st.native), is_map_key(M, St#st.holders)} of
         {true, _} when not Introspection -> {native_closure, #{module => atom_to_binary(M)}};
         {_, true} when not Introspection -> {root_holder, #{module => atom_to_binary(M)}};
+        {_, true} ->
+            case relocated_info(F, Args) of
+                true -> {root_holder, #{module => atom_to_binary(M)}};
+                false -> unknown
+            end;
         _ -> unknown
     end.
+
+%% A holder's own introspection that hands over what its relocation changes
+%% (S4): its md5, its attributes (the default vsn is the md5, and a
+%% persisted attribute may hold the path) and its compile info. The Elixir
+%% compiler's own `__info__(macros)` and friends, which it makes while it
+%% expands a call to the holder, are not among them.
+relocated_info(module_info, []) -> true;
+relocated_info(module_info, [K]) -> lists:member(K, [md5, attributes, compile]);
+relocated_info('__info__', [K]) -> lists:member(K, [md5, attributes, compile]);
+relocated_info(_F, _Args) -> false.
 
 record(_Class, toolchain, _Info, St) -> St;
 record(unknown, {user, unjudged, _, _}, _Info, St) -> St#st{unjudged = St#st.unjudged + 1};

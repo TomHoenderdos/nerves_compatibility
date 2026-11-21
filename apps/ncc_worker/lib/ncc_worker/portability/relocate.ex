@@ -19,27 +19,36 @@ defmodule NccWorker.Portability.Relocate do
       `:relocate` holding what the pass would have said; a caller that
       judges a trace alone (`judge/5`) never publishes it;
     * `settle/6` copies the project to a fresh dir under the system temp dir,
-      `<root>/second/proj`, its dependencies' sources to `vendored` and its
-      build path at `out/host` there: other names and other lengths than the
-      first build's `deps` and `_build/host`, so a path the compile derived
-      from the project dir rather than from Mix's deps or build path differs
-      from its rewrite. It runs the traced judge compile of the package's
-      closure again there, the first build's tree snapshot passed on, with
-      call patterns on the holders once each one's window has closed
+      laid out as `Compatibility.Relocation.second_layout/1` gives it: a
+      root unlike the first build's in every property a user's path can
+      have that the client accepts (length and depth, a space, upper case,
+      a dot, a dash, digits, the underscore, the project dir's name and the
+      order of the deps and build paths), so a value the compile derived
+      from the path rather than the path itself differs between the two
+      builds. It runs the traced judge compile of the package's closure
+      again there, the first build's tree snapshot passed on, with call
+      patterns on the holders once each one's window has closed
       (`:ncc_tracer`'s `root_holder` channel). A later window's call into a
-      holder, or read of a holder's `ebin`, is a taint (`holder_calls`), a
-      refusal in the package's own window;
+      holder, its read of a holder's `ebin`, or its read of a holder's md5,
+      attributes or compile info (`module_info/0,1`, `__info__/1`) is a
+      taint (`holder_calls`), a refusal in the package's own window;
     * the second verdict must be held the same way, for the same apps, its
       pass the same `compile_env`, `compile_inputs` and `manager`, and the
       first build's package dir the same before and after;
-    * each held app's `ebin` must prove (`Compatibility.Relocation.prove_ebin/4`):
-      relocated to the second build's paths, every beam is the second
-      build's chunk for chunk but metadata, and every other file the same.
+    * each held app's `ebin`, and the package's own whether it was held or
+      not, must prove (`Compatibility.Relocation.prove_ebin/4`): relocated
+      to the second build's paths, every beam is the second build's chunk
+      for chunk but metadata, and every other file the same. So a value the
+      package's compile took from a held dependency through any channel
+      (its md5, a path no holder pattern saw) refuses; a package that was
+      not held may differ only where R2 already allows a path (a `keep`
+      location, a line table's file name), and is served as it was built.
 
   Then the verdict is the pass it held. When the package itself was held it
-  carries `relocation`: the first build's `deps` and `build` paths and, per
-  beam of its `ebin` that needs a rewrite, `%{"path" => "ebin/<file>",
-  "occurrences" => [...]}`. A pass that only needed its dependencies held
+  carries `relocation`: the first build's `deps` and `build` paths, the
+  second build's (`second`, from which the client takes the envelope of
+  paths it relocates to) and, per beam of its `ebin` that needs a rewrite,
+  `%{"path" => "ebin/<file>", "occurrences" => [...]}`. A pass that only needed its dependencies held
   carries none: its own beams hold no path, and its compile never called a
   holder. `trace_stats["relocate"]` says which (`"relocated"`,
   `"dependencies"`), or why it stayed refused (`"refused: <why>"`), and the
@@ -47,9 +56,17 @@ defmodule NccWorker.Portability.Relocate do
   dir is removed either way. Never raises.
 
   What two builds cannot show: a value the compile derived from the path
-  that is the same at both roots (its length compared with a constant) and
-  holds no path. R2 cannot see one either, so a build that bakes one
-  passes today with or without this.
+  that is the same at both roots but not at the user's path. The client
+  relocates only to paths inside the envelope the two roots span (their
+  characters, between their lengths and depths), so a threshold on any of
+  these agrees with both roots; what remains is a predicate both roots and
+  the user's path happen to share (for example the presence of one letter
+  in both roots that the user's path lacks). Today R2 refuses every build
+  whose beams hold the path, so this residual is new exposure that S4
+  brings, for the builds it relocates only. `Dbgi` keeps the first build's
+  paths: a tool that compiles a module again from its debug info (`:cover`
+  on a dependency, the debugger) sees them, as it sees them in every served
+  build.
   """
 
   alias Compatibility.Relocation
@@ -103,7 +120,7 @@ defmodule NccWorker.Portability.Relocate do
         package: facts.ctx.package,
         apps: Enum.sort(apps),
         holders: for({app, modules} <- held, module <- modules, do: {app, module}),
-        ebins: Map.new(apps, &{&1, Context.ebin(facts.ctx, &1)}),
+        ebins: Map.new([facts.ctx.package | apps], &{&1, Context.ebin(facts.ctx, &1)}),
         slots: slots,
         trees: facts.ctx.trees,
         build: package_build(facts.ctx)
@@ -236,8 +253,9 @@ defmodule NccWorker.Portability.Relocate do
   defp reproduce(verdict, held, project_dir, package, opts, run, digest) do
     base = opts |> Keyword.get_lazy(:relocate_root, &System.tmp_dir!/0) |> Context.realpath()
     root = Path.join(base, "ncc-relocate-#{System.unique_integer([:positive])}")
-    proj = Path.join(root, "second/proj")
-    slots = %{"deps" => Path.join(proj, "vendored"), "build" => Path.join(proj, "out/host")}
+    layout = Relocation.second_layout(root)
+    proj = layout["project"]
+    slots = Map.take(layout, ["deps", "build"])
 
     try do
       with :ok <- copy_project(project_dir, proj, held.slots, slots),
@@ -339,8 +357,14 @@ defmodule NccWorker.Portability.Relocate do
   defp same_digest?({{:ok, digest}, {:ok, digest}}), do: true
   defp same_digest?(_digests), do: false
 
+  # Every held app's ebin, and the package's own whether it was held or
+  # not: a value its compile derived from a held dependency (the holder's
+  # md5, a path through a channel no holder pattern sees) differs at the
+  # two roots, and a package that was not held may differ only where R2
+  # already allows a path (a `keep` location, a line table's file name).
   defp prove(verdict, held, other, slots) do
-    Enum.reduce_while(held.apps, {:ok, %{}}, fn app, {:ok, acc} ->
+    Enum.uniq(held.apps ++ [held.package])
+    |> Enum.reduce_while({:ok, %{}}, fn app, {:ok, acc} ->
       with {:ok, a} <- read_ebin(held.ebins[app]),
            {:ok, b} <- read_ebin(other.ebins[app]),
            {:ok, relocated} <- Relocation.prove_ebin(a, held.slots, b, slots) do
@@ -351,15 +375,21 @@ defmodule NccWorker.Portability.Relocate do
       end
     end)
     |> case do
-      {:ok, relocated} -> pass(held, relocated[held.package])
+      {:ok, relocated} -> pass(held, own(held, relocated), slots)
       {:refuse, why} -> refused(verdict, why)
     end
   end
 
-  defp pass(held, own) when is_map(own) and map_size(own) > 0 do
+  # The package's own beams to rewrite, when it was held for its own R2
+  # refusal; nil when only dependencies were.
+  defp own(held, relocated),
+    do: if(held.package in held.apps, do: relocated[held.package])
+
+  defp pass(held, own, second) when is_map(own) and map_size(own) > 0 do
     record = %{
       "deps" => held.slots["deps"],
       "build" => held.slots["build"],
+      "second" => second,
       "files" =>
         for {name, occs} <- Enum.sort(own) do
           %{"path" => "ebin/" <> name, "occurrences" => occs}
@@ -369,7 +399,7 @@ defmodule NccWorker.Portability.Relocate do
     held.passed |> Map.put(:relocation, record) |> put_stat("relocate", "relocated")
   end
 
-  defp pass(held, _own), do: put_stat(held.passed, "relocate", "dependencies")
+  defp pass(held, _own, _second), do: put_stat(held.passed, "relocate", "dependencies")
 
   # sobelow_skip ["Traversal.FileModule"]
   defp read_ebin(ebin) when is_binary(ebin) do
