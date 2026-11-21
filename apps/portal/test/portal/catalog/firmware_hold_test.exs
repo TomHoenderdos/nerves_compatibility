@@ -4,7 +4,9 @@ defmodule Portal.Catalog.FirmwareHoldTest do
 
   alias Portal.Catalog
   alias Portal.Catalog.{Ingestion, SystemResult}
-  alias Portal.Precompiled.Holds
+  alias Portal.Precompiled.{Holds, PluginWatch}
+
+  import Portal.PrecompiledFixtures, only: [plugin_registry: 1]
 
   require Ash.Query
 
@@ -541,6 +543,58 @@ defmodule Portal.Catalog.FirmwareHoldTest do
 
       assert [{listed, 2}] = Holds.list(@taint)
       assert NaiveDateTime.compare(listed, at) == :eq
+    end
+  end
+
+  # The plugin watch (stream S5) covers firmware results too: each passing
+  # target's `rebar3_plugins` is recorded under its run, and `mix firmware`
+  # ran them without the worker's pin check, so a release that is not a
+  # reviewed one, with the reviewed checksum, withholds the target whatever
+  # the watch holds.
+  describe "the rebar3 plugin watch" do
+    @reviewed_hex Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys() |> Enum.sort()
+
+    defp plugin(name, version, sha),
+      do: %{"name" => name, "version" => version, "sha256" => sha, "owners" => ["dep"]}
+
+    defp pinned_hex do
+      {version, sha} =
+        Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Enum.max_by(&elem(&1, 0))
+
+      plugin("rebar3_hex", version, sha)
+    end
+
+    setup do
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex}]))
+      :ok
+    end
+
+    test "a target that ran only reviewed releases is served while the watch is clean" do
+      _ = run!("1.4.0", "2026-11-01T10:00:00Z", "a", rpi4: %{"rebar3_plugins" => [pinned_hex()]})
+      assert served_rpi4?("1.4.0")
+
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex ++ ["99.0.0"]}]))
+      refute served_rpi4?("1.4.0")
+    end
+
+    test "a release outside the review, or another tarball of a reviewed one, withholds it" do
+      for {record, version} <- [
+            {[plugin("rebar3_dirs", "0.1.0", String.duplicate("a", 64))], "1.5.0"},
+            {[%{pinned_hex() | "sha256" => String.duplicate("b", 64)}], "1.5.1"},
+            {[%{pinned_hex() | "version" => nil, "sha256" => nil}], "1.5.2"}
+          ] do
+        _ =
+          run!(version, "2026-11-01T10:00:00Z", "x-" <> version,
+            rpi4: %{"rebar3_plugins" => record}
+          )
+
+        refute served_rpi4?(version), inspect(record)
+      end
+    end
+
+    test "a target that ran no plugin is served" do
+      _ = run!("1.4.0", "2026-11-01T10:00:00Z", "a", rpi4: %{"rebar3_plugins" => []})
+      assert served_rpi4?("1.4.0")
     end
   end
 end

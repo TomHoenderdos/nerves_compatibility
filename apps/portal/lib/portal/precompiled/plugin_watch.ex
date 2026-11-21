@@ -233,6 +233,30 @@ defmodule Portal.Precompiled.PluginWatch do
 
   def record(_package_id, _run_id, _observations), do: :ok
 
+  @doc """
+  Records the plugin releases a firmware target of run `run_id` ran (its
+  system result's `rebar3_plugins`, `NccWorker.FirmwarePlugins`; stream
+  S8), as `record/3` does. `mix firmware` ran them without the worker's pin
+  check, so a record any release of which is not a reviewed one with the
+  reviewed checksum (`Compatibility.RebarPlugins.pins/0`), or cannot be read,
+  records the withholding mark: every firmware result of the run is
+  withheld whatever the watch holds. A target with no record records
+  nothing (an older worker: served as before).
+  """
+  @spec record_firmware(Ecto.UUID.t(), String.t() | nil, [map()] | nil) :: :ok
+  def record_firmware(package_id, run_id, record) when is_list(record) do
+    plugins = if Enum.all?(record, &pinned?/1), do: record, else: [:not_pinned]
+    record(package_id, run_id, %{"rebar3_plugins" => plugins})
+  end
+
+  def record_firmware(_package_id, _run_id, _record), do: :ok
+
+  defp pinned?(%{"name" => name, "version" => version, "sha256" => sha})
+       when is_binary(name) and is_binary(version) and is_binary(sha),
+       do: get_in(RebarPlugins.pins(), [name, version]) == sha
+
+  defp pinned?(_release), do: false
+
   defp releases(plugins) when is_list(plugins) do
     parsed = Enum.map(plugins, &release/1)
     unique = parsed |> Enum.reject(&(&1 == :error)) |> Enum.uniq_by(&Tuple.delete_at(&1, 2))

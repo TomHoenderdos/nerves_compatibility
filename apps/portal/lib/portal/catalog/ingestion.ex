@@ -2751,6 +2751,9 @@ defmodule Portal.Catalog.Ingestion do
 
     case result do
       {:ok, system_result} ->
+        :ok =
+          PluginWatch.record_firmware(run.package_id, run.run_id, system_result.rebar3_plugins)
+
         staged_blobs = Map.get(staged, system_pkg, [])
         sibling = Map.get(siblings, system_pkg)
 

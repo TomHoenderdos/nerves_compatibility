@@ -1397,7 +1397,14 @@ defmodule Portal.Catalog do
                      AND (p.name = ANY($W::text[]) OR $L ?| $W::text[])
                 ELSE true END)
   """
+  # A firmware result whose run ran a watched or unreviewed rebar3 plugin
+  # (`Portal.Precompiled.PluginWatch.record_firmware/3`, stream S8) is
+  # withheld too, by its building run's id.
   @withheld_result_clause "s.unpublished_at IS NULL AND " <>
+                            PluginWatch.served_clause(
+                              "(CASE WHEN s.carried_from_run_id IS NULL THEN r.run_id ELSE b.run_id END)"
+                            ) <>
+                            " AND " <>
                             (@withheld_lock_clause
                              |> String.replace(
                                "$L",
@@ -3723,12 +3730,18 @@ defmodule Portal.Catalog do
   # left out the same way.
   defp reject_withheld_results(results, package_name, runs, withheld) do
     runs_by_id = Map.new(runs, &{&1.id, &1})
+    built_by = fn result -> Map.get(runs_by_id, result.carried_from_run_id || result.run_id) end
+
+    # A firmware result's run that ran a watched or unreviewed rebar3 plugin
+    # (`PluginWatch.record_firmware/3`), as `@withheld_result_clause` reads it.
+    plugins = PluginWatch.withheld_runs(for r <- results, run = built_by.(r), do: run.run_id)
 
     Enum.reject(results, fn result ->
-      built_by = Map.get(runs_by_id, result.carried_from_run_id || result.run_id)
-      deps = result.deps_lock || (built_by && built_by.deps_lock)
+      run = built_by.(result)
+      deps = result.deps_lock || (run && run.deps_lock)
 
       not is_nil(result.unpublished_at) or
+        (run != nil and MapSet.member?(plugins, run.run_id)) or
         Withheld.withheld?(package_name, deps, withheld, result)
     end)
   end
