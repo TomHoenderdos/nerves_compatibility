@@ -228,12 +228,7 @@ defmodule NccWorker.Portability.Declared do
     case File.ls(dir) do
       {:ok, files} ->
         files
-        |> Enum.flat_map(fn file ->
-          case Regex.run(@tarball, file) do
-            [_, ^name, version] -> [{version, Path.join(dir, file)}]
-            _ -> []
-          end
-        end)
+        |> Enum.flat_map(&release_of(&1, name, dir))
         |> Enum.sort_by(&elem(&1, 0), &newer?/2)
         |> Enum.take(@max_versions)
         |> Enum.flat_map(fn {_version, path} -> tarball_modules(path) end)
@@ -245,6 +240,14 @@ defmodule NccWorker.Portability.Declared do
   end
 
   defp modules_of(_home, _name), do: []
+
+  # `{version, path}` of a cached tarball of package `name`.
+  defp release_of(file, name, dir) do
+    case Regex.run(@tarball, file) do
+      [_, ^name, version] -> [{version, Path.join(dir, file)}]
+      _ -> []
+    end
+  end
 
   defp newer?(a, b) do
     case {Version.parse(a), Version.parse(b)} do
