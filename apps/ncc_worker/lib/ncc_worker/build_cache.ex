@@ -606,28 +606,28 @@ defmodule NccWorker.BuildCache do
     dir = Path.join(deps_path, name)
     own? = Keyword.get(opts, :own) == true
     side? = Keyword.get(opts, :native_side) == true
-    mix_exs = Path.join(dir, "mix.exs")
-
-    tools =
-      cond do
-        own? and side? -> (@native_deps -- [name]) -- dependency_only_tools(mix_exs)
-        own? -> (@native_deps -- [name]) -- optional_only_tools(mix_exs)
-        true -> @native_deps
-      end
-
-    scan =
-      cond do
-        own? and side? and not transforms?(dir) -> :compile_time_elixir
-        own? -> :compile_time
-        Keyword.get(opts, :docs) == false -> :code
-        true -> :whole
-      end
-
     pattern = if side?, do: :side, else: target_read_pattern_rule2()
 
     File.dir?(dir) and not String.starts_with?(name, "nerves") and
-      not native_rule2?(dir, manager, tools) and
-      not reads_target?(dir, pattern, scan)
+      not native_rule2?(dir, manager, rule2_tools(dir, name, own?, side?)) and
+      not reads_target?(dir, pattern, rule2_scan(dir, opts, own?, side?))
+  end
+
+  defp rule2_tools(dir, name, true, true),
+    do: (@native_deps -- [name]) -- dependency_only_tools(Path.join(dir, "mix.exs"))
+
+  defp rule2_tools(dir, name, true, false),
+    do: (@native_deps -- [name]) -- optional_only_tools(Path.join(dir, "mix.exs"))
+
+  defp rule2_tools(_dir, _name, false, _side?), do: @native_deps
+
+  defp rule2_scan(dir, opts, own?, side?) do
+    cond do
+      own? and side? and not transforms?(dir) -> :compile_time_elixir
+      own? -> :compile_time
+      Keyword.get(opts, :docs) == false -> :code
+      true -> :whole
+    end
   end
 
   # Judge revision 15, `own: true` only: the native tools the package's own

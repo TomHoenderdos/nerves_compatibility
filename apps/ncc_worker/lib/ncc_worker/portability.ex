@@ -2626,14 +2626,17 @@ defmodule NccWorker.Portability do
       names
       |> Enum.filter(&NifOrigin.checksum_file?/1)
       |> Enum.sort()
-      |> Enum.find(fn name ->
-        case File.read(Path.join(dest, name)) do
-          {:ok, source} -> NifOrigin.parse(source) == :error
-          {:error, _} -> true
-        end
-      end)
+      |> Enum.find(&(not literal_checksum?(Path.join(dest, &1))))
     else
       _ -> "(no source dir)"
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp literal_checksum?(path) do
+    case File.read(path) do
+      {:ok, source} -> NifOrigin.parse(source) != :error
+      {:error, _} -> false
     end
   end
 
