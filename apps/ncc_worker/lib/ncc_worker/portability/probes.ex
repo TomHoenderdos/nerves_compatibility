@@ -244,7 +244,10 @@ defmodule NccWorker.Portability.Probes do
   (`Context.owner/2`, or a child VM's app).
   """
   @spec decide(map(), Context.t(), term()) ::
-          :ignore | {:unjudged, String.t()} | {:refuse, String.t()}
+          :ignore
+          | {:unjudged, String.t()}
+          | {:refuse, String.t()}
+          | {:observe, String.t(), map()}
   def decide(%{"channel" => "loaded_modules", "mfa" => mfa}, _ctx, _owner) when is_binary(mfa),
     do: {:unjudged, "compile-time list of the loaded modules: " <> mfa}
 
@@ -440,11 +443,27 @@ defmodule NccWorker.Portability.Probes do
         found_or_ensured(event, ctx, owner)
 
       declared?(ctx.declared.modules, module, ctx, owner) ->
-        :ignore
+        {:observe, "declared_absent", absent(module, ctx, event)}
 
       true ->
         {:refuse, dependency(module, event)}
     end
+  end
+
+  # Round 3, R2-1: a probe of a declared-absent dependency's module passes
+  # here but is recorded (`compile_observations.declared_absent`): another
+  # package may define the same module, and a user who has that one and not
+  # the declared one has the build's closure and finds the module. The
+  # portal refuses the build at ingest when a package with at least 1,000
+  # recent downloads that neither the lock nor a declaration names defines
+  # it (`Portal.Catalog.ModuleIndex`); client 0.9 checks the record itself.
+  defp absent(module, ctx, event) do
+    %{
+      "kind" => "module_absent",
+      "module" => module,
+      "declared" => Map.get(ctx.declared.owners, module, []),
+      "via" => via(event)
+    }
   end
 
   # A module or application of a dependency a member of the owner's closure

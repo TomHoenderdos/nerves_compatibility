@@ -15,10 +15,9 @@ defmodule NccWorker.Portability.Declared do
   (`metadata.config`, read by `NccWorker.Portability.HexFiles.parse/1`), of
   the `hexpm` repository only. A declared dependency's modules come from its
   tarballs in the run's Hex cache, any version (the host puts there only
-  tarballs it checked against Hex.pm): every literal `defmodule`,
-  `defprotocol` and `defimpl` name in its `.ex` sources, parsed without
-  creating atoms, and every `-module` of its `.erl` sources. A module a macro
-  defines is not found, and a declared dependency with no cached tarball
+  tarballs it checked against Hex.pm), read by `Compatibility.HexModules`.
+  A module a macro defines is not found, and a declared dependency with no
+  cached tarball
   holds no known module: a probe of either refuses as before. Its
   application, which the declaration names, is known either way.
 
@@ -37,14 +36,11 @@ defmodule NccWorker.Portability.Declared do
   Hex cache they lay out themselves).
   """
 
-  alias NccWorker.Portability.{Context, HexFiles, Rebar}
+  alias NccWorker.Portability.{Context, HexFiles}
 
   @tarball ~r/\A([a-z][a-z0-9_]*)-([0-9][0-9A-Za-z.+\-]*)\.tar\z/
   # Versions read per declared dependency, newest first.
   @max_versions 3
-  # The source bytes one dependency's tarball may have parsed.
-  @max_source_bytes 32 * 1024 * 1024
-  @max_files 5_000
   @max_fetch 64
   @fetch_timeout_sec 120
   @name ~r/\A[a-z][a-z0-9_]*\z/
@@ -408,107 +404,11 @@ defmodule NccWorker.Portability.Declared do
   defp tarball_modules(path) do
     max = Compatibility.StaticPriv.max_tarball_bytes()
 
-    with {:ok, bytes} when byte_size(bytes) <= max <-
-           File.open(path, [:read, :raw, :binary], &IO.binread(&1, max + 1)),
-         {:ok, tar} <- Rebar.contents_tar(bytes),
-         {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory]) do
-      files
-      |> Enum.take(@max_files)
-      |> Enum.reduce({[], 0}, fn {name, body}, {acc, bytes} ->
-        source(List.to_string(name), body, acc, bytes)
-      end)
-      |> elem(0)
-    else
+    case File.open(path, [:read, :raw, :binary], &IO.binread(&1, max + 1)) do
+      {:ok, bytes} when is_binary(bytes) -> Compatibility.HexModules.modules(bytes)
       _ -> []
     end
   rescue
     _ -> []
   end
-
-  defp source(_name, body, acc, bytes) when bytes + byte_size(body) > @max_source_bytes,
-    do: {acc, bytes}
-
-  defp source(name, body, acc, bytes) do
-    cond do
-      String.ends_with?(name, ".ex") and String.valid?(body) ->
-        {elixir_modules(body) ++ acc, bytes + byte_size(body)}
-
-      String.ends_with?(name, ".erl") ->
-        {erlang_modules(body) ++ acc, bytes + byte_size(body)}
-
-      true ->
-        {acc, bytes}
-    end
-  end
-
-  defp erlang_modules(body) do
-    case Regex.run(~r/^-module\(\s*'?([a-z][A-Za-z0-9_@]*)'?\s*\)/m, body) do
-      [_, m] -> [m]
-      _ -> []
-    end
-  end
-
-  # No atom is created: every atom of the source comes back as {:atom, name}.
-  defp elixir_modules(body) do
-    case Code.string_to_quoted(body,
-           static_atoms_encoder: fn name, _meta -> {:ok, {:atom, name}} end,
-           existing_atoms_only: true,
-           columns: false,
-           emit_warnings: false
-         ) do
-      {:ok, ast} -> ast |> walk(nil, []) |> Enum.uniq()
-      _ -> []
-    end
-  rescue
-    _ -> []
-  end
-
-  defp walk({{:atom, kind}, _, [name_ast | rest]}, outer, acc)
-       when kind in ["defmodule", "defprotocol"] do
-    case alias_name(name_ast, outer) do
-      nil -> walk(rest, outer, acc)
-      name -> walk(rest, name, [name | acc])
-    end
-  end
-
-  defp walk({{:atom, "defimpl"}, _, [proto_ast | rest]}, outer, acc) do
-    proto = alias_name(proto_ast, nil)
-    fors = rest |> Enum.filter(&is_list/1) |> Enum.flat_map(&for_option/1)
-    fors = if fors == [] and outer, do: [outer], else: Enum.map(fors, &alias_name(&1, nil))
-
-    impls =
-      for f <- fors,
-          is_binary(proto) and is_binary(f),
-          do: proto <> "." <> String.replace_prefix(f, "Elixir.", "")
-
-    walk(rest, outer, impls ++ acc)
-  end
-
-  defp walk({a, _meta, args}, outer, acc), do: walk(args, outer, walk(a, outer, acc))
-  defp walk({l, r}, outer, acc), do: walk(r, outer, walk(l, outer, acc))
-  defp walk(list, outer, acc) when is_list(list), do: Enum.reduce(list, acc, &walk(&1, outer, &2))
-  defp walk(_other, _outer, acc), do: acc
-
-  defp for_option(kw) do
-    Enum.flat_map(kw, fn
-      {key, value} when key in [:for, {:atom, "for"}] -> List.wrap(value)
-      _ -> []
-    end)
-  end
-
-  # A literal alias, nested under the enclosing module unless it starts at
-  # `Elixir`; `__MODULE__` or anything dynamic names nothing.
-  defp alias_name({:__aliases__, _, parts}, outer) do
-    names = for {:atom, p} <- parts, do: p
-
-    cond do
-      length(names) != length(parts) -> nil
-      hd(names) == "Elixir" -> Enum.join(names, ".")
-      is_binary(outer) -> outer <> "." <> Enum.join(names, ".")
-      true -> "Elixir." <> Enum.join(names, ".")
-    end
-  end
-
-  defp alias_name({:atom, name}, _outer), do: name
-  defp alias_name(_other, _outer), do: nil
 end

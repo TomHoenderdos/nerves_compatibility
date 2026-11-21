@@ -120,6 +120,13 @@ config :portal, Oban,
        # stays under hex.pm's unauthenticated rate limit. Carries `:intake`,
        # the web host's queue: HTTP calls to hex.pm, not compiles.
        {"53 4 * * 1", Portal.Workers.HexMetaRefresh},
+       # Weekly, Monday 06:17, once the metadata refresh's jobs (about an
+       # hour) have refreshed the download counts and latest versions: read
+       # the modules of every package with 1,000 or more recent downloads
+       # whose latest release changed (`Portal.Catalog.ModuleIndex`, which
+       # ingest's declared-absent refusal reads). Carries `:intake`, the web
+       # host's queue: Hex tarball downloads, not compiles.
+       {"17 6 * * 1", Portal.Workers.ModuleIndexRefresh},
        # Weekly, Tuesday 02:37: fetch the per-release download counts the
        # toolchain backlog orders a package's versions by. A day after the
        # metadata refresh, so it picks its packages by fresh recent counts

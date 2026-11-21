@@ -886,11 +886,25 @@ defmodule NccWorker.Portability.ProbesTest do
         |> ctx(%{"pkg" => ["kernel"], "child" => ["kernel"], "other" => ["kernel"]})
         |> Map.put(:declared, %{
           modules: %{"Elixir.Jason.Encoder" => ["child"], "Elixir.Poison" => ["other"]},
-          apps: %{"jason" => ["child"]}
+          apps: %{"jason" => ["child"]},
+          owners: %{"Elixir.Jason.Encoder" => ["jason"], "Elixir.Poison" => ["poison"]}
         })
 
       c = put_in(c.deps["pkg"].children, ["child"])
-      assert Probes.decide(hex("Elixir.Jason.Encoder"), c, "pkg") == :ignore
+
+      # Recorded (round 3, R2-1): the module, absent, the declared packages
+      # that define it and how it was asked. The portal refuses it at ingest
+      # when another popular package defines it too; client 0.9 checks it.
+      absent = %{
+        "kind" => "module_absent",
+        "module" => "Elixir.Jason.Encoder",
+        "declared" => ["jason"],
+        "via" => "Code.ensure_loaded?/1"
+      }
+
+      assert Probes.decide(hex("Elixir.Jason.Encoder"), c, "pkg") ==
+               {:observe, "declared_absent", absent}
+
       # Declared by a dependency outside the owner's closure.
       assert {:refuse, _} = Probes.decide(hex("Elixir.Poison"), c, "pkg")
       assert {:refuse, _} = Probes.decide(hex("Elixir.Jason.Encoder"), c, "other")
@@ -901,7 +915,7 @@ defmodule NccWorker.Portability.ProbesTest do
                c,
                "pkg"
              ) ==
-               :ignore
+               {:observe, "declared_absent", absent}
 
       app = %{
         "channel" => "app_probe",

@@ -195,7 +195,8 @@ defmodule NccWorker.Portability do
     "own_priv_reads" => 50,
     "own_tree_copies" => 50,
     "foreign_priv" => 50,
-    "holder_calls" => 50
+    "holder_calls" => 50,
+    "declared_absent" => 200
   }
   @max_refusals 100
   @max_problems 20
@@ -3176,6 +3177,23 @@ defmodule NccWorker.Portability do
 
   defp kino_own_call?({"foreign_priv", %{"owner" => owner}}, %{target: owner}), do: true
   defp kino_own_call?(_observed, _gate), do: false
+
+  # `declared_absent` (round 3, R2-1) is a list the portal decides on
+  # (`Portal.Catalog.ModuleIndex`): past its cap, one `truncated` item says
+  # so, which refuses there. Each item once, by what it says, not by which
+  # window saw it.
+  defp collect(observed, "declared_absent" = kind, cap) do
+    items =
+      observed
+      |> Enum.filter(&(elem(&1, 0) == kind))
+      |> Enum.map(&(&1 |> elem(1) |> Map.take(["kind", "module", "declared", "via"])))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    if length(items) > cap,
+      do: Enum.take(items, cap - 1) ++ [%{"kind" => "truncated"}],
+      else: items
+  end
 
   defp collect(observed, kind, cap) do
     observed

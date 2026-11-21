@@ -522,6 +522,16 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
 
     verdict = TracerFixtures.judge(proj, "fx_probe", traced, [], opts)
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+    # Recorded for the portal's module index and client 0.9 (round 3, R2-1).
+    assert verdict.observations["declared_absent"] == [
+             %{
+               "kind" => "module_absent",
+               "module" => "Elixir.FxOpt.Codec",
+               "declared" => ["fx_opt"],
+               "via" => "Code.ensure_loaded?/1"
+             }
+           ]
   end
 
   # Round 3, R2-3 (the reviewer's E3): fx_probe declares fx_tgt, not

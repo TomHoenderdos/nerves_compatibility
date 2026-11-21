@@ -56,6 +56,7 @@ defmodule Portal.Catalog.Ingestion do
     FindingTriage,
     LatestRun,
     LogSanitizer,
+    ModuleIndex,
     Package,
     PinnedBuild,
     Run,
@@ -545,6 +546,7 @@ defmodule Portal.Catalog.Ingestion do
     build =
       result
       |> target_build(opts)
+      |> gate_declared_absent()
       |> gate_build_root()
       |> gate_manifest()
       |> gate_release(result, opts)
@@ -805,6 +807,7 @@ defmodule Portal.Catalog.Ingestion do
       result
       |> toolchain_build_map()
       |> relocated_files()
+      |> gate_declared_absent()
       |> gate_manifest()
       |> gate_relocation(opts)
       |> gate_config_variant(opts)
@@ -1296,6 +1299,50 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp gate_pins(build, _result, _opts), do: build
+
+  # Round 3, R2-1: a pass build whose judge recorded a probe of a module
+  # only a declared, absent dependency defines, which another popular
+  # package defines too (`Portal.Catalog.ModuleIndex.refusal/2`), is a
+  # refusal like the judge's own: skipped, no files.
+  defp gate_declared_absent(%{"status" => "pass"} = build) do
+    case ModuleIndex.refusal(declared_absent(build), locked_names(build["deps_lock"])) do
+      nil ->
+        build
+
+      reason ->
+        Map.merge(build, %{
+          "status" => "skipped",
+          "reason" => reason,
+          "file_manifest" => nil,
+          "compile_env" => nil,
+          "compile_inputs" => nil,
+          "foreign_priv" => nil,
+          "foreign_priv_rule" => nil
+        })
+    end
+  end
+
+  defp gate_declared_absent(build), do: build
+
+  defp declared_absent(%{"compile_observations" => %{"declared_absent" => items}})
+       when is_list(items),
+       do: items
+
+  defp declared_absent(_build), do: nil
+
+  defp locked_names(%{} = lock), do: Map.keys(lock)
+  defp locked_names(_lock), do: []
+
+  # The same refusal for a run's `pure_elixir` result, which the judge
+  # passed (`host_portability`): held back as unpublished, with the reason.
+  defp declared_absent_hold(%{"host_portability" => %{"status" => "pass"} = hp} = result) do
+    case ModuleIndex.refusal(declared_absent(hp), locked_names(result["deps_lock"])) do
+      nil -> nil
+      reason -> {DateTime.utc_now(), reason}
+    end
+  end
+
+  defp declared_absent_hold(_result), do: nil
 
   defp skip_variant(build, reason),
     do: Map.merge(build, %{"status" => "skipped", "reason" => reason, "file_manifest" => nil})
@@ -1999,7 +2046,7 @@ defmodule Portal.Catalog.Ingestion do
     rule = host_portability_rule(result)
 
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
-         hold = rule2_hold(package.id, version, rule, systems),
+         hold = rule2_hold(package.id, version, rule, systems) || declared_absent_hold(result),
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at, {carried, carry?}),
          :ok <-
@@ -2317,6 +2364,12 @@ defmodule Portal.Catalog.Ingestion do
 
   defp rule2_hold(_package_id, _version, _rule, _systems), do: nil
 
+  # A `pure_elixir` result's hold: rule 2's revocation (a time) or a
+  # declared-absent refusal (`{time, reason}`); no other system is held.
+  defp held("pure_elixir", {%DateTime{} = at, reason}), do: {at, reason}
+  defp held("pure_elixir", %DateTime{} = at), do: {at, SystemResult.rule2_revocation()}
+  defp held(_system_pkg, _hold), do: {nil, nil}
+
   # The rule that judged a `pure_elixir` result's publication, from the
   # result's top-level `host_portability`; only `pure_elixir` stores it.
   defp host_portability_rule(result) do
@@ -2519,7 +2572,7 @@ defmodule Portal.Catalog.Ingestion do
          logs
        ) do
     status = Compatibility.Types.parse_status(sys["status"])
-    held_at = if system_pkg == "pure_elixir", do: hold
+    {held_at, held_reason} = held(system_pkg, hold)
     {inputs, compiled_env} = inputs_and_env(sys, {package_name, version})
     {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
 
@@ -2550,7 +2603,7 @@ defmodule Portal.Catalog.Ingestion do
         compile_env_rule: system_compile_env_rule(system_pkg, sys, compiled_env),
         portability_rule: if(system_pkg == "pure_elixir", do: rule),
         unpublished_at: held_at,
-        unpublished_reason: if(held_at, do: SystemResult.rule2_revocation()),
+        unpublished_reason: held_reason,
         toolchain_pkg: toolchain_pkg,
         toolchain_version: toolchain_version,
         otp_full: fact_string(sys["otp_full"]),

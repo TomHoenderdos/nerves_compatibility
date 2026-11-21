@@ -634,7 +634,12 @@ traced, it fetches the missing ones with `mix hex.package fetch` after the trace
 at most 64 packages, 120 s kept by the BEAM, which kills the fetch past it. Only a package the fetch reports fetched
 goes into the run's cache; a checksum error, a crash or a kill leaves it unknown, and an unknown package owns no known
 module, so its probe refuses (`NCC_DECLARED_FETCH=0` turns the fetch off; `trace_stats.declared_fetch` names what was
-fetched and what failed). The package's own probe
+fetched and what failed). Such a probe that passes is recorded in `compile_observations.declared_absent` (`kind`
+`module_absent`, the `module`, the `declared` packages that define it, `via`; at most 200, then one `truncated`
+item): another package may define the same module, and a user with that one and not the declared one has the build's
+closure. The portal refuses the build at ingest when a package with 1,000 or more recent downloads that neither the
+lock nor the record names defines the module (`Portal.Catalog.ModuleIndex`); client 0.9 is to check the record
+itself. It is not a `compile_inputs` item yet: client 0.8 reads an unknown kind as a malformed entry and misses. The package's own probe
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path
 application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier
 dependency used URI), refuses as `compile-time probe of whether a module is loaded: ` unless the same process
