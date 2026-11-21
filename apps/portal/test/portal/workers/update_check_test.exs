@@ -281,6 +281,49 @@ defmodule Portal.Workers.UpdateCheckTest do
   end
 
   describe "perform/1" do
+    # Review S5 R4: with the check off (`NCC_UPDATE_CHECK=0`) the watch is
+    # never refreshed, and after 6 hours every build that ran a plugin is
+    # withheld rather than served on a frozen watch.
+    test "while disabled the plugin watch goes stale and fails closed" do
+      reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
+      hex_says([{"rebar3_hex", "7.5.0", DateTime.utc_now(), reviewed}])
+      assert {:ok, _} = UpdateCheck.run()
+      refute Portal.Precompiled.PluginWatch.stale?()
+
+      Application.put_env(:portal, UpdateCheck, enabled: false)
+
+      Portal.Repo.query!(
+        "UPDATE rebar3_plugin_watch_state SET checked_at = now() - interval '7 hours'",
+        []
+      )
+
+      assert :ok = perform_job(UpdateCheck, %{})
+      assert Portal.Precompiled.PluginWatch.stale?()
+
+      Portal.Repo.query!(
+        "INSERT INTO rebar3_plugin_runs (run_id, package, version) VALUES ('uc-run', 'rebar3_hex', '7.5.0')",
+        []
+      )
+
+      assert Portal.Precompiled.PluginWatch.withheld_runs(["uc-run", "uc-other"]) ==
+               MapSet.new(["uc-run"])
+    end
+
+    # The refresh runs first, before anything that could raise.
+    test "the plugin watch is refreshed even when the rest of the run fails" do
+      reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
+      # A tracked package whose registry entry breaks the rebuild pass.
+      package("alpha", "1.0.0")
+
+      hex_says([
+        {"rebar3_hex", "9.0.0", DateTime.utc_now(), reviewed ++ ["9.0.0"]},
+        {"alpha", "1.0.0", DateTime.utc_now(), :not_a_list}
+      ])
+
+      _ = catch_error(UpdateCheck.run())
+      assert Portal.Precompiled.PluginWatch.watched() == %{"rebar3_hex" => ["9.0.0"]}
+    end
+
     test "does nothing at all while disabled" do
       package("alpha", "1.0.0")
       hex_says([{"alpha", "1.1.0"}])

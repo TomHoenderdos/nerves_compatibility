@@ -28,6 +28,10 @@ defmodule Portal.Precompiled.PluginWatch do
       does not cover into `rebar3_plugin_watch` (`refresh/1`): any such
       release, the newest, a prerelease or a backport alike. A package the
       registry read does not list keeps what it had.
+    * The guard fails closed (review S5 R4): while the newest refresh is
+      older than `max_age_hours/0`, or there was none (the update check
+      switched off with `NCC_UPDATE_CHECK=0`, the registry unreachable),
+      every build that ran any plugin is withheld.
     * Every selector of published files leaves out a toolchain, pinned or
       host-native build whose run ran a watched package (`served_clause/1` in
       SQL, `withheld_runs/1` in Elixir), and the watch is part of every
@@ -48,6 +52,10 @@ defmodule Portal.Precompiled.PluginWatch do
 
   alias Compatibility.RebarPlugins
 
+  # The oldest refresh the guard trusts (review S5 R4): the update check runs
+  # hourly, so six missed runs.
+  @max_age_hours 6
+
   @name ~r/\A[a-z][a-z0-9_]{0,63}\z/
   @version ~r/\A[0-9A-Za-z][0-9A-Za-z.+-]{0,63}\z/
   @sha ~r/\A[0-9a-f]{64}\z/
@@ -56,6 +64,10 @@ defmodule Portal.Precompiled.PluginWatch do
   # The record of a run that ran plugin releases this cannot list: withheld
   # whatever the watch holds (`served_clause/1`).
   @unrecorded {"*", "unrecorded", nil}
+
+  @doc "The oldest refresh, in hours, the guard trusts."
+  @spec max_age_hours() :: pos_integer()
+  def max_age_hours, do: @max_age_hours
 
   @doc "The most distinct plugin releases one run's record holds."
   @spec max_releases() :: pos_integer()
@@ -130,6 +142,12 @@ defmodule Portal.Precompiled.PluginWatch do
     now = DateTime.utc_now()
 
     Portal.Repo.transaction(fn ->
+      Portal.Repo.query!(
+        "INSERT INTO rebar3_plugin_watch_state (key, checked_at) VALUES ('refreshed', $1) " <>
+          "ON CONFLICT (key) DO UPDATE SET checked_at = EXCLUDED.checked_at",
+        [now]
+      )
+
       for package <- RebarPlugins.packages(), entry = by_name[package], entry != nil do
         versions = Map.get(entry, :versions) || [entry.latest_version]
         unreviewed = versions |> Enum.reject(&RebarPlugins.reviewed?(package, &1)) |> Enum.uniq()
@@ -175,14 +193,16 @@ defmodule Portal.Precompiled.PluginWatch do
 
   @doc """
   A subquery of one row and one column, `watch`: the watch as text for the
-  manifest fingerprints (`Portal.Catalog.precompiled_fingerprints/0`), NULL
-  while nothing is watched, so a fingerprint is then what it was before.
+  manifest fingerprints (`Portal.Catalog.precompiled_fingerprints/0`) and
+  whether it is stale, NULL while nothing is watched and it is fresh, so a
+  fingerprint is then what it was before.
   Literal SQL only.
   """
   @spec fingerprint_sql() :: String.t()
   def fingerprint_sql do
-    "SELECT string_agg(package || ':' || array_to_string(unreviewed, ','), ';' " <>
-      "ORDER BY package) AS watch FROM rebar3_plugin_watch"
+    "SELECT nullif(coalesce(string_agg(package || ':' || array_to_string(unreviewed, ','), ';' " <>
+      "ORDER BY package), '') || CASE WHEN #{stale_sql()} THEN '|stale' ELSE '' END, '') " <>
+      "AS watch FROM rebar3_plugin_watch"
   end
 
   @doc "The ones of `run_ids` whose run ran a watched package."
@@ -215,10 +235,27 @@ defmodule Portal.Precompiled.PluginWatch do
       "WHERE bp.run_id = #{run_id} AND #{withholds("bp")})"
   end
 
-  # Whether the record row aliased `bp` withholds its run: the mark, or a
-  # watched package.
+  # Whether the record row aliased `bp` withholds its run: the mark, a
+  # watched package, or any plugin while the watch is stale (review S5 R4).
   defp withholds(bp) do
-    "(#{bp}.package = '*' OR EXISTS (SELECT 1 FROM rebar3_plugin_watch pw " <>
+    "(#{bp}.package = '*' OR #{stale_sql()} OR EXISTS (SELECT 1 FROM rebar3_plugin_watch pw " <>
       "WHERE pw.package = #{bp}.package))"
+  end
+
+  @doc """
+  The SQL condition, true while the watch is stale: no refresh in the last
+  `max_age_hours/0` hours, or none ever. Literal SQL only.
+  """
+  @spec stale_sql() :: String.t()
+  def stale_sql do
+    "NOT EXISTS (SELECT 1 FROM rebar3_plugin_watch_state st WHERE st.key = 'refreshed' " <>
+      "AND st.checked_at > (now() AT TIME ZONE 'utc') - interval '#{@max_age_hours} hours')"
+  end
+
+  @doc "Whether the watch is stale (`stale_sql/0`): every build that ran a plugin is withheld."
+  @spec stale?() :: boolean()
+  def stale? do
+    %{rows: [[stale]]} = Portal.Repo.query!("SELECT #{stale_sql()}", [])
+    stale
   end
 end

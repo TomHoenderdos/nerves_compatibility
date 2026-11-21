@@ -503,6 +503,18 @@ defmodule Portal.HostNativeTest do
 
       {:ok, %{status: :pass}} = Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
       on!()
+
+      # A watch never written withholds it too (review S5 R4).
+      refute name in Catalog.packages_with_precompiled_files()
+
+      Portal.Precompiled.PluginWatch.refresh([
+        %{
+          name: "rebar3_hex",
+          latest_version: "x",
+          versions: Map.keys(Compatibility.RebarPlugins.pins()["rebar3_hex"])
+        }
+      ])
+
       # The NIF's bytes are the setup's build's too: judged per package.
       assert name in Catalog.packages_with_precompiled_files()
 

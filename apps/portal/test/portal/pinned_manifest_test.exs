@@ -65,9 +65,16 @@ defmodule Portal.PinnedManifestTest do
     }
 
     %{name: name, sha: sha} = ingested(observations: plugins)
-    assert %{"builds_closure" => [_]} = version(name)
-
     reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
+
+    # A watch never written withholds it too (review S5 R4).
+    assert version(name) == nil
+
+    Portal.Precompiled.PluginWatch.refresh([
+      %{name: "rebar3_hex", latest_version: "x", versions: reviewed}
+    ])
+
+    assert %{"builds_closure" => [_]} = version(name)
 
     watch =
       &Portal.Precompiled.PluginWatch.refresh([

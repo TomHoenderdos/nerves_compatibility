@@ -111,6 +111,8 @@ defmodule Portal.Precompiled.PluginWatchTest do
       other = "plugwatch_none_#{System.unique_integer([:positive])}"
       plain = ingest_toolchain_build(other, "1.0.0", compile_observations: observations([]))
 
+      # A fresh watch with nothing in it.
+      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
       %{name: name, sha: ebin_sha(build), other: other, other_sha: ebin_sha(plain)}
     end
 
@@ -165,6 +167,36 @@ defmodule Portal.Precompiled.PluginWatchTest do
       refute served?(ctx.name)
       refute Catalog.published_sha256?(ctx.sha)
       assert served?(ctx.other)
+    end
+
+    # Review S5 R4: the guard fails closed. A watch the update check has not
+    # refreshed in 6 hours, or never, withholds every build that ran a
+    # plugin; the next refresh serves them again.
+    test "a stale or never written watch withholds every build that ran a plugin", ctx do
+      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      assert served?(ctx.name)
+      fresh = Catalog.precompiled_fingerprints()[ctx.name]
+
+      Portal.Repo.query!(
+        "UPDATE rebar3_plugin_watch_state SET checked_at = now() - interval '7 hours'",
+        []
+      )
+
+      refute served?(ctx.name)
+      refute Catalog.published_sha256?(ctx.sha)
+      refute ctx.name in Catalog.packages_with_precompiled_files()
+      assert Catalog.precompiled_fingerprints()[ctx.name] != fresh
+      # A build that ran no plugin is not touched.
+      assert served?(ctx.other)
+
+      Portal.Repo.query!("DELETE FROM rebar3_plugin_watch_state", [])
+      refute served?(ctx.name)
+      refute Catalog.published_sha256?(ctx.sha)
+
+      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      assert served?(ctx.name)
+      assert Catalog.published_sha256?(ctx.sha)
+      assert Catalog.precompiled_fingerprints()[ctx.name] == fresh
     end
 
     test "a watched dependency of the plugin withholds it too", ctx do

@@ -78,10 +78,12 @@ defmodule Portal.Workers.UpdateCheck do
 
   ## The rebar3 plugin watch
 
-  Each run also hands the registry to `Portal.Precompiled.PluginWatch`,
+  Each run first hands the registry to `Portal.Precompiled.PluginWatch`,
   which records any release of a reviewed rebar3 plugin package outside the
   review; the builds that ran that package are withheld until a release
-  that reviews it deploys. A dry run writes nothing.
+  that reviews it deploys. A dry run writes nothing. While the check is off
+  (or failing) the watch goes stale, and after six hours every build that
+  ran a plugin is withheld.
 
   ## Scope
 
@@ -200,8 +202,13 @@ defmodule Portal.Workers.UpdateCheck do
   def run(opts \\ []) do
     case registry_source().snapshot(all_versions: true) do
       {:ok, registry} ->
-        {moved, patch_only, hidden} = moved(registry)
         dry_run? = Keyword.get(opts, :dry_run, false)
+
+        # The rebar3 plugin watch first, on its own, so nothing below can
+        # keep it from being refreshed (review S5 R4).
+        unless dry_run?, do: refresh_plugin_watch(registry)
+
+        {moved, patch_only, hidden} = moved(registry)
 
         enqueued =
           if dry_run? do
@@ -220,11 +227,6 @@ defmodule Portal.Workers.UpdateCheck do
 
         fast_path = if dry_run?, do: 0, else: ReleaseFastPath.offer(registry)
 
-        # The rebar3 plugin watch (`Portal.Precompiled.PluginWatch`): the
-        # same registry, so a plugin release nobody reviewed withholds the
-        # builds that ran that plugin within the hour.
-        unless dry_run?, do: PluginWatch.refresh(registry)
-
         Logger.info(
           "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued, #{nominated} toolchain builds nominated, #{fast_path} releases on the fast path"
         )
@@ -241,6 +243,16 @@ defmodule Portal.Workers.UpdateCheck do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # The rebar3 plugin watch (`Portal.Precompiled.PluginWatch`): the same
+  # registry, so a plugin release nobody reviewed withholds the builds that
+  # ran that plugin within the hour. A failure here is logged; the watch
+  # then goes stale and withholds them all.
+  defp refresh_plugin_watch(registry) do
+    PluginWatch.refresh(registry)
+  rescue
+    e -> Logger.error("rebar3 plugin watch not refreshed: " <> Exception.message(e))
   end
 
   # DateTime structs do not sort chronologically under Erlang term ordering.
