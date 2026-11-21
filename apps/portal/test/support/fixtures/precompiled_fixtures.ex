@@ -46,8 +46,8 @@ defmodule Portal.PrecompiledFixtures do
   lists the closure's traced config reads), `:status` (`"pass"`),
   `:mode` (`33_188`), `:config_variant` (`"default"`, both the result's echo
   and the job's value), `:portability_rule`, `:rule1_reason`, `:declared`,
-  `:manager`, `:judge_revision` and `:compile_inputs` (each absent from the
-  result unless given), and `:variant` (the job's optional-deps variant and
+  `:manager`, `:judge_revision`, `:compile_inputs` and
+  `:compile_observations` (each absent from the result unless given), and `:variant` (the job's optional-deps variant and
   the result's echo of it; absent, a `with` build that echoes nothing).
   """
   def ingest_toolchain_build(name, version, opts \\ []) do
@@ -133,7 +133,8 @@ defmodule Portal.PrecompiledFixtures do
           :manager,
           :judge_revision,
           :compile_inputs,
-          :relocation
+          :relocation,
+          :compile_observations
         ])
         |> Map.new(fn {k, v} -> {Atom.to_string(k), v} end)
       )

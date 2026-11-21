@@ -76,6 +76,13 @@ defmodule Portal.Workers.UpdateCheck do
   handed to `Portal.Workers.ReleaseFastPath` from this run instead, which
   rebuilds them as soon as its budget allows.
 
+  ## The rebar3 plugin watch
+
+  Each run also hands the registry to `Portal.Precompiled.PluginWatch`,
+  which records any release of a reviewed rebar3 plugin package outside the
+  review; the builds that ran that package are withheld until a release
+  that reviews it deploys. A dry run writes nothing.
+
   ## Scope
 
   Only packages already in the catalogue. A registry package we have never
@@ -112,6 +119,7 @@ defmodule Portal.Workers.UpdateCheck do
   alias Portal.Catalog.LatestRun
   alias Portal.Catalog.Package
   alias Portal.Workers.Backfill
+  alias Portal.Precompiled.PluginWatch
   alias Portal.Workers.ReleaseFastPath
 
   @doc """
@@ -211,6 +219,11 @@ defmodule Portal.Workers.UpdateCheck do
           end
 
         fast_path = if dry_run?, do: 0, else: ReleaseFastPath.offer(registry)
+
+        # The rebar3 plugin watch (`Portal.Precompiled.PluginWatch`): the
+        # same registry, so a plugin release nobody reviewed withholds the
+        # builds that ran that plugin within the hour.
+        unless dry_run?, do: PluginWatch.refresh(registry)
 
         Logger.info(
           "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued, #{nominated} toolchain builds nominated, #{fast_path} releases on the fast path"

@@ -44,8 +44,16 @@ defmodule Portal.Pins.Served do
     )
     |> Ash.read!(domain: Portal.Catalog)
     |> Enum.reject(&withheld?(&1, package_name, withheld))
+    |> reject_plugin_withheld()
     |> only_publishing()
     |> cap()
+  end
+
+  # A build whose run ran a watched rebar3 plugin release
+  # (`Portal.Precompiled.PluginWatch`).
+  defp reject_plugin_withheld(builds) do
+    withheld = Portal.Precompiled.PluginWatch.withheld_runs(Enum.map(builds, & &1.run_id))
+    Enum.reject(builds, &MapSet.member?(withheld, &1.run_id))
   end
 
   defp only_publishing(builds) do

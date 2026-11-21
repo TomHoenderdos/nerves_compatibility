@@ -45,6 +45,10 @@ defmodule Portal.Precompiled.Withheld do
   relocated build (`Portal.Precompiled.Relocated`, S4): its own package's
   name on the list withholds it whatever it records.
 
+  The same selectors apply a second, separate rule: a toolchain, pinned or
+  host-native build whose run ran a rebar3 plugin release that Hex now has
+  an unreviewed release of is left out (`Portal.Precompiled.PluginWatch`).
+
   Configured with `config :portal, #{inspect(__MODULE__)}, packages: [...]`.
   Without that key, or with anything but a list of strings, the default
   (`#{inspect(["kino", "phoenix_live_view"])}`) applies, so a misconfiguration

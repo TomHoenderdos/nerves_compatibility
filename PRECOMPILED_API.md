@@ -1478,6 +1478,16 @@ them.
   withheld whatever it records, and a revoked or withdrawn build stays
   unserved. LiveView-closure builds published before that come back as the
   builder rebuilds them.
+- No toolchain, pinned or host-native build that ran a rebar3 plugin is
+  served, in either manifest format or by `files/{sha256}`, while Hex has a
+  release of that plugin package, or of a plugin dependency the build ran,
+  that the builder's plugin review does not cover
+  (`Portal.Precompiled.PluginWatch`, read from the registry every hour): a
+  user's rebar3 takes a plugin's release from its own registry cache, and a
+  release nobody reviewed could change what the package compiles to. The
+  build is served again, unchanged, once a portal release that reviews that
+  release deploys. A build made before builds recorded the plugins they ran
+  (2026-11) records none and is not covered.
 - A config variant is served only beside its default build: the default
   build of the same version, toolchain, builder version and optional
   dependencies must itself be served (passing, not revoked, not withheld),

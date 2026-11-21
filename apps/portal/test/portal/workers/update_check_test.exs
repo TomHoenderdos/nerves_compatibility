@@ -224,6 +224,23 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert length(backfill_jobs()) == 1
     end
 
+    # Review S5 S1: the hourly registry read also writes the rebar3 plugin
+    # watch (`Portal.Precompiled.PluginWatch`); a dry run writes nothing.
+    test "watches a reviewed plugin package's release outside the review" do
+      reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
+      hex_says([{"rebar3_hex", "9.0.0", DateTime.utc_now(), reviewed ++ ["9.0.0"]}])
+
+      assert {:ok, _} = UpdateCheck.run(dry_run: true)
+      assert Portal.Precompiled.PluginWatch.watched() == %{}
+
+      assert {:ok, _} = UpdateCheck.run()
+      assert Portal.Precompiled.PluginWatch.watched() == %{"rebar3_hex" => ["9.0.0"]}
+
+      hex_says([{"rebar3_hex", "7.5.0", DateTime.utc_now(), reviewed}])
+      assert {:ok, _} = UpdateCheck.run()
+      assert Portal.Precompiled.PluginWatch.watched() == %{}
+    end
+
     test "dry_run reports what would be queued without queueing it" do
       package("alpha", "1.0.0")
       hex_says([{"alpha", "1.1.0"}])

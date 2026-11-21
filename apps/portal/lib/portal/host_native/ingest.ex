@@ -464,7 +464,16 @@ defmodule Portal.HostNative.Ingest do
     HostNativeBuild
     |> Ash.Changeset.for_create(:upsert, attrs)
     |> Ash.create(domain: Portal.Catalog)
+    |> plugins_recorded(attrs)
   end
+
+  # The rebar3 plugin releases the run ran (`Portal.Precompiled.PluginWatch`).
+  defp plugins_recorded({:ok, _row} = ok, attrs) do
+    :ok = Portal.Precompiled.PluginWatch.record(attrs[:run_id], attrs[:compile_observations])
+    ok
+  end
+
+  defp plugins_recorded(other, _attrs), do: other
 
   defp register(staged) do
     Enum.reduce_while(staged, :ok, fn entry, :ok ->

@@ -70,7 +70,7 @@ defmodule Portal.Catalog.Ingestion do
 
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
 
-  alias Portal.Precompiled.{ElfFacts, FirmwareRefusal, Withheld}
+  alias Portal.Precompiled.{ElfFacts, FirmwareRefusal, PluginWatch, Withheld}
   alias Portal.Repo
 
   @domain Portal.Catalog
@@ -1685,7 +1685,18 @@ defmodule Portal.Catalog.Ingestion do
       attempted_at: nil
     })
     |> Ash.create(domain: @domain)
+    |> plugins_recorded(opts.run_id, build)
   end
+
+  # The rebar3 plugin releases the run ran, by run id
+  # (`Portal.Precompiled.PluginWatch`), from the build's own observations,
+  # before the row keeps a bounded copy of them.
+  defp plugins_recorded({:ok, _row} = ok, run_id, build) do
+    :ok = PluginWatch.record(run_id, build["compile_observations"])
+    ok
+  end
+
+  defp plugins_recorded(other, _run_id, _build), do: other
 
   defp optional_deps(%{} = optional_deps), do: optional_deps
   defp optional_deps(_), do: nil
@@ -1998,6 +2009,7 @@ defmodule Portal.Catalog.Ingestion do
 
     with {:ok, row} <-
            PinnedBuild |> Ash.Changeset.for_create(:upsert, attrs) |> Ash.create(domain: @domain) do
+      :ok = PluginWatch.record(opts.run_id, build["compile_observations"])
       :ok = upsert_artifacts(staged ++ ((sibling && sibling["staged"]) || []))
       :ok = replace_pinned_memberships(row.id, staged)
       with :ok <- Portal.Deterministic.replace(row, sibling), do: {:ok, row}

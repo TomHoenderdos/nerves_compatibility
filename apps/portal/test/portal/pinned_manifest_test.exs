@@ -57,6 +57,33 @@ defmodule Portal.PinnedManifestTest do
     assert row.status == :pass
   end
 
+  # Review S5 S1: a pinned build that ran a rebar3 plugin is withheld while
+  # Hex has a release of it nobody reviewed, and served again once it is.
+  test "a pinned build that ran a watched plugin is withheld, and served again once reviewed" do
+    plugins = %{
+      "rebar3_plugins" => [%{"owner" => "dep", "name" => "rebar3_hex", "version" => "7.5.0"}]
+    }
+
+    %{name: name, sha: sha} = ingested(observations: plugins)
+    assert %{"builds_closure" => [_]} = version(name)
+
+    reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
+
+    watch =
+      &Portal.Precompiled.PluginWatch.refresh([
+        %{name: "rebar3_hex", latest_version: "x", versions: &1}
+      ])
+
+    watch.(reviewed ++ ["9.0.0"])
+    assert version(name) == nil
+    refute Catalog.published_sha256?(sha)
+    refute name in Catalog.packages_with_precompiled_files()
+
+    watch.(reviewed)
+    assert %{"builds_closure" => [_]} = version(name)
+    assert Catalog.published_sha256?(sha)
+  end
+
   test "rule-2 revocation reaches a pinned build, the files route and the fingerprint follow" do
     %{name: name, sha: sha} = ingested()
     before = Catalog.precompiled_fingerprints()[name]

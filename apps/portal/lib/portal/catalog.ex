@@ -53,7 +53,7 @@ defmodule Portal.Catalog do
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
   alias Portal.Deterministic
   alias Portal.HostNative
-  alias Portal.Precompiled.{ForeignPriv, Relocated, Withheld}
+  alias Portal.Precompiled.{ForeignPriv, PluginWatch, Relocated, Withheld}
   alias Portal.Repo
 
   @statuses ~w(pass fail error skipped unknown)
@@ -1350,7 +1350,9 @@ defmodule Portal.Catalog do
   `beam_scan` value, for `Portal.Precompiled.Batches`. Read it before the
   manifests it vouches for: a write in between then only makes the next
   fingerprint differ. The withheld package list (`Portal.Precompiled.Withheld`)
-  is part of every fingerprint, so a change to it renders every package again.
+  is part of every fingerprint, so a change to it renders every package again,
+  and so is the rebar3 plugin watch while it holds anything
+  (`Portal.Precompiled.PluginWatch.fingerprint/0`).
   The settings a manifest depends on (`host_native_enabled`,
   `deterministic_builds_enabled`, `foreign_priv_enabled`,
   `relocated_enabled`) are in it through a count of their changes.
@@ -1359,9 +1361,17 @@ defmodule Portal.Catalog do
   def precompiled_fingerprints do
     %{rows: rows} = Repo.query!(@precompiled_fingerprints_sql, [], timeout: :timer.minutes(2))
     withheld = Enum.join(Withheld.packages(), ",")
+    plugins = PluginWatch.fingerprint()
 
-    Map.new(rows, fn [name, fingerprint] -> {name, fingerprint <> "|withheld:" <> withheld} end)
+    Map.new(rows, fn [name, fingerprint] ->
+      {name, fingerprint <> "|withheld:" <> withheld <> plugin_part(plugins)}
+    end)
   end
+
+  # The plugin watch (`Portal.Precompiled.PluginWatch`), only while it holds
+  # anything: a fingerprint is what it was before while nothing is watched.
+  defp plugin_part(""), do: ""
+  defp plugin_part(plugins), do: "|plugins:" <> plugins
 
   # `Withheld.records_config_reads?/1` for the toolchain build aliased
   # `table`, NULL-safe: rule 1 next to a `compile_env` list, written by the
@@ -1463,7 +1473,8 @@ defmodule Portal.Catalog do
   served_toolchain = fn table ->
     "#{table}.revoked_at IS NULL AND #{table}.status = 'pass' " <>
       "AND #{table}.variant IN #{ToolchainBuild.variants_sql()} " <>
-      "AND #{withheld_toolchain.(table)} AND #{config_variant_served.(table)}"
+      "AND #{withheld_toolchain.(table)} AND #{config_variant_served.(table)} " <>
+      "AND #{PluginWatch.served_clause("#{table}.run_id")}"
   end
 
   # The toolchain builds a selector of published files judges, aliased `t`,
@@ -1507,6 +1518,7 @@ defmodule Portal.Catalog do
   @served_host_native_clause """
   EXISTS (SELECT 1 FROM settings st WHERE st.host_native_enabled)
   AND h.status = 'pass' AND h.revoked_at IS NULL
+  AND #{PluginWatch.served_clause("h.run_id")}
   AND #{withheld_lock_clause |> String.replace("$L", "h.deps_lock") |> String.replace("$E", "(h.compile_env_rule = 1 AND h.compile_env IS NOT NULL AND h.run_id IS NOT NULL)")}
   """
 
@@ -1520,6 +1532,7 @@ defmodule Portal.Catalog do
   @served_pinned_clause """
   pb.status = 'pass' AND pb.revoked_at IS NULL AND pb.unpublished_at IS NULL
   AND pb.config_variant = 'default'
+  AND #{PluginWatch.served_clause("pb.run_id")}
   AND pb.target IN (#{Enum.map_join(Portal.Workers.PinnedBuild.targets(), ", ", &"'#{&1}'")})
   AND (pb.builder_id IS NULL
        OR EXISTS (SELECT 1 FROM builders pbb
@@ -3698,7 +3711,14 @@ defmodule Portal.Catalog do
   # and the package list apply the same predicate in SQL
   # (`@served_toolchain_clause`).
   defp serve_toolchain(builds, package_name, withheld) do
-    kept = Enum.reject(builds, &Withheld.withheld?(package_name, &1.deps_lock, withheld, &1))
+    plugins = PluginWatch.withheld_runs(Enum.map(builds, & &1.run_id))
+
+    kept =
+      Enum.reject(builds, fn build ->
+        Withheld.withheld?(package_name, build.deps_lock, withheld, build) or
+          MapSet.member?(plugins, build.run_id)
+      end)
+
     Enum.filter(kept, &Withheld.config_variant_served?(&1, kept))
   end
 

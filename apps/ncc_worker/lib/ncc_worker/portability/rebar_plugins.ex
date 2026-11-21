@@ -83,18 +83,22 @@ defmodule NccWorker.Portability.RebarPlugins do
     case installed(dest) do
       {:ok, installed} ->
         for {name, dir} <- Enum.sort(installed),
-            {:ok, version} <- [metadata_version(name, dir)] do
-          sha =
-            case cached(cache, name, version) do
-              {:ok, bytes} -> :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
-              _ -> nil
-            end
-
-          %{"name" => name, "version" => version, "sha256" => sha}
-        end
+            {:ok, version} <- [metadata_version(name, dir)],
+            do: %{
+              "name" => name,
+              "version" => version,
+              "sha256" => cached_sha(cache, name, version)
+            }
 
       _ ->
         []
+    end
+  end
+
+  defp cached_sha(cache, name, version) do
+    case cached(cache, name, version) do
+      {:ok, bytes} -> :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+      _ -> nil
     end
   end
 
@@ -348,20 +352,22 @@ defmodule NccWorker.Portability.RebarPlugins do
     with {:ok, props} <- application(app, name),
          {:ok, src_props} <- application(app_src, name),
          true <- prop(props, "env") == prop(src_props, "env") do
-      case prop(props, "modules") do
-        list when is_list(list) ->
-          Enum.all?(list, &match?({:atom, m} when is_binary(m), &1)) and
-            Enum.all?(list, fn {:atom, m} -> MapSet.member?(modules, m) end)
-
-        _ ->
-          false
-      end
+      known_modules?(prop(props, "modules"), modules)
     else
       _ -> false
     end
   end
 
   defp app_ok?(_app, _files, _name, _modules), do: false
+
+  defp known_modules?(list, modules) when is_list(list) do
+    Enum.all?(list, fn
+      {:atom, module} when is_binary(module) -> MapSet.member?(modules, module)
+      _ -> false
+    end)
+  end
+
+  defp known_modules?(_list, _modules), do: false
 
   defp application(text, name) when is_binary(text) do
     case HexFiles.parse(text) do

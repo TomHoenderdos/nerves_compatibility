@@ -484,6 +484,47 @@ defmodule Portal.HostNativeTest do
       refute bytes =~ "builds_host_native"
     end
 
+    # Review S5 S1: a host-native build that ran a rebar3 plugin is withheld
+    # while Hex has a release of it nobody reviewed.
+    test "a build that ran a watched plugin is withheld, and served again once reviewed" do
+      name = unique()
+      {tarball, origins, blobs} = downloader()
+
+      plugins = %{
+        "rebar3_plugins" => [%{"owner" => "dep", "name" => "rebar3_hex", "version" => "7.5.0"}]
+      }
+
+      result =
+        put_in(
+          result(name, tarball, origins),
+          ["host_native_build", "compile_observations"],
+          plugins
+        )
+
+      {:ok, %{status: :pass}} = Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
+      on!()
+      # The NIF's bytes are the setup's build's too: judged per package.
+      assert name in Catalog.packages_with_precompiled_files()
+
+      reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
+
+      watch =
+        &Portal.Precompiled.PluginWatch.refresh([
+          %{name: "rebar3_hex", latest_version: "x", versions: &1}
+        ])
+
+      watch.(reviewed ++ ["9.0.0"])
+      assert Catalog.precompiled_manifest_v2(name) == nil
+      refute name in Catalog.packages_with_precompiled_files()
+
+      watch.(reviewed)
+
+      assert %{"versions" => %{"1.0.0" => %{"builds_host_native" => [_]}}} =
+               Catalog.precompiled_manifest_v2(name)
+
+      assert name in Catalog.packages_with_precompiled_files()
+    end
+
     test "a revoked build is not served", %{name: name, row: row} do
       on!()
       row |> Ash.Changeset.for_update(:revoke, %{}) |> Ash.update!(domain: Catalog)
