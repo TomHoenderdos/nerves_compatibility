@@ -947,9 +947,9 @@ defmodule Portal.Catalog.Ingestion do
 
   defp read_beam(_entry, _files_dir), do: {:refused, "a beam with no valid sha"}
 
-  # sobelow_skip ["Traversal.FileModule"]
   defp read_first([]), do: :none
 
+  # sobelow_skip ["Traversal.FileModule"]
   defp read_first([path | rest]) do
     case File.read(path) do
       {:ok, bytes} -> {:ok, bytes}
