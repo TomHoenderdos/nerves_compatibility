@@ -186,6 +186,32 @@ defmodule Portal.PrecompiledFixtures do
   end
 
   @doc """
+  A registry read (`Portal.HexRegistry.snapshot/1` entries) that lists every
+  reviewed rebar3 plugin package with exactly its reviewed releases
+  (`Compatibility.RebarPlugins`), each `{name, versions}` of `overrides` in
+  place of its package's: a complete read, which marks the plugin watch
+  fresh (`Portal.Precompiled.PluginWatch.refresh/1`).
+  """
+  @spec plugin_registry([{String.t(), [String.t()]}]) :: [map()]
+  def plugin_registry(overrides \\ []) do
+    reviewed =
+      for package <- Compatibility.RebarPlugins.packages(),
+          into: %{},
+          do:
+            {package,
+             Map.keys(Compatibility.RebarPlugins.pins()[package]) ++
+               Map.get(Compatibility.RebarPlugins.left_out(), package, [])}
+
+    for {name, versions} <- Map.merge(reviewed, Map.new(overrides)) |> Enum.sort(),
+        do: %{
+          name: name,
+          latest_version: List.last(versions),
+          versions: versions,
+          updated_at: nil
+        }
+  end
+
+  @doc """
   The job opts `ingest_toolchain_build/3` ingests with: `:toolchain`,
   `:builder_version` and `:config_variant` as there, and `:files_dir` (a new
   empty directory when absent).

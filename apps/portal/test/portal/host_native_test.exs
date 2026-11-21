@@ -7,6 +7,8 @@ defmodule Portal.HostNativeTest do
 
   require Ash.Query
 
+  import Portal.PrecompiledFixtures, only: [plugin_registry: 0, plugin_registry: 1]
+
   alias Portal.Catalog
   alias Portal.Catalog.{ArtifactMembership, HostNativeBuild}
   alias Portal.HostNative
@@ -507,23 +509,14 @@ defmodule Portal.HostNativeTest do
       # A watch never written withholds it too (review S5 R4).
       refute name in Catalog.packages_with_precompiled_files()
 
-      Portal.Precompiled.PluginWatch.refresh([
-        %{
-          name: "rebar3_hex",
-          latest_version: "x",
-          versions: Map.keys(Compatibility.RebarPlugins.pins()["rebar3_hex"])
-        }
-      ])
+      Portal.Precompiled.PluginWatch.refresh(plugin_registry())
 
       # The NIF's bytes are the setup's build's too: judged per package.
       assert name in Catalog.packages_with_precompiled_files()
 
       reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
 
-      watch =
-        &Portal.Precompiled.PluginWatch.refresh([
-          %{name: "rebar3_hex", latest_version: "x", versions: &1}
-        ])
+      watch = &Portal.Precompiled.PluginWatch.refresh(plugin_registry([{"rebar3_hex", &1}]))
 
       watch.(reviewed ++ ["9.0.0"])
       assert Catalog.precompiled_manifest_v2(name) == nil

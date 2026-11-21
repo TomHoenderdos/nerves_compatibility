@@ -5,6 +5,7 @@ defmodule Portal.PinnedManifestTest do
   use Portal.DataCase, async: false
 
   import Portal.PinnedFixtures
+  import Portal.PrecompiledFixtures, only: [plugin_registry: 0, plugin_registry: 1]
 
   alias Portal.Catalog
   alias Portal.Precompiled.{DeterministicRevocation, ToolchainRevocation}
@@ -70,16 +71,11 @@ defmodule Portal.PinnedManifestTest do
     # A watch never written withholds it too (review S5 R4).
     assert version(name) == nil
 
-    Portal.Precompiled.PluginWatch.refresh([
-      %{name: "rebar3_hex", latest_version: "x", versions: reviewed}
-    ])
+    Portal.Precompiled.PluginWatch.refresh(plugin_registry())
 
     assert %{"builds_closure" => [_]} = version(name)
 
-    watch =
-      &Portal.Precompiled.PluginWatch.refresh([
-        %{name: "rebar3_hex", latest_version: "x", versions: &1}
-      ])
+    watch = &Portal.Precompiled.PluginWatch.refresh(plugin_registry([{"rebar3_hex", &1}]))
 
     watch.(reviewed ++ ["9.0.0"])
     assert version(name) == nil

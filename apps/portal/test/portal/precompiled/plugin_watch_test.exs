@@ -21,6 +21,8 @@ defmodule Portal.Precompiled.PluginWatchTest do
 
   defp observations(plugins), do: %{"rebar3_plugins" => plugins, "problems" => []}
 
+  # A partial read: only `entries` (review S5 N2: never marks the watch
+  # fresh). `plugin_registry/1` is a complete one.
   defp registry(entries) do
     for {name, versions} <- entries,
         do: %{
@@ -79,6 +81,32 @@ defmodule Portal.Precompiled.PluginWatchTest do
   end
 
   describe "refresh/1" do
+    # Review S5 N2: a read that does not list every reviewed package proves
+    # nothing about the ones it leaves out, so it never marks the watch fresh.
+    test "an empty or partial registry read does not mark the watch fresh" do
+      assert PluginWatch.stale?()
+
+      PluginWatch.refresh([])
+      assert PluginWatch.stale?()
+
+      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      assert PluginWatch.stale?()
+
+      PluginWatch.refresh(plugin_registry())
+      refute PluginWatch.stale?()
+
+      Portal.Repo.query!(
+        "UPDATE rebar3_plugin_watch_state SET checked_at = now() - interval '7 hours'",
+        []
+      )
+
+      # A partial read still writes what it lists, and keeps the old time.
+      assert PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex ++ ["7.6.0"]}])) ==
+               %{"rebar3_hex" => ["7.6.0"]}
+
+      assert PluginWatch.stale?()
+    end
+
     test "a release outside the review is watched; reviewing it clears the watch" do
       assert PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}, {"pc", ["1.0.0"]}])) ==
                %{}
@@ -114,7 +142,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
       plain = ingest_toolchain_build(other, "1.0.0", compile_observations: observations([]))
 
       # A fresh watch with nothing in it.
-      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex}]))
       %{name: name, sha: ebin_sha(build), other: other, other_sha: ebin_sha(plain)}
     end
 
@@ -138,7 +166,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
       before = Catalog.precompiled_fingerprints()[ctx.name]
       other_before = Catalog.precompiled_fingerprints()[ctx.other]
 
-      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex ++ ["7.6.0"]}]))
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex ++ ["7.6.0"]}]))
 
       refute served?(ctx.name)
       refute Catalog.published_sha256?(ctx.sha)
@@ -152,7 +180,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
       assert Catalog.published_sha256?(ctx.other_sha)
       assert Catalog.precompiled_fingerprints()[ctx.other] == other_before
 
-      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex}]))
 
       assert served?(ctx.name)
       assert Catalog.published_sha256?(ctx.sha)
@@ -160,7 +188,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
       assert Catalog.precompiled_fingerprints()[ctx.name] == before
 
       # A watched plugin the package never ran leaves its fingerprint alone.
-      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}, {"verl", ["9.9.9"]}]))
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex}, {"verl", ["9.9.9"]}]))
       assert PluginWatch.watched() == %{"verl" => ["9.9.9"]}
       assert served?(ctx.name)
       assert Catalog.precompiled_fingerprints()[ctx.name] == before
@@ -175,7 +203,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
         [ctx.name]
       )
 
-      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex}]))
       refute served?(ctx.name)
       refute Catalog.published_sha256?(ctx.sha)
       assert served?(ctx.other)
@@ -185,7 +213,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
     # refreshed in 6 hours, or never, withholds every build that ran a
     # plugin; the next refresh serves them again.
     test "a stale or never written watch withholds every build that ran a plugin", ctx do
-      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex}]))
       assert served?(ctx.name)
       fresh = Catalog.precompiled_fingerprints()[ctx.name]
       other_fresh = Catalog.precompiled_fingerprints()[ctx.other]
@@ -207,7 +235,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
       refute served?(ctx.name)
       refute Catalog.published_sha256?(ctx.sha)
 
-      PluginWatch.refresh(registry([{"rebar3_hex", @reviewed_hex}]))
+      PluginWatch.refresh(plugin_registry([{"rebar3_hex", @reviewed_hex}]))
       assert served?(ctx.name)
       assert Catalog.published_sha256?(ctx.sha)
       assert Catalog.precompiled_fingerprints()[ctx.name] == fresh
@@ -221,7 +249,7 @@ defmodule Portal.Precompiled.PluginWatchTest do
         [ctx.name]
       )
 
-      PluginWatch.refresh(registry([{"hex_core", ["0.21.1", "0.22.0"]}]))
+      PluginWatch.refresh(plugin_registry([{"hex_core", ["0.21.1", "0.22.0"]}]))
       refute served?(ctx.name)
       refute Catalog.published_sha256?(ctx.sha)
       assert served?(ctx.other)

@@ -72,6 +72,13 @@ defmodule Portal.Workers.UpdateCheckTest do
 
   defp hex_says(rows), do: Process.put(:hex_answer, {:ok, rows})
 
+  # Every reviewed rebar3 plugin package with its reviewed releases, as
+  # registry rows: a read that marks the plugin watch fresh (review S5 N2).
+  defp plugin_rows(overrides \\ []) do
+    for %{name: name, versions: versions} <- Portal.PrecompiledFixtures.plugin_registry(overrides),
+        do: {name, List.last(versions), DateTime.utc_now(), versions}
+  end
+
   defp hex_fails(reason), do: Process.put(:hex_answer, {:error, reason})
 
   defp package(name, latest_version) do
@@ -285,8 +292,7 @@ defmodule Portal.Workers.UpdateCheckTest do
     # never refreshed, and after 6 hours every build that ran a plugin is
     # withheld rather than served on a frozen watch.
     test "while disabled the plugin watch goes stale and fails closed" do
-      reviewed = Compatibility.RebarPlugins.pins()["rebar3_hex"] |> Map.keys()
-      hex_says([{"rebar3_hex", "7.5.0", DateTime.utc_now(), reviewed}])
+      hex_says(plugin_rows())
       assert {:ok, _} = UpdateCheck.run()
       refute Portal.Precompiled.PluginWatch.stale?()
 
@@ -316,13 +322,14 @@ defmodule Portal.Workers.UpdateCheckTest do
       # A tracked package whose registry entry breaks the rebuild pass.
       package("alpha", "1.0.0")
 
-      hex_says([
-        {"rebar3_hex", "9.0.0", DateTime.utc_now(), reviewed ++ ["9.0.0"]},
-        {"alpha", "1.0.0", DateTime.utc_now(), :not_a_list}
-      ])
+      hex_says(
+        plugin_rows([{"rebar3_hex", reviewed ++ ["9.0.0"]}]) ++
+          [{"alpha", "1.0.0", DateTime.utc_now(), :not_a_list}]
+      )
 
       _ = catch_error(UpdateCheck.run())
       assert Portal.Precompiled.PluginWatch.watched() == %{"rebar3_hex" => ["9.0.0"]}
+      refute Portal.Precompiled.PluginWatch.stale?()
     end
 
     test "does nothing at all while disabled" do

@@ -156,20 +156,25 @@ defmodule Portal.Precompiled.PluginWatch do
   Writes the watch from `registry` (`Portal.HexRegistry.snapshot/1` with
   `all_versions: true`): for each reviewed package the registry lists, the
   releases outside the review, or no row when there are none. A package it
-  does not list keeps its row. Returns the watch as it is then:
+  does not list keeps its row. Only a read that lists every reviewed package
+  marks the watch fresh (review S5 N2): an empty or partial one says nothing
+  about the packages it leaves out. Returns the watch as it is then:
   `%{package => [version]}`.
   """
   @spec refresh([map()]) :: %{String.t() => [String.t()]}
   def refresh(registry) do
     by_name = Map.new(registry, &{&1.name, &1})
     now = DateTime.utc_now()
+    missing = Enum.reject(RebarPlugins.packages(), &Map.has_key?(by_name, &1))
 
     Portal.Repo.transaction(fn ->
-      Portal.Repo.query!(
-        "INSERT INTO rebar3_plugin_watch_state (key, checked_at) VALUES ('refreshed', $1) " <>
-          "ON CONFLICT (key) DO UPDATE SET checked_at = EXCLUDED.checked_at",
-        [now]
-      )
+      if missing == [] do
+        Portal.Repo.query!(
+          "INSERT INTO rebar3_plugin_watch_state (key, checked_at) VALUES ('refreshed', $1) " <>
+            "ON CONFLICT (key) DO UPDATE SET checked_at = EXCLUDED.checked_at",
+          [now]
+        )
+      end
 
       for package <- RebarPlugins.packages(), entry = by_name[package], entry != nil do
         versions = Map.get(entry, :versions) || [entry.latest_version]
@@ -179,6 +184,13 @@ defmodule Portal.Precompiled.PluginWatch do
     end)
 
     watched = watched()
+
+    if missing != [] do
+      Logger.warning(
+        "rebar3 plugin watch not marked fresh: the registry read lists none of " <>
+          Enum.join(missing, ", ")
+      )
+    end
 
     if watched != %{} do
       Logger.warning(
