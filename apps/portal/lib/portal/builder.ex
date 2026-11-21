@@ -235,7 +235,9 @@ defmodule Portal.Builder do
   `"native_side" => true` while `NCC_JUDGE_NATIVE_SIDE=1`
   (`:judge_native_side`: a natively built dependency's native side set
   apart from its beams, and rule 2's finer target and native-tool
-  reading, `NccWorker.Portability`), and `"relocate" => true` while the
+  reading, `NccWorker.Portability`), `"differential" => true` while
+  `NCC_JUDGE_DIFFERENTIAL=1` (`:judge_differential`, differential builds:
+  `NccWorker.Portability.Differential`), and `"relocate" => true` while the
   `relocate_builds_enabled` setting is on (relocatable builds,
   `NccWorker.Portability.Relocate`; such a job also gets two binds of its
   own scratch, `build_docker_args/4`, when its image carries the relocate
@@ -257,6 +259,7 @@ defmodule Portal.Builder do
       "relocate",
       Portal.Settings.get().relocate_builds_enabled == true and Map.get(args, :pins) == nil
     )
+    |> put_on("differential", config(:judge_differential, false) == true)
     |> none_as_nil()
   end
 

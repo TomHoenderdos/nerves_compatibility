@@ -89,6 +89,18 @@ defmodule NccWorker.Portability do
   decided (`"relocated"`, `"dependencies"`, `"refused: <why>"`), so a row
   shows which way it was judged (the umbrella re-review's Q3).
 
+  A job sent `differential: true` (`NCC_INPUT.judge.differential`) has a
+  read of a value the worker can change (the scheduler count and HOME
+  anywhere, the plain arguments outside every window) observed as
+  `varied_reads` instead of refused (`Events`); a verdict that would pass
+  with any is held as could-not-judge (`Differential.hold/2`), and only
+  `run/3` passes it, after two variant builds of the closure with those
+  values at either end of their domain wrote the same app
+  (`Differential.settle/6`); otherwise it refuses with the read's own
+  refusal and what differed. A verdict `PrivRepro` holds as well is
+  could-not-judge. Without the flag nothing here changes, and no judge
+  revision does either.
+
   The package's own compile writing into its own build `priv`, and the
   probes `File.mkdir_p/1` makes of the directories above it (`Events`'
   `priv_writes` and `priv_probes`, judge revision 21), refuse nothing here,

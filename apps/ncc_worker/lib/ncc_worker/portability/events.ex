@@ -124,6 +124,15 @@ defmodule NccWorker.Portability.Events do
       there refuses (`compile-time read of kino's asset archives: `), any
       other write there refuses as before. The judge settles them
       (`ForeignPriv.settle/2`).
+    * Differential builds (the job's `differential` flag,
+      `Context.differential`): a host read refusal of the scheduler count
+      (`system_info(schedulers_online | schedulers)`) or of HOME
+      (`init:get_argument(home)`) anywhere, or of the plain arguments
+      outside every window (Mix evaluating a rebar3 dependency's
+      `rebar.config.script`), is observed as `varied_reads`, carrying the
+      refusal it would be, for `NccWorker.Portability.Differential` to
+      settle; a `mix.exs` read stays R4's. A stat of the empty path
+      (`File.exists?("")`) is ignored: `enoent` on every host.
     * A user `set_cwd` refuses: it changes what every later relative path
       names.
     * A call into a natively built dependency refuses in the package's

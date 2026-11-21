@@ -252,6 +252,14 @@ if portal_available? do
     # revision, so turning it on reopens nothing: a targeted requeue
     # rebuilds the rows it can change. Anything else, or unset, keeps it off.
     judge_native_side: if(System.get_env("NCC_JUDGE_NATIVE_SIDE") == "1", do: true),
+    # `1` turns on differential builds (`NccWorker.Portability.Differential`):
+    # toolchain builds get `NCC_INPUT.judge.differential`, and a scheduler
+    # count, HOME or rebar.config.script plain-arguments read whose value
+    # reaches no published file passes after two variant builds. It bumps no
+    # judge revision, so a fleet with it on some nodes only reopens nothing:
+    # a node without it skips such a row as before. Anything else, or unset,
+    # keeps it off.
+    judge_differential: if(System.get_env("NCC_JUDGE_DIFFERENTIAL") == "1", do: true),
     # `0` turns off the firmware targets' traced compile-input pass
     # (`NccWorker.FirmwareInputs`, judge revision 19): firmware builds get
     # `NCC_INPUT.firmware_inputs: false`, local and remote alike, with no

@@ -128,6 +128,7 @@ defmodule NccWorker.HostTrace do
             :native_side,
             :foreign_priv,
             :relocate,
+            :differential,
             :trees,
             :target,
             :host_native

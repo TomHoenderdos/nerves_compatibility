@@ -66,6 +66,8 @@ defmodule NccWorker.Deterministic do
   returned, as `{:ok, sibling}` or `{:error, reason}` (see the moduledoc).
   `judged_with` holds the `releases:` and `trees:` the build's passing
   trace was judged on. `opts`: `run_started_at:`, `makefile_rule2:`,
+  `differential:` (the sibling settles its own varied reads with variants
+  of its own, `ERL_COMPILER_OPTIONS` kept in their env),
   `hex_home:` (the run's verified Hex cache, default `HEX_HOME`), and
   `trace:` (tests; `NccWorker.Portability.run/3`'s shape).
   """
@@ -190,6 +192,7 @@ defmodule NccWorker.Deterministic do
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
         foreign_priv: Keyword.get(opts, :foreign_priv) == true,
         native_side: Keyword.get(opts, :native_side) == true,
+        differential: Keyword.get(opts, :differential) == true,
         hex_home: hex_home(opts),
         run_started_at: Keyword.get(opts, :run_started_at),
         trace_dir: Path.join(paths.work_dir, "trace-" <> @build_dir),

@@ -2249,7 +2249,8 @@ defmodule NccWorker.Worker do
         makefile_rule2: rule2,
         foreign_priv: foreign_priv?(input),
         native_side: side,
-        relocate: relocate?(input)
+        relocate: relocate?(input),
+        differential: differential?(input)
       ] ++ opts
 
     with {:ok, compiled} <-
@@ -2315,7 +2316,8 @@ defmodule NccWorker.Worker do
           run_started_at: input[:started_at],
           makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
           foreign_priv: Keyword.get(opts, :foreign_priv) == true,
-          native_side: Keyword.get(opts, :native_side) == true
+          native_side: Keyword.get(opts, :native_side) == true,
+          differential: Keyword.get(opts, :differential) == true
         ] ++ trace_opt(opts)
       )
     else
@@ -2520,6 +2522,12 @@ defmodule NccWorker.Worker do
   # unless the portal sends exactly `true`.
   defp relocate?(%{judge: %{relocate: true}}), do: true
   defp relocate?(_input), do: false
+
+  # NCC_INPUT.judge.differential (differential builds,
+  # `NccWorker.Portability.Differential`): off unless the portal sends
+  # exactly `true` (`Portal.Builder.judge_input/1`).
+  defp differential?(%{judge: %{differential: true}}), do: true
+  defp differential?(_input), do: false
 
   @doc false
   # The toolchain run's one compile (`NccWorker.HostTrace`). With "exclude"
