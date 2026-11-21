@@ -435,8 +435,8 @@ defmodule NccWorker.Portability.DifferentialTest do
     for {entry, why} <- [
           {%{app: "fx", release: "fx 0.1.0", status: :unreviewed},
            "fx 0.1.0's rebar.config.script is not a reviewed one"},
-          {%{app: "fx", release: nil, status: :unverified},
-           "fx has no verified tarball to tell its scripts by"}
+          {%{app: "fx", release: nil, status: :unverified, why: "no verified tarball"},
+           "fx's scripts cannot be verified: no verified tarball"}
         ] do
       v = settle(held(ctx, [@plain], [@reviewed, entry]), ctx, no_run)
       assert v.reason == @plain["refusal"] <> "; " <> why

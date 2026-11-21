@@ -3115,37 +3115,56 @@ defmodule NccWorker.Portability do
 
   @doc false
   # The locked releases whose `rebar.config.script` Mix may have evaluated in
-  # the traced VM, each `%{app, release, status}`: every release of the lock
-  # but a closure dependency Mix builds itself (`"mix"`), whose verified
-  # tarball holds a `rebar.config.script`, `:reviewed` when it is a
-  # `ReviewedScripts` release and `:unreviewed` otherwise; one whose tarball
-  # cannot be verified is `:unverified` (it may hold one). Public for tests.
+  # the traced VM, each `%{app, release, status}` (and `why` when
+  # `:unverified`): every release of the lock but a closure dependency Mix
+  # builds itself (`"mix"`) whose verified tarball holds a
+  # `rebar.config.script`, `:reviewed` when it is a `ReviewedScripts`
+  # release and `:unreviewed` otherwise. `:unverified` (it may hold one, or
+  # one that is not what was reviewed): a tarball that cannot be verified or
+  # read, a script member that is no regular file (review N5: Mix follows a
+  # link), or a `rebar.config.script` on disk under the dependencies' dir
+  # whose tarball holds none. Public for tests.
   @spec script_releases(Context.t()) :: [map()]
   def script_releases(%Context{hex: {home, releases}} = ctx) do
     for app <- releases |> Map.keys() |> Enum.sort(),
         not (Context.dep?(ctx, app) and Context.manager(ctx, app) == "mix"),
-        entry = script_release(app, releases[app], Context.release_tarball(home, releases, app)),
+        entry =
+          script_release(ctx, app, releases[app], Context.release_tarball(home, releases, app)),
         entry != nil,
         do: entry
   end
 
-  defp script_release(app, _release, nil), do: %{app: app, release: nil, status: :unverified}
+  defp script_release(_ctx, app, _release, nil),
+    do: unverified(app, "no verified tarball")
 
-  defp script_release(app, %{name: name, version: version}, bytes) do
-    case ReviewedScripts.scripts(bytes) do
-      {:ok, %{"rebar.config.script" => _} = scripts} ->
+  defp script_release(ctx, app, %{name: name, version: version}, bytes) do
+    case ReviewedScripts.script_members(bytes) do
+      {:ok, :scripted} ->
+        {:ok, scripts} = ReviewedScripts.scripts(bytes)
+
         status =
           if ReviewedScripts.reviewed?(name, version, scripts), do: :reviewed, else: :unreviewed
 
         %{app: app, release: "#{name} #{version}", status: status}
 
-      {:ok, _none} ->
-        nil
+      {:ok, :none} ->
+        if script_on_disk?(ctx, app),
+          do: unverified(app, "a rebar.config.script on disk its tarball does not hold")
 
-      :error ->
-        %{app: app, release: nil, status: :unverified}
+      {:unverified, why} ->
+        unverified(app, why)
     end
   end
+
+  defp unverified(app, why), do: %{app: app, release: nil, status: :unverified, why: why}
+
+  # Mix's own test (`Mix.Rebar.load_config/1`: `File.exists?`), without
+  # following a link: any entry there is one.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp script_on_disk?(%Context{deps_path: deps}, app) when is_binary(deps),
+    do: match?({:ok, _}, File.lstat(Path.join([deps, app, "rebar.config.script"])))
+
+  defp script_on_disk?(_ctx, _app), do: false
 
   # Judge revision 21: what the package's own compile did in its own build
   # `priv` and above it (`Events`' `priv_writes` and `priv_probes`). `built`

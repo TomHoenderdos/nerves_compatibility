@@ -197,6 +197,19 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
         {name, script_run(root, name, %{"rebar.config.script" => script})}
       end
       |> Map.put("gproc", script_run(root, "gproc", gproc_files(), "gproc", "1.2.0"))
+      # Review N5: a reviewed gproc beside a release whose
+      # rebar.config.script is a link to N1's script.
+      |> Map.put(
+        "fx_ln",
+        r3_run(root, "fx_ln", "fx_ln", [
+          {"gproc", "1.2.0", gproc_files()},
+          {"fx_ln", "0.1.0",
+           %{
+             "real.script" => @position_script,
+             "rebar.config.script" => {:symlink, "real.script"}
+           }}
+        ])
+      )
 
     %{
       verdicts: verdicts,
@@ -235,40 +248,59 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   # whose tarball holds `files` beside its config and module.
   defp script_run(root, name, files, app \\ nil, version \\ "0.1.0") do
     app = app || "fx_dv_r3_#{name}"
+    r3_run(root, name, app, [{app, version, files}])
+  end
+
+  # A project of the rebar3 dependencies `specs` (`{app, version, files}`,
+  # a `{:symlink, target}` file a link in both the tarball and the tree),
+  # each with its config, module and `.app.src`, judged for `package`.
+  defp r3_run(root, name, package, specs) do
     dir = Path.join(root, "r3-#{name}")
-    src = "-module(#{app}).\n-export([x/0]).\nx() -> ok.\n"
+    hex_home = Path.join(dir, "hex")
     config = "{erl_opts, []}.\n"
 
-    deps = %{
-      app => %{
-        manager: :rebar3,
-        rebar_config: config,
-        files: Map.put(files, "src/#{app}.erl", src)
-      }
-    }
+    {deps, releases} =
+      Enum.map_reduce(specs, [], fn {app, version, files}, releases ->
+        src = "-module(#{app}).\n-export([x/0]).\nx() -> ok.\n"
 
-    proj = TracerFixtures.project(dir, [app], deps)
+        app_src =
+          ~s({application, #{app}, [{vsn, "#{version}"}, {description, "fixture"}, ) <>
+            ~s({applications, [kernel, stdlib]}]}.\n)
+
+        all =
+          Map.merge(files, %{
+            "rebar.config" => config,
+            "src/#{app}.erl" => src,
+            "src/#{app}.app.src" => app_src
+          })
+
+        {plain, links} = Enum.split_with(all, fn {_, body} -> is_binary(body) end)
+
+        spec = %{
+          manager: :rebar3,
+          rebar_config: config,
+          files: Map.new(plain),
+          links: Map.new(links, fn {path, {:symlink, target}} -> {path, target} end)
+        }
+
+        release =
+          TracerFixtures.hex_release(
+            hex_home,
+            app,
+            ["src", "priv", "rebar.config" | Map.keys(files)],
+            all,
+            [
+              {"version", version}
+            ]
+          )
+
+        {{app, spec}, [release | releases]}
+      end)
+
+    deps = Map.new(deps)
+    proj = TracerFixtures.project(dir, Map.keys(deps), deps)
     File.write!(Path.join(proj, "mix.lock"), "%{}\n")
-    hex_home = Path.join(dir, "hex")
-
-    app_src =
-      ~s({application, #{app}, [{vsn, "0.1.0"}, {description, "fixture"}, ) <>
-        ~s({applications, [kernel, stdlib]}]}.\n)
-
-    release =
-      TracerFixtures.hex_release(
-        hex_home,
-        app,
-        ["src", "priv", "rebar.config" | Map.keys(files)],
-        Map.merge(files, %{
-          "rebar.config" => config,
-          "src/#{app}.erl" => src,
-          "src/#{app}.app.src" => app_src
-        }),
-        [{"version", version}]
-      )
-
-    run(dir, proj, app, releases: Map.new([release]), hex_home: hex_home)
+    run(dir, proj, package, releases: Map.new(releases), hex_home: hex_home)
   end
 
   defp log(v), do: inspect(v.observations, pretty: true, limit: 60)
@@ -382,6 +414,17 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
 
     assert [%{"read" => "plain_args", "owner" => "outside", "arg" => %{"rebar_script" => true}}] =
              v.observations["differential"]["reads"]
+  end
+
+  # Review N5: a link member is dropped by an in-memory extract, so the
+  # release looked script-less; Mix follows the link and evaluates it.
+  test "a release whose rebar.config.script is a link refuses", ctx do
+    v = ctx.scripts["fx_ln"]
+    assert v.status == :skip, log(v)
+
+    assert v.reason ==
+             "compile-time host read: init:get_plain_arguments/0 (dispatcher stack, first frame erl_eval); " <>
+               "fx_ln's scripts cannot be verified: rebar.config.script is a symlink in its tarball"
   end
 
   # Every other script refuses, the reviewer's two false hits among them:

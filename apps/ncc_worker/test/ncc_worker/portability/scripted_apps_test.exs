@@ -38,14 +38,26 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
         release(home, "unknown_dep", script),
         release(home, "mix_dep", script),
         release(home, "plain_dep", %{}),
-        release(home, "outside", script)
+        release(home, "outside", script),
+        # Review N5: a script member that is a link.
+        release(home, "linked", %{
+          "real.script" => "CONFIG.\n",
+          "rebar.config.script" => {:symlink, "real.script"}
+        }),
+        # A script on disk its tarball does not hold.
+        release(home, "on_disk", %{})
       ])
       # A release whose tarball is not in the cache cannot be told.
       |> Map.put("gone", %{name: "gone", version: "1.0.0", checksum: String.duplicate("0", 64)})
 
     dep = fn manager -> %{manager: manager, build: Path.join(dir, "x"), children: []} end
 
+    deps_path = Path.join(dir, "deps")
+    File.mkdir_p!(Path.join(deps_path, "on_disk"))
+    File.write!(Path.join([deps_path, "on_disk", "rebar.config.script"]), "CONFIG.\n")
+
     ctx = %Context{
+      deps_path: deps_path,
       hex: {home, releases},
       deps: %{
         "gproc" => dep.("rebar3"),
@@ -57,8 +69,20 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
     }
 
     assert Portability.script_releases(ctx) == [
-             %{app: "gone", release: nil, status: :unverified},
+             %{app: "gone", release: nil, status: :unverified, why: "no verified tarball"},
              %{app: "gproc", release: "gproc 1.2.0", status: :reviewed},
+             %{
+               app: "linked",
+               release: nil,
+               status: :unverified,
+               why: "rebar.config.script is a symlink in its tarball"
+             },
+             %{
+               app: "on_disk",
+               release: nil,
+               status: :unverified,
+               why: "a rebar.config.script on disk its tarball does not hold"
+             },
              %{app: "outside", release: "outside 0.1.0", status: :unreviewed},
              %{app: "r3_dep", release: "r3_dep 0.1.0", status: :unreviewed},
              %{app: "unknown_dep", release: "unknown_dep 0.1.0", status: :unreviewed}

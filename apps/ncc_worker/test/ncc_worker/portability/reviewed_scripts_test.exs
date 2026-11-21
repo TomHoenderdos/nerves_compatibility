@@ -40,6 +40,42 @@ defmodule NccWorker.Portability.ReviewedScriptsTest do
     assert ReviewedScripts.scripts("not a tarball") == :error
   end
 
+  # Review N5: `:erl_tar.extract(_, [:memory])` drops a link member, so the
+  # member table is read: a script member that is no regular file makes the
+  # release unverifiable (Mix follows the link and evaluates it).
+  test "a script member that is a link cannot be verified", %{tmp_dir: dir} do
+    files = %{
+      "rebar.config" => "{erl_opts, []}.\n",
+      "real.script" => "CONFIG.\n",
+      "rebar.config.script" => {:symlink, "real.script"}
+    }
+
+    assert {:unverified, "rebar.config.script is a symlink in its tarball"} =
+             ReviewedScripts.script_members(tarball(dir, "fx_ln", "0.1.0", files))
+
+    nested = %{"rebar.config.script" => "CONFIG.\n", "priv/x.script" => {:symlink, "../real"}}
+
+    assert {:unverified, "priv/x.script is a symlink in its tarball"} =
+             ReviewedScripts.script_members(tarball(dir, "fx_ln2", "0.1.0", nested))
+  end
+
+  test "script members: none, or all regular files, a ./ prefix included", %{tmp_dir: dir} do
+    assert {:ok, :none} =
+             ReviewedScripts.script_members(
+               tarball(dir, "plain", "0.1.0", %{"rebar.config" => "x"})
+             )
+
+    assert {:ok, :scripted} =
+             ReviewedScripts.script_members(tarball(dir, "g", "1.2.0", gproc_files()))
+
+    dotted = %{"./rebar.config.script" => {:symlink, "x"}, "x" => "CONFIG.\n"}
+
+    assert {:unverified, "rebar.config.script is a symlink in its tarball"} =
+             ReviewedScripts.script_members(tarball(dir, "dot", "0.1.0", dotted))
+
+    assert {:unverified, "tarball unreadable"} = ReviewedScripts.script_members("not a tarball")
+  end
+
   test "gproc 1.2.0's scripts as Hex ships them are reviewed", %{tmp_dir: dir} do
     {:ok, scripts} = ReviewedScripts.scripts(tarball(dir, "gproc", "1.2.0", gproc_files()))
     assert ReviewedScripts.reviewed?("gproc", "1.2.0", scripts)

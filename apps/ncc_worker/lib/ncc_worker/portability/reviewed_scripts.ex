@@ -115,6 +115,46 @@ defmodule NccWorker.Portability.ReviewedScripts do
   def reviewed?(name, version, scripts), do: Map.get(table(), {name, version}) == scripts
 
   @doc """
+  What a Hex tarball's contents hold of scripts, from the member table (an
+  in-memory extract drops a link member, review N5): `{:ok, :none}` without
+  a `rebar.config.script`, `{:ok, :scripted}` with one when every script
+  member (`rebar.config.script` and every `*.script`, a leading `./`
+  dropped) is a regular file, and `{:unverified, why}` when one is not (a
+  symbolic or hard link, a directory, anything else: Mix follows a link and
+  evaluates its target) or the tarball cannot be read.
+  """
+  @spec script_members(binary()) :: {:ok, :none | :scripted} | {:unverified, String.t()}
+  def script_members(bytes) when is_binary(bytes) do
+    with {:ok, tar} <- Rebar.contents_tar(bytes),
+         {:ok, table} when length(table) <= @max_files <-
+           :erl_tar.table({:binary, tar}, [:verbose]) do
+      members = for entry <- table, do: {member_name(elem(entry, 0)), elem(entry, 1)}
+      scripts = Enum.filter(members, fn {path, _type} -> script?(path) end)
+
+      case Enum.find(scripts, fn {_path, type} -> type != :regular end) do
+        {path, type} ->
+          {:unverified, "#{path} is a #{type} in its tarball"}
+
+        nil when scripts == [] ->
+          {:ok, :none}
+
+        nil ->
+          if List.keymember?(scripts, "rebar.config.script", 0),
+            do: {:ok, :scripted},
+            else: {:ok, :none}
+      end
+    else
+      _ -> {:unverified, "tarball unreadable"}
+    end
+  rescue
+    _ -> {:unverified, "tarball unreadable"}
+  end
+
+  def script_members(_bytes), do: {:unverified, "tarball unreadable"}
+
+  defp member_name(name), do: name |> to_string() |> String.trim_leading("./")
+
+  @doc """
   The script files of a Hex tarball's contents, `%{path => sha256}`:
   `rebar.config.script` and every `*.script`, as regular files under safe
   relative paths. `:error` for a tarball that cannot be read.
@@ -126,7 +166,7 @@ defmodule NccWorker.Portability.ReviewedScripts do
            :erl_tar.extract({:binary, tar}, [:memory]) do
       scripts =
         for {name, body} <- entries,
-            path = List.to_string(name),
+            path = member_name(name),
             script?(path),
             into: %{},
             do: {path, :sha256 |> :crypto.hash(body) |> Base.encode16(case: :lower)}

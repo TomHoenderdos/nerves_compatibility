@@ -201,8 +201,8 @@ defmodule NccWorker.Portability.Differential do
     end
   end
 
-  defp not_reviewed(%{status: :unverified, app: app}),
-    do: "#{app} has no verified tarball to tell its scripts by"
+  defp not_reviewed(%{status: :unverified, app: app} = entry),
+    do: "#{app}'s scripts cannot be verified: #{Map.get(entry, :why, "no verified tarball")}"
 
   defp not_reviewed(%{release: release}),
     do: "#{release}'s rebar.config.script is not a reviewed one"

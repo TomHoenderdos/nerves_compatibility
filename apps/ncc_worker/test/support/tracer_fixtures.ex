@@ -133,12 +133,31 @@ defmodule NccWorker.TracerFixtures do
 
   defp contents_entry(contents) when map_size(contents) == 0, do: []
 
+  # A `{:symlink, target}` value is a symbolic link member (`:erl_tar` stores
+  # a link it is handed as a link), as Hex allows one inside the package.
   defp contents_entry(contents) do
-    gz = Path.join(System.tmp_dir!(), "ncc-contents-#{System.unique_integer([:positive])}.tar.gz")
-    files = for {path, body} <- contents, do: {String.to_charlist(path), body}
+    n = System.unique_integer([:positive])
+    gz = Path.join(System.tmp_dir!(), "ncc-contents-#{n}.tar.gz")
+    links = Path.join(System.tmp_dir!(), "ncc-contents-links-#{n}")
+
+    files =
+      for {path, body} <- contents do
+        case body do
+          {:symlink, target} ->
+            link = Path.join(links, path)
+            File.mkdir_p!(Path.dirname(link))
+            File.ln_s!(target, link)
+            {String.to_charlist(path), String.to_charlist(link)}
+
+          body ->
+            {String.to_charlist(path), body}
+        end
+      end
+
     :ok = :erl_tar.create(String.to_charlist(gz), files, [:compressed])
     bytes = File.read!(gz)
     File.rm!(gz)
+    File.rm_rf!(links)
     [{~c"contents.tar.gz", bytes}]
   end
 
