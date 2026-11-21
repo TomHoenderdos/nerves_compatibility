@@ -15,26 +15,7 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
 
   defp manifest(name), do: Catalog.precompiled_manifest_v2(name)
 
-  defp record(name) do
-    %{
-      "deps" => "/work/proj/deps",
-      "build" => "/work/proj/_build/host",
-      "files" => [
-        %{
-          "path" => "ebin/#{name}.beam",
-          "occurrences" => [
-            %{
-              "chunk" => "LitT",
-              "index" => 0,
-              "term" => [],
-              "kind" => "binary",
-              "parts" => ["", "deps", "/#{name}/c_include"]
-            }
-          ]
-        }
-      ]
-    }
-  end
+  defp record(name), do: Portal.Test.RelocationFixtures.record(name)
 
   # No regular list of any version, nor any deterministic one, holds a
   # relocated entry: a client before 0.9.0 would install its bytes as they
@@ -117,12 +98,10 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
     assert m == nil or not Map.has_key?(m["versions"], "0.2.0")
   end
 
-  # A stale record beside a pass the old release wrote with its own files:
-  # those files are a plain build's, listed as one, without the record.
-  test "a stale record beside an old release's pass lists it as a plain build", %{
-    name: name,
-    row: row
-  } do
+  # A stale record (an older release rewrote run_id and left the columns
+  # it does not know): the row's files are in `relocated_file_manifest`,
+  # which nothing but a counted record lists, so it is listed nowhere.
+  test "a stale record beside an old release's pass is listed nowhere", %{name: name, row: row} do
     on!()
 
     Portal.Repo.query!(
@@ -132,13 +111,9 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
 
     m = manifest(name)
     assert_contract!(m)
-
-    assert [entry] =
-             m["versions"]["0.2.0"]["builds"] ++
-               (m["versions"]["0.2.0"]["builds_with_inputs"] || [])
-
-    refute Map.has_key?(entry, "relocation")
-    refute Map.has_key?(m["versions"]["0.2.0"], "relocated")
+    assert m == nil or not Map.has_key?(m["versions"], "0.2.0")
+    [%{"sha256" => sha}] = row.relocated_file_manifest["ebin"]
+    refute Catalog.published_sha256?(sha)
   end
 
   test "the package's own name on the withheld list withholds its relocated build", %{name: name} do
@@ -181,7 +156,7 @@ defmodule Portal.Catalog.ManifestRelocatedTest do
   describe "files route and fingerprints" do
     test "a relocated build's files are served while the setting is on and the mark is the row's",
          %{name: name, row: row} do
-      [%{"sha256" => sha}] = row.file_manifest["ebin"]
+      [%{"sha256" => sha}] = row.relocated_file_manifest["ebin"]
       off!()
       refute Catalog.published_sha256?(sha)
       refute name in Catalog.packages_with_precompiled_files()

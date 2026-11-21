@@ -141,24 +141,7 @@ defmodule Portal.Reports.RequeueTest do
 
   # S4: a client before 0.9.0 never reads a version's `relocated` object.
   test "a not_built miss from a client before 0.9.0 for a relocated version triggers nothing" do
-    record = %{
-      "deps" => "/work/proj/deps",
-      "build" => "/work/proj/_build/host",
-      "files" => [
-        %{
-          "path" => "ebin/fine.beam",
-          "occurrences" => [
-            %{
-              "chunk" => "LitT",
-              "index" => 0,
-              "term" => [],
-              "kind" => "binary",
-              "parts" => ["", "deps", "/fine/c_include"]
-            }
-          ]
-        }
-      ]
-    }
+    record = Portal.Test.RelocationFixtures.record("fine")
 
     Portal.PrecompiledFixtures.ingest_toolchain_build("fine", "0.2.0", relocation: record)
 
@@ -169,6 +152,16 @@ defmodule Portal.Reports.RequeueTest do
     new = miss!("fine", "0.2.0", body: %{"client" => "0.9.0"})
     assert :ok = requeue(new)
     refute decision(new) == "skipped:relocated_client"
+
+    # A relocated earlier build (another lock) counts too.
+    Portal.PrecompiledFixtures.ingest_toolchain_build("fine", "0.2.0",
+      deps_lock: %{"decimal" => %{"version" => "2.1.2", "checksum" => "def"}},
+      finished_at: "2026-10-25T10:00:00Z"
+    )
+
+    again = miss!("fine", "0.2.0", body: %{"client" => "0.8.0"})
+    assert :ok = requeue(again)
+    assert decision(again) == "skipped:relocated_client"
   end
 
   test "an unknown package is skipped and nothing is asked of Hex" do

@@ -91,6 +91,7 @@ defmodule Portal.Catalog.ToolchainBuild do
     :foreign_priv,
     :foreign_priv_rule,
     :relocation,
+    :relocated_file_manifest,
     :file_manifest,
     :optional_deps,
     :finished_at,
@@ -428,6 +429,13 @@ defmodule Portal.Catalog.ToolchainBuild do
     end
 
     attribute :relocation_run_id, :string do
+      public?(true)
+    end
+
+    # A relocated build's files, which `file_manifest` (nil for it) lists for
+    # any other build: a release before S4 reads `file_manifest` alone, so it
+    # serves nothing of a relocated build.
+    attribute :relocated_file_manifest, :map do
       public?(true)
     end
 

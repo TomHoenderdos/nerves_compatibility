@@ -332,8 +332,12 @@ defmodule Portal.Reports.Requeue do
         join: p in "catalog_packages",
         on: p.id == t.package_id,
         where:
-          p.name == ^package and t.version == ^version and
-            t.relocation_run_id == t.run_id and is_nil(t.revoked_at)
+          p.name == ^package and t.version == ^version and is_nil(t.revoked_at) and
+            (t.relocation_run_id == t.run_id or
+               fragment(
+                 "EXISTS (SELECT 1 FROM unnest(?) AS e WHERE e->>'relocation_run_id' = e->>'run_id')",
+                 t.earlier_builds
+               ))
       )
     )
   end

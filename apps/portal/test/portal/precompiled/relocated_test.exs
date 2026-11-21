@@ -5,24 +5,7 @@ defmodule Portal.Precompiled.RelocatedTest do
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
   alias Portal.Precompiled.Relocated
 
-  @record %{
-    "deps" => "/work/proj/deps",
-    "build" => "/work/proj/_build/host",
-    "files" => [
-      %{
-        "path" => "ebin/Elixir.Fine.beam",
-        "occurrences" => [
-          %{
-            "chunk" => "LitT",
-            "index" => 0,
-            "term" => [],
-            "kind" => "binary",
-            "parts" => ["", "deps", "/fine/c_include"]
-          }
-        ]
-      }
-    ]
-  }
+  @record Portal.Test.RelocationFixtures.record("Elixir.Fine")
 
   test "counted/1: the record while its mark is the row's run, else nil" do
     assert Relocated.counted(%{relocation: @record, run_id: "r1", relocation_run_id: "r1"}) ==

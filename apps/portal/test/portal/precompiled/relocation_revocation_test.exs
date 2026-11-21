@@ -6,26 +6,7 @@ defmodule Portal.Precompiled.RelocationRevocationTest do
 
   import Portal.PrecompiledFixtures, only: [ingest_toolchain_build: 3]
 
-  defp record(name) do
-    %{
-      "deps" => "/work/proj/deps",
-      "build" => "/work/proj/_build/host",
-      "files" => [
-        %{
-          "path" => "ebin/#{name}.beam",
-          "occurrences" => [
-            %{
-              "chunk" => "LitT",
-              "index" => 0,
-              "term" => [],
-              "kind" => "binary",
-              "parts" => ["", "deps", "/#{name}/c_include"]
-            }
-          ]
-        }
-      ]
-    }
-  end
+  defp record(name), do: Portal.Test.RelocationFixtures.record(name)
 
   setup do
     {:ok, _} = Portal.Settings.save(%{relocated_enabled: true})
@@ -85,5 +66,24 @@ defmodule Portal.Precompiled.RelocationRevocationTest do
 
     assert Ash.get!(Portal.Catalog.ToolchainBuild, plain.id, domain: Portal.Catalog).revoked_at ==
              nil
+  end
+
+  # The umbrella review's S1: a row whose own build is plain and whose
+  # earlier build (another lock) is relocated is selected too; revoking the
+  # row hides its earlier builds.
+  test "a relocated earlier build is selected and revoked with its row", %{a: a} do
+    lock = %{"decimal" => %{"version" => "2.1.2", "checksum" => "def"}}
+
+    _plain =
+      ingest_toolchain_build(a, "1.0.0",
+        compile_env_rule: 1,
+        deps_lock: lock,
+        finished_at: "2026-10-25T10:00:00Z"
+      )
+
+    assert listed?(a)
+    assert {:dry_run, [%{package: ^a}]} = RelocationRevocation.revoke(package: a)
+    assert {:revoked, 1, _, _} = RelocationRevocation.revoke(package: a, dry_run: false)
+    refute listed?(a)
   end
 end

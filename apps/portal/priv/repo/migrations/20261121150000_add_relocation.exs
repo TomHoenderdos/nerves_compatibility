@@ -11,8 +11,11 @@ defmodule Portal.Repo.Migrations.AddRelocation do
   Add-only for the release still running during the deploy window: its
   inserts leave the columns null and its upserts leave them alone, so a
   record an older release's rebuild left behind no longer has its row's
-  `run_id` and counts for nothing. That release ingests a relocated pass as
-  a skip with no files, so it never stores one as a plain pass.
+  `run_id` and counts for nothing. What keeps that release from serving a
+  relocated build is where its files are: `relocated_file_manifest`, with
+  `file_manifest` nil (`AddRelocatedFileManifest`), in the row and in the
+  worker's `result.json` alike, so it stores and finds a relocated pass
+  with no files.
   """
 
   use Ecto.Migration

@@ -1,9 +1,11 @@
 defmodule Portal.Precompiled.RelocationRevocation do
   @moduledoc """
   The lever for relocated builds (`Portal.Precompiled.Relocated`): revokes
-  every relocated toolchain build of a package (and version), or all of
-  them. A build counts only while its record is its own run's
-  (`relocation_run_id = run_id`).
+  every toolchain row of a package (and version), or all of them, whose own
+  build or any earlier build (`Portal.Catalog.ToolchainBuild.EarlierBuilds`)
+  is relocated. A build counts only while its record is its own run's
+  (`relocation_run_id = run_id`). Revoking a row hides its earlier builds
+  too, a plain one beside a relocated one included.
 
   Counts first: `dry_run: true` is the default and writes nothing, and its
   listing is cut at `limit:` (50). Acting needs a filter. A revoked build
@@ -115,7 +117,13 @@ defmodule Portal.Precompiled.RelocationRevocation do
       join: p in "catalog_packages",
       as: :package,
       on: p.id == t.package_id,
-      where: is_nil(t.revoked_at) and t.relocation_run_id == t.run_id,
+      where: is_nil(t.revoked_at),
+      where:
+        t.relocation_run_id == t.run_id or
+          fragment(
+            "EXISTS (SELECT 1 FROM unnest(?) AS e WHERE e->>'relocation_run_id' = e->>'run_id')",
+            t.earlier_builds
+          ),
       order_by: [p.name, t.version, t.id],
       select: %{
         id: type(t.id, Ecto.UUID),

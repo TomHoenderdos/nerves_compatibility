@@ -24,13 +24,22 @@ defmodule PortalWeb.ApiSchemas.Relocation do
     %{
       title: "Relocation",
       description:
-        "The build's own `deps` and `build` paths, and per beam to rewrite every occurrence of " <>
+        "The build's own `deps` and `build` paths, the second build's, and per beam to rewrite every occurrence of " <>
           "them: the chunk, the literal, atom or file name index, the path inside the term, " <>
           "the kind and the value as a template.",
       type: :object,
       properties: %{
         deps: %Schema{type: :string},
         build: %Schema{type: :string},
+        second: %Schema{
+          type: :object,
+          description:
+            "The second build's own `deps` and `build` paths: with the first, they span the " <>
+              "paths a client relocates to.",
+          properties: %{deps: %Schema{type: :string}, build: %Schema{type: :string}},
+          required: [:deps, :build],
+          additionalProperties: false
+        },
         files: %Schema{
           type: :array,
           items: %Schema{
@@ -44,7 +53,7 @@ defmodule PortalWeb.ApiSchemas.Relocation do
           }
         }
       },
-      required: [:deps, :build, :files],
+      required: [:deps, :build, :second, :files],
       additionalProperties: false
     },
     struct?: false

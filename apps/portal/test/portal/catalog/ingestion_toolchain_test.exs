@@ -194,36 +194,24 @@ defmodule Portal.Catalog.IngestionToolchainTest do
   # S4 phase 2: a relocated pass is stored with its files and its record,
   # marked with its run (`Portal.Catalog.RelocationMark`); the manifest
   # lists it under `relocated` only (`Portal.Precompiled.Relocated`).
+  # As the worker writes a relocated pass: its files under
+  # `relocated_file_manifest`, `file_manifest` nil.
   defp relocated_result(name, beam, priv, record) do
-    pass_result(name, beam, priv)
+    result = pass_result(name, beam, priv)
+    manifest = result["toolchain_build"]["file_manifest"]
+
+    result
     |> put_in(["toolchain_build", "relocation"], record)
+    |> put_in(["toolchain_build", "relocated_file_manifest"], manifest)
+    |> put_in(["toolchain_build", "file_manifest"], nil)
     |> put_in(["toolchain_build", "compile_observations"], %{
       "trace_stats" => %{"relocate" => "relocated"}
     })
   end
 
-  defp record(name) do
-    %{
-      "deps" => "/work/proj/deps",
-      "build" => "/work/proj/_build/host",
-      "files" => [
-        %{
-          "path" => "ebin/#{name}.beam",
-          "occurrences" => [
-            %{
-              "chunk" => "LitT",
-              "index" => 0,
-              "term" => [],
-              "kind" => "binary",
-              "parts" => ["", "deps", "/#{name}/c_include"]
-            }
-          ]
-        }
-      ]
-    }
-  end
+  defp record(name), do: Portal.Test.RelocationFixtures.record(name)
 
-  test "a relocated pass is stored with its files, its record and its run's mark" do
+  test "a relocated pass is stored with its record, its files under relocated_file_manifest only" do
     name = unique_name()
     beam = blob("beam-#{name}")
     priv = blob("priv-#{name}")
@@ -238,27 +226,96 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert tb.status == :pass
     assert tb.relocation == record(name)
     assert tb.relocation_run_id == tb.run_id
-    assert %{"ebin" => [_], "priv" => [_]} = tb.file_manifest
+    assert tb.file_manifest == nil
+    assert %{"ebin" => [_], "priv" => [_]} = tb.relocated_file_manifest
     assert length(memberships(tb)) == 2
   end
 
-  test "a relocation record the host cannot apply stores a fail with no files" do
+  # The umbrella review's B3: main cda77d24 (a release before S4) reads a
+  # toolchain row's files from `file_manifest` alone, in its listing
+  # (`toolchain_files/3` of nil is nil) and in its files route (this
+  # predicate, copied from cda77d24's `in_own_manifest`). A relocated row
+  # gives it nothing to serve.
+  test "a release before S4 finds nothing to serve in a relocated row" do
     name = unique_name()
     beam = blob("beam-#{name}")
     priv = blob("priv-#{name}")
-    bad = put_in(record(name), ["files", Access.at(0), "path"], "ebin/other.beam")
 
-    assert {:ok, %ToolchainBuild{} = tb} =
-             Ingestion.ingest_toolchain(
-               relocated_result(name, beam, priv, bad),
-               opts(name, files_dir_with([beam, priv]))
-             )
+    {:ok, tb} =
+      Ingestion.ingest_toolchain(
+        relocated_result(name, beam, priv, record(name)),
+        opts(name, files_dir_with([beam, priv]))
+      )
 
-    assert tb.status == :fail
-    assert tb.reason =~ "relocation refused on the host: "
-    assert tb.file_manifest == nil
-    assert tb.relocation == nil
-    assert memberships(tb) == []
+    main_served = """
+    SELECT 1 FROM catalog_toolchain_builds t
+    WHERE t.id = $1 AND t.status = 'pass' AND t.revoked_at IS NULL
+      AND (t.file_manifest @> jsonb_build_object('ebin', jsonb_build_array(jsonb_build_object('sha256', $2::text)))
+           OR t.file_manifest @> jsonb_build_object('priv', jsonb_build_array(jsonb_build_object('sha256', $2::text))))
+    """
+
+    for {sha, _} <- [beam, priv] do
+      assert %{rows: []} = Portal.Repo.query!(main_served, [Ecto.UUID.dump!(tb.id), sha])
+    end
+
+    %{rows: [[manifest]]} =
+      Portal.Repo.query!("SELECT file_manifest FROM catalog_toolchain_builds WHERE id = $1", [
+        Ecto.UUID.dump!(tb.id)
+      ])
+
+    assert manifest == nil
+
+    # Its earlier-build snapshot, as cda77d24's `EarlierBuilds.entry/1`
+    # takes it, has no files either.
+    assert tb |> Portal.Catalog.ToolchainBuild.EarlierBuilds.entry() |> Map.get("file_manifest") ==
+             nil
+  end
+
+  test "a relocation record the host refuses stores a fail with no files" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+    other = put_in(record(name), ["files", Access.at(0), "path"], "ebin/other.beam")
+    unpinned = %{record(name) | "deps" => "/elsewhere/proj/deps"}
+
+    occ = %{
+      "chunk" => "LitT",
+      "index" => 0,
+      "term" => [],
+      "kind" => "binary",
+      "parts" => ["", "deps", String.duplicate("x", 3000)]
+    }
+
+    big = put_in(record(name), ["files", Access.at(0), "occurrences"], List.duplicate(occ, 100))
+
+    for {bad, why} <- [{other, "not a file of the build"}, {unpinned, "worker"}, {big, "256 KiB"}] do
+      assert {:ok, %ToolchainBuild{} = tb} =
+               Ingestion.ingest_toolchain(
+                 relocated_result(name, beam, priv, bad),
+                 opts(name, files_dir_with([beam, priv]))
+               )
+
+      assert tb.status == :fail
+      assert tb.reason =~ "relocation refused on the host: "
+      assert tb.reason =~ why
+      assert tb.file_manifest == nil
+      assert tb.relocated_file_manifest == nil
+      assert tb.relocation == nil
+      assert memberships(tb) == []
+    end
+  end
+
+  test "a relocated pass in the old shape (its files in file_manifest) stores a fail" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+
+    old =
+      pass_result(name, beam, priv)
+      |> put_in(["toolchain_build", "relocation"], record(name))
+
+    assert {:ok, %ToolchainBuild{status: :fail, file_manifest: nil}} =
+             Ingestion.ingest_toolchain(old, opts(name, files_dir_with([beam, priv])))
   end
 
   # Task I: a recorded compile_env value must be plain, small ETF; the

@@ -120,7 +120,21 @@ defmodule Portal.PrecompiledFixtures do
       )
     end)
     |> put_requested_optional_deps(Keyword.get(opts, :variant))
+    |> relocated_shape()
   end
+
+  # A relocated pass lists its files under `relocated_file_manifest` (S4),
+  # as the worker writes it.
+  defp relocated_shape(%{"toolchain_build" => %{"relocation" => %{}} = build} = result) do
+    build =
+      build
+      |> Map.put("relocated_file_manifest", build["file_manifest"])
+      |> Map.put("file_manifest", nil)
+
+    %{result | "toolchain_build" => build}
+  end
+
+  defp relocated_shape(result), do: result
 
   # The worker's echo of the optional-deps variant it was asked to build.
   defp put_requested_optional_deps(result, nil), do: result

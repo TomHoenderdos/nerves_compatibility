@@ -804,6 +804,7 @@ defmodule Portal.Catalog.Ingestion do
     build =
       result
       |> toolchain_build_map()
+      |> relocated_files()
       |> gate_manifest()
       |> gate_relocation(opts)
       |> gate_config_variant(opts)
@@ -828,6 +829,7 @@ defmodule Portal.Catalog.Ingestion do
   # skip with no files. A dependent that passed because its dependency
   # proved relocatable carries no record and is a plain pass.
   @pinned_relocated "relocated build: a pinned build is not relocated"
+  @relocated_shape "relocated_shape_ok"
   @relocation_refused "relocation refused on the host: "
 
   defp gate_relocation(%{"status" => "pass", "relocation" => record} = build, opts) do
@@ -837,20 +839,55 @@ defmodule Portal.Catalog.Ingestion do
         |> Map.delete("relocation")
         |> skip_variant(@pinned_relocated)
 
-      (build["foreign_priv"] || []) != [] ->
-        build
-        |> Map.delete("relocation")
-        |> refused("beside foreign priv files", @relocation_refused)
-
-      problem = Compatibility.Relocation.record_problem(record, ebin_paths(build)) ->
+      problem = relocation_problem(record, build) ->
         build |> Map.delete("relocation") |> refused(problem, @relocation_refused)
 
       true ->
-        build
+        Map.delete(build, @relocated_shape)
     end
   end
 
-  defp gate_relocation(build, _opts), do: Map.delete(build, "relocation")
+  defp gate_relocation(build, _opts), do: Map.drop(build, ["relocation", @relocated_shape])
+
+  defp relocation_problem(record, build) do
+    cond do
+      Map.get(build, @relocated_shape) != true ->
+        "its files are not under relocated_file_manifest"
+
+      (build["foreign_priv"] || []) != [] ->
+        "beside foreign priv files"
+
+      problem = Compatibility.Relocation.record_problem(record, ebin_paths(build)) ->
+        problem
+
+      problem = Compatibility.Relocation.pinned_problem(record) ->
+        problem
+
+      true ->
+        nil
+    end
+  end
+
+  # The umbrella review's B3: a relocated pass lists its files under
+  # `relocated_file_manifest`, `file_manifest` nil, so a release before S4
+  # finds nothing to serve. Here they are taken as the build's files for
+  # every gate and the staging, and `upsert_toolchain_build/5` stores them
+  # back under `relocated_file_manifest`. A relocated pass in any other
+  # shape is marked for `gate_relocation/2` to refuse; any other build's
+  # `relocated_file_manifest` is dropped.
+  defp relocated_files(%{"status" => "pass", "relocation" => %{}} = build) do
+    case {build["file_manifest"], build["relocated_file_manifest"]} do
+      {nil, %{} = manifest} ->
+        build
+        |> Map.delete("relocated_file_manifest")
+        |> Map.merge(%{"file_manifest" => manifest, @relocated_shape => true})
+
+      _ ->
+        build |> Map.delete("relocated_file_manifest") |> Map.put(@relocated_shape, false)
+    end
+  end
+
+  defp relocated_files(build), do: Map.delete(build, "relocated_file_manifest")
 
   defp ebin_paths(%{"file_manifest" => %{"ebin" => entries}}) when is_list(entries),
     do: for(%{"path" => path} when is_binary(path) <- entries, do: path)
@@ -1435,7 +1472,10 @@ defmodule Portal.Catalog.Ingestion do
       declared: declared(build["declared"]),
       compile_env: compiled_env,
       compile_inputs: inputs,
-      file_manifest: file_manifest(build["file_manifest"]),
+      file_manifest:
+        if(relocation(status, build), do: nil, else: file_manifest(build["file_manifest"])),
+      relocated_file_manifest:
+        if(relocation(status, build), do: file_manifest(build["file_manifest"])),
       optional_deps: optional_deps(result["optional_deps"]),
       portability_rule: portability_rule(build["portability_rule"]),
       rule1_reason: bounded_reason(build["rule1_reason"]),

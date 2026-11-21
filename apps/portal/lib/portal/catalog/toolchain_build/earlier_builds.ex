@@ -80,7 +80,8 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
     :foreign_priv_rule,
     :foreign_priv_run_id,
     :relocation,
-    :relocation_run_id
+    :relocation_run_id,
+    :relocated_file_manifest
   ]
 
   # Not served, but what a revocation judges an entry by (moduledoc).
@@ -95,19 +96,37 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   @doc """
   The build `row` serves, as an entry: its served columns, string keyed,
   with `finished_at` in ISO 8601. nil for a row that serves nothing: one that
-  does not pass, is revoked, or has no lock or no files.
+  does not pass, is revoked, or has no lock or no files. A relocated build's
+  files are in `relocated_file_manifest` (`Portal.Precompiled.Relocated`);
+  a release before S4 takes only a row with a `file_manifest`, so it keeps
+  no relocated build as an earlier one.
   """
   @spec entry(ToolchainBuild.t() | nil) :: map() | nil
   def entry(
         %ToolchainBuild{status: :pass, revoked_at: nil, deps_lock: %{}, file_manifest: %{}} = row
+      ),
+      do: as_entry(row)
+
+  def entry(
+        %ToolchainBuild{
+          status: :pass,
+          revoked_at: nil,
+          deps_lock: %{},
+          file_manifest: nil,
+          relocated_file_manifest: %{}
+        } = row
       ) do
+    if Portal.Precompiled.Relocated.counted(row), do: as_entry(row)
+  end
+
+  def entry(_row), do: nil
+
+  defp as_entry(row) do
     row
     |> Map.take(@fields ++ @verdict)
     |> Map.new(fn {key, value} -> {Atom.to_string(key), value} end)
     |> Map.put("finished_at", row.finished_at && DateTime.to_iso8601(row.finished_at))
   end
-
-  def entry(_row), do: nil
 
   @doc """
   The earlier builds after `replaced` (the row as it was, or nil) gave way to
@@ -159,7 +178,9 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
   def shas(earlier) do
     earlier
     |> List.wrap()
-    |> Enum.flat_map(fn entry -> manifest_shas(entry["file_manifest"]) ++ foreign_shas(entry) end)
+    |> Enum.flat_map(fn entry ->
+      manifest_shas(entry["file_manifest"]) ++ foreign_shas(entry) ++ relocated_shas(entry)
+    end)
     |> Enum.uniq()
   end
 
@@ -172,6 +193,13 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
        do: for(%{"sha256" => sha} <- list, is_binary(sha) and sha != "", do: sha)
 
   defp foreign_shas(_entry), do: []
+
+  # A relocated earlier build's files, while its record is its own run's.
+  defp relocated_shas(%{"relocation_run_id" => run, "run_id" => run} = entry)
+       when is_binary(run),
+       do: manifest_shas(entry["relocated_file_manifest"])
+
+  defp relocated_shas(_entry), do: []
 
   defp manifest_shas(%{} = manifest) do
     for key <- @manifest_keys,

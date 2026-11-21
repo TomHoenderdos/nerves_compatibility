@@ -1286,8 +1286,9 @@ defmodule Portal.Catalog do
   ), relocated_pkgs AS (
     SELECT t.package_id FROM catalog_toolchain_builds t
     WHERE t.relocation_run_id = t.run_id
-       OR EXISTS (SELECT 1 FROM unnest(t.earlier_builds) AS e
-                  WHERE e->>'relocation_run_id' = e->>'run_id')
+       OR (cardinality(t.earlier_builds) > 0
+           AND EXISTS (SELECT 1 FROM unnest(t.earlier_builds) AS e
+                       WHERE e->>'relocation_run_id' = e->>'run_id'))
   ), setting_bound AS (
     SELECT package_id FROM catalog_host_native_builds
     UNION
@@ -1477,7 +1478,7 @@ defmodule Portal.Catalog do
            to_jsonb(r.compile_env) AS compile_env, r.compile_env_rule,
            r.compile_env_run_id, r.run_id, r.file_manifest,
            to_jsonb(r.foreign_priv) AS foreign_priv, r.foreign_priv_run_id,
-           r.relocation_run_id
+           r.relocation_run_id, r.relocated_file_manifest
     UNION ALL
     SELECT r.id, r.package_id, r.version, r.toolchain, r.builder_version, r.variant,
            r.config_variant, r.status, r.revoked_at, e->'deps_lock',
@@ -1487,7 +1488,7 @@ defmodule Portal.Catalog do
                 THEN (e->>'compile_env_rule')::integer END,
            e->>'compile_env_run_id', e->>'run_id', e->'file_manifest',
            CASE WHEN jsonb_typeof(e->'foreign_priv') = 'array' THEN e->'foreign_priv' END,
-           e->>'foreign_priv_run_id', e->>'relocation_run_id'
+           e->>'foreign_priv_run_id', e->>'relocation_run_id', e->'relocated_file_manifest'
     FROM unnest(r.earlier_builds) AS e
     WHERE e->'deps_lock' IS DISTINCT FROM r.deps_lock
       AND #{served_toolchain.("r")}
@@ -1565,16 +1566,26 @@ defmodule Portal.Catalog do
       "jsonb_build_array(jsonb_build_object('sha256', #{sha})))"
   end
 
-  # A relocated build's own files (its record the mark of the row's own run,
-  # `Portal.Precompiled.Relocated.counted/1`) are served only while the
-  # `relocated_enabled` setting is on: with it off the build is listed
-  # nowhere, so none of its files is served either.
-  relocated_files_served = fn table ->
-    "(NOT coalesce(#{table}.relocation_run_id = #{table}.run_id, false) " <>
-      "OR EXISTS (SELECT 1 FROM settings st WHERE st.relocated_enabled))"
+  # A relocated build's files (its record the mark of the row's own run,
+  # `Portal.Precompiled.Relocated.counted/1`) are in its
+  # `relocated_file_manifest`, and served only while the `relocated_enabled`
+  # setting is on: with it off the build is listed nowhere. A release before
+  # S4 reads `file_manifest` alone, nil for such a build, and serves none.
+  in_relocated = fn table, sha ->
+    "(EXISTS (SELECT 1 FROM settings st WHERE st.relocated_enabled) " <>
+      "AND coalesce(#{table}.relocation_run_id = #{table}.run_id, false) " <>
+      "AND (#{table}.relocated_file_manifest @> jsonb_build_object('ebin', " <>
+      "jsonb_build_array(jsonb_build_object('sha256', #{sha}))) " <>
+      "OR #{table}.relocated_file_manifest @> jsonb_build_object('priv', " <>
+      "jsonb_build_array(jsonb_build_object('sha256', #{sha})))))"
   end
 
-  @served_toolchain_file_clause "((#{in_own_manifest.("t", "m.sha256")} AND #{relocated_files_served.("t")}) OR #{in_foreign_priv.("t", "m.sha256")})"
+  # A row whose record counts serves nothing from its `file_manifest` (nil).
+  plain_files_served = fn table ->
+    "NOT coalesce(#{table}.relocation_run_id = #{table}.run_id, false)"
+  end
+
+  @served_toolchain_file_clause "((#{in_own_manifest.("t", "m.sha256")} AND #{plain_files_served.("t")}) OR #{in_foreign_priv.("t", "m.sha256")} OR #{in_relocated.("t", "m.sha256")})"
 
   # Whether the host-native build `h` lists `sha` in its own file manifest.
   @served_host_native_file_clause in_own_manifest.("h", "m.sha256")
@@ -4282,7 +4293,7 @@ defmodule Portal.Catalog do
   defp toolchain_builds_v2(sources) do
     for tb <- sources.toolchain_builds,
         stored = Map.get(sources.shas_by_toolchain_build_id, tb.id, MapSet.new()),
-        files = toolchain_files(tb.file_manifest, stored, sources.present_shas),
+        files = toolchain_files(listed_manifest(tb), stored, sources.present_shas),
         files != nil,
         foreign = foreign_files(tb, stored, sources.present_shas),
         foreign != :absent,
@@ -4290,6 +4301,13 @@ defmodule Portal.Catalog do
         listed = put_relocated(listed, tb),
         listed != nil,
         do: listed
+  end
+
+  # A relocated build's files are in `relocated_file_manifest` (its
+  # `file_manifest` nil, so a release before S4 serves nothing of it), and
+  # only while its record counts; any other build's in `file_manifest`.
+  defp listed_manifest(tb) do
+    if Relocated.counted(tb), do: Map.get(tb, :relocated_file_manifest), else: tb.file_manifest
   end
 
   # Tags a build whose record counts (`Portal.Precompiled.Relocated.counted/1`)
@@ -4480,6 +4498,7 @@ defmodule Portal.Catalog do
       :foreign_priv_run_id,
       :relocation,
       :relocation_run_id,
+      :relocated_file_manifest,
       :finished_at,
       :earlier_builds
     ])
