@@ -280,6 +280,40 @@ defmodule Portal.Workers.ClosureDriftTest do
                |> Ash.read!(domain: Catalog)
     end
 
+    # phoenix 2.0.0 is out, no dependent allows it, and some drifted on
+    # jason: that is the daily drift's work, not this release's.
+    test "a build whose drift does not involve the dependency is left alone" do
+      dependent = name()
+
+      registry([
+        {"certifi", ["2.18.0", "3.0.0"]},
+        {"jason", ["1.0.0", "1.1.0"]},
+        {dependent, ["0.4.0"]}
+      ])
+
+      hex_releases(%{
+        dependent => [release("0.4.0", [{"certifi", "~> 2.18"}, {"jason", "~> 1.0"}])],
+        "certifi" => [release("2.18.0", []), release("3.0.0", [])],
+        "jason" => [release("1.0.0", []), release("1.1.0", [])]
+      })
+
+      ingest_toolchain_build(dependent, "0.4.0",
+        deps_lock: %{
+          "certifi" => %{"version" => "2.18.0", "checksum" => "c"},
+          "jason" => %{"version" => "1.0.0", "checksum" => "j"}
+        },
+        finished_at: @built
+      )
+
+      assert {:ok, %{candidates: 1, drifted: 0, enqueued: 0}} =
+               ClosureDrift.rebuild_dependents("certifi", priority: 2, reason: "fast", max: 10)
+
+      assert all_enqueued(worker: ToolchainBuild) == []
+
+      # The daily run still rebuilds it, for jason.
+      assert {:ok, %{drifted: 1, enqueued: 1}} = ClosureDrift.run()
+    end
+
     test "queues at most its cap" do
       names = [name(), name(), name()]
       two_releases(names)

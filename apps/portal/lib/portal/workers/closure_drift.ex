@@ -172,8 +172,9 @@ defmodule Portal.Workers.ClosureDrift do
 
   @doc """
   The toolchain phase of a run for the builds that lock `dep` only, the
-  release fast path's (`Portal.Workers.ReleaseFastPath`): the same judge
-  and the same kept build, with its own `:priority`, `:reason` and cap
+  release fast path's (`Portal.Workers.ReleaseFastPath`): the same judge,
+  counting a build as drifted only when `dep` is among what moved, and the
+  same kept build, with its own `:priority`, `:reason` and cap
   (`:max`), and no firmware phase. Returns the summary `run/1` does,
   without `firmware`, and with `capped: true` when it stopped at the cap
   with candidates left. Option `:dry_run` as for `run/1`.
@@ -213,6 +214,7 @@ defmodule Portal.Workers.ClosureDrift do
         queue_for: queue_for,
         releases: releases,
         deadline: deadline,
+        dep: Keyword.get(opts, :dep),
         priority: Keyword.fetch!(opts, :priority),
         reason: Keyword.fetch!(opts, :reason),
         max: Keyword.fetch!(opts, :max)
@@ -266,7 +268,7 @@ defmodule Portal.Workers.ClosureDrift do
   end
 
   defp judge(candidate, index, context, dry_run?, acc) do
-    case ClosureDrift.drift(candidate, index, context.releases) do
+    case candidate |> ClosureDrift.drift(index, context.releases) |> moved(context.dep) do
       {:drift, changes} when dry_run? ->
         log_drift(candidate, changes)
         %{acc | drifted: acc.drifted + 1}
@@ -284,6 +286,15 @@ defmodule Portal.Workers.ClosureDrift do
         %{acc | unknown: acc.unknown + 1}
     end
   end
+
+  # For one dependency's release (`rebuild_dependents/2`), a build is drift
+  # only when that dependency is among what moved: one that drifted on
+  # another dependency is the daily run's to rebuild.
+  defp moved({:drift, changes} = drift, dep) when is_binary(dep) do
+    if Enum.any?(changes, &(&1["dep"] == dep)), do: drift, else: :current
+  end
+
+  defp moved(verdict, _dep), do: verdict
 
   defp log_drift(candidate, changes) do
     moved = Enum.map_join(changes, ", ", &"#{&1["dep"]} #{&1["from"]} -> #{&1["to"]}")
