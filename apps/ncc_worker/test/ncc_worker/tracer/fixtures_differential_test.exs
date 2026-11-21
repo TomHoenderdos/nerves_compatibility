@@ -143,15 +143,9 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   CONFIG.
   """
 
-  # gproc 1.2.0's script files, vendored unchanged from its Hex tarball: a
-  # reviewed release (`ReviewedScripts`).
-  @gproc Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0")
-  defp gproc_files do
-    for path <- ~w(rebar.config.script priv/check_edown.script priv/remove_deps.script
-                   src/gproc.app.src.script),
-        into: %{},
-        do: {path, File.read!(Path.join(@gproc, path))}
-  end
+  # gproc 1.2.0's Hex tarball, vendored unchanged: a reviewed release
+  # (`ReviewedScripts`, by its outer checksum).
+  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0.tar")
 
   setup_all do
     # The real path: on macOS `/var` is a link to `/private/var`, and Mix
@@ -196,13 +190,16 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
           into: %{} do
         {name, script_run(root, name, %{"rebar.config.script" => script})}
       end
-      |> Map.put("gproc", script_run(root, "gproc", gproc_files(), "gproc", "1.2.0"))
+      |> Map.put(
+        "gproc",
+        r3_run(root, "gproc", "gproc", [{"gproc", "1.2.0", {:tarball, @gproc_tar}}])
+      )
       # Review N5: a reviewed gproc beside a release whose
       # rebar.config.script is a link to N1's script.
       |> Map.put(
         "fx_ln",
         r3_run(root, "fx_ln", "fx_ln", [
-          {"gproc", "1.2.0", gproc_files()},
+          {"gproc", "1.2.0", {:tarball, @gproc_tar}},
           {"fx_ln", "0.1.0",
            %{
              "real.script" => @position_script,
@@ -254,53 +251,75 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   # A project of the rebar3 dependencies `specs` (`{app, version, files}`,
   # a `{:symlink, target}` file a link in both the tarball and the tree),
   # each with its config, module and `.app.src`, judged for `package`.
+  # `{app, version, {:tarball, path}}` is a real Hex tarball: its contents
+  # are the tree, the tarball the cache's.
   defp r3_run(root, name, package, specs) do
     dir = Path.join(root, "r3-#{name}")
     hex_home = Path.join(dir, "hex")
     config = "{erl_opts, []}.\n"
 
     {deps, releases} =
-      Enum.map_reduce(specs, [], fn {app, version, files}, releases ->
-        src = "-module(#{app}).\n-export([x/0]).\nx() -> ok.\n"
+      Enum.map_reduce(specs, [], fn
+        {app, version, {:tarball, path}}, releases ->
+          real_release(hex_home, app, version, path, releases)
 
-        app_src =
-          ~s({application, #{app}, [{vsn, "#{version}"}, {description, "fixture"}, ) <>
-            ~s({applications, [kernel, stdlib]}]}.\n)
+        {app, version, files}, releases ->
+          src = "-module(#{app}).\n-export([x/0]).\nx() -> ok.\n"
 
-        all =
-          Map.merge(files, %{
-            "rebar.config" => config,
-            "src/#{app}.erl" => src,
-            "src/#{app}.app.src" => app_src
-          })
+          app_src =
+            ~s({application, #{app}, [{vsn, "#{version}"}, {description, "fixture"}, ) <>
+              ~s({applications, [kernel, stdlib]}]}.\n)
 
-        {plain, links} = Enum.split_with(all, fn {_, body} -> is_binary(body) end)
+          all =
+            Map.merge(files, %{
+              "rebar.config" => config,
+              "src/#{app}.erl" => src,
+              "src/#{app}.app.src" => app_src
+            })
 
-        spec = %{
-          manager: :rebar3,
-          rebar_config: config,
-          files: Map.new(plain),
-          links: Map.new(links, fn {path, {:symlink, target}} -> {path, target} end)
-        }
+          {plain, links} = Enum.split_with(all, fn {_, body} -> is_binary(body) end)
 
-        release =
-          TracerFixtures.hex_release(
-            hex_home,
-            app,
-            ["src", "priv", "rebar.config" | Map.keys(files)],
-            all,
-            [
-              {"version", version}
-            ]
-          )
+          spec = %{
+            manager: :rebar3,
+            rebar_config: config,
+            files: Map.new(plain),
+            links: Map.new(links, fn {path, {:symlink, target}} -> {path, target} end)
+          }
 
-        {{app, spec}, [release | releases]}
+          release =
+            TracerFixtures.hex_release(
+              hex_home,
+              app,
+              ["src", "priv", "rebar.config" | Map.keys(files)],
+              all,
+              [
+                {"version", version}
+              ]
+            )
+
+          {{app, spec}, [release | releases]}
       end)
 
     deps = Map.new(deps)
     proj = TracerFixtures.project(dir, Map.keys(deps), deps)
     File.write!(Path.join(proj, "mix.lock"), "%{}\n")
     run(dir, proj, package, releases: Map.new(releases), hex_home: hex_home)
+  end
+
+  defp real_release(hex_home, app, version, path, releases) do
+    bytes = File.read!(path)
+    cache = Path.join(hex_home, "packages/hexpm")
+    File.mkdir_p!(cache)
+    File.write!(Path.join(cache, "#{app}-#{version}.tar"), bytes)
+
+    {:ok, [{_, gz}]} =
+      :erl_tar.extract({:binary, bytes}, [:memory, {:files, [~c"contents.tar.gz"]}])
+
+    {:ok, members} = :erl_tar.extract({:binary, gz}, [:memory, :compressed])
+    files = Map.new(members, fn {name, body} -> {List.to_string(name), body} end)
+    sum = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+    release = {app, %{name: app, version: version, checksum: sum}}
+    {{app, %{manager: :rebar3, files: files}}, [release | releases]}
   end
 
   defp log(v), do: inspect(v.observations, pretty: true, limit: 60)

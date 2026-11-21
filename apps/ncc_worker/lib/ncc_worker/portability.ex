@@ -3137,13 +3137,13 @@ defmodule NccWorker.Portability do
   defp script_release(_ctx, app, _release, nil),
     do: unverified(app, "no verified tarball")
 
-  defp script_release(ctx, app, %{name: name, version: version}, bytes) do
+  defp script_release(ctx, app, %{name: name, version: version} = release, bytes) do
     case ReviewedScripts.script_members(bytes) do
       {:ok, :scripted} ->
-        {:ok, scripts} = ReviewedScripts.scripts(bytes)
+        sum = Map.get(release, :checksum)
 
         status =
-          if ReviewedScripts.reviewed?(name, version, scripts), do: :reviewed, else: :unreviewed
+          if ReviewedScripts.reviewed?(name, version, sum), do: :reviewed, else: :unreviewed
 
         %{app: app, release: "#{name} #{version}", status: status}
 

@@ -4,17 +4,22 @@ defmodule NccWorker.Portability.ReviewedScripts do
   differential build (`NccWorker.Portability.Differential`, review N1 and
   N2): a plain-arguments read Mix's evaluation of such a script makes takes
   the differential route only when every scripted release of the run's lock
-  is one of these, by Hex name, version and the sha256 of every script file
-  of its verified tarball (`rebar.config.script` and every `*.script`, the
-  set exactly). The read cannot be told apart by release (the trace names no
-  script), so one release that is not on the list refuses the read. Nothing
-  here runs a script.
+  is one of these, by Hex name, version and outer checksum (the sha256 of
+  the whole Hex tarball, which the lock and the registry carry; review R5),
+  so every byte is pinned: every script file and the `rebar.config` they
+  read. A per-script sha256 would add nothing to that. The read cannot be
+  told apart by release (the trace names no script), so one release that is
+  not on the list refuses the read. Which releases are scripted at all comes
+  from the tarball's member table (`script_members/1`; review N5: an
+  in-memory extract drops a link member). Nothing here runs a script.
 
   Each entry was read whole. What a Mix user's plain arguments can reach
   (`[<install>/bin/mix, Task | Args]`, `["--no-halt", "+iex", "-S", "mix" |
   ...]`, or any other shape), and what else the script does:
 
-    * gproc 0.3.1 to 1.3.0 (`rebar.config.script` in two versions, the
+    * gproc in these eight versions, and no other: 0.3.1, 0.5.0, 0.6.1,
+      0.8.0, 0.9.1, 1.0.0, 1.2.0 and 1.3.0 (review R6;
+      `rebar.config.script` in two versions, the
       0.8.0 one adding a shell config under `GPROC_DIST=true`;
       `priv/check_edown.script` in two versions that differ in a git URL
       alone; `priv/remove_deps.script`; from 1.2.0 a
@@ -63,56 +68,47 @@ defmodule NccWorker.Portability.ReviewedScripts do
 
   @max_files 10_000
 
-  # Script files shared by several releases.
-  @gproc_config_old "fe25e3030b70ad885ae89d2390ba3c1b742ade8fae3042911d70aa93403d99f2"
-  @gproc_config "bf4bc215b10cc661de6c35a5d257b1fd76378b48d40bab2202f8014293fa5621"
-  @gproc_edown_old "26d51e06e522622059f7b2c48d0d6ecc8fe3a53fc26f50ed01567d29c1b66ed2"
-  @gproc_edown "04ab798fb3d6b53a6fd91d4114319cf3d08a0db88c2e620568972b071e573cc2"
-  @gproc_remove "38ca93e84f11c717b11bc67f8c2eac23e118afda56ac37492ba1be3bc5785088"
-  @gproc_app_src "35edb4115b4a43cff9ca220cb0402af1181e8633389aed86ec78259e84b4816c"
-  @chatterbox "1c03a915c8cefc5b41dbb7082c3c152b3faa494df28de593ba03682bf9146677"
-  @tls "b8f2cca4a553c556905a511a0b1b9b27e3f9948f436bd1dc88650097884a140c"
-  @setup "fb636a8ab54045500f349f05b82446727312b733a9d0d317b210d734c19cb357"
-  @exometer "62b7031d79ddccc7d7093deee040c37135458c743bb764de7d1cd06ddc39f289"
-
-  defp gproc(config, edown),
-    do: %{
-      "rebar.config.script" => config,
-      "priv/check_edown.script" => edown,
-      "priv/remove_deps.script" => @gproc_remove
-    }
-
-  defp gproc(config, edown, app_src),
-    do: Map.put(gproc(config, edown), "src/gproc.app.src.script", app_src)
-
-  @doc "Every reviewed release: `{hex_name, version} => %{script_path => sha256}`."
-  @spec table() :: %{{String.t(), String.t()} => %{String.t() => String.t()}}
+  @doc """
+  Every reviewed release: `{hex_name, version} => outer checksum`, the
+  sha256 of the Hex tarball the lock and the registry carry (review R5), so
+  every byte is pinned: the scripts and the `rebar.config` they read. Each
+  was taken from the release's tarball and checked against the registry.
+  """
+  @spec table() :: %{{String.t(), String.t()} => String.t()}
   def table do
     %{
-      {"gproc", "0.3.1"} => gproc(@gproc_config_old, @gproc_edown_old),
-      {"gproc", "0.5.0"} => gproc(@gproc_config_old, @gproc_edown),
-      {"gproc", "0.6.1"} => gproc(@gproc_config_old, @gproc_edown),
-      {"gproc", "0.8.0"} => gproc(@gproc_config, @gproc_edown),
-      {"gproc", "0.9.1"} => gproc(@gproc_config, @gproc_edown),
-      {"gproc", "1.0.0"} => gproc(@gproc_config, @gproc_edown),
-      {"gproc", "1.2.0"} => gproc(@gproc_config, @gproc_edown, @gproc_app_src),
-      {"gproc", "1.3.0"} => gproc(@gproc_config, @gproc_edown, @gproc_app_src),
-      {"ts_chatterbox", "0.11.0"} => %{"rebar.config.script" => @chatterbox},
-      {"ts_chatterbox", "0.16.0"} => %{"rebar.config.script" => @chatterbox},
-      {"tls_certificate_check", "1.36.0"} => %{"rebar.config.script" => @tls},
-      {"setup", "2.1.0"} => %{"rebar.config.script" => @setup},
-      {"setup", "2.2.1"} => %{"rebar.config.script" => @setup},
-      {"exometer_core", "1.7.1"} => %{"rebar.config.script" => @exometer},
-      {"exometer_core", "2.0.0"} => %{"rebar.config.script" => @exometer}
+      {"gproc", "0.3.1"} => "3c449925a5cbf57cc40d13c6c282bc1080b5ed3bad97e1acdbe969fd63a65fce",
+      {"gproc", "0.5.0"} => "5bc0fa4e999a6665b92ce57a7f12d7e9d1c26bfc39b0f657994be05cd3818b18",
+      {"gproc", "0.6.1"} => "5506435afbc62de6beb2ade24356a2a6c26c2046e250f845f0676589e86e96ab",
+      {"gproc", "0.8.0"} => "580adafa56463b75263ef5a5df4c86af321f68694e7786cb057fd805d1e2a7de",
+      {"gproc", "0.9.1"} => "905088e32e72127ed9466f0bac0d8e65704ca5e73ee5a62cb073c3117916d507",
+      {"gproc", "1.0.0"} => "109f253c2787de8a371a51179d4973230cbec6239ee673fa12216a5ce7e4f902",
+      {"gproc", "1.2.0"} => "70c6f8c91fa5974296cd87974949d8eab953230414f31c4a623ff75131e0827a",
+      {"gproc", "1.3.0"} => "143a8ce6eb59610a351178482b629d2b052c69df84c9c50b9c13ae38354c8c14",
+      {"ts_chatterbox", "0.11.0"} =>
+        "722fe2bad52913ab7e87d849fc6370375f0c961ffb2f0b5e6d647c9170c382a6",
+      {"ts_chatterbox", "0.16.0"} =>
+        "34c145c702f3a8d22f49a189eb34579ef3db68f9a98a82d19b5cf6e390aad54f",
+      {"tls_certificate_check", "1.36.0"} =>
+        "e58b8626336b9cd483f0fd8346af501de648a07093b077be442f29ef6db28ef1",
+      {"setup", "2.1.0"} => "efd072578f0cf85bea96caaffc7adb0992398272522660a136e10567377071c5",
+      {"setup", "2.2.1"} => "f7babbd47d32ca81c4e1768ede237e1b63105214d2076fa1ba7780ab61457db4",
+      {"exometer_core", "1.7.1"} =>
+        "61a2ab26bc48b36a113d220b4afb06bd82bb2054d8a7f0813ff94c263b325594",
+      {"exometer_core", "2.0.0"} =>
+        "aea333e830a33be0d7bc60701bbdc899566de9387a4de8649412fcbd309633a4"
     }
   end
 
   @doc """
-  Whether `name` `version` with exactly these script files (`scripts/1`)
-  is a reviewed release.
+  Whether `name` `version` with this outer checksum (the lock's, which the
+  verified tarball matched) is a reviewed release.
   """
-  @spec reviewed?(String.t(), String.t(), %{String.t() => String.t()}) :: boolean()
-  def reviewed?(name, version, scripts), do: Map.get(table(), {name, version}) == scripts
+  @spec reviewed?(String.t(), String.t(), String.t() | nil) :: boolean()
+  def reviewed?(name, version, checksum) when is_binary(checksum),
+    do: Map.get(table(), {name, version}) == checksum
+
+  def reviewed?(_name, _version, _checksum), do: false
 
   @doc """
   What a Hex tarball's contents hold of scripts, from the member table (an
@@ -153,33 +149,6 @@ defmodule NccWorker.Portability.ReviewedScripts do
   def script_members(_bytes), do: {:unverified, "tarball unreadable"}
 
   defp member_name(name), do: name |> to_string() |> String.trim_leading("./")
-
-  @doc """
-  The script files of a Hex tarball's contents, `%{path => sha256}`:
-  `rebar.config.script` and every `*.script`, as regular files under safe
-  relative paths. `:error` for a tarball that cannot be read.
-  """
-  @spec scripts(binary()) :: {:ok, %{String.t() => String.t()}} | :error
-  def scripts(bytes) when is_binary(bytes) do
-    with {:ok, tar} <- Rebar.contents_tar(bytes),
-         {:ok, entries} when length(entries) <= @max_files <-
-           :erl_tar.extract({:binary, tar}, [:memory]) do
-      scripts =
-        for {name, body} <- entries,
-            path = member_name(name),
-            script?(path),
-            into: %{},
-            do: {path, :sha256 |> :crypto.hash(body) |> Base.encode16(case: :lower)}
-
-      {:ok, scripts}
-    else
-      _ -> :error
-    end
-  rescue
-    _ -> :error
-  end
-
-  def scripts(_bytes), do: :error
 
   defp script?(path),
     do: path == "rebar.config.script" or String.ends_with?(path, ".script")

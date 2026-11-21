@@ -11,13 +11,16 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
 
   @moduletag :tmp_dir
 
-  @gproc Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0")
+  # gproc 1.2.0's Hex tarball, vendored unchanged: a reviewed release.
+  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0.tar")
 
-  defp gproc_files do
-    for path <- ~w(rebar.config.script priv/check_edown.script priv/remove_deps.script
-                   src/gproc.app.src.script),
-        into: %{"rebar.config" => "{erl_opts, []}.\n"},
-        do: {path, File.read!(Path.join(@gproc, path))}
+  defp real_gproc(home) do
+    dir = Path.join(home, "packages/hexpm")
+    File.mkdir_p!(dir)
+    bytes = File.read!(@gproc_tar)
+    File.write!(Path.join(dir, "gproc-1.2.0.tar"), bytes)
+    sum = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
+    {"gproc", %{name: "gproc", version: "1.2.0", checksum: sum}}
   end
 
   defp release(home, app, files, meta \\ []) do
@@ -31,7 +34,7 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
 
     releases =
       Map.new([
-        release(home, "gproc", gproc_files(), [{"version", "1.2.0"}]),
+        real_gproc(home),
         release(home, "r3_dep", script),
         # Review L1: a closure dependency whose manager the closure line
         # leaves unknown is counted too.
