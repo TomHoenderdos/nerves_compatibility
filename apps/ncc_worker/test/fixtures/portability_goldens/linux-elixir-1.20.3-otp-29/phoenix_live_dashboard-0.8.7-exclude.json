@@ -3,20 +3,26 @@
   "compile_env_rule": null,
   "deps_lock": {
     "mime": "2.0.7",
-    "phoenix": "1.8.16",
+    "phoenix": "1.8.17",
     "phoenix_html": "4.4.0",
-    "phoenix_live_view": "1.2.13",
+    "phoenix_live_view": "1.2.15",
     "phoenix_pubsub": "2.4.1",
     "phoenix_template": "1.1.0",
-    "plug": "1.20.3",
+    "plug": "1.20.4",
     "plug_crypto": "2.2.1",
-    "telemetry": "1.4.2",
+    "telemetry": "1.4.3",
     "telemetry_metrics": "1.2.0",
     "websock": "0.5.3",
     "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
+    "build_root_recompile_dir": [
+      {
+        "owner": "phoenix_live_dashboard",
+        "path": "<root>/deps/phoenix_live_dashboard/lib/phoenix/live_dashboard"
+      }
+    ],
     "build_root_source_path": [],
     "config_reads": [
       {
@@ -65,6 +71,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -507,7 +530,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -524,7 +547,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -678,40 +701,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "always_evaluate_messages",
-          "key_name": "always_evaluate_messages"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/logger.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 111,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "always_evaluate_messages",
-          "key_name": "always_evaluate_messages"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/logger.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 132,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -966,6 +955,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -1408,7 +1414,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1425,7 +1431,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1596,23 +1602,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 111,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_application",
-          "key_name": "compile_time_application"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/logger.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 132,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -1867,6 +1856,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -2190,7 +2196,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2207,7 +2213,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2446,6 +2452,23 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 464,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 137,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2904,7 +2927,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2921,7 +2944,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3092,23 +3115,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 111,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_matching",
-          "key_name": "compile_time_purge_matching"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/logger.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 132,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -3421,6 +3427,39 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [
+      {
+        "arg": {
+          "app": "phoenix_template",
+          "app_name": "phoenix_template",
+          "key": "compiled_template_engines",
+          "key_name": "compiled_template_engines"
+        },
+        "file": "lib/phoenix/template.ex",
+        "line": 337,
+        "mfa": "application:set_env/4",
+        "module": "Elixir.Phoenix.Template",
+        "owner": "phoenix_live_dashboard"
+      }
+    ],
+    "declared_absent": [
+      {
+        "declared": [
+          "igniter"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Igniter",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
+          "jason"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Jason.Encoder",
+        "via": "Code.ensure_loaded?/1"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3473,8 +3512,10 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "endian_reads": [],
+    "env_reads": [
       {
+        "all": false,
         "arg": {
           "name": "LIVE_VIEW_PATH"
         },
@@ -3482,9 +3523,13 @@
         "line": 75,
         "mfa": "os:getenv/1",
         "module": "Elixir.Phoenix.LiveDashboard.MixProject",
-        "owner": "phoenix_live_dashboard"
+        "name": "LIVE_VIEW_PATH",
+        "owner": "phoenix_live_dashboard",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3492,18 +3537,92 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [],
+    "native_beam_reads": [],
+    "native_build": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "ok",
-    "problems": [
-      "config value cannot be told: phoenix_view template_engines"
+    "os_type_reads": [],
+    "own_priv_reads": [],
+    "own_tree_copies": [
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/2",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:write_file_info/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": null
+      }
     ],
-    "refusals": [],
-    "taint": {},
+    "priv_probes": [],
+    "priv_writes": [],
+    "problems": [],
+    "refusals": [
+      {
+        "owner": "phoenix_live_dashboard",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.ModalComponent via erlang:function_exported/3"
+      },
+      {
+        "owner": "phoenix_live_dashboard",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.NavBarComponent via erlang:function_exported/3"
+      },
+      {
+        "owner": "phoenix_live_dashboard",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.PageLive via erlang:function_exported/3"
+      },
+      {
+        "owner": "websock_adapter",
+        "reason": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
+      }
+    ],
+    "taint": {
+      "websock_adapter": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
+    },
+    "target_reads": [],
     "tree_check": {
       "mime": "ok",
       "phoenix": "ok",
@@ -3528,9 +3647,9 @@
   "optional_deps_variant": "exclude",
   "package": "phoenix_live_dashboard",
   "platform": "linux-elixir-1.20.3-otp-29",
-  "reason": "portability could not be judged",
+  "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.NavBarComponent via erlang:function_exported/3",
   "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
   "status": "skipped",
-  "trace_verdict": "could_not_judge",
+  "trace_verdict": "refused",
   "version": "0.8.7"
 }

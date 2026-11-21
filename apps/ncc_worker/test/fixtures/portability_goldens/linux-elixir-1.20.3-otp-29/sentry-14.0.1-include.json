@@ -3,46 +3,47 @@
   "compile_env_rule": null,
   "deps_lock": {
     "acceptor_pool": "1.0.1",
-    "certifi": "2.18.0",
+    "certifi": "2.19.0",
     "chatterbox": "0.16.0",
     "ctx": "0.6.0",
-    "finch": "0.24.0",
+    "finch": "0.25.0",
     "gproc": "1.2.0",
     "grpcbox": "0.18.0",
-    "h2": "0.15.1",
-    "hackney": "4.10.2",
+    "h2": "0.18.3",
+    "hackney": "4.12.3",
     "hpack": "0.3.0",
     "hpax": "1.1.0",
-    "idna": "7.1.0",
+    "idna": "8.0.0",
     "jason": "1.4.5",
     "mime": "2.0.7",
     "mimerl": "1.5.0",
     "mint": "1.11.0",
     "nimble_options": "1.2.0",
     "nimble_ownership": "1.0.2",
-    "nimble_pool": "1.1.0",
+    "nimble_pool": "1.2.0",
     "opentelemetry": "1.7.0",
     "opentelemetry_api": "1.5.0",
     "opentelemetry_exporter": "1.11.0",
     "opentelemetry_semantic_conventions": "1.27.0",
     "parse_trans": "3.4.2",
-    "phoenix": "1.8.16",
+    "phoenix": "1.8.17",
     "phoenix_html": "4.4.0",
-    "phoenix_live_view": "1.2.13",
+    "phoenix_live_view": "1.2.15",
     "phoenix_pubsub": "2.4.1",
     "phoenix_template": "1.1.0",
-    "plug": "1.20.3",
+    "plug": "1.20.4",
     "plug_crypto": "2.2.1",
-    "quic": "2.6.1",
+    "quic": "3.3.0",
     "ssl_verify_fun": "1.1.9",
-    "telemetry": "1.4.2",
+    "telemetry": "1.4.3",
     "tls_certificate_check": "1.36.0",
     "websock": "0.5.3",
     "websock_adapter": "0.7.2",
-    "webtransport": "0.5.5"
+    "webtransport": "0.5.13"
   },
   "judge_compile": "finished",
   "observations": {
+    "build_root_recompile_dir": [],
     "build_root_source_path": [],
     "config_reads": [
       {
@@ -74,7 +75,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 301,
+        "line": 307,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -91,7 +92,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 415,
+        "line": 425,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -108,7 +109,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 478,
+        "line": 484,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -125,7 +126,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 639,
+        "line": 629,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -346,10 +347,27 @@
         "file": "lib/nimble_pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 1081,
+        "line": 1373,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
       },
       {
         "arg": {
@@ -768,10 +786,10 @@
           "key_name": "always_evaluate_messages"
         },
         "extent": "frame",
-        "file": "lib/phoenix/socket.ex",
+        "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 714,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -788,24 +806,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "always_evaluate_messages",
-          "key_name": "always_evaluate_messages"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix/socket/transport.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -992,7 +993,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 301,
+        "line": 307,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -1009,7 +1010,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 415,
+        "line": 425,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -1026,7 +1027,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 478,
+        "line": 484,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -1043,7 +1044,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 639,
+        "line": 629,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -1264,10 +1265,27 @@
         "file": "lib/nimble_pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 1081,
+        "line": 1373,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
       },
       {
         "arg": {
@@ -1703,10 +1721,10 @@
           "key_name": "compile_time_application"
         },
         "extent": "frame",
-        "file": "lib/phoenix/socket.ex",
+        "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 769,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1723,24 +1741,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_application",
-          "key_name": "compile_time_application"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix/socket/transport.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1927,7 +1928,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 301,
+        "line": 307,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -1944,7 +1945,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 415,
+        "line": 425,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -1961,7 +1962,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 478,
+        "line": 484,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -1978,7 +1979,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 639,
+        "line": 629,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -2029,10 +2030,27 @@
         "file": "lib/nimble_pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 1081,
+        "line": 1373,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
       },
       {
         "arg": {
@@ -2349,10 +2367,10 @@
           "key_name": "compile_time_purge_level"
         },
         "extent": "frame",
-        "file": "lib/phoenix/socket.ex",
+        "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 769,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2369,24 +2387,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_level",
-          "key_name": "compile_time_purge_level"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix/socket/transport.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2454,7 +2455,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 301,
+        "line": 307,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -2471,7 +2472,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 415,
+        "line": 425,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -2488,7 +2489,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 478,
+        "line": 484,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -2505,7 +2506,7 @@
         "file": "lib/finch/http2/pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 639,
+        "line": 629,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "finch"
@@ -2726,10 +2727,27 @@
         "file": "lib/nimble_pool.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 1081,
+        "line": 1373,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "nimble_pool"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
       },
       {
         "arg": {
@@ -3148,10 +3166,10 @@
           "key_name": "compile_time_purge_matching"
         },
         "extent": "frame",
-        "file": "lib/phoenix/socket.ex",
+        "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 714,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3168,24 +3186,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_matching",
-          "key_name": "compile_time_purge_matching"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix/socket/transport.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3447,6 +3448,52 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [
+      {
+        "arg": {
+          "app": "parse_trans",
+          "app_name": "parse_trans",
+          "key": "revert_workaround",
+          "key_name": "revert_workaround"
+        },
+        "file": "<work>/work/proj/deps/parse_trans/src/parse_trans.erl",
+        "line": 653,
+        "mfa": "application:set_env/3",
+        "module": "parse_trans",
+        "owner": "hackney"
+      },
+      {
+        "arg": {
+          "app": "parse_trans",
+          "app_name": "parse_trans",
+          "key": "revert_workaround",
+          "key_name": "revert_workaround"
+        },
+        "file": "<work>/work/proj/deps/parse_trans/src/parse_trans.erl",
+        "line": 653,
+        "mfa": "application:set_env/3",
+        "module": "parse_trans",
+        "owner": "parse_trans"
+      }
+    ],
+    "declared_absent": [
+      {
+        "declared": [
+          "decimal"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Decimal",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
+          "igniter"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Igniter",
+        "via": "Code.ensure_loaded?/1"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3461,6 +3508,21 @@
         "mfa": "Version.compare/2",
         "module": "Elixir.Sentry.OpenTelemetry.VersionChecker",
         "owner": "sentry"
+      },
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.15.0\""
+        },
+        "extent": "frame",
+        "file": "<work>/work/proj/deps/sentry/mix.exs",
+        "first": "Elixir.Sentry.Mixfile",
+        "first_kind": "user",
+        "line": 174,
+        "mfa": "Version.match?/2",
+        "module": "Elixir.Sentry.Mixfile",
+        "owner": "sentry",
+        "series": true
       },
       {
         "arg": {
@@ -3489,6 +3551,21 @@
         "mfa": "Version.match?/2",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "left": "\"1.20.3\"",
+          "right": "\">= 1.20.0\""
+        },
+        "extent": "frame",
+        "file": "<work>/work/proj/deps/sentry/mix.exs",
+        "first": "Elixir.Sentry.Mixfile",
+        "first_kind": "user",
+        "line": 75,
+        "mfa": "Version.match?/2",
+        "module": "Elixir.Sentry.Mixfile",
+        "owner": "sentry",
+        "series": true
       },
       {
         "arg": {
@@ -3535,6 +3612,30 @@
       {
         "arg": {},
         "extent": "frame",
+        "file": "<work>/work/proj/deps/sentry/mix.exs",
+        "first": "Elixir.Sentry.Mixfile",
+        "first_kind": "user",
+        "line": 174,
+        "mfa": "System.version/0",
+        "module": "Elixir.Sentry.Mixfile",
+        "owner": "sentry",
+        "series": true
+      },
+      {
+        "arg": {},
+        "extent": "frame",
+        "file": "<work>/work/proj/deps/sentry/mix.exs",
+        "first": "Elixir.Sentry.Mixfile",
+        "first_kind": "user",
+        "line": 75,
+        "mfa": "System.version/0",
+        "module": "Elixir.Sentry.Mixfile",
+        "owner": "sentry",
+        "series": true
+      },
+      {
+        "arg": {},
+        "extent": "frame",
         "file": "lib/phoenix/code_reloader/server.ex",
         "first": "elixir_compiler_N",
         "first_kind": "user",
@@ -3555,8 +3656,38 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "endian_reads": [],
+    "env_reads": [
       {
+        "all": false,
+        "arg": {
+          "name": "CERTIFI_EMBED"
+        },
+        "file": "<work>/work/proj/deps/certifi/src/certifi_pt.erl",
+        "line": 28,
+        "mfa": "os:getenv/1",
+        "module": "certifi_pt",
+        "name": "CERTIFI_EMBED",
+        "owner": "certifi",
+        "slice_allowed": false,
+        "vm": "child:certifi"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "GPROC_DIST"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "os:getenv/1",
+        "module": null,
+        "name": "GPROC_DIST",
+        "owner": "outside",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3564,192 +3695,106 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "REBAR_DEPS"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "os:getenv/1",
+        "module": null,
+        "name": "REBAR_DEPS",
+        "owner": "outside",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "SENTRY_INTEGRATION"
+        },
+        "file": "<work>/work/proj/deps/sentry/mix.exs",
+        "line": 17,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Sentry.Mixfile",
+        "name": "SENTRY_INTEGRATION",
+        "owner": "sentry",
+        "slice_allowed": false,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [],
+    "native_beam_reads": [],
+    "native_build": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "ok",
-    "problems": [
-      "hpack: a rebar3 parent evaluates rebar.config.script"
+    "os_type_reads": [],
+    "own_priv_reads": [],
+    "own_tree_copies": [
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/2",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:write_file_info/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": null
+      }
     ],
+    "priv_probes": [],
+    "priv_writes": [],
+    "problems": [],
     "refusals": [
       {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:27)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:28)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:29)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:30)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:31)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:32)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:33)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:34)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:35)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:36)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:37)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:38)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:39)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:40)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:41)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:42)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:43)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:44)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:45)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: file:list_dir/1 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:93)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:27)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:28)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:29)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:30)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:31)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:32)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:33)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:34)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:35)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:36)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:37)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:38)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:39)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:40)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:41)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:42)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:43)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:44)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:45)"
-      },
-      {
-        "owner": "opentelemetry_semantic_conventions",
-        "reason": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:93)"
+        "owner": "mint",
+        "reason": "compile-time probe of a dependency outside the closure: Elixir.CAStore via Code.ensure_loaded?/1"
       },
       {
         "owner": "outside",
         "reason": "compile-time host read: init:get_plain_arguments/0 (dispatcher stack, first frame erl_eval)"
-      },
-      {
-        "owner": "outside",
-        "reason": "compile-time host read: os:getenv/1 (GPROC_DIST) (dispatcher stack, first frame erl_eval)"
-      },
-      {
-        "owner": "outside",
-        "reason": "compile-time host read: os:getenv/1 (REBAR_DEPS) (dispatcher stack, first frame erl_eval)"
-      },
-      {
-        "owner": "sentry",
-        "reason": "compile-time Elixir patch dependence: System.version/0 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:174)"
       },
       {
         "owner": "sentry",
@@ -3757,33 +3802,18 @@
       },
       {
         "owner": "sentry",
-        "reason": "compile-time Elixir patch dependence: System.version/0 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:75)"
-      },
-      {
-        "owner": "sentry",
-        "reason": "compile-time Elixir patch dependence: Version.match?/2 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:174)"
-      },
-      {
-        "owner": "sentry",
-        "reason": "compile-time Elixir patch dependence: Version.match?/2 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:75)"
-      },
-      {
-        "owner": "sentry",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 project/0 is not a keyword list literal (<work>/work/proj/deps/sentry/mix.exs:17)"
-      },
-      {
-        "owner": "sentry",
         "reason": "compile-time host read: application:loaded_applications/0 in Sentry.OpenTelemetry.VersionChecker.get_loaded_version/1 (lib/sentry/opentelemetry/version_checker.ex:55)"
+      },
+      {
+        "owner": "websock_adapter",
+        "reason": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
       }
     ],
     "taint": {
-      "chatterbox": "rebar3 build evaluates rebar.config.script",
-      "gproc": "rebar3 build evaluates rebar.config.script",
-      "hackney": "rebar3 build runs pre_hooks",
-      "opentelemetry_semantic_conventions": "compile-time host read in mix.exs: filelib:wildcard/2 project/0 is not a keyword list literal (<work>/work/proj/deps/opentelemetry_semantic_conventions/mix.exs:93)",
-      "quic": "rebar3 build runs pre_hooks",
-      "tls_certificate_check": "rebar3 build evaluates rebar.config.script"
+      "mint": "compile-time probe of a dependency outside the closure: Elixir.CAStore via Code.ensure_loaded?/1",
+      "websock_adapter": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
     },
+    "target_reads": [],
     "tree_check": {
       "acceptor_pool": "ok",
       "certifi": "ok",
@@ -3846,7 +3876,7 @@
   "optional_deps_variant": "include",
   "package": "sentry",
   "platform": "linux-elixir-1.20.3-otp-29",
-  "reason": "compile-time host read: os:getenv/1 (REBAR_DEPS) (dispatcher stack, first frame erl_eval)",
+  "reason": "compile-time host read: init:get_plain_arguments/0 (dispatcher stack, first frame erl_eval)",
   "rule1_reason": "OS-specific (lib/sentry/event.ex: :os.type()",
   "status": "skipped",
   "trace_verdict": "refused",

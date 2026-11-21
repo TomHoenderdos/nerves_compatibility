@@ -1,41 +1,27 @@
 {
-  "compile_env": [
-    "jason [\"decoding_integer_digit_limit\"] = :error",
-    "logger [\"always_evaluate_messages\"] = {:ok, false}",
-    "logger [\"compile_time_application\"] = {:ok, nil}",
-    "logger [\"compile_time_purge_level\"] = :error",
-    "logger [\"compile_time_purge_matching\"] = {:ok, []}",
-    "mime [\"extensions\"] = :error",
-    "mime [\"suffixes\"] = :error",
-    "mime [\"types\"] = :error",
-    "phoenix_live_view [\"debug_attributes\"] = :error",
-    "phoenix_live_view [\"debug_heex_annotations\"] = :error",
-    "phoenix_live_view [\"enable_expensive_runtime_checks\"] = :error",
-    "phoenix_live_view [\"root_tag_attribute\"] = :error",
-    "plug [\"mimes\"] = :error",
-    "plug [\"statuses\"] = :error"
-  ],
-  "compile_env_rule": 1,
+  "compile_env": [],
+  "compile_env_rule": null,
   "deps_lock": {
     "attrs": "0.6.0",
     "decimal": "3.2.0",
     "ecto": "3.14.3",
     "jason": "1.4.5",
     "mime": "2.0.7",
-    "phoenix": "1.8.16",
+    "phoenix": "1.8.17",
     "phoenix_html": "4.4.0",
     "phoenix_html_helpers": "1.0.1",
-    "phoenix_live_view": "1.2.13",
+    "phoenix_live_view": "1.2.15",
     "phoenix_pubsub": "2.4.1",
     "phoenix_template": "1.1.0",
-    "plug": "1.20.3",
+    "plug": "1.20.4",
     "plug_crypto": "2.2.1",
-    "telemetry": "1.4.2",
+    "telemetry": "1.4.3",
     "websock": "0.5.3",
     "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
+    "build_root_recompile_dir": [],
     "build_root_source_path": [
       {
         "owner": "ecto",
@@ -232,6 +218,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -674,7 +677,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -691,7 +694,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -811,23 +814,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 595,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "always_evaluate_messages",
-          "key_name": "always_evaluate_messages"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/html_formatter.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 297,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -1099,6 +1085,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -1541,7 +1544,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1558,7 +1561,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1695,23 +1698,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_application",
-          "key_name": "compile_time_application"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/test/upload_client.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -1983,6 +1969,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -2306,7 +2309,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2323,7 +2326,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2443,23 +2446,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_level",
-          "key_name": "compile_time_purge_level"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/test/upload_client.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -2613,6 +2599,23 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 464,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 137,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3071,7 +3074,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3088,7 +3091,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3208,23 +3211,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 595,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_matching",
-          "key_name": "compile_time_purge_matching"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/html_formatter.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 297,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -3469,6 +3455,17 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [],
+    "declared_absent": [
+      {
+        "declared": [
+          "igniter"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Igniter",
+        "via": "Code.ensure_loaded?/1"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3571,8 +3568,10 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "endian_reads": [],
+    "env_reads": [
       {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3580,16 +3579,80 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [],
+    "native_beam_reads": [],
+    "native_build": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "ok",
+    "os_type_reads": [],
+    "own_priv_reads": [],
+    "own_tree_copies": [
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/2",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:write_file_info/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": null
+      }
+    ],
+    "priv_probes": [],
+    "priv_writes": [],
     "problems": [],
-    "refusals": [],
-    "taint": {},
+    "refusals": [
+      {
+        "owner": "websock_adapter",
+        "reason": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
+      }
+    ],
+    "taint": {
+      "websock_adapter": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
+    },
+    "target_reads": [],
     "tree_check": {
       "attrs": "ok",
       "decimal": "ok",
@@ -3622,9 +3685,9 @@
   "optional_deps_variant": "include",
   "package": "polymorphic_embed",
   "platform": "linux-elixir-1.20.3-otp-29",
-  "reason": null,
+  "reason": "closure dependency observed the host: websock_adapter (compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1)",
   "rule1_reason": null,
-  "status": "pass",
-  "trace_verdict": "pass",
+  "status": "skipped",
+  "trace_verdict": "refused",
   "version": "5.0.6"
 }

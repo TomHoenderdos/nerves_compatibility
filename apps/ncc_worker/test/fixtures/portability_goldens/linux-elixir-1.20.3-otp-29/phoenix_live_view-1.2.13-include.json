@@ -10,21 +10,39 @@
     "jason": "1.4.5",
     "lazy_html": "0.1.14",
     "mime": "2.0.7",
-    "phoenix": "1.8.16",
+    "phoenix": "1.8.17",
     "phoenix_html": "4.4.0",
     "phoenix_pubsub": "2.4.1",
     "phoenix_template": "1.1.0",
     "phoenix_view": "2.0.4",
-    "plug": "1.20.3",
+    "plug": "1.20.4",
     "plug_crypto": "2.2.1",
-    "telemetry": "1.4.2",
+    "telemetry": "1.4.3",
     "websock": "0.5.3",
     "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
+    "build_root_recompile_dir": [],
     "build_root_source_path": [],
     "config_reads": [
+      {
+        "arg": {
+          "app": "elixir",
+          "app_name": "elixir",
+          "atoms": true,
+          "key": "ansi_enabled",
+          "key_name": "ansi_enabled"
+        },
+        "extent": "frame",
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "first": "Elixir.Mix.Shell.IO",
+        "first_kind": "toolchain",
+        "line": 236,
+        "mfa": "application:get_env/3",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "lazy_html"
+      },
       {
         "arg": {
           "app": "elixir_make",
@@ -190,6 +208,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "always_evaluate_messages",
+          "key_name": "always_evaluate_messages"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -632,7 +667,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -649,7 +684,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -769,40 +804,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 595,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "always_evaluate_messages",
-          "key_name": "always_evaluate_messages"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/html_formatter.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 297,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "always_evaluate_messages",
-          "key_name": "always_evaluate_messages"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/test/upload_client.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -1057,6 +1058,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_application",
+          "key_name": "compile_time_application"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -1499,7 +1517,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1516,7 +1534,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -1653,23 +1671,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_application",
-          "key_name": "compile_time_application"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/test/upload_client.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -1924,6 +1925,23 @@
         "file": "lib/phoenix/channel/server.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
+        "line": 137,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_level",
+          "key_name": "compile_time_purge_level"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
         "line": 19,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
@@ -2247,7 +2265,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2264,7 +2282,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -2316,23 +2334,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 1252,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_level",
-          "key_name": "compile_time_purge_level"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/channel.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 1749,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -2401,23 +2402,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_level",
-          "key_name": "compile_time_purge_level"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/test/upload_client.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -2554,6 +2538,23 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 464,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "phoenix"
+      },
+      {
+        "arg": {
+          "app": "logger",
+          "app_name": "logger",
+          "atoms": true,
+          "key": "compile_time_purge_matching",
+          "key_name": "compile_time_purge_matching"
+        },
+        "extent": "frame",
+        "file": "lib/phoenix/channel/server.ex",
+        "first": "Elixir.Logger",
+        "first_kind": "toolchain",
+        "line": 137,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3012,7 +3013,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 346,
+        "line": 347,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3029,7 +3030,7 @@
         "file": "lib/phoenix/socket/transport.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
-        "line": 426,
+        "line": 427,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix"
@@ -3166,23 +3167,6 @@
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
         "line": 297,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix_live_view"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_matching",
-          "key_name": "compile_time_purge_matching"
-        },
-        "extent": "frame",
-        "file": "lib/phoenix_live_view/test/upload_client.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 184,
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "phoenix_live_view"
@@ -3424,9 +3408,45 @@
         "mfa": "application:get_env/2",
         "module": "elixir_compiler_N",
         "owner": "plug"
+      },
+      {
+        "arg": {
+          "app": "public_key",
+          "app_name": "public_key",
+          "atoms": true,
+          "key": "cacerts_path",
+          "key_name": "cacerts_path"
+        },
+        "extent": "frame",
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "first": "pubkey_os_cacerts",
+        "first_kind": "toolchain",
+        "line": 72,
+        "mfa": "application:get_env/2",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "owner": "lazy_html"
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [],
+    "declared_absent": [
+      {
+        "declared": [
+          "decimal"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Decimal",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
+          "igniter"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Igniter",
+        "via": "Code.ensure_loaded?/1"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3479,8 +3499,108 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "endian_reads": [],
+    "env_reads": [
       {
+        "all": false,
+        "arg": {
+          "name": "ELIXIR_MAKE_CACERT"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 56,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "ELIXIR_MAKE_CACERT",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "ELIXIR_MAKE_CACHE_DIR"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 17,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "ELIXIR_MAKE_CACHE_DIR",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HEX_CACERTS_PATH"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 53,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "HEX_CACERTS_PATH",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HOME"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "HOME",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HTTPS_PROXY"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "HTTPS_PROXY",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HTTP_PROXY"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "HTTP_PROXY",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "MIX_XDG"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 13,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "MIX_XDG",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3488,9 +3608,98 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "TARGET_ABI"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 100,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_ABI",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "TARGET_ARCH"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 98,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_ARCH",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "TARGET_OS"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 99,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_OS",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "XDG_CACHE_HOME"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "XDG_CACHE_HOME",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "http_proxy"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "http_proxy",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "https_proxy"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "https_proxy",
+        "owner": "lazy_html",
+        "slice_allowed": false,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [
       {
         "arg": {
@@ -3503,6 +3712,8 @@
         "owner": "lazy_html"
       }
     ],
+    "native_beam_reads": [],
+    "native_build": [],
     "native_calls": [
       {
         "arg": {
@@ -3556,6 +3767,26 @@
       },
       {
         "arg": {
+          "module": "Elixir.ElixirMake.Artefact"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 238,
+        "mfa": "ElixirMake.Artefact.download/2",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "lazy_html"
+      },
+      {
+        "arg": {
+          "module": "Elixir.ElixirMake.Downloader.Httpc"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 238,
+        "mfa": "ElixirMake.Downloader.Httpc.download/1",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "lazy_html"
+      },
+      {
+        "arg": {
           "module": "Elixir.Mix.Tasks.Compile.ElixirMake"
         },
         "file": null,
@@ -3569,8 +3800,151 @@
       "<work>/work/proj/_build/host/lib/lazy_html/priv/liblazy_html.so"
     ],
     "nif_check": "ok",
+    "os_type_reads": [
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 93,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.CCPrecompiler",
+        "owner": "lazy_html",
+        "scope": "covered"
+      },
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "owner": "lazy_html",
+        "scope": "covered"
+      },
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 72,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "owner": "lazy_html",
+        "scope": "covered"
+      },
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 163,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "lazy_html",
+        "scope": "covered"
+      },
+      {
+        "arg": {},
+        "file": "lib/cc_precompiler.ex",
+        "line": 93,
+        "mfa": "os:type/0",
+        "module": "Elixir.CCPrecompiler",
+        "owner": "lazy_html",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "os:type/0",
+        "module": "Elixir.ElixirMake.Artefact",
+        "owner": "lazy_html",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 72,
+        "mfa": "os:type/0",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "owner": "lazy_html",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 163,
+        "mfa": "os:type/0",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "lazy_html",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "pubkey_os_cacerts.erl",
+        "line": 266,
+        "mfa": "os:type/0",
+        "module": "pubkey_os_cacerts",
+        "owner": "lazy_html",
+        "scope": "full"
+      }
+    ],
+    "own_priv_reads": [],
+    "own_tree_copies": [
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/2",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:write_file_info/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": null
+      }
+    ],
+    "priv_probes": [],
+    "priv_writes": [],
     "problems": [],
     "refusals": [
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time host read: application:get_env/2 (public_key) cacerts_path is read by OTP's certificate, TLS or socket code (pubkey_os_cacerts): the compile reached the host's CA store, crypto or network in ElixirMake.Downloader.Httpc (lib/elixir_make/downloader/httpc.ex:72)"
+      },
       {
         "owner": "lazy_html",
         "reason": "compile-time host read: erlang:open_port/2 via ram_file:ll_open/3 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
@@ -3589,27 +3963,23 @@
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 (os_type) in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
-      },
-      {
-        "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 (os_type) in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
-      },
-      {
-        "owner": "lazy_html",
-        "reason": "compile-time host read: erlang:system_info/1 (os_type) via filename:basedir_os_type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
-      },
-      {
-        "owner": "lazy_html",
         "reason": "compile-time host read: erlang:system_info/1 (system_architecture) in CCPrecompiler.current_target/1 (lib/cc_precompiler.ex:143)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:open/2 <<\"./liblazy_html.so\"...>> via erl_tar:open1/4 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+        "reason": "compile-time host read: file:open/2 (an in-memory file) via erl_tar:open1/4 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time host read: file:read_file/1 /etc/ssl/certs/ca-certificates.crt via pubkey_os_cacerts:load_from_file/1 in ElixirMake.Downloader.Httpc.otp_cacerts/0 (lib/elixir_make/downloader/httpc.ex:72)"
       },
       {
         "owner": "lazy_html",
         "reason": "compile-time host read: file:read_file/2 <home>/.cache/elixir_make/lazy_html-nif-2.16-aarch64-linux-gnu-0.1.14.tar.gz in ElixirMake.Artefact.verify_and_decompress/2 (lib/elixir_make/artefact.ex:111)"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time host read: file:read_file_info/1 /etc/ssl/certs/ca-certificates.crt via pubkey_os_cacerts:dir_or_file/1 in ElixirMake.Downloader.Httpc.otp_cacerts/0 (lib/elixir_make/downloader/httpc.ex:72)"
       },
       {
         "owner": "lazy_html",
@@ -3621,7 +3991,19 @@
       },
       {
         "owner": "lazy_html",
+        "reason": "compile-time host read: file:read_file_info/2 /home via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time host read: file:read_file_info/2 /home via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
+      },
+      {
+        "owner": "lazy_html",
         "reason": "compile-time host read: file:read_file_info/2 <home> via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time host read: file:read_file_info/2 <home> via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
       },
       {
         "owner": "lazy_html",
@@ -3629,7 +4011,11 @@
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
       },
       {
         "owner": "lazy_html",
@@ -3645,43 +4031,75 @@
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 (ELIXIR_MAKE_CACHE_DIR) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:17)"
+        "reason": "compile-time host read: httpc:request/4 in ElixirMake.Downloader.Httpc.download/1 (lib/elixir_make/downloader/httpc.ex:42)"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 (HOME) via filename:basedir_join_home/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time probe of an OTP application outside the closure: asn1 via Application.spec/2"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 (MIX_XDG) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:13)"
+        "reason": "compile-time probe of an OTP application outside the closure: asn1 via application_controller:load_application/1"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_ABI) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:100)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via Application.spec/2"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_ARCH) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:98)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via application_controller:is_running/1"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_OS) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:99)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via application_controller:load_application/1"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:getenv/1 (XDG_CACHE_HOME) via filename:getenv/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via code:ensure_loaded/1"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:type/0 in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via erlang:function_exported/3"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via Application.spec/2"
       },
       {
         "owner": "lazy_html",
-        "reason": "compile-time host read: os:type/0 via filename:basedir_os_type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via application_controller:is_running/1"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via application_controller:load_application/1"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via code:ensure_loaded/1"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via erlang:function_exported/3"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time probe of an OTP application outside the closure: ssl via Application.spec/2"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time probe of an OTP application outside the closure: ssl via application_controller:is_running/1"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time probe of an OTP application outside the closure: ssl via application_controller:load_application/1"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Mix via erlang:function_exported/3"
+      },
+      {
+        "owner": "lazy_html",
+        "reason": "compile-time write outside ebin: file:make_dir/1 /home"
       },
       {
         "owner": "lazy_html",
@@ -3705,17 +4123,27 @@
       },
       {
         "owner": "lazy_html",
+        "reason": "compile-time write outside ebin: file:write_file/3 <home>/.cache/elixir_make/lazy_html-nif-2.16-aarch64-linux-gnu-0.1.14.tar.gz"
+      },
+      {
+        "owner": "lazy_html",
         "reason": "compile-time write outside ebin: file:write_file_info/3 <work>/work/proj/_build/host/lib/lazy_html/priv/liblazy_html.so"
       },
       {
         "owner": "lazy_html",
         "reason": "compile-time write outside ebin: prim_file:open/2 <work>/work/proj/_build/host/lib/lazy_html/priv/liblazy_html.so"
+      },
+      {
+        "owner": "websock_adapter",
+        "reason": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
       }
     ],
     "taint": {
       "fine": "bakes the build path: Elixir.Fine \"<root>/deps/fine/c_include\"",
-      "lazy_html": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+      "lazy_html": "compile-time probe of whether a module is loaded: Elixir.Mix via erlang:function_exported/3",
+      "websock_adapter": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
     },
+    "target_reads": [],
     "tree_check": {
       "cc_precompiler": "unverified: native build",
       "elixir_make": "unverified: native build",

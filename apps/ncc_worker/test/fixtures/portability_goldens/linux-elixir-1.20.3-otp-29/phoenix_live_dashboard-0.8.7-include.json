@@ -14,22 +14,28 @@
     "exqlite": "0.43.0",
     "mime": "2.0.7",
     "myxql": "0.9.0",
-    "phoenix": "1.8.16",
+    "phoenix": "1.8.17",
     "phoenix_html": "4.4.0",
-    "phoenix_live_view": "1.2.13",
+    "phoenix_live_view": "1.2.15",
     "phoenix_pubsub": "2.4.1",
     "phoenix_template": "1.1.0",
-    "plug": "1.20.3",
+    "plug": "1.20.4",
     "plug_crypto": "2.2.1",
     "postgrex": "0.22.4",
     "table_rex": "4.1.0",
-    "telemetry": "1.4.2",
+    "telemetry": "1.4.3",
     "telemetry_metrics": "1.2.0",
     "websock": "0.5.3",
     "websock_adapter": "0.7.2"
   },
   "judge_compile": "finished",
   "observations": {
+    "build_root_recompile_dir": [
+      {
+        "owner": "phoenix_live_dashboard",
+        "path": "<root>/deps/phoenix_live_dashboard/lib/phoenix/live_dashboard"
+      }
+    ],
     "build_root_source_path": [
       {
         "owner": "ecto",
@@ -65,6 +71,23 @@
       }
     ],
     "config_reads": [
+      {
+        "arg": {
+          "app": "elixir",
+          "app_name": "elixir",
+          "atoms": true,
+          "key": "ansi_enabled",
+          "key_name": "ansi_enabled"
+        },
+        "extent": "frame",
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "first": "Elixir.Mix.Shell.IO",
+        "first_kind": "toolchain",
+        "line": 236,
+        "mfa": "application:get_env/3",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite"
+      },
       {
         "arg": {
           "app": "elixir_make",
@@ -1468,23 +1491,6 @@
           "key_name": "compile_time_application"
         },
         "extent": "frame",
-        "file": "lib/mix/tasks/phx.gen.release.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 410,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_application",
-          "key_name": "compile_time_application"
-        },
-        "extent": "frame",
         "file": "lib/myxql/client.ex",
         "first": "Elixir.Logger",
         "first_kind": "toolchain",
@@ -2172,23 +2178,6 @@
         "mfa": "application:get_env/3",
         "module": "elixir_compiler_N",
         "owner": "exqlite"
-      },
-      {
-        "arg": {
-          "app": "logger",
-          "app_name": "logger",
-          "atoms": true,
-          "key": "compile_time_purge_level",
-          "key_name": "compile_time_purge_level"
-        },
-        "extent": "frame",
-        "file": "lib/mix/tasks/phx.gen.release.ex",
-        "first": "Elixir.Logger",
-        "first_kind": "toolchain",
-        "line": 410,
-        "mfa": "application:get_env/3",
-        "module": "elixir_compiler_N",
-        "owner": "phoenix"
       },
       {
         "arg": {
@@ -3464,9 +3453,83 @@
         "mfa": "application:get_env/3",
         "module": "Elixir.Postgrex.Extensions.JSONB",
         "owner": "postgrex"
+      },
+      {
+        "arg": {
+          "app": "public_key",
+          "app_name": "public_key",
+          "atoms": true,
+          "key": "cacerts_path",
+          "key_name": "cacerts_path"
+        },
+        "extent": "frame",
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "first": "pubkey_os_cacerts",
+        "first_kind": "toolchain",
+        "line": 72,
+        "mfa": "application:get_env/2",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "owner": "exqlite"
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [
+      {
+        "arg": {
+          "app": "phoenix_template",
+          "app_name": "phoenix_template",
+          "key": "compiled_template_engines",
+          "key_name": "compiled_template_engines"
+        },
+        "file": "lib/phoenix/template.ex",
+        "line": 337,
+        "mfa": "application:set_env/4",
+        "module": "Elixir.Phoenix.Template",
+        "owner": "phoenix_live_dashboard"
+      }
+    ],
+    "declared_absent": [
+      {
+        "declared": [
+          "geo"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Geo",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
+          "igniter"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Igniter",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
+          "jason"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Jason.Encoder",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
+          "table"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Table.Reader",
+        "via": "Code.ensure_loaded?/1"
+      },
+      {
+        "declared": [
+          "tds"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Tds",
+        "via": "Code.ensure_loaded?/1"
+      }
+    ],
     "elixir_version": [
       {
         "arg": {
@@ -3619,8 +3682,38 @@
         "owner": "phoenix"
       }
     ],
-    "mix_exs_allowed": [
+    "endian_reads": [],
+    "env_reads": [
       {
+        "all": false,
+        "arg": {
+          "name": "ANDROID_API_LEVEL"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 162,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "ANDROID_API_LEVEL",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "CC_PRECOMPILER_ONLY_LISTED_TARGETS"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 141,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "CC_PRECOMPILER_ONLY_LISTED_TARGETS",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "DB_CONNECTION_PATH"
         },
@@ -3628,9 +3721,13 @@
         "line": 61,
         "mfa": "os:getenv/1",
         "module": "Elixir.MyXQL.MixProject",
-        "owner": "myxql"
+        "name": "DB_CONNECTION_PATH",
+        "owner": "myxql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "ECTO_ADAPTER"
         },
@@ -3638,9 +3735,13 @@
         "line": 14,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "ECTO_ADAPTER",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "ECTO_PATH"
         },
@@ -3648,9 +3749,125 @@
         "line": 84,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "ECTO_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
+        "arg": {
+          "name": "ELIXIR_MAKE_CACERT"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 56,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "ELIXIR_MAKE_CACERT",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "ELIXIR_MAKE_CACHE_DIR"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 17,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "ELIXIR_MAKE_CACHE_DIR",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "EXQLITE_INTEGRATION"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 27,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "EXQLITE_INTEGRATION",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "EXQLITE_USE_SYSTEM"
+        },
+        "file": "<work>/work/proj/deps/exqlite/mix.exs",
+        "line": 72,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.Exqlite.MixProject",
+        "name": "EXQLITE_USE_SYSTEM",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HEX_CACERTS_PATH"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 53,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "HEX_CACERTS_PATH",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HOME"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "HOME",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HTTPS_PROXY"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "HTTPS_PROXY",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "HTTP_PROXY"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "HTTP_PROXY",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "LIVE_VIEW_PATH"
         },
@@ -3658,9 +3875,27 @@
         "line": 75,
         "mfa": "os:getenv/1",
         "module": "Elixir.Phoenix.LiveDashboard.MixProject",
-        "owner": "phoenix_live_dashboard"
+        "name": "LIVE_VIEW_PATH",
+        "owner": "phoenix_live_dashboard",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
+        "arg": {
+          "name": "MIX_XDG"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 13,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "MIX_XDG",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "MYXQL_PATH"
         },
@@ -3668,9 +3903,13 @@
         "line": 100,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "MYXQL_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "PLUG_CRYPTO_2_0"
         },
@@ -3678,9 +3917,13 @@
         "line": 57,
         "mfa": "os:getenv/1",
         "module": "elixir_compiler_N",
-        "owner": "plug"
+        "name": "PLUG_CRYPTO_2_0",
+        "owner": "plug",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
         "arg": {
           "name": "POSTGREX_PATH"
         },
@@ -3688,9 +3931,55 @@
         "line": 92,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "POSTGREX_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
       },
       {
+        "all": false,
+        "arg": {
+          "name": "TARGET_ABI"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 100,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_ABI",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "TARGET_ARCH"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 98,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_ARCH",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "TARGET_OS"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 99,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.CCPrecompiler",
+        "name": "TARGET_OS",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
         "arg": {
           "name": "TDS_PATH"
         },
@@ -3698,9 +3987,56 @@
         "line": 108,
         "mfa": "os:getenv/1",
         "module": "Elixir.EctoSQL.MixProject",
-        "owner": "ecto_sql"
+        "name": "TDS_PATH",
+        "owner": "ecto_sql",
+        "slice_allowed": true,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "XDG_CACHE_HOME"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "name": "XDG_CACHE_HOME",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "http_proxy"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "http_proxy",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
+      },
+      {
+        "all": false,
+        "arg": {
+          "name": "https_proxy"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 82,
+        "mfa": "os:getenv/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "name": "https_proxy",
+        "owner": "exqlite",
+        "slice_allowed": false,
+        "vm": "main"
       }
     ],
+    "env_writes": [],
+    "mix_exs_allowed": [],
     "mix_project_paths": [
       {
         "arg": {
@@ -3713,6 +4049,8 @@
         "owner": "exqlite"
       }
     ],
+    "native_beam_reads": [],
+    "native_build": [],
     "native_calls": [
       {
         "arg": {
@@ -3766,6 +4104,26 @@
       },
       {
         "arg": {
+          "module": "Elixir.ElixirMake.Artefact"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 238,
+        "mfa": "ElixirMake.Artefact.download/2",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
+          "module": "Elixir.ElixirMake.Downloader.Httpc"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 238,
+        "mfa": "ElixirMake.Downloader.Httpc.download/1",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite"
+      },
+      {
+        "arg": {
           "module": "Elixir.Mix.Tasks.Compile.ElixirMake"
         },
         "file": null,
@@ -3779,25 +4137,150 @@
       "<work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so"
     ],
     "nif_check": "ok",
-    "problems": [
-      "config value cannot be told: phoenix_view template_engines"
+    "os_type_reads": [
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/cc_precompiler.ex",
+        "line": 93,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.CCPrecompiler",
+        "owner": "exqlite",
+        "scope": "covered"
+      },
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.ElixirMake.Artefact",
+        "owner": "exqlite",
+        "scope": "covered"
+      },
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 72,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "owner": "exqlite",
+        "scope": "covered"
+      },
+      {
+        "arg": {
+          "key": "os_type"
+        },
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 163,
+        "mfa": "erlang:system_info/1",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite",
+        "scope": "covered"
+      },
+      {
+        "arg": {},
+        "file": "lib/cc_precompiler.ex",
+        "line": 93,
+        "mfa": "os:type/0",
+        "module": "Elixir.CCPrecompiler",
+        "owner": "exqlite",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "lib/elixir_make/artefact.ex",
+        "line": 18,
+        "mfa": "os:type/0",
+        "module": "Elixir.ElixirMake.Artefact",
+        "owner": "exqlite",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "lib/elixir_make/downloader/httpc.ex",
+        "line": 72,
+        "mfa": "os:type/0",
+        "module": "Elixir.ElixirMake.Downloader.Httpc",
+        "owner": "exqlite",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "lib/mix/tasks/compile.elixir_make.ex",
+        "line": 163,
+        "mfa": "os:type/0",
+        "module": "Elixir.Mix.Tasks.Compile.ElixirMake",
+        "owner": "exqlite",
+        "scope": "full"
+      },
+      {
+        "arg": {},
+        "file": "pubkey_os_cacerts.erl",
+        "line": 266,
+        "mfa": "os:type/0",
+        "module": "pubkey_os_cacerts",
+        "owner": "exqlite",
+        "scope": "full"
+      }
     ],
+    "own_priv_reads": [],
+    "own_tree_copies": [
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/2",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "from": "<work>/work/proj/deps/phoenix/installer/templates/phx_web/components/core_components.ex.eex",
+          "from_kind": "read",
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:copy/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": "installer/templates/phx_web/components/core_components.ex.eex"
+      },
+      {
+        "app": "phoenix",
+        "arg": {
+          "path": "<work>/work/proj/deps/phoenix/priv/templates/phx.gen.live/core_components.ex.eex"
+        },
+        "file": null,
+        "line": null,
+        "mfa": "file:write_file_info/3",
+        "module": null,
+        "owner": "phoenix",
+        "path": "priv/templates/phx.gen.live/core_components.ex.eex",
+        "source": null
+      }
+    ],
+    "priv_probes": [],
+    "priv_writes": [],
+    "problems": [],
     "refusals": [
       {
         "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:141)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:162)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler_url (<work>/work/proj/deps/exqlite/mix.exs:27)"
+        "reason": "compile-time host read: application:get_env/2 (public_key) cacerts_path is read by OTP's certificate, TLS or socket code (pubkey_os_cacerts): the compile reached the host's CA store, crypto or network in ElixirMake.Downloader.Httpc (lib/elixir_make/downloader/httpc.ex:72)"
       },
       {
         "owner": "exqlite",
@@ -3817,27 +4300,23 @@
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: erlang:system_info/1 (os_type) in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read: erlang:system_info/1 (os_type) in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
-      },
-      {
-        "owner": "exqlite",
-        "reason": "compile-time host read: erlang:system_info/1 (os_type) via filename:basedir_os_type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
-      },
-      {
-        "owner": "exqlite",
         "reason": "compile-time host read: erlang:system_info/1 (system_architecture) in CCPrecompiler.current_target/1 (lib/cc_precompiler.ex:143)"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: file:open/2 <<\"./sqlite3_nif.so\"...>> via erl_tar:open1/4 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+        "reason": "compile-time host read: file:open/2 (an in-memory file) via erl_tar:open1/4 in ElixirMake.Artefact.verify_and_decompress/4 (lib/elixir_make/artefact.ex:131)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file/1 /etc/ssl/certs/ca-certificates.crt via pubkey_os_cacerts:load_from_file/1 in ElixirMake.Downloader.Httpc.otp_cacerts/0 (lib/elixir_make/downloader/httpc.ex:72)"
       },
       {
         "owner": "exqlite",
         "reason": "compile-time host read: file:read_file/2 <home>/.cache/elixir_make/exqlite-nif-2.17-aarch64-linux-gnu-0.43.0.tar.gz in ElixirMake.Artefact.verify_and_decompress/2 (lib/elixir_make/artefact.ex:111)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/1 /etc/ssl/certs/ca-certificates.crt via pubkey_os_cacerts:dir_or_file/1 in ElixirMake.Downloader.Httpc.otp_cacerts/0 (lib/elixir_make/downloader/httpc.ex:72)"
       },
       {
         "owner": "exqlite",
@@ -3849,7 +4328,19 @@
       },
       {
         "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 /home via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 /home via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
+      },
+      {
+        "owner": "exqlite",
         "reason": "compile-time host read: file:read_file_info/2 <home> via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <home> via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
       },
       {
         "owner": "exqlite",
@@ -3857,7 +4348,15 @@
       },
       {
         "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
+      },
+      {
+        "owner": "exqlite",
         "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
       },
       {
         "owner": "exqlite",
@@ -3873,43 +4372,75 @@
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (ELIXIR_MAKE_CACHE_DIR) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:17)"
+        "reason": "compile-time host read: httpc:request/4 in ElixirMake.Downloader.Httpc.download/1 (lib/elixir_make/downloader/httpc.ex:42)"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (HOME) via filename:basedir_join_home/1 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time probe of an OTP application outside the closure: asn1 via Application.spec/2"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (MIX_XDG) in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:13)"
+        "reason": "compile-time probe of an OTP application outside the closure: asn1 via application_controller:load_application/1"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_ABI) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:100)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via Application.spec/2"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_ARCH) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:98)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via application_controller:is_running/1"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (TARGET_OS) in CCPrecompiler.current_target_from_env/0 (lib/cc_precompiler.ex:99)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via application_controller:load_application/1"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:getenv/1 (XDG_CACHE_HOME) via filename:getenv/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via code:ensure_loaded/1"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:type/0 in CCPrecompiler.current_target/0 (lib/cc_precompiler.ex:93)"
+        "reason": "compile-time probe of an OTP application outside the closure: inets via erlang:function_exported/3"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:type/0 in Mix.Tasks.Compile.ElixirMake.run/1 (lib/mix/tasks/compile.elixir_make.ex:163)"
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via Application.spec/2"
       },
       {
         "owner": "exqlite",
-        "reason": "compile-time host read: os:type/0 via filename:basedir_os_type/0 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:18)"
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via application_controller:is_running/1"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via application_controller:load_application/1"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via code:ensure_loaded/1"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time probe of an OTP application outside the closure: public_key via erlang:function_exported/3"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time probe of an OTP application outside the closure: ssl via Application.spec/2"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time probe of an OTP application outside the closure: ssl via application_controller:is_running/1"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time probe of an OTP application outside the closure: ssl via application_controller:load_application/1"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Mix via erlang:function_exported/3"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:make_dir/1 /home"
       },
       {
         "owner": "exqlite",
@@ -3933,16 +4464,38 @@
       },
       {
         "owner": "exqlite",
+        "reason": "compile-time write outside ebin: file:write_file/3 <home>/.cache/elixir_make/exqlite-nif-2.17-aarch64-linux-gnu-0.43.0.tar.gz"
+      },
+      {
+        "owner": "exqlite",
         "reason": "compile-time write outside ebin: file:write_file_info/3 <work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so"
       },
       {
         "owner": "exqlite",
         "reason": "compile-time write outside ebin: prim_file:open/2 <work>/work/proj/_build/host/lib/exqlite/priv/sqlite3_nif.so"
+      },
+      {
+        "owner": "phoenix_live_dashboard",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.ModalComponent via erlang:function_exported/3"
+      },
+      {
+        "owner": "phoenix_live_dashboard",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.NavBarComponent via erlang:function_exported/3"
+      },
+      {
+        "owner": "phoenix_live_dashboard",
+        "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.PageLive via erlang:function_exported/3"
+      },
+      {
+        "owner": "websock_adapter",
+        "reason": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
       }
     ],
     "taint": {
-      "exqlite": "compile-time host read in mix.exs: os:getenv/1 sets make_precompiler (<work>/work/proj/deps/exqlite/mix.exs:72)"
+      "exqlite": "compile-time probe of whether a module is loaded: Elixir.Mix via erlang:function_exported/3",
+      "websock_adapter": "compile-time probe of a dependency outside the closure: cowboy_websocket via Code.ensure_loaded?/1"
     },
+    "target_reads": [],
     "tree_check": {
       "cc_precompiler": "unverified: native build",
       "db_connection": "ok",
@@ -3985,9 +4538,9 @@
   "optional_deps_variant": "include",
   "package": "phoenix_live_dashboard",
   "platform": "linux-elixir-1.20.3-otp-29",
-  "reason": "portability could not be judged",
+  "reason": "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveDashboard.NavBarComponent via erlang:function_exported/3",
   "rule1_reason": "OS-specific (lib/phoenix/live_dashboard/pages/home_page.ex: system_architecture)",
   "status": "skipped",
-  "trace_verdict": "could_not_judge",
+  "trace_verdict": "refused",
   "version": "0.8.7"
 }

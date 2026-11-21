@@ -1,0 +1,131 @@
+{
+  "compile_env": [
+    "jason [\"decoding_integer_digit_limit\"] = :error"
+  ],
+  "compile_env_rule": 1,
+  "deps_lock": {
+    "jason": "1.4.5"
+  },
+  "judge_compile": "finished",
+  "observations": {
+    "build_root_recompile_dir": [],
+    "build_root_source_path": [],
+    "config_reads": [
+      {
+        "arg": {
+          "app": "jason",
+          "app_name": "jason",
+          "atoms": true,
+          "key": "decoding_integer_digit_limit",
+          "key_name": "decoding_integer_digit_limit"
+        },
+        "extent": "frame",
+        "file": "lib/decoder.ex",
+        "first": "elixir_compiler_N",
+        "first_kind": "user",
+        "line": 167,
+        "mfa": "application:get_env/3",
+        "module": "elixir_compiler_N",
+        "owner": "jason"
+      }
+    ],
+    "config_unreviewed": [],
+    "config_writes": [],
+    "declared_absent": [
+      {
+        "declared": [
+          "decimal"
+        ],
+        "kind": "module_absent",
+        "module": "Elixir.Decimal",
+        "via": "Code.ensure_loaded?/1"
+      }
+    ],
+    "elixir_version": [],
+    "endian_reads": [],
+    "env_reads": [],
+    "env_writes": [],
+    "mix_exs_allowed": [],
+    "mix_project_paths": [],
+    "native_beam_reads": [],
+    "native_build": [],
+    "native_calls": [],
+    "native_libs": [],
+    "nif_check": "ok",
+    "os_type_reads": [],
+    "own_priv_reads": [
+      {
+        "app": "rustler",
+        "arg": {
+          "path": "<work>/work/proj/_build/host/lib/rustler/priv/templates/basic/Cargo.toml.eex"
+        },
+        "file": "lib/mix/tasks/rustler.new.ex",
+        "line": 33,
+        "mfa": "file:read_file/2",
+        "module": "elixir_compiler_N",
+        "owner": "rustler",
+        "source": "priv/templates/basic/Cargo.toml.eex"
+      },
+      {
+        "app": "rustler",
+        "arg": {
+          "path": "<work>/work/proj/_build/host/lib/rustler/priv/templates/basic/README.md"
+        },
+        "file": "lib/mix/tasks/rustler.new.ex",
+        "line": 33,
+        "mfa": "file:read_file/2",
+        "module": "elixir_compiler_N",
+        "owner": "rustler",
+        "source": "priv/templates/basic/README.md"
+      },
+      {
+        "app": "rustler",
+        "arg": {
+          "path": "<work>/work/proj/_build/host/lib/rustler/priv/templates/basic/src/lib.rs"
+        },
+        "file": "lib/mix/tasks/rustler.new.ex",
+        "line": 33,
+        "mfa": "file:read_file/2",
+        "module": "elixir_compiler_N",
+        "owner": "rustler",
+        "source": "priv/templates/basic/src/lib.rs"
+      },
+      {
+        "app": "rustler",
+        "arg": {
+          "path": "<work>/work/proj/_build/host/lib/rustler/priv/templates/root/Cargo.toml.eex"
+        },
+        "file": "lib/mix/tasks/rustler.new.ex",
+        "line": 33,
+        "mfa": "file:read_file/2",
+        "module": "elixir_compiler_N",
+        "owner": "rustler",
+        "source": "priv/templates/root/Cargo.toml.eex"
+      }
+    ],
+    "own_tree_copies": [],
+    "priv_probes": [],
+    "priv_writes": [],
+    "problems": [],
+    "refusals": [],
+    "taint": {},
+    "target_reads": [],
+    "tree_check": {
+      "jason": "ok",
+      "rustler": "unverified: native build"
+    }
+  },
+  "optional_deps": {
+    "added": [],
+    "dropped": [],
+    "reason": null
+  },
+  "optional_deps_variant": "include",
+  "package": "rustler",
+  "platform": "linux-elixir-1.20.3-otp-29",
+  "reason": null,
+  "rule1_reason": "calls System.cmd/3",
+  "status": "pass",
+  "trace_verdict": "pass",
+  "version": "0.38.0"
+}

@@ -8,6 +8,7 @@
   },
   "judge_compile": "finished",
   "observations": {
+    "build_root_recompile_dir": [],
     "build_root_source_path": [],
     "config_reads": [
       {
@@ -29,6 +30,8 @@
       }
     ],
     "config_unreviewed": [],
+    "config_writes": [],
+    "declared_absent": [],
     "elixir_version": [
       {
         "arg": {
@@ -56,14 +59,25 @@
         "owner": "decimal"
       }
     ],
+    "endian_reads": [],
+    "env_reads": [],
+    "env_writes": [],
     "mix_exs_allowed": [],
     "mix_project_paths": [],
+    "native_beam_reads": [],
+    "native_build": [],
     "native_calls": [],
     "native_libs": [],
     "nif_check": "ok",
+    "os_type_reads": [],
+    "own_priv_reads": [],
+    "own_tree_copies": [],
+    "priv_probes": [],
+    "priv_writes": [],
     "problems": [],
     "refusals": [],
     "taint": {},
+    "target_reads": [],
     "tree_check": {
       "decimal": "ok",
       "jason": "ok"
