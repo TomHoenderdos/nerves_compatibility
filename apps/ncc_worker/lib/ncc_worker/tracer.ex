@@ -108,6 +108,7 @@ defmodule NccWorker.Tracer do
          {:ok, elixir} <- executable("elixir"),
          :ok <- reset(trace_dir),
          :ok <- driver_input(trace_dir, opts),
+         :ok <- base_loaded(elixir, trace_dir, Keyword.get(opts, :env, [])),
          {:ok, ebin} <- install(Path.join(trace_dir, "ebin")),
          {:ok, installed} <- digests(ebin) do
       env =
@@ -126,6 +127,8 @@ defmodule NccWorker.Tracer do
       Enum.find([swept, result, reaped, checked], result, &match?({:error, _}, &1))
     end
   end
+
+  @base_loaded "base-loaded"
 
   @doc """
   The trace errors (`trace_stats["tracer_error"]`) that mean processes were
@@ -279,6 +282,24 @@ defmodule NccWorker.Tracer do
   end
 
   # sobelow_skip ["Traversal.FileModule"]
+  # The modules a bare VM of this toolchain has loaded once it runs code
+  # (`elixir -e`, with the compile's own environment): erts's, kernel's,
+  # stdlib's and Elixir's boot. The tracer takes as loaded for the user only
+  # a module both loaded before it started and in this list (round 3, R2-6);
+  # one Mix, Hex or the driver loaded is traced and judged like any other.
+  # A list that cannot be made fails the trace.
+  # sobelow_skip ["CI.System", "Traversal.FileModule"]
+  defp base_loaded(elixir, trace_dir, env) do
+    script = ~S|IO.write(Enum.map_join(:code.all_loaded(), "\n", &Atom.to_string(elem(&1, 0))))|
+
+    case System.cmd(elixir, ["-e", script], env: env, cd: trace_dir, stderr_to_stdout: true) do
+      {out, 0} -> File.write(Path.join(trace_dir, @base_loaded), out)
+      {out, code} -> {:error, {:base_loaded, code, String.slice(out, 0, 500)}}
+    end
+  rescue
+    e -> {:error, {:base_loaded, Exception.message(e)}}
+  end
+
   defp reset(dir) do
     # A sealed ebin left by an earlier run cannot be emptied until writable.
     _ = File.chmod(Path.join(dir, "ebin"), 0o755)
@@ -360,6 +381,7 @@ defmodule NccWorker.Tracer do
       {"NCC_TRACE_HOLDERS", opts |> Keyword.get(:holders, []) |> holders_env()},
       {"NCC_TRACE_MODE", Atom.to_string(mode)},
       {"NCC_TRACE_SWEEP", Keyword.get_lazy(opts, :window_sweep, &window_sweep/0)},
+      {"NCC_TRACE_BASE", Path.join(trace_dir, @base_loaded)},
       {"MIX_OS_DEPS_COMPILE_PARTITION_COUNT", nil}
     ]
   end

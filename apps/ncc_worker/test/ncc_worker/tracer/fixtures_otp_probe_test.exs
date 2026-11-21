@@ -634,6 +634,38 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
                "erlang:function_exported/3"
   end
 
+  # Round 3, R2-6: a module loaded before the tracer started (Mix loads
+  # `:sofs` for its own work) is no longer taken as loaded for the user,
+  # whose VM need not have loaded it: only what a bare VM of the toolchain
+  # has loaded is (`NCC_TRACE_BASE`). So a loaded-now probe of it is traced
+  # and refuses, and a module the bare VM has (`:queue`) is still skipped.
+  test "a loaded-now probe of a module only Mix loaded before the trace refuses",
+       %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(dir, ["fx_probe"], %{
+        "fx_probe" => %{
+          files: %{
+            "lib/fx_probe.ex" =>
+              TracerFixtures.attr_module(
+                "FxProbe",
+                "{function_exported?(:queue, :new, 0), function_exported?(:sofs, :empty_set, 0)}"
+              )
+          }
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"])
+    assert {:ok, 0} = traced.result, traced.log
+    modules = for e <- probes(traced), do: e["arg"]["module"]
+    assert "sofs" in modules
+    refute "queue" in modules
+
+    assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert reason ==
+             "compile-time probe of whether a module is loaded: sofs via erlang:function_exported/3"
+  end
+
   # Round-2 ruling 2: a plug pipeline. Plug.Builder's init_module_plug/4
   # calls `plug.init(opts)` and then asks `function_exported?(plug, :call,
   # 2)` (plug 1.5.0 and later, reviewed): the direct call loaded the module

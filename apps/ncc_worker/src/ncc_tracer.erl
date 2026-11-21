@@ -668,7 +668,8 @@ probe_head(_MFA, M) -> [M].
 %% leaves the set empty. With it, the modules no probe of which is traced
 %% (probe_spec/5): those loaded before the tracer started or by Mix anyway,
 %% all but the ones we loaded.
-installed(main, Before, Preloaded) ->
+installed(main, Before0, Preloaded) ->
+    Before = every_vm(Before0),
     {Pid, Ref} = spawn_monitor(fun() ->
                                        exit({installed, installed_modules(Before, Preloaded),
                                              skipped(Before, Preloaded)})
@@ -678,6 +679,23 @@ installed(main, Before, Preloaded) ->
         {'DOWN', Ref, process, Pid, Reason} -> erlang:error({installed_modules, Reason})
     end;
 installed(child, _Before, _Preloaded) -> {#{}, #{}}.
+
+%% Round 3 (R2-6): of the modules loaded before the tracer started, only
+%% those a bare VM of this toolchain has loaded too (`NCC_TRACE_BASE`, which
+%% NccWorker.Tracer writes from `elixir -e`: erts's, kernel's, stdlib's and
+%% Elixir's boot) are taken as loaded for the user. One Mix, Hex or the
+%% driver loaded is traced and judged like any other. Without the list,
+%% erts's preloaded modules only.
+every_vm(Before) ->
+    Base = case os:getenv("NCC_TRACE_BASE") of
+               false -> erlang:pre_loaded();
+               Path -> base_list(file:read_file(Path))
+           end,
+    maps:with(Base, Before).
+
+base_list({ok, Bin}) ->
+    [binary_to_atom(L) || L <- binary:split(Bin, <<"\n">>, [global, trim_all])];
+base_list(_Error) -> erlang:pre_loaded().
 
 %% Round 2 (R1-A): an every-path application's module not loaded yet is
 %% traced too: whether it is loaded now is what other compile-time code
