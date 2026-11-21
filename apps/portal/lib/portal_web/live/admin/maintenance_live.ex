@@ -1021,9 +1021,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     do: "on",
                     else: "off"}.
                 </span>
-                Toolchain builds whose beams hold their build's paths are built again at two more
-                roots and, when every root proves, stored as relocated builds. It serves nothing by
-                itself; relocated builds below decides that.
+                Toolchain builds whose beams hold their build's paths, and their dependents, are
+                built again at two more roots and, when every root proves, stored as relocated
+                builds. It serves nothing by itself; relocated builds below decides that.
               </p>
             </div>
             <button
