@@ -755,8 +755,15 @@ defmodule Portal.Workers.UpdateCheckTest do
 
   describe "the release fast path" do
     test "a run offers a release its dependents' builds lock behind" do
-      Application.put_env(:portal, Portal.Workers.ReleaseFastPath, min_dependents: 1)
-      on_exit(fn -> Application.delete_env(:portal, Portal.Workers.ReleaseFastPath) end)
+      previous = Application.get_env(:portal, Portal.Workers.ReleaseFastPath, [])
+
+      Application.put_env(
+        :portal,
+        Portal.Workers.ReleaseFastPath,
+        Keyword.put(previous, :min_dependents, 1)
+      )
+
+      on_exit(fn -> Application.put_env(:portal, Portal.Workers.ReleaseFastPath, previous) end)
 
       passing_package("alpha", "1.0.0")
 

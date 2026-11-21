@@ -404,6 +404,43 @@ defmodule Portal.Workers.IngestIdentityTest do
     end
   end
 
+  # The same for a pinned build: its row is `Portal.Workers.PinnedBuild`'s,
+  # under the job's pinned identity.
+  describe "a pinned ingest that runs out of attempts" do
+    test "writes an error row for its pinned identity on the last attempt" do
+      name = Portal.PinnedFixtures.unique()
+      pins = Portal.PinnedFixtures.pins(name)
+      result = Portal.PinnedFixtures.result(name, pins, beams: ["unstaged-#{name}"])
+      replay(result, files_dir_with([]))
+      Portal.Catalog.Ingestion.ensure_package_id(name)
+
+      args = %{
+        "kind" => "pinned",
+        "run_id" => "pn-#{name}",
+        "image_digest" => "sha256:identity",
+        "package" => name,
+        "version" => "1.0.0",
+        "toolchain" => "1.20/28",
+        "builder_version" => Portal.Toolchains.builder_version(),
+        "pins" => pins,
+        "pin_hash" => pins["hash"],
+        "target" => "pure_elixir"
+      }
+
+      capture_log(fn ->
+        assert {:error, {:artifacts_unstaged, [_]}} =
+                 Ingest.perform(%Oban.Job{args: args, attempt: 5, max_attempts: 5})
+      end)
+
+      assert [%{status: :error, pin_hash: hash, reason: "ingest failed: " <> _}] =
+               Portal.Catalog.PinnedBuild
+               |> Ash.Query.filter(package.name == ^name)
+               |> Ash.read!(domain: Catalog)
+
+      assert hash == pins["hash"]
+    end
+  end
+
   describe "a toolchain build's variant" do
     defp variant_args(name, variant) do
       base = %{
