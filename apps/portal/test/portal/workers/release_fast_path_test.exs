@@ -381,11 +381,15 @@ defmodule Portal.Workers.ReleaseFastPathTest do
               inserted_at: DateTime.utc_now()
             })
           rescue
-            error in DBConnection.ConnectionError -> error
+            error in [DBConnection.ConnectionError, Postgrex.Error] -> error
           end
         end)
 
-      assert %DBConnection.ConnectionError{} = raised
+      # The statement's own timeout: the client gives up, or the cancel it
+      # sends reaches the server first, whichever wins under load.
+      assert match?(%DBConnection.ConnectionError{}, raised) or
+               match?(%Postgrex.Error{postgres: %{code: :query_canceled}}, raised)
+
       assert div(elapsed, 1000) < 1_200
 
       {:ok, other} = Postgrex.start_link(session_config())
