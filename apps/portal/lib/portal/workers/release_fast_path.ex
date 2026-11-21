@@ -43,8 +43,8 @@ defmodule Portal.Workers.ReleaseFastPath do
   roughly 570 toolchain builds an hour the builders drain, so priority 3
   gets a share of every hour), and one run of a job queues at most
   `max_per_release/0` of them. One job runs at a time, across nodes: a run
-  takes a Postgres advisory lock (`lock_key/0`) first and snoozes a minute
-  when another run holds it, so no two runs read the same room. A run that
+  takes a Postgres advisory lock (`lock_key/0`) first and snoozes one to one
+  and a half minutes when another run holds it, so no two runs read the same room. A run that
   has no room, or that stopped at its share with candidates left, snoozes
   for an hour: the remainder carries over to the next hour rather than
   being dropped. A full budget or a held lock is checked before anything
@@ -103,6 +103,7 @@ defmodule Portal.Workers.ReleaseFastPath do
   @reason "release_fast_path"
   @carry_over_seconds 3600
   @lock_snooze_seconds 60
+  @lock_snooze_jitter 30
   # A fixed key for `pg_try_advisory_lock/2`: one fast-path run at a time.
   # The two-key form, whose key space is apart from the one-key form the
   # `hashtext` identity locks use (`pg_advisory_xact_lock(hashtext(...))`).
@@ -132,6 +133,16 @@ defmodule Portal.Workers.ReleaseFastPath do
   # block for as long as any statement blocked. The connection is linked to
   # the job process: a run that dies, or that `timeout/1` stops, takes the
   # connection with it, and closing it lets the lock go.
+  #
+  # Waiting jobs wake together (one update check offers several releases
+  # at once), and each would open a connection only to find the lock busy:
+  # up to an `:intake` queue's worth at once, against a shared Postgres
+  # with little room. So the pool answers whether the lock is held
+  # (`pg_locks`), and the lock's own connection is opened only to take it.
+  # That check is a shortcut, not the lock: when it finds the lock free,
+  # `pg_try_advisory_lock` on the own connection still decides, so two jobs
+  # that both see it free cost one short connection each and one of them
+  # waits.
   defp serialized(job) do
     case lock() do
       {:ok, conn} ->
@@ -142,23 +153,48 @@ defmodule Portal.Workers.ReleaseFastPath do
         end
 
       :busy ->
-        lock_busy(job)
+        lock_busy(job, "locked")
+
+      :unreachable ->
+        lock_busy(job, "its lock could not be reached")
     end
   end
 
-  defp lock do
+  defp lock, do: if(held?(), do: :busy, else: take_lock())
+
+  # Whether a session of this database holds the lock, through the pool.
+  defp held? do
+    %{rows: [[held]]} =
+      Repo.query!(
+        """
+        SELECT EXISTS (
+          SELECT 1 FROM pg_locks
+          WHERE locktype = 'advisory' AND granted
+            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+            AND classid = $1 AND objid = $2 AND objsubid = 2
+        )
+        """,
+        lock_args()
+      )
+
+    held
+  end
+
+  defp take_lock do
     {:ok, conn} = Postgrex.start_link(lock_connection_opts())
 
     case Postgrex.query(conn, "SELECT pg_try_advisory_lock($1, $2)", lock_args(), timeout: 15_000) do
       {:ok, %{rows: [[true]]}} ->
         {:ok, conn}
 
-      other ->
-        if not match?({:ok, _}, other),
-          do: Logger.warning("Release fast path could not take its lock: #{inspect(other)}")
-
+      {:ok, _} ->
         GenServer.stop(conn)
         :busy
+
+      {:error, error} ->
+        Logger.warning("Release fast path could not reach its lock: #{Exception.message(error)}")
+        GenServer.stop(conn)
+        :unreachable
     end
   end
 
@@ -174,19 +210,22 @@ defmodule Portal.Workers.ReleaseFastPath do
   # The pool's connection settings, for one connection of its own.
   @connection_keys ~w(hostname port username password database socket socket_dir ssl ssl_opts
                       socket_options parameters connect_timeout handshake_timeout)a
+  # `lock_connection` in this worker's config is merged over them.
   defp lock_connection_opts do
     Repo.config()
     |> Keyword.take(@connection_keys)
+    |> Keyword.merge(Keyword.get(config(), :lock_connection, []))
     |> Keyword.put(:pool_size, 1)
   end
 
-  # Another run holds the lock: try again in a minute, until the job is as
-  # old as a carry-over may be.
-  defp lock_busy(%Oban.Job{args: args, inserted_at: inserted_at}) do
+  # Another run holds the lock, or it could not be reached: try again in a
+  # minute and a half at most, jittered so the waiting jobs do not wake
+  # together, until the job is as old as a carry-over may be.
+  defp lock_busy(%Oban.Job{args: args, inserted_at: inserted_at}, why) do
     if hours_since(inserted_at) >= carry_over_hours(),
       do:
-        {:cancel, "release fast path for #{args["package"]} #{args["version"]} gave up: locked"},
-      else: {:snooze, @lock_snooze_seconds}
+        {:cancel, "release fast path for #{args["package"]} #{args["version"]} gave up: #{why}"},
+      else: {:snooze, @lock_snooze_seconds + :rand.uniform(@lock_snooze_jitter + 1) - 1}
   end
 
   @impl Oban.Worker

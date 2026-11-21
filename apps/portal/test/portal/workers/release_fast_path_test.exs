@@ -345,9 +345,10 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       Postgrex.query!(other, lock_sql(), lock_args())
       flush_registry_reads()
 
-      assert {:snooze, 60} =
+      assert {:snooze, seconds} =
                perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
 
+      assert seconds in 60..90
       assert fast_path_builds() == []
       refute_received :asked_registry
 
@@ -360,6 +361,60 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert %{rows: [[true]]} = Postgrex.query!(other, try_lock_sql(), lock_args())
 
       GenServer.stop(other)
+    end
+
+    # Re-review H3: up to an `:intake` queue's worth of waiting jobs wake
+    # together; each one used to open a Postgres connection of its own to
+    # find the lock busy. The pool answers that now, and the lock's own
+    # connection is opened only to take it. Here that connection points at
+    # a port nothing listens on, so opening it would log a failure.
+    test "a job that finds the lock busy opens no connection of its own, and wakes jittered" do
+      {:ok, other} = Postgrex.start_link(session_config())
+      Postgrex.query!(other, lock_sql(), lock_args())
+      Application.put_env(:portal, ReleaseFastPath, enabled: true, lock_connection: [port: 1])
+
+      snoozes =
+        for _ <- 1..20 do
+          log =
+            ExUnit.CaptureLog.capture_log(fn ->
+              assert {:snooze, seconds} =
+                       ReleaseFastPath.perform(%Oban.Job{
+                         args: %{"package" => "certifi", "version" => "2.19.0"},
+                         inserted_at: DateTime.utc_now()
+                       })
+
+              send(self(), {:snoozed, seconds})
+            end)
+
+          assert log == ""
+          assert_received {:snoozed, seconds}
+          seconds
+        end
+
+      assert Enum.all?(snoozes, &(&1 in 60..90))
+      assert length(Enum.uniq(snoozes)) > 1
+
+      GenServer.stop(other)
+    end
+
+    # The check through the pool is only a shortcut: when it finds the lock
+    # free but the lock's own connection cannot take it, the job waits too.
+    test "a lock connection that fails is a wait, not a run, and is logged as such" do
+      Application.put_env(:portal, ReleaseFastPath, enabled: true, lock_connection: [port: 1])
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:snooze, seconds} =
+                   ReleaseFastPath.perform(%Oban.Job{
+                     args: %{"package" => "certifi", "version" => "2.19.0"},
+                     inserted_at: DateTime.utc_now()
+                   })
+
+          assert seconds in 60..90
+        end)
+
+      assert log =~ "Release fast path could not reach its lock"
+      assert fast_path_builds() == []
     end
 
     # Re-review H6: a job that finds the lock busy gives up at the same age
