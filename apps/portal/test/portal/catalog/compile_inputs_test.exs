@@ -102,6 +102,22 @@ defmodule Portal.Catalog.CompileInputsTest do
     end
   end
 
+  # Review S5 N6: a client before 0.6.0 reads `builds` and format 1 only,
+  # and compares no compile input, so a build whose only input is
+  # `config_all` must never be there.
+  test "a build whose only input is config_all is published under builds_with_inputs only" do
+    name = name()
+    all = [%{"kind" => "config_all", "app" => "tz", "entries" => []}]
+    tb = ingest_toolchain_build(name, "0.3.0", compile_inputs: all)
+    assert tb.compile_inputs == all
+
+    manifest = Catalog.precompiled_manifest_v2(name)
+    assert %{"builds" => [], "builds_with_inputs" => [build]} = manifest["versions"]["0.3.0"]
+    assert build["build"]["compile_inputs"] == all
+    assert_api_schema(manifest, "ManifestV2")
+    assert Catalog.precompiled_manifest(name) == nil
+  end
+
   test "a build whose inputs need no check stays under builds, with the field" do
     name = name()
     ingest_toolchain_build(name, "0.3.0", compile_inputs: @own)

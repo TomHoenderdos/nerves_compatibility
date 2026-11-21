@@ -1064,7 +1064,9 @@ build fails as the reason it was not used:
     - a `config_all` item (clients 0.9.0 and later) holds when `app`'s env in the project, read
       before any dependency compiles, has exactly the keys of `entries` with the values they
       decode to: an app not loaded yet holds its config alone; a loaded one is compared only when
-      its `.app` declares no env, else the item differs. Else `config_all_differs`, with `app` as
+      its `.app` declares no env, else the item differs. So an item for an app Mix loads before
+      every compile (`elixir`, `mix`, `ex_unit`, `iex`, `logger`), each of whose `.app` declares
+      env, never holds: such a build is listed but no client takes it. Else `config_all_differs`, with `app` as
       its argument. A client that does not know the kind treats the item as malformed: a miss.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
@@ -1176,7 +1178,6 @@ Reason codes: `hit`, `not_in_batch`, `not_built_version`,
 `system_bound_compile`, `env_differs`, `env_set_at_build`, `env_all`,
 `config_unrecorded`, `config_order_differs`, `rebar3_global_config`,
 `erl_compiler_options`, `platform_define_differs`, `endian_differs`, `os_type_differs`,
-`config_all_differs`,
 `triple_differs`, `nif_version_newer`, `origin_unverified`, `deterministic_not_built`, and the
 foreign priv codes of client 0.8.0: `foreign_priv_target_compiles` ("writes into {0}'s priv; {0}
 compiles from source in this run"), `foreign_priv_target_missing` ("writes into {0}'s priv; {0} is
@@ -1184,12 +1185,13 @@ not in this build"), `foreign_priv_target_linked` ("writes into {0}'s priv, whic
 sources"), `foreign_priv_conflict` ("writes {0}'s priv/assets/{1}, which {2} also claims"),
 `foreign_priv_rule_unknown` ("writes into {0}'s priv under rule {1}, which this client does not
 know") and `foreign_priv_device` ("writes into {0}'s priv at compile time; not installed on a
-device"), and the relocation codes of client 0.9.0: `relocated_paths` ("relocated build: this
+device"), the relocation codes of client 0.9.0: `relocated_paths` ("relocated build: this
 project's paths are not its own real paths"), `relocated_otp` ("relocated build: needs OTP 28 or
 later"), `relocation_refused` ("relocated build: the rewrite refused"), `relocated_path_spelling`
 ("relocated build: this project's {0} path is not spelled as on disk"), `relocated_path_ascii`
 ("relocated build: this project's {0} path is not printable ASCII") and `relocated_path_envelope`
-("relocated build: this project's {0} path is outside the paths it was proven at"). Another code
+("relocated build: this project's {0} path is outside the paths it was proven at"), and client
+0.9.0's `config_all_differs` ("built with a different compile-time config of {0}"). Another code
 is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
