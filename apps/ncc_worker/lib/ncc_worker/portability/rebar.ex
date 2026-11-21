@@ -101,6 +101,17 @@ defmodule NccWorker.Portability.Rebar do
   same rules; a missing one is could-not-judge. `check/2` applies the same
   rules to the files on disk (tests, and nothing the judge trusts).
 
+  What rebar3 evaluates itself refuses (review S5 S2): an app's
+  `.app.src.script` (`rebar_app_utils`, `app_src_script`) and a `.app.src`
+  whose `vsn` is not a string (`git`, `semver`, `{git, _}`, `{cmd, Cmd}`:
+  `rebar_utils:vcs_vsn/3` runs a command). rebar3 evaluates them in its own
+  VM, where the code has only OTP and rebar3 frames, so the trace drops what
+  it does, and the result goes into the `.app` it writes, a published file.
+  They are read from the verified tarball, anywhere in it (fail closed:
+  rebar3's `src_dirs` can name other dirs), and an `.app.src` the bounded
+  parser cannot read (a `fun` in its `env`) refuses too, since its `vsn`
+  cannot be known. `check/2` reads the same files under `dest`.
+
   Config files are anyone's text, so they are read with
   `NccWorker.Portability.HexFiles.parse/1` (bounded, creates no atoms)
   rather than `:file.consult/1`. A config that parser cannot read refuses.
@@ -148,6 +159,8 @@ defmodule NccWorker.Portability.Rebar do
   @type sources :: %{
           required(:config) => binary() | nil | :unreadable,
           required(:script?) => boolean(),
+          optional(:app_src_script?) => boolean(),
+          optional(:app_srcs) => [binary() | :unreadable],
           optional(:mix_config) => String.t() | {:unjudged, String.t()},
           optional(:reviewed) => [{String.t(), String.t()}]
         }
@@ -186,8 +199,30 @@ defmodule NccWorker.Portability.Rebar do
         :error -> :unreadable
       end
 
-    sources = %{config: config, script?: File.exists?(Path.join(dest, "rebar.config.script"))}
+    {scripts, srcs} = dest |> app_src_paths() |> Enum.split_with(&app_src_script?/1)
+
+    sources = %{
+      config: config,
+      script?: File.exists?(Path.join(dest, "rebar.config.script")),
+      app_src_script?: scripts != [],
+      app_srcs: Enum.map(srcs, &app_src_text/1)
+    }
+
     check_sources(sources, [], mix_config)
+  end
+
+  # The `.app.src` and `.app.src.script` files under `dest`, at any depth.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp app_src_paths(dest) do
+    Path.wildcard(Path.join(dest, "**/*.app.src")) ++
+      Path.wildcard(Path.join(dest, "**/*.app.src.script"))
+  end
+
+  defp app_src_text(path) do
+    case read_file(path) do
+      {:ok, text} -> text
+      _ -> :unreadable
+    end
   end
 
   @doc """
@@ -203,7 +238,8 @@ defmodule NccWorker.Portability.Rebar do
   def check_sources(%{config: own} = sources, parents, mix_config) do
     reviewed = Map.get(sources, :reviewed, [])
 
-    with {:ok, own_terms} <- parse_own(own),
+    with :ok <- app_src(sources),
+         {:ok, own_terms} <- parse_own(own),
          {:ok, inherited} <- parent_overrides(parents),
          {:ok, own_inputs} <- inputs(config({:ok, own_terms ++ inherited}, reviewed)),
          {:ok, mix_inputs} <- inputs(mix_config(mix_config, reviewed)) do
@@ -248,6 +284,46 @@ defmodule NccWorker.Portability.Rebar do
         uniq: true,
         do: name
   end
+
+  # Review S5 S2: what rebar3 evaluates itself (moduledoc).
+  defp app_src(%{app_src_script?: true}),
+    do: {:refuse, "rebar3 build evaluates an .app.src.script"}
+
+  defp app_src(sources) do
+    sources
+    |> Map.get(:app_srcs, [])
+    |> Enum.map(&app_src_vsn/1)
+    |> Enum.find(:ok, &(&1 != :ok))
+  end
+
+  defp app_src_vsn(text) when is_binary(text) do
+    case HexFiles.parse(text) do
+      {:ok, [{{:atom, "application"}, {:atom, _app}, props}]} when is_list(props) ->
+        props |> Enum.flat_map(&vsn_of/1) |> plain_vsn()
+
+      _ ->
+        {:refuse, "rebar3 build .app.src unreadable"}
+    end
+  end
+
+  defp app_src_vsn(_unreadable), do: {:refuse, "rebar3 build .app.src unreadable"}
+
+  defp vsn_of({{:atom, "vsn"}, vsn}), do: [vsn]
+  defp vsn_of(_prop), do: []
+
+  # One `vsn`, a non-empty string: rebar3 takes it as it is.
+  defp plain_vsn([vsn]) when is_list(vsn) and vsn != [] do
+    if List.ascii_printable?(vsn), do: :ok, else: computed_vsn()
+  end
+
+  defp plain_vsn(_vsns), do: computed_vsn()
+
+  defp computed_vsn, do: {:refuse, "rebar3 build computes its .app.src vsn"}
+
+  defp app_src_script?(path), do: String.ends_with?(path, ".app.src.script")
+
+  defp app_src?(path),
+    do: String.ends_with?(path, ".app.src") or app_src_script?(path)
 
   defp plugin_name({:atom, name}), do: name
   defp plugin_name({{:atom, name}, _requirement}), do: name
@@ -355,7 +431,10 @@ defmodule NccWorker.Portability.Rebar do
 
   def tarball_sources(bytes) when is_binary(bytes) do
     with {:ok, tar} <- contents_tar(bytes),
-         {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory, {:files, @config_files}]) do
+         {:ok, names} <- :erl_tar.table({:binary, tar}),
+         app_srcs = Enum.filter(names, &app_src?(List.to_string(&1))),
+         {:ok, files} <-
+           :erl_tar.extract({:binary, tar}, [:memory, {:files, @config_files ++ app_srcs}]) do
       sources(Map.new(files, fn {name, body} -> {List.to_string(name), body} end))
     else
       _ -> {:unjudged, "rebar3 app's verified Hex tarball is unreadable"}
@@ -393,12 +472,20 @@ defmodule NccWorker.Portability.Rebar do
     do: sources(%{files | "rebar.config" => :unreadable})
 
   defp sources(files) do
+    {scripts, srcs} =
+      files |> Map.keys() |> Enum.filter(&app_src?/1) |> Enum.split_with(&app_src_script?/1)
+
     {:ok,
      %{
        config: Map.get(files, "rebar.config"),
-       script?: Map.has_key?(files, "rebar.config.script")
+       script?: Map.has_key?(files, "rebar.config.script"),
+       app_src_script?: scripts != [],
+       app_srcs: for(src <- Enum.sort(srcs), do: bounded(files[src]))
      }}
   end
+
+  defp bounded(text) when byte_size(text) <= @max_config_bytes, do: text
+  defp bounded(_text), do: :unreadable
 
   defp mix_config(nil, _reviewed), do: :ok
 

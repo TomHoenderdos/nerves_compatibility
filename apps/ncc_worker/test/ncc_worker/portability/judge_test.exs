@@ -2131,6 +2131,38 @@ defmodule NccWorker.Portability.JudgeTest do
       assert obs["taint"] == %{}
     end
 
+    # Review S5 S2: what rebar3 evaluates itself is read from the verified
+    # tarball too, a dependency's and the package's own.
+    test "an .app.src.script or a computed vsn in the tarball refuses", %{proj: proj} do
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      config = %{"rebar.config" => "{erl_opts, []}.\n"}
+
+      script = %{
+        "src/dep.app.src.script" => ~s|CONFIG ++ [{env, [{arch, os:cmd("uname -m")}]}].\n|
+      }
+
+      opts = rebar_opts(proj, ["dep"], %{"dep" => Map.merge(config, script)})
+
+      assert %{
+               status: :skip,
+               reason:
+                 "closure dependency observed the host: dep (rebar3 build evaluates an .app.src.script)"
+             } = judge(proj, r, opts)
+
+      cmd = %{"src/dep.app.src" => ~s|{application, dep, [{vsn, {cmd, "uname -m"}}]}.\n|}
+      opts = rebar_opts(proj, ["dep"], %{"dep" => Map.merge(config, cmd)})
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (rebar3 build computes its .app.src vsn)"
+             } = judge(proj, r, opts)
+
+      plain = %{"src/dep.app.src" => ~s|{application, dep, [{vsn, "0.1.0"}]}.\n|}
+      opts = rebar_opts(proj, ["dep"], %{"dep" => Map.merge(config, plain)})
+      assert %{status: :pass, observations: %{"taint" => taint}} = judge(proj, r, opts)
+      assert taint == %{}
+    end
+
     test "rebar.config is read from the verified tarball, not deps/ after the build",
          %{proj: proj} do
       hook = ~s({erl_opts, []}.\n{pre_hooks, [{compile, "sh evil.sh"}]}.\n)
@@ -2661,6 +2693,72 @@ defmodule NccWorker.Portability.JudgeTest do
       atom = "ncc_rebar_never_an_atom_#{System.unique_integer([:positive])}"
       assert :ok = Rebar.check(write(dir, "atom", %{"rebar.config" => "{#{atom}, []}.\n"}))
       assert_raise ArgumentError, fn -> String.to_existing_atom(atom) end
+    end
+
+    # Review S5 S2: rebar3 evaluates an app's `src/<app>.app.src.script`
+    # and runs a `.app.src` `vsn` command (`git`, `{cmd, ...}`, `semver`)
+    # itself, in its own VM, with only OTP and rebar3 on the stack: the
+    # trace drops what it does. What they compute goes into the published
+    # `.app`, so either refuses, and so does an `.app.src` the judge cannot
+    # read (it cannot tell its `vsn`).
+    @app_src_cases [
+      {"script",
+       %{"src/x.app.src.script" => ~s|CONFIG ++ [{env, [{arch, os:cmd("uname -m")}]}].\n|},
+       "rebar3 build evaluates an .app.src.script"},
+      {"nested_script", %{"src/sub/x.app.src.script" => "CONFIG.\n"},
+       "rebar3 build evaluates an .app.src.script"},
+      {"vsn_git", %{"src/x.app.src" => "{application, x, [{vsn, git}]}.\n"},
+       "rebar3 build computes its .app.src vsn"},
+      {"vsn_cmd", %{"src/x.app.src" => ~s|{application, x, [{vsn, {cmd, "uname -m"}}]}.\n|},
+       "rebar3 build computes its .app.src vsn"},
+      {"vsn_semver", %{"src/x.app.src" => "{application, x, [{vsn, semver}]}.\n"},
+       "rebar3 build computes its .app.src vsn"},
+      {"vsn_git_short", %{"src/x.app.src" => "{application, x, [{vsn, {git, short}}]}.\n"},
+       "rebar3 build computes its .app.src vsn"},
+      {"vsn_binary", %{"src/x.app.src" => ~s|{application, x, [{vsn, <<"1.0.0">>}]}.\n|},
+       "rebar3 build computes its .app.src vsn"},
+      {"vsn_twice", %{"src/x.app.src" => ~s|{application, x, [{vsn, "1.0.0"}, {vsn, git}]}.\n|},
+       "rebar3 build computes its .app.src vsn"},
+      {"vsn_missing", %{"src/x.app.src" => "{application, x, [{registered, []}]}.\n"},
+       "rebar3 build computes its .app.src vsn"},
+      {"fun_in_env",
+       %{"src/x.app.src" => ~s|{application, x, [{vsn, "1.0.0"}, {env, [{f, fun m:f/0}]}]}.\n|},
+       "rebar3 build .app.src unreadable"},
+      {"not_an_app", %{"src/x.app.src" => "{vsn, \"1.0.0\"}.\n"},
+       "rebar3 build .app.src unreadable"}
+    ]
+
+    defp write_tree(dir, name, files) do
+      d = Path.join(dir, name)
+
+      for {f, body} <- files do
+        File.mkdir_p!(Path.dirname(Path.join(d, f)))
+        File.write!(Path.join(d, f), body)
+      end
+
+      d
+    end
+
+    test "an .app.src.script or a computed .app.src vsn refuses", %{tmp_dir: dir} do
+      plain = %{"src/x.app.src" => ~s|{application, x, [{vsn, "1.0.0"}, {registered, []}]}.\n|}
+      assert :ok = Rebar.check(write_tree(dir, "plain", plain))
+
+      for {name, files, reason} <- @app_src_cases do
+        # On disk (`check/2`) and from the verified tarball (`check_sources/3`).
+        assert {:refuse, ^reason} = Rebar.check(write_tree(dir, name, files)), name
+
+        home = Path.join(dir, "hex-" <> name)
+        {_app, release} = NccWorker.TracerFixtures.hex_release(home, "x", ["src"], files)
+        tar = File.read!(Path.join([home, "packages/hexpm", "x-#{release.version}.tar"]))
+        assert {:ok, sources} = Rebar.tarball_sources(tar), name
+        assert {:refuse, ^reason} = Rebar.check_sources(sources, [], nil), name
+      end
+
+      home = Path.join(dir, "hex-plain")
+      {_app, release} = NccWorker.TracerFixtures.hex_release(home, "x", ["src"], plain)
+      tar = File.read!(Path.join([home, "packages/hexpm", "x-#{release.version}.tar"]))
+      assert {:ok, sources} = Rebar.tarball_sources(tar)
+      assert :ok = Rebar.check_sources(sources, [], nil)
     end
 
     # The real files of the 2026-11-06 benchmark lock's releases, vendored
