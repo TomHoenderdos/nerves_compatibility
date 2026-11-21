@@ -281,9 +281,11 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
     assert golden["status"] == "skipped", inspect(Map.take(golden, ["status", "reason"]))
 
-    assert golden["reason"] ==
-             "closure dependency observed the host: vega_lite (compile-time probe of an OTP " <>
-               "application outside the closure: wx via Code.ensure_loaded?/1)"
+    # kino, compiled first, is tainted too (its probe of nx's Nx.Heatmap).
+    assert golden["observations"]["taint"]["vega_lite"] ==
+             "compile-time probe of an OTP application outside the closure: wx via " <>
+               "Code.ensure_loaded?/1",
+           inspect(golden["observations"]["taint"])
   end
 
   # A compile-time probe of an installed OTP application off the package's
