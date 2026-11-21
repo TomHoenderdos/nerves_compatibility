@@ -1824,10 +1824,11 @@ defmodule NccWorker.Portability do
   # integrity refusal (the trace itself tampered with) refuses wherever it
   # fell too: from a quiet interval or an owner outside the package's
   # closure (its window or its child VM) it counts as `:outside`.
-  # A probe's text names the window it fell in (S8 review R5): an app, or
-  # `outside` for a quiet interval or an owner outside the closure, so a
-  # firmware target's judge and the withhold snippets tell a dependency's
-  # probe from the package's own.
+  # A probe's text names the window it fell in (S8 review R5): the owning
+  # app's name, an app outside the closure included, or `outside` for a
+  # quiet interval (an owner that is no app name), so a firmware target's
+  # judge and the withhold snippets tell a dependency's probe from the
+  # package's own.
   defp keep(owner, {:unjudged, why}, _scope), do: {:any, {:unjudged, owned_problem(owner, why)}}
 
   defp keep(owner, {:refuse, @integrity <> _} = decision, scope),
