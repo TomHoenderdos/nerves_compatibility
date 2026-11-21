@@ -7,8 +7,10 @@ defmodule NccWorker.Portability.Context do
   tracer loaded before anything compiled (`preloaded`), the windows
   package code started a nested compile in (`nested`), and, for the VM
   whose events are being decided, its `code:ensure_loaded/1` probes
-  (`ensured`, `NccWorker.Portability.Probes.ensured/1`), and the modules
-  each closure dependency's build holds (`modules`, from its `ebin`).
+  (`ensured`, `NccWorker.Portability.Probes.ensured/1`), the modules
+  each closure dependency's build holds (`modules`, from its `ebin`), and
+  the modules and applications of the dependencies the closure's members
+  declare and the build lacks (`declared`, `NccWorker.Portability.Declared`).
 
   Every app here is an OTP app name, as the trace's closure line carries
   them. The `package` given to `build/4` may be a Hex name that is not its
@@ -73,7 +75,8 @@ defmodule NccWorker.Portability.Context do
     drivers: %{},
     foreign_priv: nil,
     holders: %{},
-    modules: %{}
+    modules: %{},
+    declared: %{modules: %{}, apps: %{}}
   ]
 
   @type dep :: %{
@@ -104,7 +107,8 @@ defmodule NccWorker.Portability.Context do
           deps_path: String.t() | nil,
           drivers: %{String.t() => String.t()},
           foreign_priv: map() | nil,
-          modules: %{String.t() => String.t()}
+          modules: %{String.t() => String.t()},
+          declared: %{modules: %{String.t() => [String.t()]}, apps: %{String.t() => [String.t()]}}
         }
 
   @max_hops 40

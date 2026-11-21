@@ -54,15 +54,16 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # first refusal (the golden lists them all). These record what the rules
   # do today; they are not loosened here.
   #
-  # The probe rules of fix/otp-app-probe round 1 refuse more of them: a
-  # closure dependency's probe of a module no dependency of its closure
-  # builds (websock_adapter's `cowboy_websocket`, jason's `Decimal` and
-  # mint's `CAStore` of their absent optional dependencies, phoenix_live_view
-  # and swoosh's own `Igniter` and `Plug`), and phoenix_live_dashboard's
-  # loaded-now `function_exported?/3` (@probe_reasons).
+  # The probe rules of fix/otp-app-probe refuse more of them: a closure
+  # dependency's probe of a module no dependency of its closure builds or
+  # declares (websock_adapter's `cowboy_websocket`: cowboy comes only
+  # through plug_cowboy), and a loaded-now `function_exported?/3` of a
+  # module the probe did not load itself (@probe_reasons). A probe of an
+  # absent declared optional dependency's module passes (round 2, ruling 1:
+  # jason's `Decimal`, mint's `CAStore`, swoosh's `Plug`).
   @expected %{
     {"phoenix", "exclude"} => "refused",
-    {"phoenix", "include"} => "refused",
+    {"phoenix", "include"} => "pass",
     {"phoenix_live_view", "exclude"} => "refused",
     # fine (lazy_html's C++ headers dependency) bakes `deps/fine/c_include`
     # (R2 taint); lazy_html's elixir_make precompiled-NIF download reads the
@@ -75,13 +76,13 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
     # (c35aede2). The include variant refuses on exqlite's host reads.
     {"phoenix_live_dashboard", "exclude"} => "refused",
     {"phoenix_live_dashboard", "include"} => "refused",
-    {"swoosh", "exclude"} => "refused",
+    {"swoosh", "exclude"} => "pass",
     # quic's reviewed build_nif.sh compile hook is let through (6cc2fd1e),
     # and hackney's clean hooks never run under `rebar3 bare compile`
     # (1c270cc5), so neither taints the closure. The reads certifi_pt and
     # parse_trans made through OTP's own code loading (erl_prim_loader) no
     # longer refuse (judge refinements, item 5a).
-    {"swoosh", "include"} => "refused",
+    {"swoosh", "include"} => "pass",
     # sentry's mix.exs reads SENTRY_INTEGRATION for `test_paths` (line 17),
     # but project/0 ends `++ xref_options()`, an `if` on System.version(),
     # so it is not a keyword list literal (mix.exs rule); and
@@ -99,23 +100,18 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
   # What each build the probe rules refuse refuses for first, on this
   # toolchain (Elixir 1.20, OTP 28 and 29: the closure's sources decide it).
+  @html_engine "compile-time probe of whether a module is loaded: " <>
+                 "Elixir.Phoenix.LiveView.HTMLEngine via erlang:function_exported/3"
+
   @probe_reasons %{
     {"phoenix", "exclude"} =>
       @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
-    {"phoenix", "include"} => @taint <> "jason (#{@dep}Elixir.Decimal via Code.ensure_loaded?/1)",
-    {"phoenix_live_view", "exclude"} => @dep <> "Elixir.Igniter via Code.ensure_loaded?/1",
-    {"phoenix_live_view", "include"} => @dep <> "Elixir.Igniter via Code.ensure_loaded?/1",
-    {"phoenix_live_dashboard", "exclude"} =>
-      "compile-time probe of whether a module is loaded: Elixir.Phoenix.LiveView.HTMLEngine via " <>
-        "erlang:function_exported/3",
-    {"swoosh", "exclude"} => @dep <> "Elixir.Plug via Code.ensure_loaded?/1",
-    {"swoosh", "include"} => @taint <> "jason (#{@dep}Elixir.Decimal via Code.ensure_loaded?/1)",
-    {"finch", "include"} => @taint <> "mint (#{@dep}Elixir.CAStore via Code.ensure_loaded?/1)",
+    {"phoenix_live_view", "exclude"} => @html_engine,
+    {"phoenix_live_view", "include"} => @html_engine,
+    {"phoenix_live_dashboard", "exclude"} => @html_engine,
+    {"phoenix_live_dashboard", "include"} => @html_engine,
     {"polymorphic_embed", "include"} =>
-      @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)",
-    {"rustler", "include"} => @taint <> "jason (#{@dep}Elixir.Decimal via Code.ensure_loaded?/1)",
-    {"kino_maplibre", "include"} =>
-      @taint <> "kino (#{@dep}Elixir.Nx.Heatmap via Code.ensure_loaded?/1)"
+      @taint <> "websock_adapter (#{@dep}cowboy_websocket via Code.ensure_loaded?/1)"
   }
 
   # Packages whose toolchain builds are published hits today (the
@@ -252,8 +248,7 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
       assert golden["reason"] == @probe_reasons[{package, "include"}],
              inspect(Map.take(golden, ["reason", "observations"]), pretty: true, limit: :infinity)
 
-      refute Enum.any?(golden["observations"]["refusals"], &(&1["owner"] == package)),
-             inspect(golden["observations"]["refusals"])
+      assert golden["status"] == "pass", inspect(Map.take(golden, ["status", "reason"]))
 
       assert Enum.any?(
                golden["observations"]["own_priv_reads"],
@@ -305,6 +300,8 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
                pretty: true,
                limit: :infinity
              )
+
+      assert golden["status"] == "pass"
 
       observed = Enum.map_join(golden["observations"]["foreign_priv"], &inspect/1)
       assert Enum.all?(dirs, &String.contains?(observed, &1)), observed
@@ -368,11 +365,7 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
   # checked 2026-11-21 on Elixir 1.20.5). The build was served to Mix.install
   # users with poison.
   @dependency_probe [
-    {"jose", "1.11.12", "Elixir.Poison", "Code.ensure_loaded?/1"},
-    # Declared optional (phoenix_html), absent from the exclude variant:
-    # refused too. The client's closure check keeps a user with
-    # phoenix_html from this build, so this one costs coverage only.
-    {"chromic_pdf", "1.17.2", "Elixir.Phoenix.HTML.Safe", "Code.ensure_loaded?/1"}
+    {"jose", "1.11.12", "Elixir.Poison", "Code.ensure_loaded?/1"}
   ]
 
   for {package, version, module, via} <- @dependency_probe do
@@ -389,6 +382,34 @@ defmodule NccWorker.Tracer.GoldensIntegrationTest do
 
       assert "compile-time probe of a dependency outside the closure: #{module} via #{via}" in reasons,
              inspect(reasons)
+    end
+  end
+
+  # Round-2 ruling 1: a probe of a module of a dependency a closure member
+  # declares and the build lacks is no false hit on the host, so it passes:
+  # ecto's `Jason.Encoder` impls (jason optional) and jason's `Decimal`
+  # encoder (decimal optional), each in its exclude variant. The modules are
+  # known from the dependency's tarball in the run's Hex cache, so the
+  # include builds run first and seed it.
+  @tag package: "ecto", version: "3.13.5", variant: "exclude", declared: true
+  test "declared optional: ecto and jason exclude pass with their absent optional dependencies",
+       ctx do
+    for {package, version} <- [{"jason", "1.4.5"}, {"ecto", "3.13.5"}],
+        do: build(ctx, package, version, "include")
+
+    for {package, version, module} <- [
+          {"ecto", "3.13.5", "Elixir.Jason"},
+          {"jason", "1.4.5", "Elixir.Decimal"}
+        ] do
+      {golden, stats} = build(ctx, package, version, "exclude")
+      report(ctx, golden, stats)
+      refusals = Enum.map(golden["observations"]["refusals"] || [], & &1["reason"])
+
+      refute Enum.any?(refusals, &(&1 =~ "outside the closure: " <> module)),
+             inspect(refusals)
+
+      assert golden["status"] == "pass",
+             inspect(Map.take(golden, ["status", "reason", "observations"]), pretty: true)
     end
   end
 

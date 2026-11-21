@@ -392,6 +392,56 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert event["arg"]["app"] == nil
   end
 
+  # Round-2 ruling 1: a probe of a module of a dependency the package
+  # declares and this build lacks passes. The client's closure check keeps
+  # a project that has the dependency (and so has it in the package's
+  # closure) from the build. Known only from the dependency's tarball in the
+  # run's Hex cache.
+  test "a probe of an absent declared optional dependency's module passes", %{tmp_dir: dir} do
+    home = Path.join(dir, "hex")
+
+    req = [
+      {"name", "fx_opt"},
+      {"app", "fx_opt"},
+      {"optional", true},
+      {"requirement", "~> 0.1"},
+      {"repository", "hexpm"}
+    ]
+
+    {app, release} =
+      TracerFixtures.hex_release(home, "fx_probe", ["lib", "mix.exs"], %{}, [
+        {"requirements", [req]}
+      ])
+
+    proj =
+      TracerFixtures.project(Path.join(dir, "p"), ["fx_probe"], %{
+        "fx_probe" => %{
+          files: %{
+            "lib/fx_probe.ex" =>
+              TracerFixtures.attr_module("FxProbe", "Code.ensure_loaded?(FxOpt.Codec)")
+          }
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_probe"])
+    assert {:ok, 0} = traced.result, traced.log
+    opts = [releases: %{app => release}, hex_home: home]
+
+    # fx_opt's tarball is not cached: its modules are unknown, so it refuses.
+    assert %{status: :skip, reason: reason} =
+             TracerFixtures.judge(proj, "fx_probe", traced, [], opts)
+
+    assert reason ==
+             "compile-time probe of a dependency outside the closure: Elixir.FxOpt.Codec via Code.ensure_loaded?/1"
+
+    TracerFixtures.hex_release(home, "fx_opt", ["lib"], %{
+      "lib/fx_opt.ex" => "defmodule FxOpt do\n  defmodule Codec do\n  end\nend\n"
+    })
+
+    verdict = TracerFixtures.judge(proj, "fx_probe", traced, [], opts)
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+  end
+
   # A closure dependency's module can be found the same way pruned or not;
   # whether it is loaded now is the earlier compiles' doing, unless the same
   # process ensure-loads it first.

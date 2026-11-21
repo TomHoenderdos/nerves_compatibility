@@ -147,6 +147,7 @@ defmodule NccWorker.Portability do
     CompileInputs,
     ConfigReads,
     Context,
+    Declared,
     ElixirVersion,
     Events,
     ForeignPriv,
@@ -553,6 +554,11 @@ defmodule NccWorker.Portability do
         Tracer.run(project_dir, [package], tracer_opts(opts, env, trace_dir, native))
       end)
 
+    # After the traced compile, so nothing it fetches is seen by it: the
+    # modules of the dependencies the closure declares and lacks
+    # (`Declared`, round-2 ruling 1).
+    {fetch_ms, fetched} = timed(fn -> Declared.fetch(home, releases, env) end)
+
     ctx_opts =
       [
         releases: releases,
@@ -580,9 +586,13 @@ defmodule NccWorker.Portability do
     |> put_stat("judge_compile", judge_compile(traced))
     |> put_stat("trees_ms", trees_ms)
     |> put_stat("compile_ms", compile_ms)
+    |> put_stat("declared_fetch", declared_fetch(fetched, fetch_ms))
     |> put_stat("tracer_error", tracer_error(traced))
     |> put_stat("makefile_rule2", makefile_rule2?(opts))
   end
+
+  defp declared_fetch({:ok, names}, ms), do: %{"fetched" => length(names), "ms" => ms}
+  defp declared_fetch({:error, why}, ms), do: %{"error" => inspect(why, limit: 5), "ms" => ms}
 
   # Item 1 (behind `makefile_rule2: true`): the native list without the
   # dependencies whose native build file Mix never runs, which the judge
@@ -957,11 +967,23 @@ defmodule NccWorker.Portability do
 
   # --- gathering ---------------------------------------------------------------
 
+  # Read only when a probe it decides was traced: the declared-absent
+  # dependencies' tarballs are parsed for their modules.
+  defp declared(ctx, report) do
+    if Enum.any?(all_events(report), &Probes.declared_relevant?/1),
+      do: Declared.index(ctx),
+      else: ctx.declared
+  end
+
+  defp all_events(report),
+    do:
+      Stream.concat(report.events, Stream.flat_map(report.children, fn {_app, c} -> c.events end))
+
   defp facts(project_dir, package, report, native, opts) do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
     gate = ForeignPriv.gate(ctx, scope, opts)
-    ctx = %{ctx | foreign_priv: gate}
+    ctx = %{ctx | foreign_priv: gate, declared: declared(ctx, report)}
 
     side = side_mode(opts, ctx, scope, native)
 

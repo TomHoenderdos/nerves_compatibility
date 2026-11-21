@@ -261,6 +261,9 @@ defmodule NccWorker.Portability.Probes do
       Context.dep?(ctx, owner) and app in path_of(ctx, owner) ->
         :ignore
 
+      declared?(ctx.declared.apps, app, ctx, owner) ->
+        :ignore
+
       true ->
         {:refuse, app_probe(app, arg, event)}
     end
@@ -268,6 +271,19 @@ defmodule NccWorker.Portability.Probes do
 
   def decide(event, _ctx, _owner),
     do: {:unjudged, "unreadable probe event: #{inspect(event["mfa"])}"}
+
+  @doc """
+  Whether an event is one `NccWorker.Portability.Declared` may decide: a
+  package's probe of a module the trace did not load and no installed
+  application holds, or an application probe.
+  """
+  @spec declared_relevant?(map()) :: boolean()
+  def declared_relevant?(%{"channel" => "app_probe"}), do: true
+
+  def declared_relevant?(%{"channel" => "probe", "arg" => %{"by_package" => true} = arg}),
+    do: arg["otp_app"] in [nil, false] and arg["app"] in [nil, false]
+
+  def declared_relevant?(_event), do: false
 
   @doc """
   The `code:ensure_loaded/1` probes among one VM's `{owner, event}` pairs,
@@ -385,12 +401,27 @@ defmodule NccWorker.Portability.Probes do
       is_binary(Context.mix_exs(ctx, event, owner)) ->
         {:refuse, dependency(module, event) <> " in mix.exs"}
 
-      not (Context.dep?(ctx, owner) and
-               Map.get(ctx.modules, module) in Context.closure_of(ctx, owner)) ->
-        {:refuse, dependency(module, event)}
+      Context.dep?(ctx, owner) and Map.get(ctx.modules, module) in Context.closure_of(ctx, owner) ->
+        found_or_ensured(event, ctx, owner)
+
+      declared?(ctx.declared.modules, module, ctx, owner) ->
+        :ignore
 
       true ->
-        found_or_ensured(event, ctx, owner)
+        {:refuse, dependency(module, event)}
+    end
+  end
+
+  # A module or application of a dependency a member of the owner's closure
+  # declares and the build lacks (`Context` `declared`).
+  defp declared?(index, key, ctx, owner) do
+    case Map.fetch(index, key) do
+      {:ok, members} ->
+        Context.dep?(ctx, owner) and
+          Enum.any?(members, &(&1 in Context.closure_of(ctx, owner)))
+
+      :error ->
+        false
     end
   end
 

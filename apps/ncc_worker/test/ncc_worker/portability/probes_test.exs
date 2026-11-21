@@ -733,6 +733,45 @@ defmodule NccWorker.Portability.ProbesTest do
       assert Probes.decide(at(exported, "<0.10.0>", 200), c, "pkg") == :ignore
     end
 
+    # Round-2 ruling 1: a module of a dependency a closure member declares
+    # and the build lacks (an optional dependency left out). The client
+    # serves a build only to a project whose package closure is the build's,
+    # and Mix makes a present optional dependency a child of its declarer:
+    # a user who has it never gets this build.
+    test "of an absent declared dependency's module is no concern", %{tmp_dir: dir} do
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "child" => ["kernel"], "other" => ["kernel"]})
+        |> Map.put(:declared, %{
+          modules: %{"Elixir.Jason.Encoder" => ["child"], "Elixir.Poison" => ["other"]},
+          apps: %{"jason" => ["child"]}
+        })
+
+      c = put_in(c.deps["pkg"].children, ["child"])
+      assert Probes.decide(hex("Elixir.Jason.Encoder"), c, "pkg") == :ignore
+      # Declared by a dependency outside the owner's closure.
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Poison"), c, "pkg")
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Jason.Encoder"), c, "other")
+      # A loaded-now probe of it: whether it is loaded is no question then
+      # either, the module is on no path.
+      assert Probes.decide(
+               hex("Elixir.Jason.Encoder", mfa: "erlang:function_exported/3"),
+               c,
+               "pkg"
+             ) ==
+               :ignore
+
+      app = %{
+        "channel" => "app_probe",
+        "mfa" => "application_controller:get_key/2",
+        "arg" => %{"app" => "jason"},
+        "caller" => frame("Elixir.Application", "spec", 2)
+      }
+
+      assert Probes.decide(app, c, "pkg") == :ignore
+      assert {:refuse, _} = Probes.decide(put_in(app["arg"]["app"], "poison"), c, "pkg")
+    end
+
     test "the compiler's own lookup is no concern", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => ["kernel"]})
       lookup = hex("Elixir.Phoenix.HTML.Safe", arg: %{"by_package" => false})
