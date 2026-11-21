@@ -1899,7 +1899,7 @@ defmodule Portal.Catalog.Ingestion do
     package_info = result |> Map.get("package", %{}) |> with_job_version(opts)
 
     with {:ok, package} <- ensure_package(package_name(package_info, opts), %{}) do
-      case backfill_kept(verdict, staged, package.id, opts) do
+      case backfill_kept(verdict, staged, package.id, opts, build) do
         {:ok, _row} = kept -> kept
         {:error, _reason} = error -> error
         nil -> write_pinned_verdict(result, build, verdict, opts, package.id, staged)
@@ -1918,10 +1918,19 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   # A sibling backfill's rebuild replaces the key's row only with a pass
-  # whose sibling held and was staged; see `backfill_attempted/2`.
-  defp backfill_kept({:pass, _reason}, {_staged, %{}}, _package_id, _opts), do: nil
+  # whose sibling held and was staged; see `backfill_attempted/2`. Or with a
+  # firmware judge refusal (review Q1): the judge refused the code the kept
+  # pass was compiled from, so the refusal is written over the row like any
+  # pinned rebuild's, the row is served no more, and its verdict holds the
+  # target (`Portal.Precompiled.Holds`).
+  defp backfill_kept({:pass, _reason}, {_staged, %{}}, _package_id, _opts, _build), do: nil
 
-  defp backfill_kept(_verdict, _staged, package_id, opts) do
+  defp backfill_kept(_verdict, _staged, _package_id, _opts, %{
+         "firmware_judge" => %{"status" => "skipped"}
+       }),
+       do: nil
+
+  defp backfill_kept(_verdict, _staged, package_id, opts, _build) do
     if backfill?(opts), do: backfill_attempted(package_id, opts)
   end
 
@@ -1930,9 +1939,9 @@ defmodule Portal.Catalog.Ingestion do
   @doc false
   # A sibling backfill's rebuild (`Portal.Pins.from_lock/2`'s
   # `deterministic: true`, the job's `sibling_backfill`) that brought
-  # anything but a pass with its sibling: a fail, a skip, an error, a
-  # timeout, another toolchain, or a pass whose sibling was refused or
-  # absent. The key's row stays as it is, its status, files, memberships
+  # anything but a pass with its sibling or a firmware judge refusal: a
+  # fail, a skip, an error, a timeout, another toolchain, or a pass whose
+  # sibling was refused or absent. The key's row stays as it is, its status, files, memberships
   # and sibling, and only records the attempt (`sibling_attempted`):
   # `{:ok, row}`, or `{:error, reason}` when that write failed. `nil` when
   # the key has no row: nothing pinned is served to keep, and the rebuild's

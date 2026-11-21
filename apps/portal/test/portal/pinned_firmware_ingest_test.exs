@@ -132,6 +132,48 @@ defmodule Portal.PinnedFirmwareIngestTest do
       refute served.(bad_row)
     end
 
+    # Review Q1, the reviewer's T12: a sibling backfill keeps the key's row
+    # for any rebuild but a pass with its sibling. A judge refusal is no
+    # such rebuild: it is written over the row, which is then served no
+    # more, and it holds the target as any judge refusal does.
+    test "a sibling backfill the judge refuses replaces the served pass" do
+      name = unique()
+      assert {:ok, pass} = ingest_firmware(name, pins(name))
+      assert pass.status == :pass and pass.firmware_judge == nil
+      served = fn -> Enum.map(Portal.Pins.Served.served(pass.package_id, name, []), & &1.id) end
+      assert pass.id in served.()
+
+      assert {:ok, row} =
+               ingest_firmware(name, pins(name), judge: @refused, job: [sibling_backfill: true])
+
+      assert row.id == pass.id
+      assert row.status == :skipped
+      assert row.firmware_judge == @refused
+      assert row.sibling_attempted
+      assert shas(row) == []
+      refute pass.id in served.()
+
+      # The refusal holds a later pinned build of the target that is no pass.
+      other =
+        pins(name, [
+          %{"name" => "decimal", "hex" => "decimal", "version" => "2.2.0", "checksum" => @b}
+        ])
+
+      assert {:ok, later} = ingest_firmware(name, other)
+      assert later.unpublished_reason == Catalog.SystemResult.judge_refusal()
+    end
+
+    test "a sibling backfill with any other failed rebuild keeps the served pass" do
+      name = unique()
+      assert {:ok, pass} = ingest_firmware(name, pins(name))
+
+      assert {:ok, row} =
+               ingest_firmware(name, pins(name), status: "fail", job: [sibling_backfill: true])
+
+      assert row.id == pass.id and row.status == :pass and row.sibling_attempted
+      assert shas(row) == [sha("beam-" <> name)]
+    end
+
     test "a target the judge refused is skipped with its verdict and no files" do
       name = unique()
       assert {:ok, row} = ingest_firmware(name, pins(name), judge: @refused)
