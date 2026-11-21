@@ -6,7 +6,7 @@ defmodule Portal.Settings.Setting do
 
   The table's `publication_changes` column is no attribute here: a trigger
   alone writes it, counting each change to `host_native_enabled`,
-  `deterministic_builds_enabled` or `foreign_priv_enabled`, for
+  `deterministic_builds_enabled`, `foreign_priv_enabled` or `relocated_enabled`, for
   `Portal.Catalog.precompiled_fingerprints/0` (see the migration that adds it).
   """
 
@@ -64,7 +64,8 @@ defmodule Portal.Settings.Setting do
         :firmware_world_enabled,
         :host_native_enabled,
         :deterministic_builds_enabled,
-        :foreign_priv_enabled
+        :foreign_priv_enabled,
+        :relocated_enabled
       ])
 
       upsert?(true)
@@ -190,6 +191,15 @@ defmodule Portal.Settings.Setting do
     # carry the judge's `foreign_priv` flag (`Portal.Builder.judge_input/1`).
     # Off by default; stored rows stay when it is turned off, unserved.
     attribute :foreign_priv_enabled, :boolean do
+      allow_nil?(false)
+      default(false)
+      public?(true)
+    end
+
+    # Whether relocated builds (S4, `Portal.Precompiled.Relocated`) are
+    # published under a version's `relocated` object and their files served.
+    # Off by default; stored rows stay when it is turned off, unserved.
+    attribute :relocated_enabled, :boolean do
       allow_nil?(false)
       default(false)
       public?(true)

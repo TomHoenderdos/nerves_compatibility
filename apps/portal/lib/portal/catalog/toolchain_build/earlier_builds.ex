@@ -78,7 +78,9 @@ defmodule Portal.Catalog.ToolchainBuild.EarlierBuilds do
     :file_manifest,
     :foreign_priv,
     :foreign_priv_rule,
-    :foreign_priv_run_id
+    :foreign_priv_run_id,
+    :relocation,
+    :relocation_run_id
   ]
 
   # Not served, but what a revocation judges an entry by (moduledoc).

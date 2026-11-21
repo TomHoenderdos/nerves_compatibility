@@ -191,35 +191,73 @@ defmodule Portal.Catalog.IngestionToolchainTest do
     assert stored.latest_version == "1.4.3"
   end
 
-  # S4: no client rewrites a relocated build's beams yet, so a pass that
-  # carries `relocation` is stored as a skip with no files, its record kept.
-  test "a relocated pass is stored as a skip with no files, its record in the observations" do
+  # S4 phase 2: a relocated pass is stored with its files and its record,
+  # marked with its run (`Portal.Catalog.RelocationMark`); the manifest
+  # lists it under `relocated` only (`Portal.Precompiled.Relocated`).
+  defp relocated_result(name, beam, priv, record) do
+    pass_result(name, beam, priv)
+    |> put_in(["toolchain_build", "relocation"], record)
+    |> put_in(["toolchain_build", "compile_observations"], %{
+      "trace_stats" => %{"relocate" => "relocated"}
+    })
+  end
+
+  defp record(name) do
+    %{
+      "deps" => "/work/proj/deps",
+      "build" => "/work/proj/_build/host",
+      "files" => [
+        %{
+          "path" => "ebin/#{name}.beam",
+          "occurrences" => [
+            %{
+              "chunk" => "LitT",
+              "index" => 0,
+              "term" => [],
+              "kind" => "binary",
+              "parts" => ["", "deps", "/#{name}/c_include"]
+            }
+          ]
+        }
+      ]
+    }
+  end
+
+  test "a relocated pass is stored with its files, its record and its run's mark" do
     name = unique_name()
     beam = blob("beam-#{name}")
     priv = blob("priv-#{name}")
-
-    record = %{
-      "deps" => "/work/proj/deps",
-      "build" => "/work/proj/_build/host",
-      "files" => [%{"path" => "ebin/#{name}.beam", "occurrences" => []}]
-    }
-
-    result =
-      pass_result(name, beam, priv)
-      |> put_in(["toolchain_build", "relocation"], record)
-      |> put_in(["toolchain_build", "compile_observations"], %{
-        "trace_stats" => %{"relocate" => "relocated"}
-      })
+    run_id = "tc-reloc-#{System.unique_integer([:positive])}"
 
     assert {:ok, %ToolchainBuild{} = tb} =
-             Ingestion.ingest_toolchain(result, opts(name, files_dir_with([beam, priv])))
+             Ingestion.ingest_toolchain(
+               relocated_result(name, beam, priv, record(name)),
+               opts(name, files_dir_with([beam, priv]), run_id)
+             )
 
-    assert tb.status == :skipped
-    assert tb.reason == "relocated build: no client rewrites its beams yet"
+    assert tb.status == :pass
+    assert tb.relocation == record(name)
+    assert tb.relocation_run_id == tb.run_id
+    assert %{"ebin" => [_], "priv" => [_]} = tb.file_manifest
+    assert length(memberships(tb)) == 2
+  end
+
+  test "a relocation record the host cannot apply stores a fail with no files" do
+    name = unique_name()
+    beam = blob("beam-#{name}")
+    priv = blob("priv-#{name}")
+    bad = put_in(record(name), ["files", Access.at(0), "path"], "ebin/other.beam")
+
+    assert {:ok, %ToolchainBuild{} = tb} =
+             Ingestion.ingest_toolchain(
+               relocated_result(name, beam, priv, bad),
+               opts(name, files_dir_with([beam, priv]))
+             )
+
+    assert tb.status == :fail
+    assert tb.reason =~ "relocation refused on the host: "
     assert tb.file_manifest == nil
-    assert tb.compile_env == nil
-    assert tb.compile_observations["relocation"] == record
-    assert tb.compile_observations["trace_stats"] == %{"relocate" => "relocated"}
+    assert tb.relocation == nil
     assert memberships(tb) == []
   end
 

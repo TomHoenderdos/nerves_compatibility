@@ -90,6 +90,7 @@ defmodule Portal.Catalog.ToolchainBuild do
     :compile_inputs,
     :foreign_priv,
     :foreign_priv_rule,
+    :relocation,
     :file_manifest,
     :optional_deps,
     :finished_at,
@@ -205,6 +206,7 @@ defmodule Portal.Catalog.ToolchainBuild do
       validate({Portal.Catalog.ToolchainBuild.KnownConfigVariant, []})
       change(Portal.Catalog.ToolchainBuild.MarkRun)
       change(Portal.Catalog.ForeignPrivMark)
+      change(Portal.Catalog.RelocationMark)
     end
 
     create :upsert do
@@ -221,12 +223,13 @@ defmodule Portal.Catalog.ToolchainBuild do
       validate({Portal.Catalog.ToolchainBuild.KnownConfigVariant, []})
       change(Portal.Catalog.ToolchainBuild.MarkRun)
       change(Portal.Catalog.ForeignPrivMark)
+      change(Portal.Catalog.RelocationMark)
       upsert?(true)
       upsert_identity(:unique_config_identity)
       # Every mutable field, so a rebuild fully replaces the previous outcome:
       # a field the new build leaves nil (a cleared `reason`) must not survive.
       # `revoked_at` is deliberately absent: a rebuild does not un-revoke.
-      upsert_fields([:compile_env_run_id, :foreign_priv_run_id | @mutable])
+      upsert_fields([:compile_env_run_id, :foreign_priv_run_id, :relocation_run_id | @mutable])
     end
 
     update :revoke do
@@ -412,6 +415,19 @@ defmodule Portal.Catalog.ToolchainBuild do
     end
 
     attribute :foreign_priv_run_id, :string do
+      public?(true)
+    end
+
+    # S4: the worker's record of the occurrences of its deps and build paths
+    # in this build's own beams (`Compatibility.Relocation`), checked for
+    # its shape at ingest, and the run whose write set it
+    # (`Portal.Catalog.RelocationMark`): the record counts only while that is
+    # the row's `run_id` (`Portal.Precompiled.Relocated.counted/1`).
+    attribute :relocation, :map do
+      public?(true)
+    end
+
+    attribute :relocation_run_id, :string do
       public?(true)
     end
 

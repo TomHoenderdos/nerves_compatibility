@@ -805,7 +805,7 @@ defmodule Portal.Catalog.Ingestion do
       result
       |> toolchain_build_map()
       |> gate_manifest()
-      |> gate_relocation()
+      |> gate_relocation(opts)
       |> gate_config_variant(opts)
       |> gate_world_closure(opts)
       |> gate_pins(result, opts)
@@ -818,32 +818,47 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   # S4 (`NccWorker.Portability.Relocate`): a pass whose own beams bake the
-  # deps or build path is served only rewritten to the user's own paths
-  # (`Compatibility.Relocation`), which no client does yet, so it publishes
-  # nothing: stored as a skip with no files, the worker's record kept in
-  # `compile_observations["relocation"]`. A dependent that passed because
-  # its dependency proved relocatable carries no record and is a plain pass.
-  @relocated "relocated build: no client rewrites its beams yet"
+  # deps or build path, with the worker's record of every occurrence a
+  # client rewrites at install (`Compatibility.Relocation`). The host checks
+  # the record's shape against the build's own `ebin` and stores it
+  # (`relocation`, `Portal.Catalog.RelocationMark`); the manifest lists the
+  # build under `relocated` only (`Portal.Precompiled.Relocated`). A record
+  # the host refuses, or one beside foreign priv files, publishes none of
+  # the build's files. A pinned build has no column for one: it stays a
+  # skip with no files. A dependent that passed because its dependency
+  # proved relocatable carries no record and is a plain pass.
+  @pinned_relocated "relocated build: a pinned build is not relocated"
+  @relocation_refused "relocation refused on the host: "
 
-  defp gate_relocation(%{"status" => "pass", "relocation" => %{} = record} = build) do
-    observations = Map.get(build, "compile_observations") || %{}
+  defp gate_relocation(%{"status" => "pass", "relocation" => record} = build, opts) do
+    cond do
+      Map.has_key?(opts, :pins) ->
+        build
+        |> Map.delete("relocation")
+        |> skip_variant(@pinned_relocated)
 
-    build
-    |> Map.delete("relocation")
-    |> Map.merge(%{
-      "status" => "skipped",
-      "reason" => @relocated,
-      "file_manifest" => nil,
-      "compile_env" => nil,
-      "compile_inputs" => nil,
-      "built_priv" => nil,
-      "foreign_priv" => nil,
-      "foreign_priv_rule" => nil,
-      "compile_observations" => Map.put(observations, "relocation", record)
-    })
+      (build["foreign_priv"] || []) != [] ->
+        build
+        |> Map.delete("relocation")
+        |> refused("beside foreign priv files", @relocation_refused)
+
+      problem = Compatibility.Relocation.record_problem(record, ebin_paths(build)) ->
+        build |> Map.delete("relocation") |> refused(problem, @relocation_refused)
+
+      true ->
+        build
+    end
   end
 
-  defp gate_relocation(build), do: Map.delete(build, "relocation")
+  defp gate_relocation(build, _opts), do: Map.delete(build, "relocation")
+
+  defp ebin_paths(%{"file_manifest" => %{"ebin" => entries}}) when is_list(entries),
+    do: for(%{"path" => path} when is_binary(path) <- entries, do: path)
+
+  defp ebin_paths(_build), do: []
+
+  defp relocated?(%{"status" => "pass", "relocation" => %{}}), do: true
+  defp relocated?(_build), do: false
 
   # Foreign priv spec 4.2, once the build's own priv held: the archives its
   # compile wrote into kino's priv, proved again on the host
@@ -923,7 +938,12 @@ defmodule Portal.Catalog.Ingestion do
 
   defp stage_toolchain_build(result, build, opts) do
     # Checked first: the check reads the build's blobs from the run's files.
-    sibling = Portal.Deterministic.Ingest.candidate(result, build, opts)
+    # A relocated build has no sibling: the worker never relocates one.
+    sibling =
+      if relocated?(build),
+        do: :none,
+        else: Portal.Deterministic.Ingest.candidate(result, build, opts)
+
     wanted = shas_from_manifest(Map.get(build, "file_manifest")) ++ foreign_shas(build)
     staged = stage_shas(wanted, opts.files_dir)
 
@@ -1425,6 +1445,7 @@ defmodule Portal.Catalog.Ingestion do
       compile_env_rule: compile_env_rule(Map.get(build, "compile_env_rule"), compiled_env),
       foreign_priv: foreign_priv(status, build),
       foreign_priv_rule: foreign_priv_rule(status, build),
+      relocation: relocation(status, build),
       transient_attempts: attempts,
       finished_at: parse_datetime(result["finished_at"]),
       # Named, or the upsert leaves the kept row's attempt in place: the
@@ -1449,6 +1470,11 @@ defmodule Portal.Catalog.Ingestion do
        do: rule
 
   defp foreign_priv_rule(_status, _build), do: nil
+
+  # A pass build's relocation record, as the host checked it
+  # (`gate_relocation/2`); none on any other status.
+  defp relocation(:pass, %{"relocation" => %{} = record}), do: record
+  defp relocation(_status, _build), do: nil
 
   @max_observation_bytes 256 * 1024
 
