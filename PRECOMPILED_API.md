@@ -838,6 +838,64 @@ What it lists:
   ```
 - `build.foreign_priv_rule`, `build.foreign_priv_target` — only on a build under a
   `foreign_priv` object (above).
+- `versions[v].relocated` — relocated builds: toolchain builds whose own beams hold the deps or
+  build path of the compile that made them (a `__DIR__` or `Path.expand/1` literal, an Erlang
+  `?FILE`, a path into the build's `priv`), each listed with `relocation`, the record of every
+  such occurrence, which the client rewrites to its project's own paths at install. Read only by
+  clients 0.9.0 and later, after the version's other lists (and its `foreign_priv` object)
+  missed; no client up to 0.8.x reads this key, so to them a package whose only builds are here
+  shows `MISS not built`, and they never install a byte copy that holds another machine's path.
+  It is an object of the same lists as the version itself, `builds` (always present),
+  `builds_with_inputs` and `builds_closure`, split, picked (newest per key) and matched by the
+  same rules, and it is never in format 1, in a version's other lists, in `deterministic` (a
+  relocated build has no sibling) or in `foreign_priv`. An entry is its toolchain build's usual
+  entry, its `ebin` files the served bytes and their `sha256`, plus `relocation`:
+
+  ```json
+  "relocation": {
+    "deps": "/work/proj/deps",
+    "build": "/work/proj/_build/host",
+    "files": [
+      {"path": "ebin/Elixir.Fine.beam",
+       "occurrences": [{"chunk": "LitT", "index": 3, "term": [], "kind": "binary",
+                        "parts": ["", "deps", "/fine/c_include"]}]}
+    ]
+  }
+  ```
+
+  `deps` and `build` are the compile's `Mix.Project.deps_path/0` and `build_path/0`. Each file is
+  a beam of the entry's `ebin`, and each occurrence names its chunk (`LitT`, `AtU8`, `Attr`,
+  `Line`), the literal's index from 0, the atom's from 1 or the line table's file name's from 0,
+  the path to the value inside the term (element indices of tuples and lists, a proper list's
+  tail at its length, a map value's index among the map's keys in term order), its kind
+  (`binary`, `charlist`, `atom`) and the value as a template, text and slot names (`deps`,
+  `build`) in turn. The builder (`NccWorker.Portability.Relocate`) built the package a second time
+  at another root, with other names and lengths for both paths, and kept the build only when its
+  beams relocated to the second build's paths are the second build's chunk for chunk but `CInf`,
+  `Dbgi` and `Docs` (`Compatibility.Relocation.prove/4`); a path in a built binary, a hashed or
+  measured one, one in a map key, a protocol that holds one and anything else the rewrite would
+  not reproduce refuse. The portal checks the record's shape against the build's own `ebin` at
+  ingest and stores none it refuses. Listed only while the portal's `relocated_enabled` setting is
+  on, and only when every file the entry lists is held; absent otherwise, so a version without
+  relocated builds renders the bytes it always did. The files of a relocated build are served
+  only while the setting is on, and its own package's name on the withheld list withholds it
+  whatever it records.
+
+  A client takes one only on a unix host whose file names are UTF-8, on OTP 28 or later, when its
+  project's deps path and build path are absolute, normalised and real all the way down (no
+  symlink in either), and, for a `charlist` occurrence, both are ASCII (`relocated_paths`,
+  `relocated_otp`). After staging and verifying the served files it rewrites each recorded
+  occurrence from the record's paths to its own, as its own compile would have written it: a
+  changed literal is `term_to_binary(term, [{:minor_version, 2}, :deterministic])` in its own VM,
+  an atom or line-table file name is rewritten in place, the module's md5 is taken again over the
+  essential chunks (`AtU8`, `Code`, `StrT`, `ImpT`, `ExpT`, `FunT` with every `old_uniq` zeroed,
+  `LitT`, `Meta`), every fun's `old_uniq` is its first 27 bits and a default `vsn` (the old md5)
+  becomes the new one. It refuses (`relocation_refused`) a recorded value the served beam does not
+  hold, two literals, atoms or file names that would become one, an atom over 255 characters and
+  any of the record's paths left in a rewritten chunk. The relocated files' hashes go into the
+  install's provenance with the paths they were relocated to, so a later run keeps the install
+  while those paths are the project's and installs it again, relocated anew, once they are not (a
+  moved project).
 - One build per target, toolchain (`"<elixir minor>/<otp>"`),
   `system_version`, `deps` and config variant: the newest wins. A toolchain
   build with and one without the package's optional dependencies differ in
@@ -1033,7 +1091,9 @@ not in this build"), `foreign_priv_target_linked` ("writes into {0}'s priv, whic
 sources"), `foreign_priv_conflict` ("writes {0}'s priv/assets/{1}, which {2} also claims"),
 `foreign_priv_rule_unknown` ("writes into {0}'s priv under rule {1}, which this client does not
 know") and `foreign_priv_device` ("writes into {0}'s priv at compile time; not installed on a
-device"). Another code is stored as `unknown`.
+device"), and the relocation codes of client 0.9.0: `relocated_paths` ("relocated build: this
+project's paths are not its own real paths"), `relocated_otp` ("relocated build: needs OTP 28 or
+later") and `relocation_refused` ("relocated build: {0}"). Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300
@@ -1056,6 +1116,7 @@ system is `skipped:unbuildable` before anything else but
 | Decision | When |
 | --- | --- |
 | `skipped:foreign_priv_client` | A `not_built_*` miss from a client before 0.8.0 (or one that names no version) for a version with a foreign priv build, or of kino. That client never reads a version's `foreign_priv` object, so no build changes what it is served. |
+| `skipped:relocated_client` | A `not_built_*` miss from a client before 0.9.0 (or one that names no version) for a version with a relocated build. That client never reads a version's `relocated` object. |
 | `skipped:unknown_package` | The catalog has no run of the package. |
 | `skipped:unbuildable` | No build here produces the missed tuple: a device report without a public system (`custom` included), a system version no run of the last 30 days recorded, or a toolchain no worker image builds. |
 | `skipped:superseded` | A run of the last 30 days recorded a newer version of that system. A build now produces the newer one, so the older tuple would never be judged. |
