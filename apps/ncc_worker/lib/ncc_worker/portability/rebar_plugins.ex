@@ -299,14 +299,14 @@ defmodule NccWorker.Portability.RebarPlugins do
   def check(dest, cache, named, pins \\ @pins) do
     with {:ok, installed} <- installed(dest),
          :ok <- all_named(named, installed) do
-      Enum.reduce_while(Enum.sort(installed), :ok, fn {name, dir}, :ok ->
-        case release(name, dir, cache, pins) do
-          :ok -> {:cont, :ok}
-          other -> {:halt, other}
-        end
-      end)
+      installed
+      |> Enum.sort()
+      |> Enum.find_value(:ok, fn {name, dir} -> failed(release(name, dir, cache, pins)) end)
     end
   end
+
+  defp failed(:ok), do: nil
+  defp failed(other), do: other
 
   defp all_named(named, installed) do
     case Enum.find(named, &(not Map.has_key?(installed, &1))) do
@@ -331,17 +331,17 @@ defmodule NccWorker.Portability.RebarPlugins do
   defp profiles(build) do
     case File.ls(build) do
       {:ok, names} ->
-        names
-        |> Enum.sort()
-        |> Enum.reduce_while({:ok, %{}}, fn profile, {:ok, acc} ->
-          case plugins_dir(build, Path.join([build, profile, "plugins"])) do
-            {:ok, found} -> {:cont, merge(acc, found)}
-            other -> {:halt, other}
-          end
-        end)
+        names |> Enum.sort() |> Enum.reduce_while({:ok, %{}}, &profile(build, &1, &2))
 
       _ ->
         {:unjudged, "rebar3 build dir cannot be read"}
+    end
+  end
+
+  defp profile(build, profile, {:ok, acc}) do
+    case plugins_dir(build, Path.join([build, profile, "plugins"])) do
+      {:ok, found} -> {:cont, merge(acc, found)}
+      other -> {:halt, other}
     end
   end
 
@@ -542,21 +542,23 @@ defmodule NccWorker.Portability.RebarPlugins do
       {:ok, names} ->
         names
         |> Enum.sort()
-        |> Enum.reduce_while(acc, fn name, acc ->
-          case walk_entry(root, join(relative, name), acc) do
-            {:ok, _, _, _} = acc -> {:cont, acc}
-            other -> {:halt, other}
-          end
-        end)
-        |> case do
-          {:ok, files, _count, _bytes} when relative == "" -> {:ok, files}
-          other -> other
-        end
+        |> Enum.reduce_while(acc, &walk_step(root, join(relative, &1), &2))
+        |> walked(relative)
 
       _ ->
         {:unjudged, "rebar3 plugin dir cannot be read"}
     end
   end
+
+  defp walk_step(root, relative, acc) do
+    case walk_entry(root, relative, acc) do
+      {:ok, _, _, _} = acc -> {:cont, acc}
+      other -> {:halt, other}
+    end
+  end
+
+  defp walked({:ok, files, _count, _bytes}, ""), do: {:ok, files}
+  defp walked(other, _relative), do: other
 
   # sobelow_skip ["Traversal.FileModule"]
   defp walk_entry(root, relative, {:ok, files, count, bytes}) do
