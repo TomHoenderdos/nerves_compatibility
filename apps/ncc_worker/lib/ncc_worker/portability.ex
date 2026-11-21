@@ -148,6 +148,7 @@ defmodule NccWorker.Portability do
     ConfigReads,
     Context,
     Declared,
+    Differential,
     ElixirVersion,
     Events,
     ForeignPriv,
@@ -197,7 +198,8 @@ defmodule NccWorker.Portability do
     "own_tree_copies" => 50,
     "foreign_priv" => 50,
     "holder_calls" => 50,
-    "declared_absent" => 200
+    "declared_absent" => 200,
+    "varied_reads" => 50
   }
   @max_refusals 100
   @max_problems 20
@@ -428,6 +430,7 @@ defmodule NccWorker.Portability do
     |> guarded_run(package, opts)
     |> PrivRepro.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> Relocate.settle(project_dir, package, opts, &run/3, &build_digest/1)
+    |> Differential.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> put_stat("wall_ms", System.monotonic_time(:millisecond) - started)
     |> put_transient()
   end
@@ -475,7 +478,7 @@ defmodule NccWorker.Portability do
 
     transient =
       stats["judge_compile"] != "finished" or stats["report_over_budget"] == true or
-        stats["priv_repro"] == "not_finished"
+        stats["priv_repro"] == "not_finished" or stats["differential"] == "not_finished"
 
     put_stat(verdict, "transient", transient)
   end
@@ -588,7 +591,8 @@ defmodule NccWorker.Portability do
           :foreign_priv,
           :native_side,
           :relocate,
-          :holders
+          :holders,
+          :differential
         ])
 
     project_dir
@@ -879,7 +883,8 @@ defmodule NccWorker.Portability do
         :late_env,
         :sweep,
         :window_sweep,
-        :holders
+        :holders,
+        :plain_args
       ])
   end
 
@@ -1003,7 +1008,12 @@ defmodule NccWorker.Portability do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
     gate = ForeignPriv.gate(ctx, scope, opts)
-    ctx = %{ctx | foreign_priv: gate, declared: declared(ctx, report)}
+    ctx = %{
+      ctx
+      | foreign_priv: gate,
+        declared: declared(ctx, report),
+        differential: differential?(opts)
+    }
 
     side = side_mode(opts, ctx, scope, native)
 
@@ -3020,7 +3030,7 @@ defmodule NccWorker.Portability do
       |> ForeignPriv.put_verdict(facts.foreign, status, facts.ctx.package)
 
     if status == :pass,
-      do: PrivRepro.hold(verdict, own_priv(facts)),
+      do: verdict |> PrivRepro.hold(own_priv(facts)) |> Differential.hold(varied(facts)),
       else: Relocate.hold(verdict, facts, &verdict_of(relocation_facts(facts, &1)))
   end
 
@@ -3036,6 +3046,43 @@ defmodule NccWorker.Portability do
       end)
 
     %{facts | package_r2: package_r2, deps: deps, relocate: false}
+  end
+
+  # Differential builds (the job's `differential` flag, a toolchain build's
+  # judge only: never a firmware target's or a host-native build's, which
+  # take `target:`): the variant builds themselves (`:variant`) observe the
+  # varied reads too, and hold them, but never settle them.
+  defp differential?(opts),
+    do: Keyword.get(opts, :differential) in [true, :variant] and target(opts) == nil
+
+  # What `Differential.hold/2` needs: the varied reads (`Events`'
+  # `varied_reads`, by owner), the package's build dir, the tree snapshot
+  # it was judged on and, when a read was of the plain arguments, the
+  # verified tarballs of the closure's rebar3 dependencies that hold a
+  # `rebar.config.script`.
+  defp varied(%{ctx: ctx, decided: decided, scope: scope}) do
+    reads =
+      for {owner, {:observe, "varied_reads", item}} <- decided,
+          do: Map.put(item, "owner", owner_name(owner))
+
+    scripts =
+      if Enum.any?(reads, &(&1["read"] == "plain_args")), do: scripted(ctx, scope), else: []
+
+    %{
+      reads: Enum.uniq(reads),
+      build: Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build,
+      trees: ctx.trees,
+      scripts: scripts
+    }
+  end
+
+  defp scripted(%Context{hex: {home, releases}} = ctx, scope) do
+    for app <- Enum.sort(scope),
+        Context.manager(ctx, app) == "rebar3",
+        bytes = Context.release_tarball(home, releases, app),
+        is_binary(bytes),
+        match?({:ok, %{script?: true}}, Rebar.tarball_sources(bytes)),
+        do: {app, bytes}
   end
 
   # Judge revision 21: what the package's own compile did in its own build
@@ -3229,6 +3276,7 @@ defmodule NccWorker.Portability do
 
     facts
     |> caps()
+    |> differential_caps(facts.ctx.differential)
     |> Map.new(fn {kind, cap} -> {kind, collect(observed ++ r2_observed(facts), kind, cap)} end)
     |> Map.merge(%{
       "trace_stats" => stats(facts),
@@ -3293,6 +3341,10 @@ defmodule NccWorker.Portability do
     caps = if facts.foreign.flag, do: @caps, else: Map.delete(@caps, "foreign_priv")
     if facts.relocate, do: caps, else: Map.delete(caps, "holder_calls")
   end
+
+  # Likewise without the differential flag: no `varied_reads` list.
+  defp differential_caps(caps, true), do: caps
+  defp differential_caps(caps, _off), do: Map.delete(caps, "varied_reads")
 
   defp kino_own_call?({"foreign_priv", %{"owner" => owner}}, %{target: owner}), do: true
   defp kino_own_call?(_observed, _gate), do: false

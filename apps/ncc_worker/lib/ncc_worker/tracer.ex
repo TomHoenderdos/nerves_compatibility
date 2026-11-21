@@ -58,6 +58,10 @@ defmodule NccWorker.Tracer do
   last two reaches the VM through its env: the driver reads them from
   `driver.etf` in `trace_dir` before the tracer starts, and a trace whose
   file is unreadable fails.
+
+  A differential build's variant (`NccWorker.Portability.Differential`)
+  passes `plain_args:`, words put after the task on the command line: the
+  Mix VM's plain arguments, which the driver ignores.
   """
 
   alias NccWorker.{OptionalDepsTargets, OsKill, ProcessSweep}
@@ -102,6 +106,7 @@ defmodule NccWorker.Tracer do
   def run(project_dir, packages, opts) do
     trace_dir = Keyword.fetch!(opts, :trace_dir)
     mode = mode!(opts)
+    words = plain_args(opts)
 
     with {:ok, timeout_sec} <- budget(opts),
          {:ok, timeout} <- executable("timeout"),
@@ -117,7 +122,8 @@ defmodule NccWorker.Tracer do
 
       args =
         ["--kill-after=10", "#{timeout_sec}"] ++
-          wrapper(opts) ++ [elixir, "-pa", ebin, "-S", "mix", "ncc.trace_compile"]
+          wrapper(opts) ++
+          [elixir, "-pa", ebin, "-S", "mix", "ncc.trace_compile"] ++ words
 
       result = exec(timeout, args, project_dir, env, timeout_sec, opts)
       swept = sweep(opts, :after)
@@ -335,6 +341,22 @@ defmodule NccWorker.Tracer do
     case Keyword.get(opts, :mode, :judge) do
       mode when mode in [:judge, :host] -> mode
       other -> raise ArgumentError, "unknown tracer mode: #{inspect(other)}"
+    end
+  end
+
+  # A differential build's variant asks for more plain arguments for the
+  # Mix VM (`NccWorker.Portability.Differential`): after the task, whose
+  # driver ignores its arguments. Anything but a list of strings raises
+  # before anything runs.
+  defp plain_args(opts) do
+    case Keyword.get(opts, :plain_args, []) do
+      words when is_list(words) ->
+        if Enum.all?(words, &(is_binary(&1) and not String.contains?(&1, <<0>>))),
+          do: words,
+          else: raise(ArgumentError, "plain_args: not a list of strings")
+
+      other ->
+        raise ArgumentError, "plain_args: #{inspect(other)}"
     end
   end
 

@@ -305,6 +305,19 @@ defmodule NccWorker.TracerTest do
       assert_received {:ran, _timeout, ["--kill-after=10", "60", ^elixir | _], ^dir, _env}
     end
 
+    # A differential build's variant (`NccWorker.Portability.Differential`):
+    # the words are the Mix VM's plain arguments; the driver ignores them.
+    test "plain arguments go after the driver task", %{tmp_dir: dir} do
+      trace_dir = Path.join(dir, "trace")
+      opts = [trace_dir: trace_dir, cmd: capture(self()), timeout_ms: 60_000]
+
+      Tracer.run(dir, ["x"], [plain_args: ["test", "--force"]] ++ opts)
+      assert_received {:ran, _timeout, args, ^dir, _env}
+      assert Enum.take(args, -3) == ["ncc.trace_compile", "test", "--force"]
+
+      assert_raise ArgumentError, fn -> Tracer.run(dir, ["x"], [plain_args: [:x]] ++ opts) end
+    end
+
     test "argv and the late env reach the driver through the trace dir, never the env",
          %{tmp_dir: dir} do
       trace_dir = Path.join(dir, "trace")
