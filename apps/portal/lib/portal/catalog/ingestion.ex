@@ -2086,7 +2086,7 @@ defmodule Portal.Catalog.Ingestion do
     rule = host_portability_rule(result)
 
     with {:ok, package} <- upsert_package(package_name, package_info, finished_at),
-         hold = rule2_hold(package.id, version, rule, systems) || declared_absent_hold(result),
+         hold = holds(package.id, version, rule, systems, result),
          {:ok, run} <-
            create_run(result, opts, package.id, version, overall, finished_at, {carried, carry?}),
          :ok <-
@@ -2410,6 +2410,65 @@ defmodule Portal.Catalog.Ingestion do
   defp held("pure_elixir", %DateTime{} = at), do: {at, SystemResult.rule2_revocation()}
   defp held(_system_pkg, _hold), do: {nil, nil}
 
+  # What each system result of this run is stored withdrawn with:
+  # `%{system_pkg => {unpublished_at, unpublished_reason}}`, the rule-2 hold
+  # (`rule2_hold/4`) and the firmware holds (`firmware_holds/3`).
+  defp holds(package_id, version, rule, systems, result) do
+    held =
+      case held(
+             "pure_elixir",
+             rule2_hold(package_id, version, rule, systems) || declared_absent_hold(result)
+           ) do
+        {nil, nil} -> %{}
+        pair -> %{"pure_elixir" => pair}
+      end
+
+    Map.merge(firmware_holds(package_id, version, systems), held)
+  end
+
+  # A revocation of a firmware target's build sticks: `mix firmware` is not
+  # traced, so a new run of the same package version would publish that
+  # target again, judged by nobody for what the revocation found (a
+  # compile-time probe, a rebar3 plugin or hook, a closure's toolchain
+  # refusal). When a result of this version and target was withdrawn for any
+  # reason but those a new build is judged by again
+  # (`SystemResult.rejudged_reasons/0`), the new run's result of that target
+  # is stored withdrawn too, with the newest such withdrawal's reason and
+  # timestamp: the revocation's own undo, which matches rows on both, puts
+  # it back with the rest. Whatever its status, as the rule-2 hold does; a
+  # target the run did not build is a carried copy, which keeps its own.
+  @firmware_hold_sql """
+  SELECT DISTINCT ON (s.system_pkg) s.system_pkg, s.unpublished_at, s.unpublished_reason
+  FROM catalog_system_results s
+  JOIN catalog_runs r ON r.id = s.run_id
+  WHERE r.package_id = $1 AND r.version_tested = $2
+    AND s.system_pkg = ANY($3::text[])
+    AND s.unpublished_at IS NOT NULL
+    AND s.unpublished_reason IS NOT NULL
+    AND NOT (s.unpublished_reason = ANY($4::text[]))
+  ORDER BY s.system_pkg, s.unpublished_at DESC, s.unpublished_reason
+  """
+
+  defp firmware_holds(package_id, version, systems) do
+    case systems |> Map.keys() |> Enum.reject(&(&1 in ["host", "pure_elixir"])) do
+      [] ->
+        %{}
+
+      targets ->
+        %{rows: rows} =
+          Repo.query!(@firmware_hold_sql, [
+            Ecto.UUID.dump!(package_id),
+            version,
+            targets,
+            SystemResult.rejudged_reasons()
+          ])
+
+        Map.new(rows, fn [target, at, reason] ->
+          {target, {DateTime.from_naive!(at, "Etc/UTC"), reason}}
+        end)
+    end
+  end
+
   # The rule that judged a `pure_elixir` result's publication, from the
   # result's top-level `host_portability`; only `pure_elixir` stores it.
   defp host_portability_rule(result) do
@@ -2612,7 +2671,7 @@ defmodule Portal.Catalog.Ingestion do
          logs
        ) do
     status = Compatibility.Types.parse_status(sys["status"])
-    {held_at, held_reason} = held(system_pkg, hold)
+    {held_at, held_reason} = Map.get(hold, system_pkg, {nil, nil})
     {inputs, compiled_env} = inputs_and_env(sys, {package_name, version})
     {toolchain_pkg, toolchain_version} = system_toolchain(sys["toolchain"])
 

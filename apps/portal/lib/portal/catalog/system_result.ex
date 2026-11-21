@@ -37,6 +37,19 @@ defmodule Portal.Catalog.SystemResult do
   @spec superseded_by_refusal() :: String.t()
   def superseded_by_refusal, do: @superseded_by_refusal
 
+  @doc """
+  The `unpublished_reason`s of a firmware result that do not hold the
+  target's later builds (`Portal.Catalog.Ingestion`): the worker judges
+  every new firmware build by the baked build path rule itself
+  (`NccWorker.FirmwareBuildRoot`), and a newer refusal withdraws older
+  builds itself (`Portal.Precompiled.FirmwareRefusal`). Every other reason
+  is a judge's revocation that no firmware build runs again, so it holds:
+  a compile-time probe, a rebar3 plugin or hook, a closure's toolchain
+  refusal. A withdrawal with no reason holds nothing either.
+  """
+  @spec rejudged_reasons() :: [String.t()]
+  def rejudged_reasons, do: [@baked_build_path, @superseded_by_refusal]
+
   postgres do
     table("catalog_system_results")
     repo(Portal.Repo)
@@ -254,7 +267,8 @@ defmodule Portal.Catalog.SystemResult do
     # `Portal.Precompiled.FirmwareBuildPathWithdrawal`,
     # `superseded_by_refusal/0` for `Portal.Precompiled.FirmwareRefusal`, nil
     # for every other way, so each tool lists and undoes only its own.
-    # Carried copies keep it.
+    # Carried copies keep it, and so does a later build of a firmware target
+    # that a revocation holds (`rejudged_reasons/0`).
     attribute :unpublished_reason, :string do
       public?(true)
     end
