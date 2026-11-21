@@ -32,7 +32,9 @@ defmodule NccWorker.Portability.Events do
       from any other frame refuses; `endian` is observed as
       `endian_reads`, a compile input `CompileInputs` records with the
       builder's byte order for the client to compare, wherever it is read
-      (judge revision 13); `os:type/0` and `system_info(os_type)` outside
+      (judge revision 13); OTP's own `pubkey_os_cacerts:on_load/0` reading
+      `os:type/0` to pick whether to load its Windows NIF is ignored;
+      `os:type/0` and `system_info(os_type)` outside
       those path internals are observed as `os_type_reads`, a compile input
       `CompileInputs` records with the builder's OS type (judge revision
       17); every other key refuses, and the
@@ -468,6 +470,22 @@ defmodule NccWorker.Portability.Events do
        do: :ignore,
        else: {:refuse, host_read(e)}
   end
+
+  # OTP's `pubkey_os_cacerts:on_load/0` (OTP 26 to 29), which code_server
+  # runs in a process of its own when public_key's CA module loads (rebar3
+  # fetching a plugin from Hex over TLS): `{win32, _} -> load_nif(); _ -> ok`.
+  # The value decides only whether OTP loads its Windows NIF and reaches
+  # nothing else. Only that frame, the installed OTP's (`caller_kind`
+  # "toolchain"), calling the read itself on code_server's stack.
+  defp os_identity(%{
+         "mfa" => "os:type/0",
+         "first_kind" => "toolchain",
+         "caller_kind" => "toolchain",
+         "first" => %{"module" => "pubkey_os_cacerts", "function" => "on_load", "arity" => 0},
+         "caller" => %{"module" => "pubkey_os_cacerts", "function" => "on_load", "arity" => 0},
+         "bottom" => %{"module" => "code_server"}
+       }),
+       do: :ignore
 
   defp os_identity(%{"mfa" => "erlang:system_info/1"} = e), do: {:refuse, host_read(e)}
   defp os_identity(%{"mfa" => "os:type/0"} = e), do: path_handling(e, &os_type_read/1)

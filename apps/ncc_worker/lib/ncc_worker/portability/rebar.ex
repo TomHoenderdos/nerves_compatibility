@@ -33,13 +33,27 @@ defmodule NccWorker.Portability.Rebar do
   active sections; in `overrides`, or any other script, arch, command or
   digest, it counts as before. quic itself stays native (`c_src`).
 
-  `plugins` refuse unless every entry is `rebar3_hex` from Hex, as the bare
-  atom or `{rebar3_hex, Requirement}` with a version requirement string.
-  rebar3 installs a dependency's `plugins` before `bare compile` and runs
-  each one's `init/1` (`rebar_plugins:top_level_install/1`, without
-  provider overrides). rebar3_hex's (7.1.0) only adds providers in the
-  `hex` namespace, so it changes nothing about the compile. A git source,
-  a `{pkg, Name}` source, or any other plugin still refuses.
+  `plugins` refuse unless every entry is a reviewed plugin from Hex
+  (`@reviewed_plugins`: rebar3_hex, rebar3_ex_doc, rebar3_lint,
+  rebar3_proper, coveralls, covertool), as the bare atom or `{Name,
+  Requirement}` with a version or requirement string. rebar3 installs a
+  dependency's `plugins` before `bare compile`, from Hex at whatever release
+  its own registry cache resolves (no lock names it), and runs each one's
+  `init/1` (`rebar_plugins:top_level_install/1`, without provider
+  overrides) in the traced child VM, where what the plugin's code reads,
+  writes or fetches is judged like any compile code. A reviewed plugin's
+  `init/1` only registers providers in every release, so the release a
+  user's rebar3 picks changes nothing about the compile. A git source, a
+  `{pkg, Name}` source, or any other plugin still refuses: its release and
+  its dependencies' are the user's rebar3 cache's, and what its `init/1`
+  does to rebar3's state no trace sees.
+
+  A shell compile hook of a natively built app (`sources`' `native?:`, the
+  judge's native list) is part of its native build, which the native rules
+  judge (crc32cer's `make nif`): it does not refuse here, as an entry of the
+  app's own active sections only. A hook whose command is a namespaced
+  provider (`{{hex, publish}, Script}`) never runs in `bare compile`; and
+  rebar3's own `escriptize` as a post-compile provider hook is let through.
 
   A dependency's own `rebar.config.script` is not refused for existing.
   Mix evaluates it (`Mix.Rebar.load_config/1`, from
@@ -109,6 +123,13 @@ defmodule NccWorker.Portability.Rebar do
   alias NccWorker.Portability.HexFiles
 
   @hook_keys ~w(pre_hooks post_hooks provider_hooks plugins)
+  # The plugins whose every Hex release's `init/1` only registers providers
+  # (`rebar_state:add_provider/2`), which `rebar3 bare compile` never runs,
+  # read release by release on 2026-11-21: rebar3_hex (its `hex` namespace,
+  # 7.1.0), rebar3_ex_doc (34 releases, `ex_doc`), rebar3_lint (43, `lint`),
+  # rebar3_proper (19, `proper`), coveralls (8, `rebar3_coveralls` from its
+  # app env's `providers`) and covertool (8, `covertool generate`).
+  @reviewed_plugins ~w(rebar3_hex rebar3_ex_doc rebar3_lint rebar3_proper coveralls covertool)
   # The commands `rebar3 bare compile` runs hooks for (`rebar_prv_compile`).
   @compile_commands ~w(compile erlc_compile app_compile)
   # `REBAR_PROFILE=prod` on top of rebar3's default profile.
@@ -127,7 +148,8 @@ defmodule NccWorker.Portability.Rebar do
           required(:config) => binary() | nil | :unreadable,
           required(:script?) => boolean(),
           optional(:mix_config) => String.t() | {:unjudged, String.t()},
-          optional(:reviewed) => [{String.t(), String.t()}]
+          optional(:reviewed) => [{String.t(), String.t()}],
+          optional(:native?) => boolean()
         }
 
   # Reviewed rebar3 compile hooks, by app: the `{Arch, compile, Script}`
@@ -179,7 +201,7 @@ defmodule NccWorker.Portability.Rebar do
     do: {:refuse, "rebar3 build evaluates rebar.config.script"}
 
   def check_sources(%{config: own} = sources, parents, mix_config) do
-    reviewed = Map.get(sources, :reviewed, [])
+    reviewed = %{hooks: Map.get(sources, :reviewed, []), native?: sources[:native?] == true}
 
     with {:ok, own_terms} <- parse_own(own),
          {:ok, inherited} <- parent_overrides(parents),
@@ -411,7 +433,7 @@ defmodule NccWorker.Portability.Rebar do
 
   defp nested?(terms, key) do
     any_term?(terms, fn
-      {{:atom, ^key}, value} -> counts?(key, value, [])
+      {{:atom, ^key}, value} -> counts?(key, value, %{hooks: [], native?: false})
       _ -> false
     end)
   end
@@ -432,14 +454,41 @@ defmodule NccWorker.Portability.Rebar do
 
   defp counts?(_key, _value, _reviewed), do: true
 
-  defp compile_hook?({{:atom, command}, _script}, _reviewed), do: command in @compile_commands
+  # A shell hook of a natively built app is part of that native build (its
+  # `make`), which the native rules judge: it does not count here. Any
+  # other compile hook counts unless reviewed.
+  defp compile_hook?({command, _script}, reviewed) do
+    case hook_command(command) do
+      :compile -> not reviewed.native?
+      :other -> false
+      :unknown -> true
+    end
+  end
 
-  defp compile_hook?({arch, {:atom, command}, script}, reviewed),
-    do: command in @compile_commands and not reviewed_hook?(arch, command, script, reviewed)
+  defp compile_hook?({arch, command, script}, reviewed) do
+    case hook_command(command) do
+      :compile -> not (reviewed.native? or reviewed_hook?(arch, command, script, reviewed.hooks))
+      :other -> false
+      :unknown -> true
+    end
+  end
 
   defp compile_hook?(_entry, _reviewed), do: true
 
-  defp reviewed_hook?(arch, "compile", script, reviewed) do
+  # The command a hook entry names, as `rebar_hooks:run_hooks/5` matches it
+  # (`=:=` against the provider's name, the bare atom `compile` for the
+  # compile steps): one of the compile commands, another command, or a shape
+  # it does not know. A namespaced provider's `{Namespace, Name}` never
+  # equals `compile` (dbi's `{{hex, publish}, Script}`); `{default, Name}`
+  # counts as `Name`, fail closed.
+  defp hook_command({:atom, command}),
+    do: if(command in @compile_commands, do: :compile, else: :other)
+
+  defp hook_command({{:atom, "default"}, {:atom, command}}), do: hook_command({:atom, command})
+  defp hook_command({{:atom, _namespace}, {:atom, _command}}), do: :other
+  defp hook_command(_command), do: :unknown
+
+  defp reviewed_hook?(arch, {:atom, "compile"}, script, reviewed) do
     with {:ok, arch} <- regex_text(arch),
          {:ok, script} <- regex_text(script) do
       {arch, script} in reviewed
@@ -453,16 +502,31 @@ defmodule NccWorker.Portability.Rebar do
   defp compile_provider_hooks?({{:atom, type}, hooks}) when type in ["pre", "post"] do
     not proper_list?(hooks) or
       Enum.any?(hooks, fn
-        {{:atom, command}, _provider} -> command in @compile_commands
-        _entry -> true
+        {{:atom, command}, provider} ->
+          command in @compile_commands and not reviewed_provider?(type, command, provider)
+
+        _entry ->
+          true
       end)
   end
 
   defp compile_provider_hooks?(_entry), do: true
 
-  defp hex_plugin?({:atom, "rebar3_hex"}), do: true
+  # rebar3's own `escriptize` after `compile` (cuttlefish): it reads the
+  # app's `ebin`, writes an escript under `_build/<profile>/bin` and leaves
+  # `ebin` and `priv` alone.
+  defp reviewed_provider?("post", "compile", {:atom, "escriptize"}), do: true
 
-  defp hex_plugin?({{:atom, "rebar3_hex"}, requirement}) do
+  defp reviewed_provider?("post", "compile", {{:atom, "default"}, {:atom, "escriptize"}}),
+    do: true
+
+  defp reviewed_provider?(_type, _command, _provider), do: false
+
+  # A reviewed plugin (`@reviewed_plugins`) from Hex: the bare name, or the
+  # name with a version or requirement string.
+  defp hex_plugin?({:atom, name}), do: name in @reviewed_plugins
+
+  defp hex_plugin?({{:atom, name}, requirement}) when name in @reviewed_plugins do
     with {:ok, text} <- regex_text(requirement),
          {:ok, _parsed} <- Version.parse_requirement(text) do
       true

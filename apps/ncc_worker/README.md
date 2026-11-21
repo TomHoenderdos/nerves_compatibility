@@ -724,7 +724,15 @@ of these skips the build:
   traced VM, outside every window) and by that `mix.rebar.config`, which holds its result; a rebar3 parent's script
   could not be judged. One reviewed compile hook is let through: quic's `sh c_src/build_nif.sh` (a no-op unless
   `QUIC_BUILD_NIF=1`), only when that script in the verified tarball and on disk before the compile has a reviewed
-  sha256 and the build env left `QUIC_BUILD_NIF` unset, with no traced write of it (`Rebar.reviewed_hooks/0`);
+  sha256 and the build env left `QUIC_BUILD_NIF` unset, with no traced write of it (`Rebar.reviewed_hooks/0`). A plugin
+  from Hex whose every release's `init/1` only registers providers runs in the traced child VM instead (rebar3_hex,
+  rebar3_ex_doc, rebar3_lint, rebar3_proper, coveralls, covertool: `Rebar`'s `@reviewed_plugins`), and its code's reads,
+  writes and network use are judged like any compile code; any other plugin, or one from git, still refuses, since
+  rebar3 resolves a plugin and its dependencies from its own registry cache and no lock or trace pins what its
+  `init/1` does. A shell compile hook of a natively built app is its native build, judged by the native rules (crc32cer's
+  `make nif`); a hook on a namespaced provider (`{{hex, publish}, Script}`) never runs in `bare compile`; rebar3's own
+  `escriptize` as a post-compile provider hook (cuttlefish) is let through. OTP's `pubkey_os_cacerts:on_load/0` reading
+  `os:type/0` when rebar3's TLS loads it is ignored;
 - a trace that did not finish.
 
 One write is let through (judge revision 21): the package's own compile (never its `mix.exs`, never a dependency's,

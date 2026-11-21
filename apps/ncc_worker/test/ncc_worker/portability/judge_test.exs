@@ -2011,6 +2011,27 @@ defmodule NccWorker.Portability.JudgeTest do
                rjudge(proj, "dep", %{"dep" => sentinel_lost})
     end
 
+    # crc32cer's `make nif`: the hook is the native build the native rules
+    # judge; for a dependency off the native list it still taints.
+    test "a natively built dependency's compile hook is its native build, not a refusal",
+         %{proj: proj} do
+      File.write!(
+        Path.join([proj, "deps/dep/rebar.config"]),
+        ~s|{pre_hooks, [{"(linux\|darwin)", compile, "make nif"}]}.\n|
+      )
+
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      opts = rebar_opts(proj, ["dep"])
+
+      assert %{reason: "closure dependency observed the host: dep (rebar3 build runs pre_hooks)"} =
+               judge(proj, r, opts)
+
+      assert %{status: :pass, observations: %{"taint" => taint}} =
+               Portability.judge(proj, "pkg", r, ["dep"], Keyword.put(opts, :built_check, false))
+
+      assert taint == %{}
+    end
+
     test "a dependency whose mix.rebar.config is missing could not be judged", %{proj: proj} do
       File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{erl_opts, []}.\n")
       r = rebar_report(proj, "dep", %{"dep" => child([])})
@@ -2372,8 +2393,22 @@ defmodule NccWorker.Portability.JudgeTest do
             {"prov", "{provider_hooks, [{pre, [{compile, {pc, compile}}]}]}.\n",
              "rebar3 build runs provider_hooks"},
             {"plugins", "{plugins, [pc]}.\n", "rebar3 build runs plugins"},
-            {"hex_and_other", "{plugins, [rebar3_hex, covertool]}.\n",
+            {"hex_and_other", "{plugins, [rebar3_hex, pc]}.\n", "rebar3 build runs plugins"},
+            {"reviewed_git",
+             ~s|{plugins, [{rebar3_ex_doc, {git, "https://x/y.git", {branch, "main"}}}]}.\n|,
              "rebar3 build runs plugins"},
+            {"reviewed_pkg", ~s|{plugins, [{rebar3_lint, "~> 5.0", {pkg, other}}]}.\n|,
+             "rebar3 build runs plugins"},
+            # A separate Hex package from covertool, never reviewed.
+            {"rebar_covertool", "{plugins, [rebar_covertool]}.\n", "rebar3 build runs plugins"},
+            {"compiler_plugin", ~s|{plugins, [{rebar3_clojerl, "0.8.8"}]}.\n|,
+             "rebar3 build runs plugins"},
+            {"prov_pre_escriptize", "{provider_hooks, [{pre, [{compile, escriptize}]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"prov_other_ns", "{provider_hooks, [{post, [{compile, {x, escriptize}}]}]}.\n",
+             "rebar3 build runs provider_hooks"},
+            {"default_ns_hook", ~s({pre_hooks, [{{default, compile}, "make"}]}.\n),
+             "rebar3 build runs pre_hooks"},
             {"hex_git", ~s|{plugins, [{rebar3_hex, {git, "https://x/y.git", {tag, "1"}}}]}.\n|,
              "rebar3 build runs plugins"},
             {"hex_pkg", "{plugins, [{rebar3_hex, {pkg, evil}}]}.\n", "rebar3 build runs plugins"},
@@ -2459,6 +2494,20 @@ defmodule NccWorker.Portability.JudgeTest do
             {"hex_plugin_bin", ~s|{plugins, [{rebar3_hex, <<"7.1.0">>}]}.\n|},
             {"hex_plugin_prod", "{profiles, [{prod, [{plugins, [rebar3_hex]}]}]}.\n"},
             {"hex_plugin_override", "{overrides, [{override, x, [{plugins, [rebar3_hex]}]}]}.\n"},
+            # The reviewed plugins: every release's init/1 registers providers
+            # alone (otel_http, aws_credentials, spectra, pipes, cets).
+            {"ex_doc_plugin", "{plugins, [rebar3_ex_doc]}.\n"},
+            {"lint_plugin_req", ~s|{plugins, [{rebar3_lint, "~> 5.0"}]}.\n|},
+            {"proper_plugin_exact", ~s|{plugins, [{rebar3_proper, "0.11.1"}]}.\n|},
+            {"coverage_plugins", "{plugins, [coveralls, covertool, rebar3_hex]}.\n"},
+            {"reviewed_prod", "{profiles, [{prod, [{plugins, [rebar3_ex_doc]}]}]}.\n"},
+            # rebar3's own escriptize after compile (cuttlefish).
+            {"prov_escriptize",
+             "{provider_hooks, [{post, [{compile, {default, escriptize}}]}]}.\n"},
+            {"prov_escriptize_bare", "{provider_hooks, [{post, [{compile, escriptize}]}]}.\n"},
+            # A namespaced provider's hook never equals `compile` (dbi).
+            {"ns_hook", ~s|{pre_hooks, [{{hex, publish}, "./update_vsn_mix.sh"}]}.\n|},
+            {"ns_arch_hook", ~s|{post_hooks, [{"linux", {hex, publish}, "x"}]}.\n|},
             # Hooks on a command `rebar3 bare compile` never runs (hackney,
             # yamerl, erlfmt, covertool: `clean`).
             {"clean_hook", ~s({pre_hooks, [{clean, "rm -rf *~ */*~"}]}.\n)},
@@ -2472,6 +2521,29 @@ defmodule NccWorker.Portability.JudgeTest do
           ] do
         assert :ok = Rebar.check(write(dir, name, %{"rebar.config" => config})), name
       end
+
+      # A natively built app's shell compile hooks are its native build
+      # (crc32cer's `make nif`): the native rules judge them, not these.
+      # In overrides, or for an app that is not natively built, they count.
+      native = fn config, native? ->
+        Rebar.check_sources(%{config: config, script?: false, native?: native?}, [], nil)
+      end
+
+      crc = ~s|{pre_hooks, [{"(linux\|darwin\|solaris\|freebsd)", compile, "make nif"}]}.\n|
+      assert :ok = native.(crc, true)
+      assert :ok = native.(~s({post_hooks, [{compile, "make -C c_src"}]}.\n), true)
+      assert {:refuse, "rebar3 build runs pre_hooks"} = native.(crc, false)
+
+      assert {:refuse, "rebar3 build runs pre_hooks"} =
+               native.(~s({overrides, [{add, [{pre_hooks, [{compile, "make"}]}]}]}.\n), true)
+
+      assert {:refuse, "rebar3 build runs pre_hooks"} =
+               native.(~s({pre_hooks, [{compile}]}.\n), true)
+
+      assert {:refuse, "rebar3 build runs provider_hooks"} =
+               native.("{provider_hooks, [{pre, [{compile, {pc, compile}}]}]}.\n", true)
+
+      assert {:refuse, "rebar3 build runs plugins"} = native.("{plugins, [pc]}.\n", true)
 
       # No atom is created from the config.
       atom = "ncc_rebar_never_an_atom_#{System.unique_integer([:positive])}"

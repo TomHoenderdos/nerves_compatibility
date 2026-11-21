@@ -288,6 +288,53 @@ defmodule NccWorker.Portability.EventsTest do
     assert {:refuse, _} = Events.decide(version, ctx, "pkg")
   end
 
+  # rebar3 fetching a plugin from Hex over TLS loads OTP's
+  # `pubkey_os_cacerts`, whose `on_load/0` reads `os:type/0` only to decide
+  # whether to load public_key's Windows NIF, on a process code_server runs
+  # on-load functions in (the trace of otel_http 0.2.0).
+  @cacerts_on_load %{"module" => "pubkey_os_cacerts", "function" => "on_load", "arity" => 0}
+
+  defp on_load_read(overrides \\ %{}) do
+    "os_identity"
+    |> ev("os:type/0", %{}, user: Map.put(@cacerts_on_load, "file", "pubkey_os_cacerts.erl"))
+    |> Map.merge(%{
+      "first" => @cacerts_on_load,
+      "caller" => @cacerts_on_load,
+      "first_kind" => "toolchain",
+      "caller_kind" => "toolchain",
+      "bottom" => %{
+        "module" => "code_server",
+        "function" => "-schedule_on_load/4-fun-0-",
+        "arity" => 1
+      }
+    })
+    |> Map.merge(overrides)
+  end
+
+  test "OTP's pubkey_os_cacerts on-load OS read is ignored; the same read elsewhere is an input",
+       %{ctx: ctx} do
+    assert :ignore = Events.decide(on_load_read(), ctx, "pkg")
+
+    for overrides <- [
+          %{"caller_kind" => "user"},
+          %{"first_kind" => "user"},
+          %{"bottom" => %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0}},
+          %{"bottom" => nil},
+          %{
+            "first" => %{@cacerts_on_load | "function" => "get"},
+            "caller" => %{@cacerts_on_load | "function" => "get"}
+          },
+          %{"caller" => %{"module" => "Elixir.Pkg", "function" => "f", "arity" => 0}}
+        ] do
+      assert {:observe, "os_type_reads", _} =
+               Events.decide(on_load_read(overrides), ctx, "pkg"),
+             inspect(overrides)
+    end
+
+    sysinfo = on_load_read(%{"mfa" => "erlang:system_info/1", "arg" => %{"key" => "os_type"}})
+    assert {:observe, "os_type_reads", _} = Events.decide(sysinfo, ctx, "pkg")
+  end
+
   @big_int %{"module" => "erlang", "function" => "big_binary_to_int", "arity" => 2}
 
   defp wordsize(key, caller) do
