@@ -7,6 +7,11 @@ defmodule Portal.Repo.Migrations.AddRebar3PluginRunsPackageId do
 
   The table is new in the same release and empty when this runs, and the
   release still running during the deploy window never reads or writes it.
+
+  Versioned after the OTP probe's migrations (main up to 20261121224300),
+  which production applied first. `if_not_exists` throughout: a test
+  database that applied these tables under their earlier versions
+  (20261121190000, 20261121203700, 20261121211500) migrates cleanly.
   """
 
   use Ecto.Migration
@@ -15,10 +20,10 @@ defmodule Portal.Repo.Migrations.AddRebar3PluginRunsPackageId do
     execute("SET LOCAL lock_timeout = '5s'")
 
     alter table(:rebar3_plugin_runs) do
-      add(:package_id, :uuid, null: false)
+      add_if_not_exists(:package_id, :uuid, null: false)
     end
 
-    create(index(:rebar3_plugin_runs, [:package_id]))
+    create_if_not_exists(index(:rebar3_plugin_runs, [:package_id]))
   end
 
   def down do
