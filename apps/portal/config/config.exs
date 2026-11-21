@@ -211,21 +211,24 @@ config :portal, Portal.Workers.ClosureDrift,
   firmware_scan_limit: 1_000,
   budget_ms: :timer.minutes(60)
 
-# Rebuilding, within the hour, the builds a release of a popular package left
-# behind (`Portal.Workers.ReleaseFastPath`): offered by the hourly update check
-# for a package the registry changed in the last `window_hours` whose newest
-# release at least `min_dependents` packages' passing builds lock behind. At
-# most `budget` of its rebuilds are incomplete at once across releases, a run
-# queues at most `max_per_release`, and the rest carries over hourly for up to
-# `max_snoozes` hours. `NCC_RELEASE_FAST_PATH=0` switches it off and
-# `NCC_RELEASE_FAST_PATH_BUDGET` sets the budget, after a restart.
+# Rebuilding, as soon as the budget allows, the builds a release of a popular
+# package left behind (`Portal.Workers.ReleaseFastPath`): offered by the hourly
+# update check for a package the registry changed in the last `window_hours`
+# whose newest release at least `min_dependents` packages' passing builds lock
+# behind. At most `budget` of its rebuilds are incomplete at once across
+# releases, 300, below the roughly 570 toolchain builds an hour, so priority 3
+# keeps a share of every hour; a run queues at most `max_per_release`, and the
+# rest carries over hourly for up to `carry_over_hours` after the job was
+# queued (with `window_hours`, below the job's 72 h unique period).
+# `NCC_RELEASE_FAST_PATH=0` switches it off and `NCC_RELEASE_FAST_PATH_BUDGET`
+# sets the budget, after a restart.
 config :portal, Portal.Workers.ReleaseFastPath,
   enabled: true,
   min_dependents: 10,
   window_hours: 3,
-  budget: 1_000,
+  budget: 300,
   max_per_release: 500,
-  max_snoozes: 48
+  carry_over_hours: 48
 
 # Registry-based native-code filter for bulk intake (`catalog_seed`,
 # `backfill`). Off by default so a deploy changes nothing until

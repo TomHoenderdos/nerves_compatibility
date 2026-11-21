@@ -1,7 +1,9 @@
 defmodule Portal.Workers.ReleaseFastPath do
   @moduledoc """
-  Oban worker (queue `:intake`) that rebuilds, within the hour, the
-  toolchain builds a release of a popular package left behind.
+  Oban worker (queue `:intake`) that rebuilds, as soon as its budget
+  allows, the toolchain builds a release of a popular package left behind:
+  a few hundred within the hour, a release with thousands of dependents
+  over several hours.
 
   ## Why
 
@@ -37,15 +39,22 @@ defmodule Portal.Workers.ReleaseFastPath do
   ## The budget
 
   At most `budget/0` of these rebuilds are incomplete at once, across every
-  release (`NCC_RELEASE_FAST_PATH_BUDGET`, 1,000 by default), and one run
-  of a job queues at most `max_per_release/0` of them, so two releases in
-  one hour share it. A run that has no room, or that stopped at its share
-  with candidates left, snoozes for an hour: the remainder carries over to
-  the next hour rather than being dropped. A full budget is checked before
-  anything is read. Each run judges afresh, so a rebuild that ran since is
-  no longer drift, and the release finishes once nothing it moved is left
-  behind. After `max_snoozes/0` hours it gives up and leaves the rest to the
-  daily drift.
+  release (`NCC_RELEASE_FAST_PATH_BUDGET`, 300 by default, below the
+  roughly 570 toolchain builds an hour the builders drain, so priority 3
+  gets a share of every hour), and one run of a job queues at most
+  `max_per_release/0` of them. One job runs at a time, across nodes: a run
+  takes a Postgres advisory lock (`lock_key/0`) first and snoozes a minute
+  when another run holds it, so no two runs read the same room. A run that
+  has no room, or that stopped at its share with candidates left, snoozes
+  for an hour: the remainder carries over to the next hour rather than
+  being dropped. A full budget or a held lock is checked before anything
+  is read. Each run judges afresh, so a rebuild that ran since is no longer
+  drift, and the release finishes once nothing it moved is left behind; it
+  also finishes once its version is no longer the package's newest stable
+  release, whose own job does the same work. `carry_over_hours/0` after it
+  was queued it gives up and leaves the rest to the daily drift. The job is
+  unique per release for longer than that plus the offer window, so a
+  release carrying over is never offered a second job.
 
   ## Enablement
 
@@ -74,7 +83,9 @@ defmodule Portal.Workers.ReleaseFastPath do
   use Oban.Worker,
     queue: :intake,
     max_attempts: 2,
-    unique: [keys: [:package, :version], period: 86_400, states: :all]
+    # Longer than a job's carry-over plus the offer window (`carry_over_hours/0`,
+    # `window_hours/0`), so a release still carrying over is not offered again.
+    unique: [keys: [:package, :version], period: 3 * 86_400, states: :all]
 
   require Logger
 
@@ -86,6 +97,13 @@ defmodule Portal.Workers.ReleaseFastPath do
   @priority 2
   @reason "release_fast_path"
   @carry_over_seconds 3600
+  @lock_snooze_seconds 60
+  # A fixed key for `pg_try_advisory_lock/1`: one fast-path run at a time.
+  @lock_key 0x52_46_50_00
+
+  @doc "The advisory lock key a run holds while it runs."
+  @spec lock_key() :: integer()
+  def lock_key, do: @lock_key
   @incomplete ~w(available scheduled executing retryable)
 
   @doc "The `reason` its rebuilds carry, which the toolchain sweep's guard leaves out."
@@ -93,44 +111,91 @@ defmodule Portal.Workers.ReleaseFastPath do
   def reason, do: @reason
 
   @impl Oban.Worker
-  def perform(%Oban.Job{args: %{"package" => package, "version" => version}} = job) do
-    if enabled?() do
-      case min(budget() - in_flight(), max_per_release()) do
-        room when room > 0 -> rebuild(job, package, version, room)
-        _none -> carry_over(job, "no room in the budget")
-      end
-    else
-      {:cancel, "the release fast path is off"}
+  def perform(%Oban.Job{} = job) do
+    if enabled?(),
+      do: serialized(job),
+      else: {:cancel, "the release fast path is off"}
+  end
+
+  # One run at a time, on every node: a session advisory lock on the one
+  # connection the run uses throughout (`Repo.checkout/2`), let go when it
+  # ends. A run that dies closes that connection, which lets it go too.
+  defp serialized(job) do
+    Repo.checkout(
+      fn ->
+        if locked?() do
+          try do
+            within_budget(job)
+          after
+            unlock()
+          end
+        else
+          {:snooze, @lock_snooze_seconds}
+        end
+      end,
+      timeout: :infinity
+    )
+  end
+
+  defp locked? do
+    %{rows: [[locked]]} = Repo.query!("SELECT pg_try_advisory_lock($1)", [@lock_key])
+    locked
+  end
+
+  defp unlock, do: Repo.query!("SELECT pg_advisory_unlock($1)", [@lock_key])
+
+  defp within_budget(%Oban.Job{args: %{"package" => package, "version" => version}} = job) do
+    case min(budget() - in_flight(), max_per_release()) do
+      room when room > 0 -> rebuild(job, package, version, room)
+      _none -> carry_over(job, "no room in the budget")
     end
   end
 
   defp rebuild(job, package, version, room) do
-    with {:ok, summary} <-
-           ClosureDrift.rebuild_dependents(package,
-             priority: @priority,
-             reason: @reason,
-             max: room
-           ) do
-      Logger.info(
-        "Release fast path: #{package} #{version}: #{summary.drifted} builds drifted, " <>
-          "#{summary.enqueued} queued, #{summary.pending} already queued"
-      )
+    case ClosureDrift.rebuild_dependents(package,
+           priority: @priority,
+           reason: @reason,
+           max: room,
+           release: version
+         ) do
+      {:ok, %{superseded: newest} = summary} ->
+        Logger.info("Release fast path: #{package} #{version}: superseded by #{newest}")
+        {:ok, summary}
 
-      if summary[:capped],
-        do: carry_over(job, "#{summary.enqueued} queued, more left"),
-        else: {:ok, summary}
+      {:ok, summary} ->
+        finish(job, package, version, summary)
+
+      other ->
+        other
     end
+  end
+
+  defp finish(job, package, version, summary) do
+    Logger.info(
+      "Release fast path: #{package} #{version}: #{summary.drifted} builds drifted, " <>
+        "#{summary.enqueued} queued, #{summary.pending} already queued"
+    )
+
+    if summary[:capped],
+      do: carry_over(job, "#{summary.enqueued} queued, more left"),
+      else: {:ok, summary}
   end
 
   # The rest of the release waits an hour; a snooze holds no `:intake` slot
   # and counts no attempt.
-  defp carry_over(%Oban.Job{args: args, meta: meta}, why) do
-    if Map.get(meta || %{}, "snoozed", 0) >= max_snoozes() do
+  #
+  # By the job's age, not its snoozes: a snooze for the lock is no hour of
+  # carry-over.
+  defp carry_over(%Oban.Job{args: args, inserted_at: inserted_at}, why) do
+    if hours_since(inserted_at) >= carry_over_hours() do
       {:cancel, "release fast path for #{args["package"]} #{args["version"]} gave up: #{why}"}
     else
       {:snooze, @carry_over_seconds}
     end
   end
+
+  defp hours_since(nil), do: 0
+  defp hours_since(at), do: DateTime.diff(DateTime.utc_now(), at, :second) / 3600
 
   # The fast-path rebuilds not yet finished, counted up to the budget.
   defp in_flight do
@@ -255,11 +320,15 @@ defmodule Portal.Workers.ReleaseFastPath do
   (`NCC_RELEASE_FAST_PATH_BUDGET`).
   """
   @spec budget() :: non_neg_integer()
-  def budget, do: Keyword.get(config(), :budget, 1_000)
+  def budget, do: Keyword.get(config(), :budget, 300)
 
-  @doc "How many hours a release's remainder carries over before it is left to the daily drift."
-  @spec max_snoozes() :: non_neg_integer()
-  def max_snoozes, do: Keyword.get(config(), :max_snoozes, 48)
+  @doc """
+  How many hours after its job was queued a release's remainder may carry
+  over before it is left to the daily drift. With `window_hours/0` it must
+  stay below the job's unique period, 72 hours.
+  """
+  @spec carry_over_hours() :: non_neg_integer()
+  def carry_over_hours, do: Keyword.get(config(), :carry_over_hours, 48)
 
   @doc "How many packages' builds must lock a release behind for it to be offered."
   @spec min_dependents() :: pos_integer()

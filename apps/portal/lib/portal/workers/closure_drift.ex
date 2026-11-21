@@ -177,14 +177,25 @@ defmodule Portal.Workers.ClosureDrift do
   same kept build, with its own `:priority`, `:reason` and cap
   (`:max`), and no firmware phase. Returns the summary `run/1` does,
   without `firmware`, and with `capped: true` when it stopped at the cap
-  with candidates left. Option `:dry_run` as for `run/1`.
+  with candidates left. Option `:dry_run` as for `run/1`. With `:release`,
+  a version of `dep`, it judges nothing unless that is still `dep`'s newest
+  stable release, and returns `{:ok, %{superseded: newest}}`.
   """
   @spec rebuild_dependents(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def rebuild_dependents(dep, opts) when is_binary(dep) do
     opts
-    |> Keyword.take([:priority, :reason, :max, :dry_run])
+    |> Keyword.take([:priority, :reason, :max, :dry_run, :release])
     |> Keyword.put(:dep, dep)
     |> toolchain_phase(fn summary, _index, _releases, _deadline -> summary end)
+  end
+
+  defp superseded(index, opts) do
+    with release when is_binary(release) <- Keyword.get(opts, :release),
+         newest when newest != release <- index |> Map.get(opts[:dep], %{}) |> Map.get(:newest) do
+      {:superseded, newest}
+    else
+      _ -> :current
+    end
   end
 
   defp toolchain_phase(opts, and_then) do
@@ -193,45 +204,53 @@ defmodule Portal.Workers.ClosureDrift do
 
     with {:ok, registry} <- registry_source().snapshot(all_versions: true) do
       index = ClosureDrift.index(registry)
-      images = Map.new(Toolchains.images(), &{&1.toolchain, &1.image})
-      builder_version = Toolchains.builder_version()
 
-      candidates =
-        ClosureDrift.candidates(index,
-          builder_version: builder_version,
-          toolchains: Map.keys(images),
-          variants: ToolchainRow.optional_deps_variants() ++ Toolchains.world_variants(),
-          limit: scan_limit(),
-          dep: Keyword.get(opts, :dep)
-        )
-
-      queue_for = MemoryRouting.router(candidates |> Enum.map(& &1.package) |> Enum.uniq())
-      {memo, releases} = memoized_releases(deadline)
-
-      context = %{
-        images: images,
-        builder_version: builder_version,
-        queue_for: queue_for,
-        releases: releases,
-        deadline: deadline,
-        dep: Keyword.get(opts, :dep),
-        priority: Keyword.fetch!(opts, :priority),
-        reason: Keyword.fetch!(opts, :reason),
-        max: Keyword.fetch!(opts, :max)
-      }
-
-      summary =
-        try do
-          candidates
-          |> judge_all(index, context, dry_run?)
-          |> log_summary()
-          |> and_then.(index, releases, deadline)
-        after
-          Process.delete(memo)
-        end
-
-      {:ok, put_out_of_time(summary, deadline)}
+      case superseded(index, opts) do
+        {:superseded, newest} -> {:ok, %{superseded: newest}}
+        :current -> judge_phase(index, opts, deadline, dry_run?, and_then)
+      end
     end
+  end
+
+  defp judge_phase(index, opts, deadline, dry_run?, and_then) do
+    images = Map.new(Toolchains.images(), &{&1.toolchain, &1.image})
+    builder_version = Toolchains.builder_version()
+
+    candidates =
+      ClosureDrift.candidates(index,
+        builder_version: builder_version,
+        toolchains: Map.keys(images),
+        variants: ToolchainRow.optional_deps_variants() ++ Toolchains.world_variants(),
+        limit: scan_limit(),
+        dep: Keyword.get(opts, :dep)
+      )
+
+    queue_for = MemoryRouting.router(candidates |> Enum.map(& &1.package) |> Enum.uniq())
+    {memo, releases} = memoized_releases(deadline)
+
+    context = %{
+      images: images,
+      builder_version: builder_version,
+      queue_for: queue_for,
+      releases: releases,
+      deadline: deadline,
+      dep: Keyword.get(opts, :dep),
+      priority: Keyword.fetch!(opts, :priority),
+      reason: Keyword.fetch!(opts, :reason),
+      max: Keyword.fetch!(opts, :max)
+    }
+
+    summary =
+      try do
+        candidates
+        |> judge_all(index, context, dry_run?)
+        |> log_summary()
+        |> and_then.(index, releases, deadline)
+      after
+        Process.delete(memo)
+      end
+
+    {:ok, put_out_of_time(summary, deadline)}
   end
 
   # In candidate order, until the run's cap is queued or its time budget is

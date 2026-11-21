@@ -12,7 +12,10 @@ defmodule Portal.Workers.ReleaseFastPathTest do
   @now ~U[2026-11-21 12:00:00Z]
 
   defmodule StubRegistry do
-    def snapshot(_opts), do: Process.get(:hex_answer, {:ok, []})
+    def snapshot(_opts) do
+      send(self(), :asked_registry)
+      Process.get(:hex_answer, {:ok, []})
+    end
   end
 
   setup do
@@ -171,6 +174,21 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       )
     end
 
+    defp flush_registry_reads do
+      receive do
+        :asked_registry -> flush_registry_reads()
+      after
+        0 -> :ok
+      end
+    end
+
+    # A second database session, outside the test's sandbox.
+    defp session_config do
+      Portal.Repo.config()
+      |> Keyword.take([:hostname, :port, :username, :password, :database])
+      |> Keyword.put(:pool_size, 1)
+    end
+
     defp fast_path_builds,
       do:
         all_enqueued(worker: ToolchainBuild)
@@ -237,10 +255,13 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert length(fast_path_builds()) == 3
 
       # A full budget queues nothing and reads nothing.
+      flush_registry_reads()
+
       assert {:snooze, 3600} =
                perform_job(ReleaseFastPath, %{"package" => "jason", "version" => "1.1.0"})
 
       assert length(fast_path_builds()) == 3
+      refute_received :asked_registry
 
       # Once the queued builds have run, the remainder carries over: each
       # release queues what is left and finishes.
@@ -257,15 +278,83 @@ defmodule Portal.Workers.ReleaseFastPathTest do
       assert Enum.sort(rebuilt) == Enum.sort(certifi_names ++ jason_names)
     end
 
-    test "a carried-over release gives up after max_snoozes" do
-      Application.put_env(:portal, ReleaseFastPath, enabled: true, budget: 0, max_snoozes: 2)
+    # By its age, not by its snoozes: a snooze for the lock (below) is no
+    # hour of carry-over.
+    test "a carried-over release gives up carry_over_hours after it was queued" do
+      Application.put_env(:portal, ReleaseFastPath, enabled: true, budget: 0, carry_over_hours: 2)
       args = %{"package" => "certifi", "version" => "2.19.0"}
+      now = DateTime.utc_now()
 
-      assert {:snooze, 3600} =
-               ReleaseFastPath.perform(%Oban.Job{args: args, meta: %{"snoozed" => 1}})
+      young = %Oban.Job{args: args, meta: %{"snoozed" => 50}, inserted_at: now}
+      assert {:snooze, 3600} = ReleaseFastPath.perform(young)
 
-      assert {:cancel, _} =
-               ReleaseFastPath.perform(%Oban.Job{args: args, meta: %{"snoozed" => 2}})
+      old = %Oban.Job{args: args, meta: %{}, inserted_at: DateTime.add(now, -2 * 3600, :second)}
+      assert {:cancel, _} = ReleaseFastPath.perform(old)
+    end
+
+    # Review F1: runs at once each read the same room, so the budget was soft.
+    test "only one job runs at a time: another holding the lock snoozes it a minute" do
+      certifi_release([name()])
+      # Linked: should the test fail, the session closes with it and so lets
+      # its lock go.
+      {:ok, other} = Postgrex.start_link(session_config())
+
+      Postgrex.query!(other, "SELECT pg_advisory_lock($1)", [ReleaseFastPath.lock_key()])
+      flush_registry_reads()
+
+      assert {:snooze, 60} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
+      assert fast_path_builds() == []
+      refute_received :asked_registry
+
+      Postgrex.query!(other, "SELECT pg_advisory_unlock($1)", [ReleaseFastPath.lock_key()])
+
+      assert {:ok, %{enqueued: 1}} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
+      # The run let the lock go: the other session takes it at once.
+      assert %{rows: [[true]]} =
+               Postgrex.query!(other, "SELECT pg_try_advisory_lock($1)", [
+                 ReleaseFastPath.lock_key()
+               ])
+
+      GenServer.stop(other)
+    end
+
+    # Review F2: a newer release has its own job, which does the same work.
+    test "a job whose release is no longer the newest stable one ends" do
+      dependent = name()
+      certifi_release([dependent])
+      {:ok, registry} = Process.get(:hex_answer)
+
+      registry =
+        Enum.map(registry, fn
+          %{name: "certifi"} = e ->
+            %{e | versions: e.versions ++ ["2.20.0"], latest_version: "2.20.0"}
+
+          e ->
+            e
+        end)
+
+      Process.put(:hex_answer, {:ok, registry})
+
+      assert {:ok, %{superseded: "2.20.0"}} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
+      assert fast_path_builds() == []
+    end
+
+    test "uniqueness outlives the carry-over and the offer window" do
+      period = ReleaseFastPath.__opts__()[:unique][:period]
+
+      assert period >=
+               (ReleaseFastPath.carry_over_hours() + ReleaseFastPath.window_hours()) * 3600
+    end
+
+    test "the budget is below the measured hourly throughput by default" do
+      Application.put_env(:portal, ReleaseFastPath, enabled: true)
+      assert ReleaseFastPath.budget() == 300
     end
 
     test "does nothing while the drift rebuilds are switched off" do

@@ -74,7 +74,7 @@ defmodule Portal.Workers.UpdateCheck do
   behind instead, which `Portal.Workers.ClosureDrift` rebuilds from the same
   registry once a day. A release that many packages' builds lock behind is
   handed to `Portal.Workers.ReleaseFastPath` from this run instead, which
-  rebuilds them within the hour.
+  rebuilds them as soon as its budget allows.
 
   ## Scope
 
@@ -303,7 +303,7 @@ defmodule Portal.Workers.UpdateCheck do
 
   # The registry's latest version of each package whose release earns no
   # full run, as a toolchain build candidate (`hex_latest_version`), unless
-  # the backlog has nothing left to build of it (`@nomination_done`). Counts
+  # the backlog has nothing left to build of it (`nomination_done/4`). Counts
   # the rows it changed. A prerelease is never nominated: prerelease churn
   # would queue builds, and some prereleases are not to be published.
   defp nominate(patch_only) do
