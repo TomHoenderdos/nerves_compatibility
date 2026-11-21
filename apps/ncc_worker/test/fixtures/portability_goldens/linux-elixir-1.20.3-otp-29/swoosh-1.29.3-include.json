@@ -3491,12 +3491,18 @@
         "declared": [
           "brotli"
         ],
+        "declared_apps": [
+          "brotli"
+        ],
         "kind": "module_absent",
         "module": "brotli",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "castore"
+        ],
+        "declared_apps": [
           "castore"
         ],
         "kind": "module_absent",
@@ -3507,12 +3513,18 @@
         "declared": [
           "configparser_ex"
         ],
+        "declared_apps": [
+          "configparser_ex"
+        ],
         "kind": "module_absent",
         "module": "Elixir.ConfigParser",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "decimal"
+        ],
+        "declared_apps": [
           "decimal"
         ],
         "kind": "module_absent",
@@ -3523,12 +3535,18 @@
         "declared": [
           "jsx"
         ],
+        "declared_apps": [
+          "jsx"
+        ],
         "kind": "module_absent",
         "module": "jsx",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "sweet_xml"
+        ],
+        "declared_apps": [
           "sweet_xml"
         ],
         "kind": "module_absent",

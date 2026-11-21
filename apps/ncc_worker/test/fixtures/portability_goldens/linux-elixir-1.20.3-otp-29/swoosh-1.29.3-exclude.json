@@ -760,12 +760,18 @@
         "declared": [
           "bandit"
         ],
+        "declared_apps": [
+          "bandit"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Bandit",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "decimal"
+        ],
+        "declared_apps": [
           "decimal"
         ],
         "kind": "module_absent",
@@ -776,6 +782,9 @@
         "declared": [
           "gen_smtp"
         ],
+        "declared_apps": [
+          "gen_smtp"
+        ],
         "kind": "module_absent",
         "module": "gen_smtp_client",
         "via": "Code.ensure_loaded?/1"
@@ -784,12 +793,18 @@
         "declared": [
           "plug"
         ],
+        "declared_apps": [
+          "plug"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Plug",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "plug_cowboy"
+        ],
+        "declared_apps": [
           "plug_cowboy"
         ],
         "kind": "module_absent",

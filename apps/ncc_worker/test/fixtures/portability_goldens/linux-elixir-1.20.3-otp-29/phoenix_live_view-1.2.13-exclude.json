@@ -3428,12 +3428,18 @@
         "declared": [
           "igniter"
         ],
+        "declared_apps": [
+          "igniter"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Igniter",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "jason"
+        ],
+        "declared_apps": [
           "jason"
         ],
         "kind": "module_absent",

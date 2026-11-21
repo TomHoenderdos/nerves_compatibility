@@ -3493,12 +3493,18 @@
         "declared": [
           "geo"
         ],
+        "declared_apps": [
+          "geo"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Geo",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "igniter"
+        ],
+        "declared_apps": [
           "igniter"
         ],
         "kind": "module_absent",
@@ -3509,6 +3515,9 @@
         "declared": [
           "jason"
         ],
+        "declared_apps": [
+          "jason"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Jason.Encoder",
         "via": "Code.ensure_loaded?/1"
@@ -3517,12 +3526,18 @@
         "declared": [
           "table"
         ],
+        "declared_apps": [
+          "table"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Table.Reader",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "tds"
+        ],
+        "declared_apps": [
           "tds"
         ],
         "kind": "module_absent",
@@ -4349,6 +4364,10 @@
       {
         "owner": "exqlite",
         "reason": "compile-time host read: file:read_file_info/2 <home>/.cache via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
+      },
+      {
+        "owner": "exqlite",
+        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
       },
       {
         "owner": "exqlite",

@@ -3481,6 +3481,9 @@
         "declared": [
           "castore"
         ],
+        "declared_apps": [
+          "castore"
+        ],
         "kind": "module_absent",
         "module": "Elixir.CAStore",
         "via": "Code.ensure_loaded?/1"
@@ -3489,12 +3492,18 @@
         "declared": [
           "decimal"
         ],
+        "declared_apps": [
+          "decimal"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Decimal",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "igniter"
+        ],
+        "declared_apps": [
           "igniter"
         ],
         "kind": "module_absent",

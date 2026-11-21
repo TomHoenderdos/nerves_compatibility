@@ -3434,12 +3434,18 @@
         "declared": [
           "decimal"
         ],
+        "declared_apps": [
+          "decimal"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Decimal",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "igniter"
+        ],
+        "declared_apps": [
           "igniter"
         ],
         "kind": "module_absent",
@@ -4012,10 +4018,6 @@
       {
         "owner": "lazy_html",
         "reason": "compile-time host read: file:read_file_info/2 <home>/.cache via elixir_utils:read_file_type/2 in Mix.Tasks.Compile.ElixirMake.download_or_reuse_nif/3 (lib/mix/tasks/compile.elixir_make.ex:239)"
-      },
-      {
-        "owner": "lazy_html",
-        "reason": "compile-time host read: file:read_file_info/2 <home>/.cache/elixir_make via elixir_utils:read_file_type/2 in ElixirMake.Artefact.cache_dir/0 (lib/elixir_make/artefact.ex:21)"
       },
       {
         "owner": "lazy_html",

@@ -931,6 +931,9 @@
         "declared": [
           "castore"
         ],
+        "declared_apps": [
+          "castore"
+        ],
         "kind": "module_absent",
         "module": "Elixir.CAStore",
         "via": "Code.ensure_loaded?/1"

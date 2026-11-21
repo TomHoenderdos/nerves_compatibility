@@ -69,12 +69,18 @@
         "declared": [
           "phoenix_live_view"
         ],
+        "declared_apps": [
+          "phoenix_live_view"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Phoenix.LiveView",
         "via": "Code.ensure_loaded?/1"
       },
       {
         "declared": [
+          "plug"
+        ],
+        "declared_apps": [
           "plug"
         ],
         "kind": "module_absent",

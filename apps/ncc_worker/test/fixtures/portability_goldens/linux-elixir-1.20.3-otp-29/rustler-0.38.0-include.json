@@ -36,6 +36,9 @@
         "declared": [
           "decimal"
         ],
+        "declared_apps": [
+          "decimal"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Decimal",
         "via": "Code.ensure_loaded?/1"

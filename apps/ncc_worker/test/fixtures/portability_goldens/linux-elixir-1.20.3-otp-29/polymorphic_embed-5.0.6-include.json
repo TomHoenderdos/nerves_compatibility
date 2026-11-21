@@ -3461,6 +3461,9 @@
         "declared": [
           "igniter"
         ],
+        "declared_apps": [
+          "igniter"
+        ],
         "kind": "module_absent",
         "module": "Elixir.Igniter",
         "via": "Code.ensure_loaded?/1"
