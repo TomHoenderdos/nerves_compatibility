@@ -169,11 +169,66 @@ defmodule Portal.PinnedFirmwareIngestTest do
           %{"name" => "decimal", "hex" => "decimal", "version" => "2.2.0", "checksum" => @b}
         ])
 
+      # Review R1: the pinned ingest runs the sweep itself.
       assert {:ok, _refusal} = ingest_firmware(name, other, judge: @refused)
 
-      _ = Portal.Precompiled.FirmwareRefusal.withdraw_superseded()
       old = Ash.get!(Catalog.PinnedBuild, old.id, domain: Catalog)
       assert old.unpublished_reason == Catalog.SystemResult.judge_refusal()
+    end
+
+    # Review R1, the reviewer's T4: an older regular firmware build of the
+    # target is withdrawn by a pinned refusal's own ingest, not only by the
+    # next regular run of the version.
+    test "a pinned judge refusal withdraws an older served regular build of the target" do
+      name = unique()
+
+      fixture =
+        [__DIR__, "..", "support", "fixtures", "result.json"]
+        |> Path.join()
+        |> File.read!()
+        |> Jason.decode!()
+
+      bytes = "regular-" <> name
+      dir = files([bytes])
+
+      rpi4 =
+        fixture["systems"]["nerves_system_rpi4"]
+        |> Map.put("compile_env", [])
+        |> Map.put("beam_scan", %{
+          "footprint" => %{
+            "file_manifest" => %{"ebin" => [entry("ebin/m0.beam", bytes)], "priv" => []}
+          }
+        })
+
+      result =
+        Map.merge(fixture, %{
+          "run_id" => "regular-#{name}",
+          "package" => %{"name" => name, "version" => "1.0.0"},
+          "deps_lock" => %{},
+          "finished_at" => "2026-11-01T10:00:00Z",
+          "systems" => %{"nerves_system_rpi4" => rpi4}
+        })
+
+      {:ok, run} =
+        Ingestion.ingest(result, %{
+          package: name,
+          version: "1.0.0",
+          run_id: result["run_id"],
+          image_digest: "sha256:x",
+          files_dir: dir,
+          scan_request_id: nil,
+          log: "log"
+        })
+
+      regular = fn ->
+        Catalog.SystemResult
+        |> Ash.Query.filter(run_id == ^run.id and system_pkg == "nerves_system_rpi4")
+        |> Ash.read_one!(domain: Catalog)
+      end
+
+      assert is_nil(regular.().unpublished_at)
+      assert {:ok, _refusal} = ingest_firmware(name, pins(name), judge: @refused)
+      assert regular.().unpublished_reason == Catalog.SystemResult.judge_refusal()
     end
   end
 

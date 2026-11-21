@@ -2047,6 +2047,9 @@ defmodule Portal.Catalog.Ingestion do
   # A pinned firmware target takes the holds a system result of its target
   # takes at ingest (`Portal.Precompiled.Holds`, review S2), added to any the
   # row already carries: the upsert never writes `unpublished_at`.
+  # Then the superseding refusals run for the version, as a regular run's
+  # ingest runs them (`FirmwareRefusal.withdraw_superseded/2`, review R1): a
+  # pinned judge refusal withdraws the target's older builds at once.
   defp hold_pinned(%PinnedBuild{target: "nerves_system_" <> _ = target} = row) do
     verdict = row.firmware_judge && row.firmware_judge["status"]
     held = Holds.for_targets(row.package_id, row.version, %{target => verdict})[target] || []
@@ -2054,7 +2057,7 @@ defmodule Portal.Catalog.Ingestion do
 
     case Holds.newest_first(Enum.uniq(held ++ own)) do
       ^own ->
-        row
+        :ok
 
       holds ->
         {at, reason, others} = Holds.columns(holds)
@@ -2064,9 +2067,10 @@ defmodule Portal.Catalog.Ingestion do
             "other_holds = $4, updated_at = now() AT TIME ZONE 'utc' WHERE id = $1",
           [dump(row.id), at, reason, others]
         )
-
-        Ash.get!(PinnedBuild, row.id, domain: @domain)
     end
+
+    _withdrawn = FirmwareRefusal.withdraw_superseded(row.package_id, row.version)
+    Ash.get!(PinnedBuild, row.id, domain: @domain)
   end
 
   defp hold_pinned(row), do: row
