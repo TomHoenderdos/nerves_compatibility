@@ -404,6 +404,49 @@ defmodule NccWorker.JsonWriterTest do
       refute Map.has_key?(decoded["systems"]["nerves_system_bbb"], "build_root")
     end
 
+    test "writes a firmware system's rebar3 plugin record, and omits the key without one" do
+      dir = Path.join(System.tmp_dir!(), "jw_plugins_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      system = %{
+        status: :pass,
+        duration_sec: 1.0,
+        firmware_size_bytes: 1,
+        log_tail: "",
+        error: nil
+      }
+
+      record = [
+        %{
+          "name" => "rebar3_hex",
+          "version" => "7.0.8",
+          "sha256" => String.duplicate("a", 64),
+          "owners" => ["yamerl"]
+        }
+      ]
+
+      result = %{
+        run_id: "r",
+        package: %{name: "pkg", version: "1.0.0"},
+        image: %{name: "i", digest: "d"},
+        toolchain: %{},
+        systems: %{
+          "nerves_system_rpi4" => Map.put(system, :rebar3_plugins, record),
+          "nerves_system_rpi3" => Map.put(system, :rebar3_plugins, []),
+          "nerves_system_bbb" => system
+        },
+        finished_at: "2026-11-21T00:00:00Z"
+      }
+
+      assert :ok = JsonWriter.write_result(dir, result)
+      decoded = dir |> Path.join("result.json") |> File.read!() |> JSON.decode!()
+
+      assert decoded["systems"]["nerves_system_rpi4"]["rebar3_plugins"] == record
+      assert decoded["systems"]["nerves_system_rpi3"]["rebar3_plugins"] == []
+      refute Map.has_key?(decoded["systems"]["nerves_system_bbb"], "rebar3_plugins")
+    end
+
     test "writes a firmware system's deterministic sibling, and omits the key without one" do
       dir = Path.join(System.tmp_dir!(), "jw_det_#{System.unique_integer([:positive])}")
       File.mkdir_p!(dir)

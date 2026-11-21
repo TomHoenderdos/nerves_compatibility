@@ -170,6 +170,12 @@ The worker runs inside the Docker container — it never invokes Docker itself. 
    "skipped", "reason", "observations": [{"rule", "path"}], "variants": {"without": {"status", "reason"}}}`
    (`variants` only when one was judged), and `host.log` gets a line per withheld build. The portal stores it, and a
    refusal withdraws the target's older builds of the same version (`Portal.Precompiled.FirmwareRefusal`).
+   Each passing target also records the rebar3 plugin releases its build installed, read from
+   `deps_<target>/<app>/_build/*/plugins` and rebar3's cache dir (`NccWorker.FirmwarePlugins`), as `rebar3_plugins`:
+   `[{"name", "version", "sha256", "owners"}]`, the sha256 that of the cached Hex tarball and `owners` the apps it was
+   installed for (the entry shape of a toolchain build's `compile_observations.rebar3_plugins`). A release that cannot
+   be read has a `null` version, one with no cached tarball a `null` sha256; `[]` when none was installed. A record
+   only: it judges nothing.
 5. When `NCC_INPUT` carries `argus` (`{"analyses": ["default", "exposure"], "scope": "firmware", "timeout_seconds": 300}`),
    runs the argus_beam escript over the host-compiled beams (`NccWorker.Argus`) and writes its findings to
    `result.json` as `argus`. `scope: "firmware"` limits this to packages that build firmware. Advisory: it never

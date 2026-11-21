@@ -149,7 +149,9 @@ defmodule NccWorker.JsonWriter do
   # firmware target whose files the baked build path rule judged
   # (`NccWorker.FirmwareBuildRoot`). `deterministic_build` only on a passing
   # firmware target that publishes its own build in a run asked for
-  # siblings (`NccWorker.FirmwareDeterministic`).
+  # siblings (`NccWorker.FirmwareDeterministic`). `rebar3_plugins` only on a
+  # passing firmware target whose deps dir was read
+  # (`NccWorker.FirmwarePlugins`), `[]` when it installed none.
   @spec convert_system_result(map()) :: map()
   defp convert_system_result(system_result) do
     [
@@ -162,7 +164,8 @@ defmodule NccWorker.JsonWriter do
       :compile_inputs,
       :toolchain,
       :otp_full,
-      :system_libs
+      :system_libs,
+      :rebar3_plugins
     ]
     |> Enum.reduce(base_system_result(system_result), fn key, json ->
       put_present(json, key, Map.get(system_result, key))

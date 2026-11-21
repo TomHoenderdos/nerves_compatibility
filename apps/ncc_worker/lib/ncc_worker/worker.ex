@@ -17,6 +17,7 @@ defmodule NccWorker.Worker do
     FirmwareBuildRoot,
     FirmwareDeterministic,
     FirmwareInputs,
+    FirmwarePlugins,
     Footprint,
     HexCache,
     HexHome,
@@ -515,6 +516,10 @@ defmodule NccWorker.Worker do
               # system's `footprint.file_manifest` (or dropped the variant
               # named under `variants`), so nothing of it is published.
               optional(:build_root) => FirmwareBuildRoot.outcome(),
+              # Only on a passing firmware system whose deps dir was read: the
+              # rebar3 plugin releases its build ran (`NccWorker.FirmwarePlugins`),
+              # each `%{"name", "version", "sha256", "owners"}`; `[]` for none.
+              optional(:rebar3_plugins) => [FirmwarePlugins.release()],
               # Only on a passing firmware target that publishes its own
               # build, in a run asked for `deterministic: true`
               # (`NccWorker.FirmwareDeterministic`): the build's deterministic
@@ -1573,7 +1578,10 @@ defmodule NccWorker.Worker do
          {:ok, systems, world} <- firmware_world(params, out, pass),
          :ok <- log_target_pass(pass.paths, out.systems),
          {:ok, systems} <-
-           systems |> gate_build_root(pass, envs) |> put_firmware_inputs(pass, envs),
+           systems
+           |> gate_build_root(pass, envs)
+           |> put_firmware_plugins(pass, envs)
+           |> put_firmware_inputs(pass, envs),
          {:ok, systems} <- put_deterministic(systems, pass, envs) do
       optional_deps =
         out.optional_deps
@@ -1616,6 +1624,7 @@ defmodule NccWorker.Worker do
            |> lock_unchanged(before == run_lock)
            |> put_system_abi(pass)
            |> gate_build_root(pass, envs, judge_opts(opts, :build_root_judge, :judge))
+           |> put_firmware_plugins(pass, envs)
            |> put_firmware_inputs(pass, envs, judge_opts(opts, :record_inputs, :record)),
          {:ok, systems} <-
            put_deterministic(systems, pass, envs, judge_opts(opts, :deterministic, :runners)) do
@@ -1672,6 +1681,18 @@ defmodule NccWorker.Worker do
 
     Enum.each(lines, &log_host(pass.paths, &1))
     systems
+  end
+
+  # The rebar3 plugin releases each passing target's build ran
+  # (`NccWorker.FirmwarePlugins`), read from its own deps dir before the
+  # compile-inputs trace lays the run's `deps/` there.
+  defp put_firmware_plugins(systems, pass, envs) do
+    targets =
+      for system <- pass.systems, env = envs[system.name], env != nil, into: %{} do
+        {system.name, {system.target, env}}
+      end
+
+    FirmwarePlugins.put(systems, %{project_dir: pass.project_dir, targets: targets})
   end
 
   # The compile-time inputs of each passing target whose package reads the
