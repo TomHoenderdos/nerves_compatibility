@@ -362,7 +362,7 @@ defmodule NccWorker.CLI do
 
   defp validate_config_variant(input), do: {:ok, input}
 
-  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps world world_members firmware_world firmware_inputs config_variant judge makefile_rule2 foreign_priv triple deterministic pins)a
+  @input_keys ~w(run_id image name digest package version requirement source paths work_dir output_dir files_dir limits per_system_timeout_sec log_tail_bytes systems_filter known_system_abi systems_override argus analyses scope timeout_seconds mode toolchain elixir otp nerves_packages system_abi egress_probe optional_deps world world_members firmware_world firmware_inputs config_variant judge makefile_rule2 foreign_priv native_side triple deterministic pins)a
   @input_key_map Map.new(@input_keys, &{Atom.to_string(&1), &1})
 
   @spec atomize_keys(map()) :: map()

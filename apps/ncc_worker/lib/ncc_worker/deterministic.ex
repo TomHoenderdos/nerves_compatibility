@@ -150,6 +150,7 @@ defmodule NccWorker.Deterministic do
       build_opts = [
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
         foreign_priv: Keyword.get(opts, :foreign_priv) == true,
+        native_side: Keyword.get(opts, :native_side) == true,
         build_path: ctx.build_path,
         hex_home: hex_home(opts)
       ]
@@ -183,6 +184,7 @@ defmodule NccWorker.Deterministic do
         trees: Keyword.get(judged_with, :trees),
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
         foreign_priv: Keyword.get(opts, :foreign_priv) == true,
+        native_side: Keyword.get(opts, :native_side) == true,
         hex_home: hex_home(opts),
         run_started_at: Keyword.get(opts, :run_started_at),
         trace_dir: Path.join(paths.work_dir, "trace-" <> @build_dir),

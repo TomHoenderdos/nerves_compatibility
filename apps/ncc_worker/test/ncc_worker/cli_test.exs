@@ -118,4 +118,9 @@ defmodule NccWorker.CLITest do
 
     assert {:ok, %{judge: %{foreign_priv: true, makefile_rule2: true}}} = CLI.parse_input(json)
   end
+
+  test "parse_input/1 reads judge.native_side" do
+    json = ~s({"run_id":"r","mode":"toolchain","judge":{"native_side":true}})
+    assert {:ok, %{judge: %{native_side: true}}} = CLI.parse_input(json)
+  end
 end

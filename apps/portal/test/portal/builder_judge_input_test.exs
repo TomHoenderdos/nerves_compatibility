@@ -21,7 +21,11 @@ defmodule Portal.BuilderJudgeInputTest do
   }
 
   test "off by default: no judge options for any build", %{previous: previous} do
-    Application.put_env(:portal, Builder, Keyword.delete(previous, :judge_makefile_rule2))
+    Application.put_env(
+      :portal,
+      Builder,
+      Keyword.drop(previous, [:judge_makefile_rule2, :judge_native_side])
+    )
 
     for mode <- ["toolchain", nil, "argus_only", "warm_nerves"],
         do: assert(Builder.judge_input(mode) == nil, inspect(mode))
@@ -55,6 +59,34 @@ defmodule Portal.BuilderJudgeInputTest do
              "foreign_priv" => true,
              "makefile_rule2" => true
            }
+  end
+
+  # S3 native side: `NCC_JUDGE_NATIVE_SIDE=1` (`:judge_native_side`) puts
+  # the flag into toolchain builds only, next to the others.
+  test "native_side: toolchain builds only, while the config says so", %{previous: previous} do
+    base = Keyword.drop(previous, [:judge_makefile_rule2, :judge_native_side])
+    Application.put_env(:portal, Builder, base)
+    {:ok, _} = Portal.Settings.save(%{foreign_priv_enabled: false})
+    assert Builder.judge_input("toolchain") == nil
+
+    Application.put_env(:portal, Builder, Keyword.put(base, :judge_native_side, true))
+    assert Builder.judge_input("toolchain") == %{"native_side" => true}
+
+    for mode <- [nil, "argus_only", "warm_nerves", "host_native"],
+        do: assert(Builder.judge_input(mode) == nil, inspect(mode))
+
+    for value <- [false, nil, "1"] do
+      Application.put_env(:portal, Builder, Keyword.put(base, :judge_native_side, value))
+      assert Builder.judge_input("toolchain") == nil, inspect(value)
+    end
+
+    Application.put_env(
+      :portal,
+      Builder,
+      base |> Keyword.put(:judge_native_side, true) |> Keyword.put(:judge_makefile_rule2, true)
+    )
+
+    assert Builder.judge_input("toolchain") == %{"makefile_rule2" => true, "native_side" => true}
   end
 
   test "worker_input carries judge only when set" do

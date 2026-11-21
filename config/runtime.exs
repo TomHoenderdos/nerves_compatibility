@@ -245,6 +245,13 @@ if portal_available? do
     # those `skipped` rows against the fleet's newest revision every sweep,
     # rebuilding the same package weekly instead of once.
     judge_makefile_rule2: if(System.get_env("NCC_JUDGE_MAKEFILE_RULE2") == "1", do: true),
+    # `1` sets a natively built dependency's native side apart from its
+    # beams (elixir_make's own activity in its window no longer taints its
+    # dependents) and reads rule 2's target and native-tool grep finer:
+    # toolchain builds get `NCC_INPUT.judge.native_side`. It changes no judge
+    # revision, so turning it on reopens nothing: a targeted requeue
+    # rebuilds the rows it can change. Anything else, or unset, keeps it off.
+    judge_native_side: if(System.get_env("NCC_JUDGE_NATIVE_SIDE") == "1", do: true),
     # `0` turns off the firmware targets' traced compile-input pass
     # (`NccWorker.FirmwareInputs`, judge revision 19): firmware builds get
     # `NCC_INPUT.firmware_inputs: false`, local and remote alike, with no

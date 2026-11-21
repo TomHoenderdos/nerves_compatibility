@@ -1671,6 +1671,35 @@ defmodule NccWorker.ToolchainModeTest do
     end
   end
 
+  test "NCC_INPUT.judge.native_side reaches the compile only when true, with no revision bump",
+       %{tmp_dir: dir} do
+    for {judge, want} <- [
+          {%{native_side: true}, true},
+          {%{native_side: "yes"}, false},
+          {%{makefile_rule2: true}, false},
+          {nil, false}
+        ] do
+      parent = self()
+      sub = Path.join(dir, "case#{System.unique_integer([:positive])}")
+      {proj, input, paths} = toolchain_run(sub)
+
+      host_trace = fn _project_dir, _package, _paths, opts ->
+        send(parent, {:flag, Keyword.get(opts, :native_side)})
+        passing_host_trace()
+      end
+
+      input = if judge, do: Map.put(input, :judge, judge), else: input
+
+      assert {:ok, result} =
+               Worker.toolchain_project(proj, input, paths, @toolchain, host_trace: host_trace)
+
+      assert_received {:flag, ^want}
+
+      assert result.toolchain_build.judge_revision ==
+               if(judge == %{makefile_rule2: true}, do: 30, else: 29)
+    end
+  end
+
   @foreign_rel "priv/assets/Sample/uxwh53kfq2wszgf23hqwgkuiza.tar.gz"
 
   defp foreign_entry(rel, bytes),

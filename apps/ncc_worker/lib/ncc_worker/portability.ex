@@ -60,6 +60,27 @@ defmodule NccWorker.Portability do
   settled archives, and `foreign_priv_rule`; `trace_stats["foreign_priv"]`
   records `"on"` or `"off"`. Without the flag nothing here changes.
 
+  A job sent `native_side: true` (`NCC_INPUT.judge.native_side`, toolchain
+  judge only) sets a natively built closure dependency's native side apart
+  from its beams. In a closure dependency's window, never the package's,
+  the reviewed native build tool's own activity (elixir_make's compiler and
+  cc_precompiler, its precompiler: their host reads, `make`, the download,
+  their cache dir, `priv`) is a `native_build` observation instead of a
+  refusal or an input, as in a firmware target's trace; an integrity call
+  and a write to the env or the application env from their frame refuse
+  as there, and a package fun they run is the dependency's own. Such a
+  dependency is clean only when its beams are shown to be its sources'
+  alone (`side_problem/3`): Mix built it, no closure NIF was mapped by its
+  window's close, its tree is exactly its verified tarball's, every beam in
+  its ebin compiled from that tree and every checksum file the tool
+  evaluates a literal map; else that is its taint (`native build not set
+  apart: `). A dependent's reads of its beams follow revision 15's rule,
+  a library of OTP's own (a download's `crypto`) mapped in its window
+  allowed, and a read of any other file in its ebin refuses. Every call
+  into it and every read of its `priv` still refuse. `trace_stats` records
+  `"native_side"`, `"on"` or `"off"`, on the toolchain judge. No judge
+  revision: the flag is the record.
+
   The package's own compile writing into its own build `priv`, and the
   probes `File.mkdir_p/1` makes of the directories above it (`Events`'
   `priv_writes` and `priv_probes`, judge revision 21), refuse nothing here,
@@ -329,6 +350,10 @@ defmodule NccWorker.Portability do
       holds them to the trace's manager (`judge/5`'s `declassified:`); a
       `deps/` that cannot be listed is then could-not-judge. Anything but
       `true` is off;
+    * `native_side:`, `true` sets a natively built closure dependency's
+      native side apart (see above) on the toolchain judge and reads rule
+      2's target and native-tool grep finer (`NativeBuild.split/4`);
+      anything but `true`, or with `target:`, is off;
     * `target:` and `host_native: true`, a host-native build's verdict
       (`NccWorker.HostNative`, `target: "host"`): judged as a firmware
       target's inputs are (`target_inputs/3`), with rustler_precompiled set
@@ -525,7 +550,7 @@ defmodule NccWorker.Portability do
         trees: trees,
         hook_scripts: hooks,
         deps_path: deps
-      ] ++ Keyword.take(opts, [:target, :roots, :host_native, :foreign_priv])
+      ] ++ Keyword.take(opts, [:target, :roots, :host_native, :foreign_priv, :native_side])
 
     project_dir
     |> verdict(package, traced, trace_dir, native, ctx_opts)
@@ -561,7 +586,7 @@ defmodule NccWorker.Portability do
             project_dir,
             &Context.release_tarball(home, releases, &1),
             deps,
-            Keyword.take(opts, [:package])
+            Keyword.take(opts, [:package, :native_side])
           )
 
         {native, declassified, nil}

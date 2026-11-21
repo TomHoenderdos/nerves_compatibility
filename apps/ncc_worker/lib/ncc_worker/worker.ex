@@ -2178,6 +2178,7 @@ defmodule NccWorker.Worker do
     log_tail_bytes = get_in(input, [:limits, :log_tail_bytes]) || @default_log_tail_bytes
 
     rule2 = makefile_rule2?(input)
+    side = native_side?(input)
     # Right after `deps.get` and before any compile: an untraced build step
     # could rewrite the lock and a tarball together later, and a compile
     # writes into the trees (item 5e).
@@ -2191,12 +2192,14 @@ defmodule NccWorker.Worker do
             releases: releases,
             hex_home: System.get_env("HEX_HOME"),
             makefile_rule2: rule2,
+            native_side: side,
             package: package_name
           ),
         run_started_at: input[:started_at],
         log_tail_bytes: log_tail_bytes,
         makefile_rule2: rule2,
-        foreign_priv: foreign_priv?(input)
+        foreign_priv: foreign_priv?(input),
+        native_side: side
       ] ++ opts
 
     with {:ok, compiled} <-
@@ -2209,7 +2212,10 @@ defmodule NccWorker.Worker do
            ),
          build =
            compiled
-           |> compiled_build(project_dir, package_name, toolchain, makefile_rule2: rule2)
+           |> compiled_build(project_dir, package_name, toolchain,
+             makefile_rule2: rule2,
+             native_side: side
+           )
            |> Map.put(:config_variant, config_variant),
          {:ok, sibling} <-
            deterministic(input, compiled, build, project_dir, paths, toolchain, compile_opts) do
@@ -2258,7 +2264,8 @@ defmodule NccWorker.Worker do
         [
           run_started_at: input[:started_at],
           makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
-          foreign_priv: Keyword.get(opts, :foreign_priv) == true
+          foreign_priv: Keyword.get(opts, :foreign_priv) == true,
+          native_side: Keyword.get(opts, :native_side) == true
         ] ++ trace_opt(opts)
       )
     else
@@ -2451,6 +2458,13 @@ defmodule NccWorker.Worker do
   # the portal sends exactly `true` (`Portal.Builder.judge_input/1`).
   defp foreign_priv?(%{judge: %{foreign_priv: true}}), do: true
   defp foreign_priv?(_input), do: false
+
+  # NCC_INPUT.judge.native_side (a natively built dependency's native side
+  # set apart from its beams, `NccWorker.Portability`, and rule 2's finer
+  # target and native-tool reading, `NccWorker.BuildCache`): off unless the
+  # portal sends exactly `true` (`Portal.Builder.judge_input/1`).
+  defp native_side?(%{judge: %{native_side: true}}), do: true
+  defp native_side?(_input), do: false
 
   @doc false
   # The toolchain run's one compile (`NccWorker.HostTrace`). With "exclude"
@@ -2759,6 +2773,7 @@ defmodule NccWorker.Worker do
       releases: releases,
       hex_home: System.get_env("HEX_HOME"),
       makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
+      native_side: Keyword.get(opts, :native_side) == true,
       package: package_name
     )
   end
@@ -3017,6 +3032,7 @@ defmodule NccWorker.Worker do
       BuildSelection.static_rules(project_dir, package_name, scan,
         tarball: tarball,
         makefile_rule2: Keyword.get(opts, :makefile_rule2) == true,
+        native_side: Keyword.get(opts, :native_side) == true,
         manager: portability[:manager],
         built_priv: built_priv,
         build_path: build_path

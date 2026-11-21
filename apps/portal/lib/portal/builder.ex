@@ -230,9 +230,13 @@ defmodule Portal.Builder do
   The `NCC_INPUT.judge` options for a build of `mode`: for a toolchain
   build (pinned toolchain builds included), `"makefile_rule2" => true`
   while `NCC_JUDGE_MAKEFILE_RULE2=1` (`:judge_makefile_rule2`, precompiled
-  judge refinements, item 1), and `"foreign_priv" => true` while the
-  `foreign_priv_enabled` setting is on (foreign priv spec 3.1, gate 1);
-  nil when neither, which the worker reads as off. Remote builds never run
+  judge refinements, item 1), `"foreign_priv" => true` while the
+  `foreign_priv_enabled` setting is on (foreign priv spec 3.1, gate 1),
+  and `"native_side" => true` while `NCC_JUDGE_NATIVE_SIDE=1`
+  (`:judge_native_side`: a natively built dependency's native side set
+  apart from its beams, and rule 2's finer target and native-tool
+  reading, `NccWorker.Portability`); nil when none, which the worker reads
+  as off. Remote builds never run
   toolchain builds, so the builder API sends none.
   """
   @spec judge_input(String.t() | nil) :: map() | nil
@@ -240,6 +244,7 @@ defmodule Portal.Builder do
     %{}
     |> put_on("makefile_rule2", config(:judge_makefile_rule2, false) == true)
     |> put_on("foreign_priv", Portal.Precompiled.ForeignPriv.enabled?())
+    |> put_on("native_side", config(:judge_native_side, false) == true)
     |> case do
       options when map_size(options) == 0 -> nil
       options -> options
