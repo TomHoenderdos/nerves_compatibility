@@ -103,20 +103,20 @@ defmodule NccWorker.TracerFixtures do
   `contents` (`%{path => body}`) is given, a `contents.tar.gz` of them: the
   judge reads a rebar3 dependency's `rebar.config` from there. `meta` adds
   `metadata.config` terms, such as `{"build_tools", ["mix"]}`, which rule 2
-  (`NccWorker.NativeBuild`) reads the manager from.
+  (`NccWorker.NativeBuild`) reads the manager from; a `{"version", v}` there
+  is the release's version instead of 0.1.0.
   """
   @spec hex_release(String.t(), String.t(), [String.t()], %{String.t() => binary()}, [tuple()]) ::
           {String.t(), map()}
   def hex_release(home, app, files, contents \\ %{}, meta \\ []) do
-    dir = Path.join(home, "packages/hexpm")
-    File.mkdir_p!(dir)
-
     {version, meta} =
       case List.keytake(meta, "version", 0) do
         {{"version", version}, rest} -> {version, rest}
         nil -> {"0.1.0", meta}
       end
 
+    dir = Path.join(home, "packages/hexpm")
+    File.mkdir_p!(dir)
     tar = Path.join(dir, "#{app}-#{version}.tar")
     terms = [{"name", app}, {"version", version}, {"files", files}] ++ meta
 
