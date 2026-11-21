@@ -23,13 +23,25 @@ defmodule Portal.Workers.UpdateCheckTest do
   # Stands in for `Portal.HexRegistry`. The worker runs in the test process, so
   # the canned answer can live in the process dictionary.
   defmodule StubRegistry do
-    def snapshot do
-      send(self(), :asked_registry)
+    # The worker asks for every version (`all_versions: true`); a row without
+    # its own list has just its latest one.
+    def snapshot(opts \\ []) do
+      send(self(), {:asked_registry, opts})
 
       case Process.get(:hex_answer, {:ok, []}) do
         {:ok, rows} -> {:ok, rows |> Enum.with_index() |> Enum.map(&normalise/1)}
         other -> other
       end
+    end
+
+    defp normalise({{name, version, updated_at, versions}, _index}) do
+      %{
+        name: name,
+        latest_version: version,
+        updated_at: updated_at,
+        versions: versions,
+        retired: []
+      }
     end
 
     # Timestamps descend with list position, so the first row written in a test
@@ -40,12 +52,20 @@ defmodule Portal.Workers.UpdateCheckTest do
       %{
         name: name,
         latest_version: version,
-        updated_at: DateTime.add(DateTime.utc_now(), -index, :second)
+        updated_at: DateTime.add(DateTime.utc_now(), -index, :second),
+        versions: [version],
+        retired: []
       }
     end
 
     defp normalise({{name, version, updated_at}, _index}),
-      do: %{name: name, latest_version: version, updated_at: updated_at}
+      do: %{
+        name: name,
+        latest_version: version,
+        updated_at: updated_at,
+        versions: [version],
+        retired: []
+      }
   end
 
   defp hex_says(rows), do: Process.put(:hex_answer, {:ok, rows})
@@ -250,7 +270,7 @@ defmodule Portal.Workers.UpdateCheckTest do
       assert :ok = perform_job(UpdateCheck, %{})
       assert queued_packages() == []
       # Disabled has to mean "sends hex.pm nothing", not "throws the answer away".
-      refute_received :asked_registry
+      refute_received {:asked_registry, _}
     end
 
     # Not the shipped default, which is on -- this is the config block having
@@ -262,7 +282,7 @@ defmodule Portal.Workers.UpdateCheckTest do
       Application.delete_env(:portal, UpdateCheck)
 
       assert :ok = perform_job(UpdateCheck, %{})
-      refute_received :asked_registry
+      refute_received {:asked_registry, _}
     end
 
     test "runs the check once enabled" do
@@ -630,6 +650,66 @@ defmodule Portal.Workers.UpdateCheckTest do
 
       assert {:ok, %{nominated: 0}} = UpdateCheck.run(dry_run: true)
       assert hex_latest("alpha") == nil
+    end
+
+    # earmark: Hex lists 1.5.0-pre1 last, so the registry's latest is a
+    # prerelease we already tested and nothing drifts, while 1.4.49, the
+    # release a fresh `mix deps.get` resolves, never earned a build.
+    test "the newest stable release behind a newer prerelease is nominated" do
+      passing_package("alpha", "2.0.0-rc.1")
+      now = DateTime.utc_now()
+      hex_says([{"alpha", "2.0.0-rc.1", now, ["1.4.0", "1.4.1", "2.0.0-rc.1"]}])
+
+      assert {:ok, %{moved: 0, enqueued: 0, nominated: 1}} = UpdateCheck.run()
+      assert hex_latest("alpha") == "1.4.1"
+
+      # Nothing new on the next run, and it stays until a build of it exists.
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == "1.4.1"
+
+      Portal.PrecompiledFixtures.ingest_toolchain_build("alpha", "1.4.1")
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert hex_latest("alpha") == nil
+    end
+
+    test "a hidden stable release with a toolchain build, or of a native package, is not nominated" do
+      passing_package("built", "2.0.0-rc.1")
+      Portal.PrecompiledFixtures.ingest_toolchain_build("built", "1.4.1")
+      native_passing_package("native", "2.0.0-rc.1")
+      passing_package("only_pre", "0.1.0-rc.2")
+      now = DateTime.utc_now()
+
+      hex_says([
+        {"built", "2.0.0-rc.1", now, ["1.4.1", "2.0.0-rc.1"]},
+        {"native", "2.0.0-rc.1", now, ["1.4.1", "2.0.0-rc.1"]},
+        {"only_pre", "0.1.0-rc.2", now, ["0.1.0-rc.1", "0.1.0-rc.2"]}
+      ])
+
+      assert {:ok, %{nominated: 0}} = UpdateCheck.run()
+      assert Enum.map(~w(built native only_pre), &hex_latest/1) == [nil, nil, nil]
+    end
+  end
+
+  describe "a second release the same day" do
+    # `Backfill` is unique per package for a day; without the version in its
+    # args, attesto 2.31.0 waited a day behind the 2.30.0 queued that morning.
+    test "queues its own rebuild" do
+      package("alpha", "1.0.0")
+      hex_says([{"alpha", "1.1.0"}])
+      assert {:ok, %{enqueued: 1}} = UpdateCheck.run()
+
+      hex_says([{"alpha", "1.2.0"}])
+      assert {:ok, %{moved: 1, enqueued: 1}} = UpdateCheck.run()
+
+      assert backfill_jobs() |> Enum.map(& &1.args["version"]) |> Enum.sort() ==
+               ["1.1.0", "1.2.0"]
+    end
+
+    test "the same release is still queued once" do
+      package("alpha", "1.0.0")
+      hex_says([{"alpha", "1.1.0"}])
+      assert {:ok, %{enqueued: 1}} = UpdateCheck.run()
+      assert {:ok, %{moved: 1, enqueued: 0}} = UpdateCheck.run()
     end
   end
 end

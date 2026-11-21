@@ -182,9 +182,9 @@ defmodule Portal.Workers.UpdateCheck do
   """
   @spec run(keyword()) :: {:ok, map()} | {:error, term()}
   def run(opts \\ []) do
-    case registry_source().snapshot() do
+    case registry_source().snapshot(all_versions: true) do
       {:ok, registry} ->
-        {moved, patch_only} = moved(registry)
+        {moved, patch_only, hidden} = moved(registry)
         dry_run? = Keyword.get(opts, :dry_run, false)
 
         enqueued =
@@ -199,7 +199,7 @@ defmodule Portal.Workers.UpdateCheck do
             0
           else
             clear_stale()
-            nominate(patch_only)
+            nominate(patch_only ++ hidden)
           end
 
         Logger.info(
@@ -236,11 +236,13 @@ defmodule Portal.Workers.UpdateCheck do
     # The whole catalogue, not a filtered subset. Passing ~22,000 registry names
     # to the database as an `IN` list would be absurd; reading our own 2,500 rows
     # and intersecting in memory is bounded by the size of the catalogue.
-    drifted =
+    packages =
       Package
-      |> Ash.Query.select([:id, :name, :latest_version, :native_components])
+      |> Ash.Query.select([:id, :name, :latest_version, :hex_latest_version, :native_components])
       |> Ash.read!(domain: Portal.Catalog)
-      |> Enum.flat_map(fn package ->
+
+    drifted =
+      Enum.flat_map(packages, fn package ->
         with {:ok, entry} <- Map.fetch(by_name, package.name),
              true <- LatestRun.newer?(entry.latest_version, package.latest_version) do
           [{package, entry}]
@@ -257,7 +259,35 @@ defmodule Portal.Workers.UpdateCheck do
     {rebuild, patch_only} =
       Enum.split_with(drifted, &rebuild?(elem(&1, 0), elem(&1, 1), statuses))
 
-    {Enum.map(rebuild, &elem(&1, 1)), patch_only}
+    {Enum.map(rebuild, &elem(&1, 1)), patch_only, hidden_stable(packages, by_name)}
+  end
+
+  # The newest stable release of each tracked pure package whose registry
+  # lists a newer prerelease after it, as a nomination candidate: earmark
+  # lists 1.5.0-pre1 last, so the drift above compares that prerelease with
+  # the one on record and sees nothing, while 1.4.49, which a fresh
+  # `mix deps.get` resolves, never earns a run. `nominate/1` skips one a
+  # toolchain build of exists. A retired release still counts: Hex resolves
+  # it (`mix hex.retire`). A native package is left out, as for a patch
+  # release: nothing builds its nomination.
+  defp hidden_stable(packages, by_name) do
+    for package <- packages,
+        not is_nil(package.latest_version),
+        not native?(package),
+        {:ok, entry} <- [Map.fetch(by_name, package.name)],
+        stable = newest_stable(entry),
+        stable not in [nil, entry.latest_version, package.latest_version],
+        package.hex_latest_version != stable,
+        do: {package, %{entry | latest_version: stable}}
+  end
+
+  defp newest_stable(entry) do
+    stable =
+      for version <- Map.get(entry, :versions) || [entry.latest_version],
+          {:ok, %Version{pre: []} = parsed} <- [Version.parse(version || "")],
+          do: parsed
+
+    if stable != [], do: stable |> Enum.max(Version) |> to_string()
   end
 
   # The registry's latest version of each package whose release earns no
@@ -406,8 +436,10 @@ defmodule Portal.Workers.UpdateCheck do
   # Both land in `Backfill`, but a stale result on a package we already display
   # outranks a package we have never tested -- see `Portal.ScanRequests` for the
   # priority table and why the two must not share a number.
-  defp enqueue({%{name: name}, delay}) do
-    case %{package: name, source: "update_check"}
+  # The version is for `Backfill`'s uniqueness only: a second release the
+  # same day is a new job, while the same release offered again is not.
+  defp enqueue({%{name: name, latest_version: version}, delay}) do
+    case %{package: name, source: "update_check", version: version}
          |> Backfill.new(schedule_in: delay)
          |> Oban.insert() do
       # Already queued by an earlier run inside `Backfill`'s uniqueness period.

@@ -58,7 +58,13 @@ defmodule Portal.Workers.Backfill do
     # A bulk rebuild names its sweep, so a second sweep the same day is a new
     # job. Every other job carries `sweep_id: nil` (`new/2` below) and stays
     # deduplicated per package per day against the other ordinary jobs.
-    unique: [keys: [:package, :sweep_id], period: 86_400]
+    #
+    # `Portal.Workers.UpdateCheck` also names the release it saw (`version`),
+    # so a package that releases twice in a day is queued again for the
+    # second one rather than a day later. A job without a version, any other
+    # caller's, dedupes against every job of its package as before. Nothing
+    # else reads it: the request resolves the package's latest release.
+    unique: [keys: [:package, :sweep_id, :version], period: 86_400]
 
   require Logger
 

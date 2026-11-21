@@ -1911,7 +1911,8 @@ defmodule Portal.Catalog do
   # that also qualifies on a run is one row, with that run's `finished_at`.
   # So does a package's `hex_latest_version` (#105), the registry's latest
   # release `Portal.Workers.UpdateCheck` nominates when a patch release of a
-  # passing package earned no full run, for a package known to be pure as
+  # passing package earned no full run, or the newest stable release a newer
+  # prerelease hides from it, for a package known to be pure as
   # `version_backfill_packages/1` reads it: a new build like a run's version,
   # not a backfill, whatever the package's downloads.
   # `backfill` marks a version only the backfill nominates: its `error` rows
