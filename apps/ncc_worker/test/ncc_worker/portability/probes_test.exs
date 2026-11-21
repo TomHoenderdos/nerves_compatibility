@@ -790,6 +790,11 @@ defmodule NccWorker.Portability.ProbesTest do
             {put_in(probe["caller"]["arity"], 3), c},
             {probe,
              %{c | hex: {nil, %{"plug" => %{name: "plug", version: "1.4.5", checksum: "x"}}}}},
+            # Newer than the newest reviewed release (round 3, R2-4).
+            {probe,
+             %{c | hex: {nil, %{"plug" => %{name: "plug", version: "1.20.5", checksum: "x"}}}}},
+            {probe,
+             %{c | hex: {nil, %{"plug" => %{name: "plug", version: "1.21.0", checksum: "x"}}}}},
             {probe, %{c | modules: Map.put(c.modules, "Elixir.Plug.Builder", "pkg")}},
             {%{probe | "mfa" => "erlang:module_loaded/1"}, c}
           ] do
@@ -823,8 +828,11 @@ defmodule NccWorker.Portability.ProbesTest do
         )
 
       assert Probes.decide(probe, c, "pkg") == :ignore
-      # 1.1 has no such probe; a release older than the reviewed one refuses.
+      # 1.1 has no such probe; a release older than the reviewed one refuses,
+      # and so does one newer than the newest reviewed (round 3, R2-4).
       assert {:refuse, _} = Probes.decide(probe, %{c | hex: release.("1.1.34")}, "pkg")
+      assert {:refuse, _} = Probes.decide(probe, %{c | hex: release.("1.2.16")}, "pkg")
+      assert {:refuse, _} = Probes.decide(probe, %{c | hex: release.("1.3.0")}, "pkg")
     end
 
     # An installed OTP module on the owner's path is the same: listed, it

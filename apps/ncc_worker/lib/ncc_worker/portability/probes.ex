@@ -225,10 +225,13 @@ defmodule NccWorker.Portability.Probes do
   # `function_exported?(state.tag_handler, :annotate_caller, 3)` (the same
   # body in 1.2.0 to 1.2.15, read 2026-11-21; 1.1 calls annotate_caller/2
   # without asking). So every dependent's ~H components.
+  # Each with the oldest and the newest release reviewed (round 3, R2-4): a
+  # newer release refuses until someone reads its body again and raises the
+  # ceiling.
   @reviewed_direct_calls [
-    {"Elixir.Plug.Builder", "init_module_plug", 4, "plug", "1.5.0"},
+    {"Elixir.Plug.Builder", "init_module_plug", 4, "plug", {"1.5.0", "1.20.4"}},
     {"Elixir.Phoenix.LiveView.TagEngine.Compiler", "maybe_anno_caller", 5, "phoenix_live_view",
-     "1.2.0"}
+     {"1.2.0", "1.2.15"}}
   ]
   # The stacks the tracer judged (`NccWorker.Portability.Events`).
   @extents ~w(frame dispatcher truncated lineage)
@@ -480,8 +483,8 @@ defmodule NccWorker.Portability.Probes do
   end
 
   # The call site, by its frame (the probe's caller), the application its
-  # module must be built by, in the owner's closure, and the oldest locked
-  # release of it reviewed.
+  # module must be built by, in the owner's closure, and the locked release
+  # of it within the reviewed range.
   defp reviewed_direct_call?(
          %{
            "mfa" => "erlang:function_exported/3",
@@ -490,18 +493,18 @@ defmodule NccWorker.Portability.Probes do
          ctx,
          owner
        ) do
-    Enum.any?(@reviewed_direct_calls, fn {rm, rf, ra, app, oldest} ->
+    Enum.any?(@reviewed_direct_calls, fn {rm, rf, ra, app, range} ->
       {m, f, a} == {rm, rf, ra} and Map.get(ctx.modules, m) == app and
-        app in Context.closure_of(ctx, owner) and reviewed_release?(ctx, app, oldest)
+        app in Context.closure_of(ctx, owner) and reviewed_release?(ctx, app, range)
     end)
   end
 
   defp reviewed_direct_call?(_event, _ctx, _owner), do: false
 
-  defp reviewed_release?(%Context{hex: {_home, releases}}, app, oldest) do
+  defp reviewed_release?(%Context{hex: {_home, releases}}, app, {oldest, newest}) do
     with %{version: v} when is_binary(v) <- Map.get(releases, app),
          {:ok, version} <- Version.parse(v) do
-      Version.compare(version, oldest) != :lt
+      Version.compare(version, oldest) != :lt and Version.compare(version, newest) != :gt
     else
       _ -> false
     end
