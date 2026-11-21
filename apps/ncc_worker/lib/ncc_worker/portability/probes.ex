@@ -161,22 +161,35 @@ defmodule NccWorker.Portability.Probes do
   outside the closure answers differently there than on the builder (jose
   1.11.12's `Code.ensure_loaded?(Poison)`, which compiles `JOSE.Poison` only
   where poison is visible): it refuses as `compile-time probe of a
-  dependency outside the closure: <module> via <function>`, also when a
-  closure dependency declares the module's package as an optional
-  dependency that this build lacks. From a dependency's `mix.exs` such a
-  probe refuses whatever the closure holds. The toolchain's own lookups of
-  such a module (the expander resolving an import, a struct or a require,
-  the behaviour check) reach only the compile's errors and warnings and are
-  no concern.
+  dependency outside the closure: <module> via <function>`. Not when a
+  member of the owner's closure declares the module's package (or the
+  probed application) as a dependency this build lacks, optional or not
+  (`Context` `declared`, from `NccWorker.Portability.Declared`): the client
+  serves a build only to a project whose package closure is the build's,
+  and Mix makes a present optional dependency a child of its declarer, so a
+  user who has it never gets this build (jason's `Decimal`, swoosh's
+  `Plug`). A declared dependency whose tarball neither the run's Hex cache
+  holds nor the pre-judge fetch got owns no known module, so its probe
+  refuses. From a dependency's `mix.exs` such a probe refuses whatever the
+  closure holds or declares. The toolchain's own lookups of such a module
+  (the expander resolving an import, a struct or a require, the behaviour
+  check) reach only the compile's errors and warnings and are no concern.
 
   A probe of a module the owner's path holds (an installed application's on
-  it, or a closure dependency's) answers the same pruned or not when it
-  asks whether the module can be found (the path probes); whether it is
-  loaded now depends on what other compile-time code in the same VM called
-  into it, which the user's project decides. The package's own loaded-now
+  it, every-path applications' included, or a closure dependency's) answers
+  the same pruned or not when it asks whether the module can be found (the
+  path probes); whether it is loaded now depends on what other compile-time
+  code in the same VM called into it, which the user's project decides
+  (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an
+  earlier dependency's compile used URI). The package's own loaded-now
   probe of such a module therefore refuses as `compile-time probe of
   whether a module is loaded: <module> via <function>`, unless the same
-  process ensure-loaded it earlier (`ensured`).
+  process ensure-loaded it earlier (`ensured`), the module is the owner's
+  own (it exists on neither side before the owner's compile), or the probe
+  comes right after a reviewed call site's own direct call of the module
+  (`@reviewed_direct_calls`: plug's `init_module_plug/4`, LiveView's tag
+  engine). A module loaded before the tracer started, or by Mix in every
+  compile, is loaded either way and never traced.
 
   An event this module cannot read could not be judged.
   """

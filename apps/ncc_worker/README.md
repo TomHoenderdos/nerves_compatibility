@@ -625,10 +625,21 @@ checker's undefined-module hint. `:code.load_file/1` is a module path probe; `:c
 `:code.prepare_loading/1` are host reads. A probe the package itself makes of a module no installed application holds refuses as
 `compile-time probe of a dependency outside the closure: <module> via <function>` unless a dependency of the prober's
 closure builds it: under Mix.install every installed dependency's `ebin` is on the code path (jose 1.11.12 compiles
-`JOSE.Poison` only `if Code.ensure_loaded?(Poison)`). It refuses also when a closure dependency declares the module's
-package as an optional dependency the build lacks. The package's own probe of whether a module of its path is loaded
-now (`function_exported?/3`, `:code.is_loaded/1`) refuses as `compile-time probe of whether a module is loaded: ` unless
-the same process ensure-loaded it first. The tracer watches every module on disk under
+`JOSE.Poison` only `if Code.ensure_loaded?(Poison)`). It does not when a member of the prober's closure declares the
+module's package (or the probed application) as a dependency the build lacks: the client serves a build only to a
+project whose package closure is the build's, and Mix makes a present optional dependency a child of its declarer.
+The judge learns those packages' modules from their tarballs in the run's Hex cache, fetching the missing ones with
+`mix hex.package fetch` after the trace (at most 64, 120 s; `NCC_DECLARED_FETCH=0` turns the fetch off, and an
+unfetched package owns no known module, so its probe refuses; `trace_stats.declared_fetch`). The package's own probe
+of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path
+application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier
+dependency used URI), refuses as `compile-time probe of whether a module is loaded: ` unless the same process
+ensure-loaded it first, the module is the package's own, or the probe follows a reviewed call site's own direct call
+of the module (plug's `Plug.Builder.init_module_plug/4` from 1.5.0, phoenix_live_view's tag engine from 1.2.0). Only a
+module loaded before the tracer started, or by Mix in every compile, is never traced. The collector writes no probe
+the judge would ignore (a toolchain function's, or one the code server makes inside another), and a toolchain
+`code:ensure_loaded/1` once per process, module and window without frames (`trace_stats.dropped_probes`). The tracer
+watches every module on disk under
 the OTP and Elixir installs that it did not load and that was not loaded before it started, and names the application
 on the event (`otp_app`); every probe function counts, the loaded-now ones included. From a dependency's `mix.exs`
 it refuses whatever the dependency lists (` in mix.exs`): `compile.all` asks its `application/0` on the code path the
