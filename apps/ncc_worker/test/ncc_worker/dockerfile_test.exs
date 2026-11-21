@@ -33,6 +33,22 @@ defmodule NccWorker.DockerfileTest do
     assert File.read!(@toolchain_dockerfile) =~ ~r/mkdir -p[^\n]*\s\/nerves-cache(\s|$)/m
   end
 
+  # S4: a build that may relocate gets per-run binds at the two extra roots'
+  # bases (`Compatibility.Relocation.bases/0`); both images pre-create them,
+  # as every other mount point, since the root is read-only.
+  test "both images pre-create the relocation mount points", %{text: text} do
+    %{second: second, third: third} = Compatibility.Relocation.bases()
+
+    for {name, body} <- [
+          {"Dockerfile", text},
+          {"Dockerfile.toolchain", File.read!(@toolchain_dockerfile)}
+        ],
+        target <- [second, third] do
+      assert Regex.match?(~r/mkdir -p[^\n]*\s#{Regex.escape(target)}(\s|$)/m, body),
+             "#{name} does not mkdir -p #{target}"
+    end
+  end
+
   # The host mounts /hex-cache read-only only for an image that says its
   # worker seeds a per-run HEX_HOME (`Compatibility.Builder.Argv`).
   test "both images carry the seeded Hex cache label", %{text: text} do

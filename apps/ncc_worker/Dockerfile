@@ -90,7 +90,9 @@ LABEL ncc.hex-cache=seeded
 # --read-only; runc creates mount points before the root goes read-only, so
 # a missing one would probably still work, but pre-creating costs nothing
 # and keeps the set of mounts in one place. /tmp exists in the base image.
-RUN sudo mkdir -p /work /out /files /tmp /hex-cache /nerves-cache /home/nerves/.cache /build-cache
+# /home/ncc-relocate and /Users only for a toolchain build that may relocate
+# (S4, Compatibility.Relocation.bases/0).
+RUN sudo mkdir -p /work /out /files /tmp /hex-cache /nerves-cache /home/nerves/.cache /build-cache /home/ncc-relocate /Users
 
 # Create app directory
 WORKDIR /app

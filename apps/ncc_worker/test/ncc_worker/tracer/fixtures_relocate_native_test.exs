@@ -171,7 +171,7 @@ defmodule NccWorker.Tracer.FixturesRelocateNativeTest do
 
   defp run(root, proj, app, releases, home) do
     Portability.run(proj, app,
-      env: TracerFixtures.env(proj),
+      env: TracerFixtures.container_env(proj, root),
       releases: releases,
       hex_home: home,
       mode: :judge,

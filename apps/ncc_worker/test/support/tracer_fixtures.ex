@@ -34,6 +34,30 @@ defmodule NccWorker.TracerFixtures do
     ]
   end
 
+  @doc """
+  `env/1` with the container's `HOME` (`/home/nerves`) as `<root>/home/nerves`,
+  so a relocation's extra roots under `relocate_root: root` sit beside it as
+  they do in the container (the umbrella re-review's Q2): `HOME` is one of
+  the roots R2 searches. `MIX_HOME` and the asdf data dir stay this VM's, so
+  the fixtures' `elixir` and Mix's archives are found.
+  """
+  @spec container_env(String.t(), String.t()) :: [{String.t(), String.t()}]
+  def container_env(proj, root) do
+    home = Path.join(root, "home/nerves")
+    File.mkdir_p!(home)
+
+    asdf =
+      System.get_env("ASDF_DATA_DIR") ||
+        Path.join(System.user_home!(), ".asdf")
+
+    env(proj) ++
+      [
+        {"HOME", home},
+        {"MIX_HOME", Mix.Utils.mix_home()},
+        {"ASDF_DATA_DIR", asdf}
+      ]
+  end
+
   @spec trace(String.t(), [String.t()], keyword()) :: map()
   def trace(proj, packages, opts \\ []) do
     root = Path.dirname(proj)

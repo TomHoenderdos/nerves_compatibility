@@ -91,6 +91,27 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
         """),
       "fx_user" =>
         lib("fx_user", "defmodule FxUser do\n  use FxMacro\nend\n", %{deps: ["fx_macro"]}),
+      # The umbrella re-review's Q1: a holder, and beside it a module that
+      # holds no path but bakes a test of it against a constant; a dependent
+      # reads that test at compile time, through no holder.
+      "fx_flag" =>
+        lib("fx_flag", """
+        defmodule FxFlag do
+          @dir __DIR__
+          def dir, do: @dir
+        end
+
+        defmodule FxFlag.Mac do
+          @mac String.contains?(__DIR__, "/Users/")
+          def mac?, do: @mac
+        end
+        """),
+      "fx_flag_user" =>
+        lib(
+          "fx_flag_user",
+          "defmodule FxFlagUser do\n  @mac FxFlag.Mac.mac?()\n  def mac?, do: @mac\nend\n",
+          %{deps: ["fx_flag"]}
+        ),
       # The path inside a binary the code builds: the string table.
       "fx_strt" =>
         lib(
@@ -99,7 +120,7 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
         )
     }
 
-    top = ~w(fx_fine fx_quiet fx_hash fx_top fx_strt fx_user fx_md5 fx_len)
+    top = ~w(fx_fine fx_quiet fx_hash fx_top fx_strt fx_user fx_md5 fx_len fx_flag fx_flag_user)
     proj = TracerFixtures.project(Path.join(root, "p"), top, deps)
     deps_from_env!(proj)
 
@@ -132,7 +153,7 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
 
   defp run(root, proj, app) do
     Portability.run(proj, app,
-      env: TracerFixtures.env(proj),
+      env: TracerFixtures.container_env(proj, root),
       releases: %{},
       mode: :judge,
       trace_dir: Path.join(root, "trace-#{app}"),
@@ -171,7 +192,8 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
     n = String.to_integer(n)
     base = Context.realpath(ctx.root)
     at = &Map.take(&1, ["deps", "build"])
-    assert at.(Relocation.second_layout(Path.join(base, "home/nerves"), n)) == second
+    assert at.(Relocation.second_layout(Path.join(base, "home/ncc-relocate"), n)) == second
+    refute String.starts_with?(second["deps"], Path.join(base, "home/nerves"))
     assert at.(Relocation.third_layout(Path.join(base, "Users"), n)) == third
     refute File.exists?(Path.join(base, "Users/Ncc-Relocate #{n}"))
 
@@ -199,17 +221,43 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
     assert :binary.match(moved, "/home/u/app/deps/fx_fine/c_include") != :nomatch
   end
 
-  test "a dependent that never calls the holder at compile time passes as it is", ctx do
+  # The umbrella re-review's Q1: a dependent that passed because a
+  # dependency was held rests on the same residual, so it carries the same
+  # record (the three roots), with nothing to rewrite in its own beams, and
+  # is stored, served and revoked as a relocated build.
+  test "a dependent that never calls the holder at compile time passes, relocated", ctx do
     v = ctx.verdicts["fx_quiet"]
     assert %{status: :pass, reason: nil} = v, log(ctx, "fx_quiet")
     assert stat(v) == "dependencies"
-    refute Map.has_key?(v, :relocation)
+    assert %{"files" => [], "second" => _, "third" => _} = v.relocation
+    assert Relocation.record_problem(v.relocation, ["ebin/Elixir.FxQuiet.beam"]) == nil
   end
 
-  test "a dependent that expands a macro of a module R2 allows passes as it is", ctx do
+  # Its line table names fx_macro's file by the builder's path (a `keep`
+  # location R2 allows): the record rewrites it to the user's.
+  test "a dependent that expands a macro of a module R2 allows passes, relocated", ctx do
     v = ctx.verdicts["fx_user"]
     assert %{status: :pass, reason: nil} = v, log(ctx, "fx_user")
     assert stat(v) == "dependencies"
+
+    assert %{"files" => [%{"path" => "ebin/Elixir.FxUser.beam", "occurrences" => occs}]} =
+             v.relocation
+
+    assert Enum.all?(occs, &(&1["chunk"] == "Line"))
+  end
+
+  # The umbrella re-review's Q1, its reproduction: the third root, built for
+  # every hold, refuses the dependency's test of its path against
+  # `/Users/`, so the dependent stays refused and is never a pass.
+  test "a dependent that reads a dependency's test of its path stays refused", ctx do
+    flag = ctx.verdicts["fx_flag"]
+    assert flag.status == :skip, log(ctx, "fx_flag")
+    assert stat(flag) =~ "fx_flag: Elixir.FxFlag.Mac.beam: AtU8 differs at another root"
+
+    v = ctx.verdicts["fx_flag_user"]
+    assert v.status == :skip, log(ctx, "fx_flag_user")
+    refute Map.has_key?(v, :relocation)
+    assert stat(v) =~ "fx_flag: Elixir.FxFlag.Mac.beam: AtU8 differs at another root"
   end
 
   # The umbrella review's B2: a holder's md5, read at compile time, is a
@@ -248,10 +296,12 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
                "fx_mid (calls a build-path holder at compile time: FxFine.include_dir/0))"
   end
 
+  # The umbrella re-review's Q3: a verdict with nothing held still says
+  # relocation was on.
   test "a path in the string table is not held for a second build", ctx do
     v = ctx.verdicts["fx_strt"]
     assert v.status == :skip
     assert v.reason =~ "bakes the build path: Elixir.FxStrt string table"
-    assert stat(v) == nil
+    assert stat(v) == "on"
   end
 end

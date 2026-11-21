@@ -83,6 +83,12 @@ defmodule NccWorker.Portability do
   `"native_side"`, `"on"` or `"off"`, on the toolchain judge. No judge
   revision: the flag is the record.
 
+  Likewise `trace_stats["relocate"]` on every toolchain verdict: `"off"`
+  without `relocate: true` (`NCC_INPUT.judge.relocate`), `"on"` with it
+  when nothing was held, and otherwise what `NccWorker.Portability.Relocate`
+  decided (`"relocated"`, `"dependencies"`, `"refused: <why>"`), so a row
+  shows which way it was judged (the umbrella re-review's Q3).
+
   The package's own compile writing into its own build `priv`, and the
   probes `File.mkdir_p/1` makes of the directories above it (`Events`'
   `priv_writes` and `priv_probes`, judge revision 21), refuse nothing here,
@@ -934,7 +940,11 @@ defmodule NccWorker.Portability do
 
       if target(opts),
         do: target_verdict_of(facts),
-        else: facts |> verdict_of() |> put_stat("native_side", on_off(native_side?(opts)))
+        else:
+          facts
+          |> verdict_of()
+          |> put_stat("native_side", on_off(native_side?(opts)))
+          |> put_stat("relocate", on_off(Relocate.enabled(opts) != false))
     end)
   rescue
     e -> not_judged("judge failed: " <> Exception.message(e))

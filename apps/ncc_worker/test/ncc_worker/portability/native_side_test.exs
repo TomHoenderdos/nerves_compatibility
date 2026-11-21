@@ -217,6 +217,16 @@ defmodule NccWorker.Portability.NativeSideTest do
              judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts)
   end
 
+  # S4, the umbrella re-review's Q3: every toolchain verdict also says
+  # whether relocation was on, as it says `native_side`.
+  test "every toolchain verdict records relocate on or off", ctx do
+    assert %{observations: %{"trace_stats" => %{"relocate" => "off"}}} =
+             judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts)
+
+    assert %{observations: %{"trace_stats" => %{"relocate" => "on"}}} =
+             judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ [relocate: true])
+  end
+
   test "the tool's own activity in a dependency's window is set apart", ctx do
     v = judge(ctx.proj, report(ctx.proj, tool_run()), ctx.opts ++ @on)
     assert %{status: :pass, reason: nil, observations: obs} = v, inspect(v.observations)

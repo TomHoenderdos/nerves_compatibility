@@ -18,15 +18,17 @@ defmodule NccWorker.Portability.Relocate do
       are that app's holders. A held verdict is the refusal it was, with
       `:relocate` holding what the pass would have said; a caller that
       judges a trace alone (`judge/5`) never publishes it;
-    * `settle/6` copies the project to extra roots and runs the traced
+    * `settle/6` copies the project to two extra roots and runs the traced
       judge compile of the package's closure again at each, the first
       build's tree snapshot passed on, with call patterns on the holders
       once each one's window has closed (`:ncc_tracer`'s `root_holder`
       channel). The second root (`Compatibility.Relocation.second_layout/2`)
-      is under `/home/nerves`, in its `.cache/mix/installs`; the third
-      (`third_layout/2`) is under `/Users`, a per-run scratch dir the portal
-      binds there for a build that may relocate (`Portal.Builder`), and is
-      built only when the package's own beams hold the path. The three
+      is under `/home/ncc-relocate`, in its `.cache/mix/installs`, under
+      `/home/` but outside the container's `HOME`, which is one of R2's
+      roots (the umbrella re-review's Q2); the third (`third_layout/2`) is
+      under `/Users`. Both are per-run scratch dirs the portal binds there
+      for a build that may relocate (`Portal.Builder`), and both run for
+      every hold (the umbrella re-review's Q1). The three
       roots differ in length and depth, case, spaces, project dir name and
       the order of the deps and build paths, and hold between them the
       words user paths hold (a home's `.cache/mix/installs`, `Library`,
@@ -51,27 +53,35 @@ defmodule NccWorker.Portability.Relocate do
       not held may differ only where R2 already allows a path (a `keep`
       location, a line table's file name), and is served as it was built.
 
-  Then the verdict is the pass it held. When the package itself was held it
-  carries `relocation`: the first build's `deps` and `build` paths, the
-  second and third builds' (`second`, `third`, from which the client takes
-  the envelope of paths it relocates to) and, per beam of its `ebin` that
-  needs a rewrite, `%{"path" => "ebin/<file>", "occurrences" => [...]}`. A
-  pass that only needed its dependencies held carries none: its own beams
-  hold no path, and its compile never called a holder.
+  Then the verdict is the pass it held, every beam of the package's own
+  `ebin` compiled from its dir under the first deps path (its `CInf`
+  source, `Relocation.compiled_in_problem/3`). It carries `relocation`: the
+  first build's `deps` and `build` paths, the second and third builds'
+  (`second`, `third`, from which the client takes the envelope of paths it
+  relocates to) and, per beam of its `ebin` that needs a rewrite,
+  `%{"path" => "ebin/<file>", "occurrences" => [...]}`. That is so both
+  when the package itself was held and when only its dependencies were: a
+  dependent's own beams often need no rewrite (`files` empty), but its
+  pass rests on the same residual, so the portal stores, gates and revokes
+  it as a relocated build and the client's envelope holds it.
   `trace_stats["relocate"]` says which (`"relocated"`, `"dependencies"`), or
   why it stayed refused (`"refused: <why>"`), and the verdict is then the
-  first build's refusal, unchanged. Each extra root's run dir is removed
-  either way. Never raises.
+  first build's refusal, unchanged; `NccWorker.Portability.judge/5` writes
+  `"on"` or `"off"` first, so every toolchain verdict says which way it was
+  judged. Each extra root's run dir is removed either way. Never raises.
 
   What the roots cannot show, the residual: a compile-time test of the path
   against a constant that none of the three roots contains (a prefix such
   as `/opt/` or `/srv/`, a word no root holds), or any test that answers the
-  same at all three roots and differently at the user's path. The client
-  relocates only to paths inside the envelope the three roots span (their
-  characters, between their lengths and depths), which bounds tests of
-  length, depth and characters, not tests of which words a path holds.
-  Today R2 refuses every build whose beams hold the path, so this residual
-  is new exposure that S4 brings, for relocated builds only. `Dbgi` keeps
+  same at all three roots and differently at the user's path. For a
+  dependent that passed because a dependency was held, that path is the
+  dependency's, and the test sits in the dependency's code or the
+  dependent's. The client relocates only to paths inside the envelope the
+  three roots span (their characters, between their lengths and depths),
+  which bounds tests of length, depth and characters, not tests of which
+  words a path holds. Today R2 refuses every build whose beams hold the
+  path, and R3 every dependent of one, so this residual is new exposure that
+  S4 brings, for relocated builds and such dependents only. `Dbgi` keeps
   the first build's paths: a tool that compiles a module again from its
   debug info (`:cover` on a dependency, the debugger) sees them, as it sees
   them in every served build.
@@ -266,18 +276,20 @@ defmodule NccWorker.Portability.Relocate do
   end
 
   # The extra roots (`Compatibility.Relocation.second_layout/2` and
-  # `third_layout/2`): under `/home/nerves` and `/Users` in the container,
-  # under `relocate_root:` in tests. The second always runs; the third only
-  # when the package's own beams hold the path (it is relocated), where a
-  # test of the path against a constant shows in no beam a dependent ships.
-  # Each root's run dir is the only dir this function removes.
+  # `third_layout/2`): under `/home/ncc-relocate` and `/Users` in the
+  # container (`Relocation.bases/0`), under `relocate_root:` in tests. Both
+  # run for every hold, a dependent's whose own beams hold no path too (the
+  # umbrella re-review's Q1): a held dependency can bake a test of its path
+  # against a constant in a module that holds no path, which a dependent
+  # then reads at compile time. Each root's run dir is the only dir this
+  # function removes.
   # sobelow_skip ["Traversal.FileModule"]
   defp reproduce(verdict, held, project_dir, package, opts, run, digest) do
     n = System.unique_integer([:positive])
     {home, users, scratch} = bases(opts)
     second = Relocation.second_layout(home, n)
     third = Relocation.third_layout(users, n)
-    roots = if held.package in held.apps, do: [second, third], else: [second]
+    roots = [second, third]
 
     job = %{
       held: held,
@@ -307,13 +319,17 @@ defmodule NccWorker.Portability.Relocate do
   end
 
   defp bases(opts) do
+    %{second: home, third: users} = Relocation.bases()
+
     case Keyword.get(opts, :relocate_root) do
       nil ->
-        {"/home/nerves", "/Users", System.tmp_dir!()}
+        {home, users, System.tmp_dir!()}
 
       root ->
         root = Context.realpath(root)
-        {Path.join(root, "home/nerves"), Path.join(root, "Users"), root}
+
+        {Path.join(root, String.trim_leading(home, "/")),
+         Path.join(root, String.trim_leading(users, "/")), root}
     end
   end
 
@@ -467,38 +483,71 @@ defmodule NccWorker.Portability.Relocate do
     end
   end
 
-  # The package's own beams to rewrite, when it was held for its own R2
-  # refusal: the same at the second root and the third, which they always
-  # are (both derive from the first build's beams and paths).
+  # The pass the hold kept, with its record: the first build's paths, the
+  # other two roots' and the package's own beams to rewrite, the same at the
+  # second root and the third, which they always are (both derive from the
+  # first build's beams and paths). A package held for its own R2 refusal
+  # is `"relocated"` and must hold a path. A dependent that passed because
+  # a dependency was held (`"dependencies"`) carries the same record, with
+  # the occurrences of the paths R2 allows in its beams (a `keep` location's
+  # file name), often none (the umbrella re-review's Q1): it rests on the
+  # same residual, so it is stored, gated and revoked as a relocated build,
+  # and the client's envelope holds it. Every beam of the package's own ebin
+  # must have been compiled from its dir under the first build's deps path
+  # (`Relocation.compiled_in_problem/3`), and the record must be one the
+  # portal and the client take (`Relocation.record_problem/2`).
   defp pass(held, {second, at_second}, {third, at_third}) do
-    own = at_second[held.package]
+    own = Map.get(at_second, held.package, %{})
+    relocated? = held.package in held.apps
 
-    cond do
-      not (is_map(own) and map_size(own) > 0) ->
-        {:refuse, "the package holds no path"}
+    with {:ok, ebin} <- own_ebin(held),
+         nil <- pass_problem(held, own, at_third, relocated?, ebin) do
+      record = %{
+        "deps" => held.slots["deps"],
+        "build" => held.slots["build"],
+        "second" => second,
+        "third" => third,
+        "files" =>
+          for {name, occs} <- Enum.sort(own) do
+            %{"path" => "ebin/" <> name, "occurrences" => occs}
+          end
+      }
 
-      own != at_third[held.package] ->
-        {:refuse, "the second and third roots recorded other occurrences"}
+      case Relocation.record_problem(record, Enum.map(Map.keys(ebin), &("ebin/" <> &1))) do
+        nil ->
+          held.passed
+          |> Map.put(:relocation, record)
+          |> put_stat("relocate", if(relocated?, do: "relocated", else: "dependencies"))
 
-      true ->
-        record = %{
-          "deps" => held.slots["deps"],
-          "build" => held.slots["build"],
-          "second" => second,
-          "third" => third,
-          "files" =>
-            for {name, occs} <- Enum.sort(own) do
-              %{"path" => "ebin/" <> name, "occurrences" => occs}
-            end
-        }
-
-        held.passed |> Map.put(:relocation, record) |> put_stat("relocate", "relocated")
+        why ->
+          {:refuse, why}
+      end
+    else
+      {:refuse, why} -> {:refuse, why}
+      why when is_binary(why) -> {:refuse, why}
+      _ -> {:refuse, "#{held.package}: unreadable ebin"}
     end
   end
 
-  # Only dependencies were held: the package is a plain pass.
-  defp pass(held, {_second, _relocated}, nil),
-    do: put_stat(held.passed, "relocate", "dependencies")
+  defp own_ebin(held) do
+    case read_ebin(held.ebins[held.package]) do
+      {:ok, ebin} -> {:ok, ebin}
+      _ -> {:refuse, "#{held.package}: unreadable ebin"}
+    end
+  end
+
+  defp pass_problem(held, own, at_third, relocated?, ebin) do
+    cond do
+      relocated? and map_size(own) == 0 ->
+        "the package holds no path"
+
+      own != Map.get(at_third, held.package, %{}) ->
+        "the second and third roots recorded other occurrences"
+
+      true ->
+        Relocation.compiled_in_problem(ebin, held.slots["deps"], held.package)
+    end
+  end
 
   # The umbrella re-review's R2: a dependency's own build tool (GNU make,
   # given a path with a space) can write its output somewhere else and still

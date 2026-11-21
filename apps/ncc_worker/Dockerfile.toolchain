@@ -55,8 +55,9 @@ RUN mix local.hex ${HEX_VERSION} --force && \
 LABEL ncc.hex-cache=seeded
 
 # Every directory the portal bind-mounts, created here because the container
-# runs --read-only (see the main Dockerfile).
-RUN mkdir -p /work /out /files /tmp /hex-cache /nerves-cache /build-cache && \
+# runs --read-only (see the main Dockerfile); /home/ncc-relocate and /Users
+# only for a build that may relocate (S4, Compatibility.Relocation.bases/0).
+RUN mkdir -p /work /out /files /tmp /hex-cache /nerves-cache /build-cache /home/ncc-relocate /Users && \
     chmod a+rwX /work /out /files /hex-cache /nerves-cache /build-cache
 
 WORKDIR /app
