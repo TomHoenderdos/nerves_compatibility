@@ -196,7 +196,7 @@ defmodule Compatibility.Relocation do
     _ -> {:refuse, "unreadable beam"}
   end
 
-  @record_keys ["build", "deps", "files", "second"]
+  @record_keys ["build", "deps", "files", "second", "third"]
   @kinds ["binary", "charlist", "atom"]
   @max_files 10_000
   @max_record_bytes 256 * 1024
@@ -206,18 +206,27 @@ defmodule Compatibility.Relocation do
   # work dir `/work` in the container (`Compatibility.Builder.Argv`).
   @first %{"deps" => "/work/proj/deps", "build" => "/work/proj/_build/host"}
 
-  # The second build's root under its base, `<tmp>/ncc-relocate-<n>`: unlike
-  # the first build's root in every property a user's path can have that
-  # the client accepts (printable ASCII). It is long and deep where the
-  # first is short and shallow, it holds a space, upper case, a dot, a dash
-  # and digits where the first holds none, its deps path holds an
-  # underscore where the first's holds none and its build path none where
-  # the first's holds one, its project dir has another name, and its deps
-  # path sorts before its build path where the first's sorts after. Every
-  # lower case letter is in it, so the two roots together span every
-  # letter, digit and the space, dot, dash and underscore.
-  @second_dirs [
-    "Second Root.d",
+  # The worker's other two roots, in production: the second under the
+  # container's home (`/home/nerves/.cache` is per-run writable scratch),
+  # the third under `/Users` (a per-run scratch dir the portal binds there
+  # for a build that may relocate, `Portal.Builder`).
+  @home "/home/nerves"
+  @users "/Users"
+
+  # The second root, under a home: lower case, no space, of middle length,
+  # its deps path sorting before its build path, its project dir `app`,
+  # holding a dot-dir, Mix.install's `.cache/mix/installs`, `nix/store`,
+  # `src`, `code`, `projects`, `@` and `~`.
+  @second_cache ".cache/mix/installs/elixir-1.20.5-erts-16.4.0.2"
+  @second_dirs ["nix/store/src/code/projects", "x_y@z~0.d", "app"]
+  @second_deps "deps"
+  @second_build "out.d/host-1"
+
+  # The third root, under `/Users`: upper case and spaces, long and deep,
+  # its build path sorting before its deps path, its project dir another
+  # name, holding `Library` and `Projects` and every letter and digit.
+  @third_dirs [
+    "Library/Mobile Documents",
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     "0123456789",
     "abcdefghijklmnopqrstuvwxyz",
@@ -225,67 +234,77 @@ defmodule Compatibility.Relocation do
     "x",
     "Y",
     "z-0",
+    "Projects",
     "The Relocated.Project-2"
   ]
-  @second_deps "Deps vendored_d"
-  @second_build "Out.Build-3/Host 4"
-  @second_base ~r"\A/tmp/ncc-relocate-[0-9]{1,20}\z"
+  @third_deps "Deps vendored_d"
+  @third_build "Build-3/Host 4"
+
+  @doc "The worker's first root: its host compile's `deps` and `build` paths."
+  @spec first_root() :: %{String.t() => String.t()}
+  def first_root, do: @first
 
   @doc """
-  The worker's second build under `base`: `"project"`, the dir its project
-  is copied to, and its `"deps"` and `"build"` paths (see the moduledoc).
+  The worker's second root for run token `n` under `home` (`/home/nerves`
+  in the container): `"project"`, the dir its project is copied to, and its
+  `"deps"` and `"build"` paths (see the moduledoc).
   """
-  @spec second_layout(String.t()) :: %{String.t() => String.t()}
-  def second_layout(base) do
-    project = Path.join([base | @second_dirs])
-
-    %{
-      "project" => project,
-      "deps" => Path.join(project, @second_deps),
-      "build" => Path.join(project, @second_build)
-    }
+  @spec second_layout(String.t(), non_neg_integer()) :: %{String.t() => String.t()}
+  def second_layout(home, n) when is_integer(n) and n >= 0 do
+    project = Path.join([home, @second_cache, "ncc-relocate-#{n}" | @second_dirs])
+    layout(project, @second_deps, @second_build)
   end
 
   @doc """
-  Why a record's two roots are not the worker's own layout, or nil: its
-  `deps` and `build` the first build's (`/work/proj/deps`,
-  `/work/proj/_build/host`), and its `second` the second build's under
-  `/tmp/ncc-relocate-<n>` (`second_layout/1`). The portal holds every
-  record it stores to this.
+  The worker's third root for run token `n` under `users` (`/Users` in the
+  container), as `second_layout/2` gives the second.
+  """
+  @spec third_layout(String.t(), non_neg_integer()) :: %{String.t() => String.t()}
+  def third_layout(users, n) when is_integer(n) and n >= 0 do
+    project = Path.join([users, "Ncc-Relocate #{n}" | @third_dirs])
+    layout(project, @third_deps, @third_build)
+  end
+
+  defp layout(project, deps, build),
+    do: %{
+      "project" => project,
+      "deps" => Path.join(project, deps),
+      "build" => Path.join(project, build)
+    }
+
+  @doc """
+  A record's three roots as the worker writes them in production for run
+  token `n` (no `files`): `deps` and `build` the first root's, `second` and
+  `third` the other two's.
+  """
+  @spec pinned_record(non_neg_integer()) :: map()
+  def pinned_record(n) do
+    Map.merge(@first, %{
+      "second" => Map.take(second_layout(@home, n), ["deps", "build"]),
+      "third" => Map.take(third_layout(@users, n), ["deps", "build"])
+    })
+  end
+
+  @doc """
+  Why a record's three roots are not the worker's own production layout,
+  or nil: `pinned_record/1` for the run token its second root names. The
+  portal holds every record it stores to this, and client 0.9.0 holds every
+  record it applies to the same rule.
   """
   @spec pinned_problem(term()) :: String.t() | nil
-  def pinned_problem(%{"deps" => deps, "build" => build, "second" => %{} = second}) do
-    base = second |> Map.get("deps", "") |> to_string() |> second_base()
-
-    cond do
-      %{"deps" => deps, "build" => build} != @first ->
-        "the first build's paths are not the worker's"
-
-      base == nil ->
-        "the second build's paths are not the worker's"
-
-      Map.take(second_layout(base), ["deps", "build"]) != second ->
-        "the second build's paths are not the worker's"
-
-      true ->
-        nil
+  def pinned_problem(%{"deps" => _, "build" => _, "second" => %{}, "third" => %{}} = record) do
+    with deps when is_binary(deps) <- get_in(record, ["second", "deps"]),
+         [_, digits] <- Regex.run(~r"/ncc-relocate-([0-9]{1,20})/", deps),
+         true <-
+           Map.take(record, ["deps", "build", "second", "third"]) ==
+             pinned_record(String.to_integer(digits)) do
+      nil
+    else
+      _ -> "the record's roots are not the worker's"
     end
   end
 
   def pinned_problem(_record), do: "not a relocation record"
-
-  # The base of a second build's deps path, when it has the layout's shape.
-  defp second_base(deps) do
-    suffix = "/" <> Path.join(@second_dirs ++ [@second_deps])
-
-    with true <- String.ends_with?(deps, suffix),
-         base = binary_part(deps, 0, byte_size(deps) - byte_size(suffix)),
-         true <- Regex.match?(@second_base, base) do
-      base
-    else
-      _ -> nil
-    end
-  end
 
   @doc """
   Why a worker's `relocation` record (`NccWorker.Portability.Relocate`) is
@@ -307,7 +326,8 @@ defmodule Compatibility.Relocation do
       record |> Map.keys() |> Enum.sort() != @record_keys ->
         "unknown keys"
 
-      problem = roots_problem(%{"deps" => deps, "build" => build}, record["second"]) ->
+      problem =
+          roots_problem(%{"deps" => deps, "build" => build}, record["second"], record["third"]) ->
         problem
 
       files == [] or length(files) > @max_files ->
@@ -326,15 +346,14 @@ defmodule Compatibility.Relocation do
 
   def record_problem(_record, _ebin_paths), do: "not a relocation record"
 
-  defp roots_problem(first, second) do
+  defp roots_problem(first, second, third) do
+    roots = [first, second, third]
+
     cond do
-      match?({:refuse, _}, valid_slots(first)) ->
+      Enum.any?(roots, &match?({:refuse, _}, valid_slots(&1))) ->
         "bad paths"
 
-      match?({:refuse, _}, valid_slots(second)) ->
-        "bad second paths"
-
-      not Enum.all?(Map.values(first) ++ Map.values(second), &printable?/1) ->
+      not Enum.all?(Enum.flat_map(roots, &Map.values/1), &printable?/1) ->
         "a path not printable ASCII"
 
       true ->
