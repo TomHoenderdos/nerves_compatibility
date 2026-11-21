@@ -396,8 +396,9 @@ if portal_available? do
   end
 
   # The release fast path (`Portal.Workers.ReleaseFastPath`), parsed the
-  # same way: `NCC_RELEASE_FAST_PATH=0` offers no release and cancels a
-  # queued one; the daily drift run goes on. `NCC_RELEASE_FAST_PATH_BUDGET`
+  # same way and read at boot: `NCC_RELEASE_FAST_PATH=0` offers no release
+  # and cancels a queued one once the `:intake` nodes restart; the daily
+  # drift run goes on. `NCC_CLOSURE_DRIFT=0` stops it too. `NCC_RELEASE_FAST_PATH_BUDGET`
   # caps its rebuilds incomplete at once; anything but a non-negative
   # integer leaves the compile-time default alone.
   case System.get_env("NCC_RELEASE_FAST_PATH") do

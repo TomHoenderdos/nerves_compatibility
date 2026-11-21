@@ -253,6 +253,28 @@ defmodule Portal.Workers.ReleaseFastPathTest do
                ReleaseFastPath.perform(%Oban.Job{args: args, meta: %{"snoozed" => 2}})
     end
 
+    test "does nothing while the drift rebuilds are switched off" do
+      # Two dependents: enough to be offered while drift is on.
+      certifi_release([name(), name()])
+      drift = Application.get_env(:portal, Portal.Workers.ClosureDrift, [])
+
+      Application.put_env(
+        :portal,
+        Portal.Workers.ClosureDrift,
+        Keyword.put(drift, :enabled, false)
+      )
+
+      on_exit(fn -> Application.put_env(:portal, Portal.Workers.ClosureDrift, drift) end)
+
+      assert {:cancel, _} =
+               perform_job(ReleaseFastPath, %{"package" => "certifi", "version" => "2.19.0"})
+
+      assert all_enqueued(worker: ToolchainBuild) == []
+
+      assert ReleaseFastPath.offer([entry("certifi", ["2.18.0", "2.19.0"], @now)], now: @now) ==
+               0
+    end
+
     test "does nothing while switched off" do
       certifi_release([name()])
       Application.put_env(:portal, ReleaseFastPath, enabled: false)

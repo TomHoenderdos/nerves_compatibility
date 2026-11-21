@@ -49,8 +49,22 @@ defmodule Portal.Workers.ReleaseFastPath do
 
   ## Enablement
 
-  On by default. `NCC_RELEASE_FAST_PATH=0` switches it off at runtime: no
-  release is offered and a queued or snoozed job is cancelled.
+  On by default. `NCC_RELEASE_FAST_PATH=0`, or `NCC_CLOSURE_DRIFT=0`, the
+  switch for the drift rebuilds it is made of, switches it off after a
+  restart of the nodes that run `:intake`: no release is offered and a
+  queued or snoozed job is cancelled. The rebuilds a job already queued
+  stay queued; to cancel them:
+
+      import Ecto.Query
+
+      Oban.cancel_all_jobs(
+        from(j in Oban.Job,
+          where:
+            j.worker == "Portal.Workers.ToolchainBuild" and
+              fragment("?->>'reason'", j.args) == "release_fast_path" and
+              j.state in ["available", "scheduled", "retryable"]
+        )
+      )
 
   A run holds an `:intake` slot while it judges, a few minutes for a
   release with a thousand dependents and at most `ClosureDrift.budget_ms/0`;
@@ -223,9 +237,12 @@ defmodule Portal.Workers.ReleaseFastPath do
     end
   end
 
-  @doc "Whether releases are offered and rebuilt (`NCC_RELEASE_FAST_PATH`)."
+  @doc """
+  Whether releases are offered and rebuilt: `NCC_RELEASE_FAST_PATH`, and the
+  drift rebuilds it is made of (`Portal.Workers.ClosureDrift.enabled?/0`).
+  """
   @spec enabled?() :: boolean()
-  def enabled?, do: Keyword.get(config(), :enabled, true) == true
+  def enabled?, do: Keyword.get(config(), :enabled, true) == true and ClosureDrift.enabled?()
 
   @doc """
   At most this many fast-path rebuilds incomplete at once, across releases
