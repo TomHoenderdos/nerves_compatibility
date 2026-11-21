@@ -2597,15 +2597,15 @@ defmodule Portal.Catalog.Ingestion do
          phase_timings, hex_version_tested, beam_scan, compile_env, compile_inputs,
          dependency_scans, log_path, log_tail, failure_category, carried_from_run_id, deps_lock,
          unpublished_at, compile_env_rule, portability_rule, unpublished_reason, native, portable, elf_needs,
-         toolchain_pkg, toolchain_version, otp_full, published_variants, build_root, inserted_at,
-         updated_at)
+         toolchain_pkg, toolchain_version, otp_full, published_variants, build_root,
+         rebar3_plugins, inserted_at, updated_at)
       SELECT m.new_id, $1, s.system_pkg, s.system_version, s.status, s.firmware_size_bytes,
              s.duration_sec, s.phase_timings, s.hex_version_tested, s.beam_scan, s.compile_env,
              s.compile_inputs, s.dependency_scans, s.log_path, s.log_tail, s.failure_category, m.built_in,
              s.deps_lock, s.unpublished_at, s.compile_env_rule, s.portability_rule,
              s.unpublished_reason, s.native, s.portable, s.elf_needs, s.toolchain_pkg,
              s.toolchain_version, s.otp_full, s.published_variants, s.build_root,
-             now() AT TIME ZONE 'utc',
+             s.rebar3_plugins, now() AT TIME ZONE 'utc',
              now() AT TIME ZONE 'utc'
       FROM catalog_system_results s
       JOIN unnest($2::uuid[], $3::uuid[], $4::uuid[]) AS m(old_id, new_id, built_in)
@@ -2708,7 +2708,8 @@ defmodule Portal.Catalog.Ingestion do
         otp_full: fact_string(sys["otp_full"]),
         published_variants: variants,
         build_root: build_root(sys["build_root"]),
-        declared_absent: if(system_pkg == "pure_elixir", do: record_list(sys["declared_absent"]))
+        declared_absent: if(system_pkg == "pure_elixir", do: record_list(sys["declared_absent"])),
+        rebar3_plugins: rebar3_plugins(sys["rebar3_plugins"], {package_name, version})
       })
       |> Ash.create(domain: @domain)
 
@@ -2739,6 +2740,55 @@ defmodule Portal.Catalog.Ingestion do
   # but a map is dropped rather than stored as a verdict.
   defp build_root(%{} = build_root), do: build_root
   defp build_root(_), do: nil
+
+  # A firmware target's rebar3 plugin record (`NccWorker.FirmwarePlugins`),
+  # all or nothing like `deps_lock/1`: the container that wrote it ran the
+  # package's code, so a malformed entry, or more entries than
+  # `SystemResult.max_plugin_releases/0`, stores no record at all rather than
+  # the well-formed part, and the ingest still succeeds. Extra keys inside a
+  # well-formed entry are stripped. Absent stays nil.
+  @plugin_name ~r/\A[A-Za-z0-9_.+:-]{1,255}\z/
+  @plugin_version ~r/\A[0-9A-Za-z][0-9A-Za-z.+-]{0,63}\z/
+  @plugin_sha ~r/\A[0-9a-f]{64}\z/
+
+  defp rebar3_plugins(nil, _context), do: nil
+
+  defp rebar3_plugins(list, context) when is_list(list) do
+    kept = if length(list) <= SystemResult.max_plugin_releases(), do: plugin_entries(list)
+    if kept == nil, do: warn_plugins(context)
+    kept
+  end
+
+  defp rebar3_plugins(_other, context), do: warn_plugins(context)
+
+  defp plugin_entries(list) do
+    Enum.reduce_while(list, [], fn entry, acc ->
+      case plugin_entry(entry) do
+        nil -> {:halt, nil}
+        kept -> {:cont, [kept | acc]}
+      end
+    end)
+    |> then(&(&1 && Enum.reverse(&1)))
+  end
+
+  defp plugin_entry(%{"name" => n, "version" => v, "sha256" => sha, "owners" => owners})
+       when is_binary(n) and (is_binary(v) or is_nil(v)) and (is_binary(sha) or is_nil(sha)) and
+              is_list(owners) do
+    if Regex.match?(@plugin_name, n) and (is_nil(v) or Regex.match?(@plugin_version, v)) and
+         (is_nil(sha) or Regex.match?(@plugin_sha, sha)) and
+         Enum.all?(owners, &(is_binary(&1) and Regex.match?(@plugin_name, &1))),
+       do: %{"name" => n, "version" => v, "sha256" => sha, "owners" => owners}
+  end
+
+  defp plugin_entry(_entry), do: nil
+
+  defp warn_plugins({package, version}) do
+    Logger.warning(
+      "rebar3_plugins malformed for #{package} #{version}: no plugin record stored for the target"
+    )
+
+    nil
+  end
 
   # Strip `footprint.file_manifest` out of every dependency scan before it is
   # persisted.

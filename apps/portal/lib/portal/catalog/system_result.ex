@@ -50,6 +50,14 @@ defmodule Portal.Catalog.SystemResult do
   @spec rejudged_reasons() :: [String.t()]
   def rejudged_reasons, do: [@baked_build_path, @superseded_by_refusal]
 
+  @doc """
+  The most rebar3 plugin releases a firmware result's `rebar3_plugins`
+  holds; a longer record is not stored, never cut (stream S5's bound on a
+  toolchain build's record).
+  """
+  @spec max_plugin_releases() :: pos_integer()
+  def max_plugin_releases, do: 64
+
   postgres do
     table("catalog_system_results")
     repo(Portal.Repo)
@@ -103,7 +111,8 @@ defmodule Portal.Catalog.SystemResult do
         :otp_full,
         :published_variants,
         :build_root,
-        :declared_absent
+        :declared_absent,
+        :rebar3_plugins
       ])
     end
 
@@ -288,6 +297,16 @@ defmodule Portal.Catalog.SystemResult do
     # `host_portability` trace (otp-probe round 6, R5-6), for
     # `Portal.Catalog.ModuleIndex.recheck/1`.
     attribute :declared_absent, {:array, :map} do
+      public?(true)
+    end
+
+    # The rebar3 plugin releases a firmware target's build ran
+    # (`NccWorker.FirmwarePlugins`), each `%{"name", "version", "sha256",
+    # "owners"}`, stored whole or not at all (`max_plugin_releases/0`); `[]`
+    # when it ran none, nil when unrecorded (a host result, a target that did
+    # not pass, an older worker, a malformed record). A record only: nothing
+    # reads it to serve or withhold. Carried copies keep it.
+    attribute :rebar3_plugins, {:array, :map} do
       public?(true)
     end
 
