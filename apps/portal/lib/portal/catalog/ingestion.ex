@@ -2772,15 +2772,16 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp plugin_entry(%{"name" => n, "version" => v, "sha256" => sha, "owners" => owners})
-       when is_binary(n) and (is_binary(v) or is_nil(v)) and (is_binary(sha) or is_nil(sha)) and
-              is_list(owners) do
-    if Regex.match?(@plugin_name, n) and (is_nil(v) or Regex.match?(@plugin_version, v)) and
-         (is_nil(sha) or Regex.match?(@plugin_sha, sha)) and
-         Enum.all?(owners, &(is_binary(&1) and Regex.match?(@plugin_name, &1))),
+       when is_list(owners) do
+    if matches?(@plugin_name, n) and optional_match?(@plugin_version, v) and
+         optional_match?(@plugin_sha, sha) and Enum.all?(owners, &matches?(@plugin_name, &1)),
        do: %{"name" => n, "version" => v, "sha256" => sha, "owners" => owners}
   end
 
   defp plugin_entry(_entry), do: nil
+
+  defp matches?(regex, value), do: is_binary(value) and Regex.match?(regex, value)
+  defp optional_match?(regex, value), do: is_nil(value) or matches?(regex, value)
 
   defp warn_plugins({package, version}) do
     Logger.warning(

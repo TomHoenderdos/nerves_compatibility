@@ -126,20 +126,13 @@ defmodule NccWorker.FirmwarePlugins do
 
   # sobelow_skip ["Traversal.FileModule"]
   defp plugins(build, dir) do
-    case File.lstat(dir) do
-      {:ok, %File.Stat{type: :directory}} ->
-        case File.ls(dir) do
-          {:ok, names} ->
-            for name <- Enum.sort(names),
-                not String.starts_with?(name, "."),
-                do: {name, entry(build, Path.join(dir, name), name)}
-
-          _ ->
-            []
-        end
-
-      _ ->
-        []
+    with {:ok, %File.Stat{type: :directory}} <- File.lstat(dir),
+         {:ok, names} <- File.ls(dir) do
+      for name <- Enum.sort(names),
+          not String.starts_with?(name, "."),
+          do: {name, entry(build, Path.join(dir, name), name)}
+    else
+      _ -> []
     end
   end
 
