@@ -559,25 +559,32 @@ names only as dependency tuples is not its native build. It bumps no judge revis
 `"judge": {"relocate": true}` turns on relocatable builds (S4, `NccWorker.Portability.Relocate`) for the toolchain
 compile; any other value leaves them off. A verdict refused only by R2's baked path (the package's own, or a closure
 dependency's taint that is its own R2 refusal) is held when every occurrence is of the build's deps or build path and
-`Compatibility.Relocation` can reach it. The project is then copied to a fresh temp dir with other names for both
-(`Compatibility.Relocation.second_layout/1`) and traced again, with call patterns on each holder module (a module
-whose beams hold the path) once its window has closed. A later window calling a holder or reading its `ebin` is
-tainted (`holder_calls`), and refuses in the package's own window. Every held app's `ebin` must prove: relocated to the
-second build's paths, each beam is the second build's chunk for chunk but `CInf`, `Dbgi` and `Docs`. A pass that held
-the package carries `toolchain_build.relocation` (the build's `deps` and `build` paths, the second build's as
-`second`, and, per beam to rewrite, every occurrence) and lists its files under `toolchain_build.relocated_file_manifest`
-with `file_manifest` nil, so a portal before S4 stores it with no files. It gets no deterministic sibling. One that held
-only dependencies is a plain pass, once its own `ebin` proved at the two roots too: a value its compile took from a
-held dependency refuses. The second build's root (`Compatibility.Relocation.second_layout/1`) differs from the first in
-length and depth, a space, upper case, a dot, a dash, digits, the underscore, the project dir's name and the order of
-the deps and build paths; a value derived from the path that is equal at both roots is the residual the client's
-envelope limits. `trace_stats.relocate` says `"relocated"`,
-`"dependencies"` or `"refused: <why>"`, and in the last case the verdict is the first build's refusal, unchanged. No
-judge revision: without the flag every verdict is today's, byte for byte. The portal sends the flag while its node has
-`NCC_JUDGE_RELOCATE=1` (`Portal.Builder.judge_input/1`), stores a pass that carries `relocation` as a pass with its
-files and record, and lists it only under a version's `relocated` object while its `relocated_enabled` setting is on,
-for clients 0.9.0 and later, which rewrite the beams at install (`PRECOMPILED_API.md`, elixir_precompiled
-`Precompiled.Relocate`).
+`Compatibility.Relocation` can reach it. The project is then copied to extra roots and traced again, with call
+patterns on each holder module (a module whose beams hold the path) once its window has closed: the second root
+(`Compatibility.Relocation.second_layout/2`) under `/home/nerves/.cache/mix/installs`, and, when the package's own
+beams hold the path, the third (`third_layout/2`) under `/Users`, which the portal binds to per-run scratch for such a
+job. The three roots differ in length and depth, case, spaces, project dir name and the order of the deps and build
+paths, and hold between them a home's `.cache/mix/installs`, `Library`, `Projects`, `projects`, `src`, `code`, `app`,
+`nix/store`, a dot-dir, `@` and `~`. A later window calling a holder, reading its `ebin` or its md5, attributes or
+compile info is tainted (`holder_calls`), and refuses in the package's own window. Every held app's `ebin`, and the
+package's own, must prove at each extra root: relocated to that root's paths, each beam is that build's chunk for chunk
+but `CInf`, `Dbgi` and `Docs`. Every closure app's source and build dirs must list the same files at each root as at
+the first: a native build tool that split the spaced root and lost its NIF while exiting 0 refuses. A pass that held
+the package carries `toolchain_build.relocation` (the three roots' `deps` and `build` paths and, per beam to rewrite,
+every occurrence) and lists its files under `toolchain_build.relocated_file_manifest` with `file_manifest` nil, so a
+portal before S4 stores it with no files. It gets no deterministic sibling. One that held only dependencies is a plain
+pass. `trace_stats.relocate` says `"relocated"`, `"dependencies"` or `"refused: <why>"`, and in the last case the
+verdict is the first build's refusal, unchanged. No judge revision: without the flag every verdict is today's, byte for
+byte. The portal sends the flag while its `relocate_builds_enabled` setting is on (`Portal.Builder.judge_input/1`),
+stores a relocated pass with its files and record, and lists it only under a version's `relocated` object while its
+`relocated_enabled` setting is on, for clients 0.9.0 and later, which rewrite the beams at install
+(`PRECOMPILED_API.md`, elixir_precompiled `Precompiled.Relocate`).
+
+The residual the roots cannot show: a compile-time test of the path against a constant that none of the three roots
+contains (a prefix such as `/opt/` or `/srv/`, a word no root holds), or any test that answers the same at all three
+roots and differently at the user's path. The client relocates only inside the envelope the three roots span, which
+bounds tests of length, depth and characters, not tests of which words a path holds. It is new exposure, for relocated
+builds only.
 
 Before the traced compile every locked dependency's source tree is checked against its checksum-verified Hex
 tarball (`NccWorker.Portability.Trees`, item 5e): the regular files under `deps/<d>` must be exactly the tarball's

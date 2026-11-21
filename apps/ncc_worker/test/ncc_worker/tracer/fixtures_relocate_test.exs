@@ -155,14 +155,25 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
 
     deps = Path.join(ctx.proj, "deps")
 
-    assert %{"deps" => ^deps, "build" => build, "files" => [file], "second" => second} =
-             v.relocation
+    assert %{
+             "deps" => ^deps,
+             "build" => build,
+             "files" => [file],
+             "second" => second,
+             "third" => third
+           } = v.relocation
 
     assert build == Path.join(ctx.proj, "_build/host")
 
-    # The second build's roots, the worker's second layout (B1).
-    base = second["deps"] |> String.split("/Second Root.d/") |> hd()
-    assert Map.take(Relocation.second_layout(base), ["deps", "build"]) == second
+    # The other two roots, the worker's layouts under `relocate_root:` for
+    # one run token (B1, R1).
+    [_, n] = Regex.run(~r"/ncc-relocate-([0-9]+)/", second["deps"])
+    n = String.to_integer(n)
+    base = Context.realpath(ctx.root)
+    at = &Map.take(&1, ["deps", "build"])
+    assert at.(Relocation.second_layout(Path.join(base, "home/nerves"), n)) == second
+    assert at.(Relocation.third_layout(Path.join(base, "Users"), n)) == third
+    refute File.exists?(Path.join(base, "Users/Ncc-Relocate #{n}"))
 
     assert Relocation.record_problem(v.relocation, ["ebin/Elixir.FxFine.beam", "ebin/fx_fine.app"]) ==
              nil

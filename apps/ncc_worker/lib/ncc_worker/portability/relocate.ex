@@ -18,27 +18,34 @@ defmodule NccWorker.Portability.Relocate do
       are that app's holders. A held verdict is the refusal it was, with
       `:relocate` holding what the pass would have said; a caller that
       judges a trace alone (`judge/5`) never publishes it;
-    * `settle/6` copies the project to a fresh dir under the system temp dir,
-      laid out as `Compatibility.Relocation.second_layout/1` gives it: a
-      root unlike the first build's in every property a user's path can
-      have that the client accepts (length and depth, a space, upper case,
-      a dot, a dash, digits, the underscore, the project dir's name and the
-      order of the deps and build paths), so a value the compile derived
-      from the path rather than the path itself differs between the two
-      builds. It runs the traced judge compile of the package's closure
-      again there, the first build's tree snapshot passed on, with call
-      patterns on the holders once each one's window has closed
-      (`:ncc_tracer`'s `root_holder` channel). A later window's call into a
-      holder, its read of a holder's `ebin`, or its read of a holder's md5,
-      attributes or compile info (`module_info/0,1`, `__info__/1`) is a
-      taint (`holder_calls`), a refusal in the package's own window;
-    * the second verdict must be held the same way, for the same apps, its
-      pass the same `compile_env`, `compile_inputs` and `manager`, and the
-      first build's package dir the same before and after;
+    * `settle/6` copies the project to extra roots and runs the traced
+      judge compile of the package's closure again at each, the first
+      build's tree snapshot passed on, with call patterns on the holders
+      once each one's window has closed (`:ncc_tracer`'s `root_holder`
+      channel). The second root (`Compatibility.Relocation.second_layout/2`)
+      is under `/home/nerves`, in its `.cache/mix/installs`; the third
+      (`third_layout/2`) is under `/Users`, a per-run scratch dir the portal
+      binds there for a build that may relocate (`Portal.Builder`), and is
+      built only when the package's own beams hold the path. The three
+      roots differ in length and depth, case, spaces, project dir name and
+      the order of the deps and build paths, and hold between them the
+      words user paths hold (a home's `.cache/mix/installs`, `Library`,
+      `Projects`, `projects`, `src`, `code`, `app`, `nix/store`, a dot-dir,
+      `@` and `~`). A later window's call into a holder, its read of a
+      holder's `ebin`, or its read of a holder's md5, attributes or compile
+      info (`module_info/0,1`, `__info__/1`) is a taint (`holder_calls`), a
+      refusal in the package's own window;
+    * each extra build must be held the same way, for the same apps, its
+      pass the same `compile_env`, `compile_inputs` and `manager`, the first
+      build's package dir the same before and after, and every closure
+      app's source dir and build dir must list the same files, by relative
+      path and type, as the first build's: a native build tool that split a
+      path with a space and put its output elsewhere, exiting 0 all the
+      same, refuses (the umbrella re-review's R2);
     * each held app's `ebin`, and the package's own whether it was held or
-      not, must prove (`Compatibility.Relocation.prove_ebin/4`): relocated
-      to the second build's paths, every beam is the second build's chunk
-      for chunk but metadata, and every other file the same. So a value the
+      not, must prove at every extra root (`Compatibility.Relocation.prove_ebin/4`):
+      relocated to that root's paths, every beam is that build's chunk for
+      chunk but metadata, and every other file the same. So a value the
       package's compile took from a held dependency through any channel
       (its md5, a path no holder pattern saw) refuses; a package that was
       not held may differ only where R2 already allows a path (a `keep`
@@ -46,27 +53,28 @@ defmodule NccWorker.Portability.Relocate do
 
   Then the verdict is the pass it held. When the package itself was held it
   carries `relocation`: the first build's `deps` and `build` paths, the
-  second build's (`second`, from which the client takes the envelope of
-  paths it relocates to) and, per beam of its `ebin` that needs a rewrite,
-  `%{"path" => "ebin/<file>", "occurrences" => [...]}`. A pass that only needed its dependencies held
-  carries none: its own beams hold no path, and its compile never called a
-  holder. `trace_stats["relocate"]` says which (`"relocated"`,
-  `"dependencies"`), or why it stayed refused (`"refused: <why>"`), and the
-  verdict is then the first build's refusal, unchanged. The second build's
-  dir is removed either way. Never raises.
+  second and third builds' (`second`, `third`, from which the client takes
+  the envelope of paths it relocates to) and, per beam of its `ebin` that
+  needs a rewrite, `%{"path" => "ebin/<file>", "occurrences" => [...]}`. A
+  pass that only needed its dependencies held carries none: its own beams
+  hold no path, and its compile never called a holder.
+  `trace_stats["relocate"]` says which (`"relocated"`, `"dependencies"`), or
+  why it stayed refused (`"refused: <why>"`), and the verdict is then the
+  first build's refusal, unchanged. Each extra root's run dir is removed
+  either way. Never raises.
 
-  What two builds cannot show: a value the compile derived from the path
-  that is the same at both roots but not at the user's path. The client
-  relocates only to paths inside the envelope the two roots span (their
-  characters, between their lengths and depths), so a threshold on any of
-  these agrees with both roots; what remains is a predicate both roots and
-  the user's path happen to share (for example the presence of one letter
-  in both roots that the user's path lacks). Today R2 refuses every build
-  whose beams hold the path, so this residual is new exposure that S4
-  brings, for the builds it relocates only. `Dbgi` keeps the first build's
-  paths: a tool that compiles a module again from its debug info (`:cover`
-  on a dependency, the debugger) sees them, as it sees them in every served
-  build.
+  What the roots cannot show, the residual: a compile-time test of the path
+  against a constant that none of the three roots contains (a prefix such
+  as `/opt/` or `/srv/`, a word no root holds), or any test that answers the
+  same at all three roots and differently at the user's path. The client
+  relocates only to paths inside the envelope the three roots span (their
+  characters, between their lengths and depths), which bounds tests of
+  length, depth and characters, not tests of which words a path holds.
+  Today R2 refuses every build whose beams hold the path, so this residual
+  is new exposure that S4 brings, for relocated builds only. `Dbgi` keeps
+  the first build's paths: a tool that compiles a module again from its
+  debug info (`:cover` on a dependency, the debugger) sees them, as it sees
+  them in every served build.
   """
 
   alias Compatibility.Relocation
@@ -121,6 +129,7 @@ defmodule NccWorker.Portability.Relocate do
         apps: Enum.sort(apps),
         holders: for({app, modules} <- held, module <- modules, do: {app, module}),
         ebins: Map.new([facts.ctx.package | apps], &{&1, Context.ebin(facts.ctx, &1)}),
+        dirs: closure_dirs(facts.ctx),
         slots: slots,
         trees: facts.ctx.trees,
         build: package_build(facts.ctx)
@@ -139,6 +148,15 @@ defmodule NccWorker.Portability.Relocate do
   # called), for the first build to report.
   defp second_refusal(%{status: :skip, reason: reason}, :second), do: {:refused, reason}
   defp second_refusal(verdict, _on), do: verdict
+
+  # Every closure app's source dir and build dir, which an extra build's own
+  # must list the same files in (`same_trees/2`).
+  defp closure_dirs(ctx) do
+    for app <- Context.closure_of(ctx, ctx.package),
+        Context.dep?(ctx, app),
+        into: %{},
+        do: {app, {ctx.deps[app].dest, ctx.deps[app].build}}
+  end
 
   defp package_build(ctx),
     do: if(Context.dep?(ctx, ctx.package), do: ctx.deps[ctx.package].build)
@@ -247,30 +265,97 @@ defmodule NccWorker.Portability.Relocate do
     if enabled(opts) == :second, do: verdict, else: Map.delete(verdict, :relocate_refused)
   end
 
-  # `root` is a fresh directory this function names under the temp dir, and
-  # the only one it removes.
+  # The extra roots (`Compatibility.Relocation.second_layout/2` and
+  # `third_layout/2`): under `/home/nerves` and `/Users` in the container,
+  # under `relocate_root:` in tests. The second always runs; the third only
+  # when the package's own beams hold the path (it is relocated), where a
+  # test of the path against a constant shows in no beam a dependent ships.
+  # Each root's run dir is the only dir this function removes.
   # sobelow_skip ["Traversal.FileModule"]
   defp reproduce(verdict, held, project_dir, package, opts, run, digest) do
-    base = opts |> Keyword.get_lazy(:relocate_root, &System.tmp_dir!/0) |> Context.realpath()
-    root = Path.join(base, "ncc-relocate-#{System.unique_integer([:positive])}")
-    layout = Relocation.second_layout(root)
-    proj = layout["project"]
+    n = System.unique_integer([:positive])
+    {home, users, scratch} = bases(opts)
+    second = Relocation.second_layout(home, n)
+    third = Relocation.third_layout(users, n)
+    roots = if held.package in held.apps, do: [second, third], else: [second]
+
+    job = %{
+      held: held,
+      project_dir: project_dir,
+      package: package,
+      opts: opts,
+      run: run,
+      digest: digest
+    }
+
+    Enum.reduce_while(roots, {:ok, %{}}, fn layout, {:ok, acc} ->
+      case extra(job, layout, scratch) do
+        {:ok, slots, relocated} -> {:cont, {:ok, Map.put(acc, layout, {slots, relocated})}}
+        {:refuse, why} -> {:halt, {:refuse, why}}
+      end
+    end)
+    |> case do
+      {:ok, done} ->
+        case pass(held, done[second], done[third]) do
+          {:refuse, why} -> refused(verdict, why)
+          passed -> passed
+        end
+
+      {:refuse, why} ->
+        refused(verdict, why)
+    end
+  end
+
+  defp bases(opts) do
+    case Keyword.get(opts, :relocate_root) do
+      nil ->
+        {"/home/nerves", "/Users", System.tmp_dir!()}
+
+      root ->
+        root = Context.realpath(root)
+        {Path.join(root, "home/nerves"), Path.join(root, "Users"), root}
+    end
+  end
+
+  # One extra build at `layout`: `{:ok, slots, relocated}` (each proved
+  # app's beams to rewrite) or `{:refuse, why}`. Its trace dir and log are
+  # under the scratch base, apart from the layout.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp extra(job, layout, scratch) do
+    %{held: held, project_dir: project_dir, package: package, opts: opts} = job
+    run_dir = run_dir(layout)
+    trace = Path.join(scratch, "ncc-relocate-trace-#{System.unique_integer([:positive])}")
     slots = Map.take(layout, ["deps", "build"])
 
     try do
-      with :ok <- copy_project(project_dir, proj, held.slots, slots),
+      with :ok <- copy_project(project_dir, layout["project"], held.slots, slots),
            slots = Map.new(slots, fn {k, v} -> {k, Context.realpath(v)} end),
-           {:ok, _} = before <- digest.(held.build) do
-        second = run.(proj, package, second_opts(opts, root, slots, held))
-        later = digest.(held.build)
-        decide(verdict, held, second, slots, {before, later})
+           {:ok, _} = before <- job.digest.(held.build) do
+        second = job.run.(layout["project"], package, second_opts(opts, trace, slots, held))
+        later = job.digest.(held.build)
+        decide(held, second, slots, {before, later})
       else
-        {:error, why} -> refused(verdict, "second build: #{inspect(why)}")
-        other -> refused(verdict, "second build: #{inspect(other, limit: 5)}")
+        {:error, why} -> {:refuse, "second build: #{inspect(why)}"}
+        other -> {:refuse, "second build: #{inspect(other, limit: 5)}"}
       end
+    rescue
+      e -> {:refuse, "second build failed: " <> Exception.message(e)}
     after
-      File.rm_rf(root)
+      File.rm_rf(run_dir)
+      File.rm_rf(trace)
     end
+  end
+
+  # The run-unique top dir of a layout: the component that names the run
+  # token, and everything under it.
+  defp run_dir(%{"project" => project}) do
+    project
+    |> Path.split()
+    |> Enum.reduce_while([], fn part, acc ->
+      acc = acc ++ [part]
+      if part =~ ~r/\A(ncc-relocate-|Ncc-Relocate )[0-9]+\z/, do: {:halt, acc}, else: {:cont, acc}
+    end)
+    |> Path.join()
   end
 
   # The project's own files, but the first build's deps and build dirs, and
@@ -285,6 +370,7 @@ defmodule NccWorker.Portability.Relocate do
       File.cp_r!(source, Path.join(proj, name))
     end
 
+    File.mkdir_p!(Path.dirname(to["deps"]))
     File.cp_r!(from["deps"], to["deps"])
     File.mkdir_p!(to["build"])
     :ok
@@ -297,7 +383,7 @@ defmodule NccWorker.Portability.Relocate do
   # snapshot (one taken now would be after the first compile, which wrote
   # leex and yecc output into the sources), no second build of its own and
   # the holders patterned.
-  defp second_opts(opts, root, slots, held) do
+  defp second_opts(opts, trace, slots, held) do
     opts
     |> Keyword.drop([:trees, :trace_dir, :log_file, :mode, :env, :extra_env, :relocate])
     |> Keyword.merge(
@@ -305,8 +391,8 @@ defmodule NccWorker.Portability.Relocate do
       extra_env: paths(Keyword.get(opts, :extra_env, []), slots, false),
       mode: :judge,
       trees: held.trees,
-      trace_dir: Path.join(root, "trace"),
-      log_file: Path.join(root, "compile.log"),
+      trace_dir: Path.join(trace, "trace"),
+      log_file: Path.join(trace, "compile.log"),
       priv_repro: false,
       relocate: :second,
       holders: held.holders
@@ -322,10 +408,10 @@ defmodule NccWorker.Portability.Relocate do
     end)
   end
 
-  defp decide(verdict, held, second, slots, digests) do
+  defp decide(held, second, slots, digests) do
     case second_problem(held, second, digests) do
-      nil -> prove(verdict, held, second.relocate, slots)
-      why -> refused(verdict, why)
+      nil -> prove(held, second.relocate, slots)
+      why -> {:refuse, why}
     end
   end
 
@@ -348,6 +434,7 @@ defmodule NccWorker.Portability.Relocate do
       other.passed.status != :pass -> "the second build's pass differs"
       facts(other.passed) != facts(held.passed) -> "the second build's pass differs"
       not same_digest?(digests) -> "the first build changed while the second ran"
+      why = same_trees(held.dirs, other.dirs) -> why
       true -> nil
     end
   end
@@ -362,7 +449,7 @@ defmodule NccWorker.Portability.Relocate do
   # md5, a path through a channel no holder pattern sees) differs at the
   # two roots, and a package that was not held may differ only where R2
   # already allows a path (a `keep` location, a line table's file name).
-  defp prove(verdict, held, other, slots) do
+  defp prove(held, other, slots) do
     Enum.uniq(held.apps ++ [held.package])
     |> Enum.reduce_while({:ok, %{}}, fn app, {:ok, acc} ->
       with {:ok, a} <- read_ebin(held.ebins[app]),
@@ -375,31 +462,118 @@ defmodule NccWorker.Portability.Relocate do
       end
     end)
     |> case do
-      {:ok, relocated} -> pass(held, own(held, relocated), slots)
-      {:refuse, why} -> refused(verdict, why)
+      {:ok, relocated} -> {:ok, slots, relocated}
+      {:refuse, why} -> {:refuse, why}
     end
   end
 
   # The package's own beams to rewrite, when it was held for its own R2
-  # refusal; nil when only dependencies were.
-  defp own(held, relocated),
-    do: if(held.package in held.apps, do: relocated[held.package])
+  # refusal: the same at the second root and the third, which they always
+  # are (both derive from the first build's beams and paths).
+  defp pass(held, {second, at_second}, {third, at_third}) do
+    own = at_second[held.package]
 
-  defp pass(held, own, second) when is_map(own) and map_size(own) > 0 do
-    record = %{
-      "deps" => held.slots["deps"],
-      "build" => held.slots["build"],
-      "second" => second,
-      "files" =>
-        for {name, occs} <- Enum.sort(own) do
-          %{"path" => "ebin/" <> name, "occurrences" => occs}
-        end
-    }
+    cond do
+      not (is_map(own) and map_size(own) > 0) ->
+        {:refuse, "the package holds no path"}
 
-    held.passed |> Map.put(:relocation, record) |> put_stat("relocate", "relocated")
+      own != at_third[held.package] ->
+        {:refuse, "the second and third roots recorded other occurrences"}
+
+      true ->
+        record = %{
+          "deps" => held.slots["deps"],
+          "build" => held.slots["build"],
+          "second" => second,
+          "third" => third,
+          "files" =>
+            for {name, occs} <- Enum.sort(own) do
+              %{"path" => "ebin/" <> name, "occurrences" => occs}
+            end
+        }
+
+        held.passed |> Map.put(:relocation, record) |> put_stat("relocate", "relocated")
+    end
   end
 
-  defp pass(held, _own, _second), do: put_stat(held.passed, "relocate", "dependencies")
+  # Only dependencies were held: the package is a plain pass.
+  defp pass(held, {_second, _relocated}, nil),
+    do: put_stat(held.passed, "relocate", "dependencies")
+
+  # The umbrella re-review's R2: a dependency's own build tool (GNU make,
+  # given a path with a space) can write its output somewhere else and still
+  # exit 0. Every closure app's source dir and build dir must list the same
+  # files, by relative path and type, after an extra build as after the
+  # first; a NIF the extra build did not put in place, or a stray file it
+  # put in the wrong place, refuses.
+  defp same_trees(first, other) do
+    Enum.find_value(Enum.sort(first), fn {app, {dest, build}} ->
+      case Map.get(other, app) do
+        {other_dest, other_build} ->
+          tree_problem(app, "sources", dest, other_dest) ||
+            tree_problem(app, "build", build, other_build)
+
+        nil ->
+          "the second build has no #{app}"
+      end
+    end)
+  end
+
+  defp tree_problem(app, what, a, b) do
+    case {listing(a), listing(b)} do
+      {{:ok, same}, {:ok, same}} -> nil
+      {{:ok, _}, {:ok, _}} -> "#{app}'s #{what} differ in the second build"
+      _ -> "#{app}'s #{what} could not be listed"
+    end
+  end
+
+  @max_listing 100_000
+
+  # `rel => type` of everything under `dir`, links not followed; a missing
+  # dir lists nothing.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp listing(nil), do: {:ok, %{}}
+
+  defp listing(dir) do
+    case File.lstat(dir) do
+      {:ok, %File.Stat{type: :directory}} -> walk(dir, "", %{})
+      {:error, :enoent} -> {:ok, %{}}
+      _ -> :error
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp walk(dir, rel, acc) do
+    case File.ls(Path.join(dir, rel)) do
+      {:ok, names} ->
+        Enum.reduce_while(Enum.sort(names), {:ok, acc}, &walk_entry(dir, rel, &1, &2))
+
+      _ ->
+        :error
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp walk_entry(dir, rel, name, {:ok, acc}) do
+    entry = if rel == "", do: name, else: Path.join(rel, name)
+
+    case File.lstat(Path.join(dir, entry)) do
+      {:ok, _} when map_size(acc) >= @max_listing ->
+        {:halt, :error}
+
+      {:ok, %File.Stat{type: :directory}} ->
+        walked(walk(dir, entry, Map.put(acc, entry, :directory)))
+
+      {:ok, %File.Stat{type: type}} ->
+        {:cont, {:ok, Map.put(acc, entry, type)}}
+
+      _ ->
+        {:halt, :error}
+    end
+  end
+
+  defp walked({:ok, _} = ok), do: {:cont, ok}
+  defp walked(:error), do: {:halt, :error}
 
   # sobelow_skip ["Traversal.FileModule"]
   defp read_ebin(ebin) when is_binary(ebin) do
