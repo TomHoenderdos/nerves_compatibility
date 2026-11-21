@@ -281,7 +281,6 @@ defmodule NccWorker.Tracer do
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   # The modules a bare VM of this toolchain has loaded once it runs code
   # (`elixir -e`, with the compile's own environment): erts's, kernel's,
   # stdlib's and Elixir's boot. The tracer takes as loaded for the user only
@@ -300,6 +299,7 @@ defmodule NccWorker.Tracer do
     e -> {:error, {:base_loaded, Exception.message(e)}}
   end
 
+  # sobelow_skip ["Traversal.FileModule"]
   defp reset(dir) do
     # A sealed ebin left by an earlier run cannot be emptied until writable.
     _ = File.chmod(Path.join(dir, "ebin"), 0o755)
