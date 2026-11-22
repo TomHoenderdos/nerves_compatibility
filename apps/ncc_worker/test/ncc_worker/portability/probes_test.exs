@@ -874,6 +874,67 @@ defmodule NccWorker.Portability.ProbesTest do
       assert {:refuse, _} = Probes.decide(probe, %{c | hex: release.("1.3.0")}, "pkg")
     end
 
+    # Coverage drop 2026-11-22, F2: LiveView's
+    # `Phoenix.Component.Declarative.__global__?/3` asks
+    # `function_exported?(module, :__global__?, 1)` of the component module
+    # it verifies, from that module's own `@after_verify` callback, which
+    # Elixir runs in the type checker's process after the beam is written.
+    # The answer only picks whether an "undefined attribute" warning prints
+    # (phoenix_live_dashboard 0.9.1's NavBarComponent, PageLive and
+    # ModalComponent, a real traced build with LiveView 1.2.15).
+    test "LiveView's __global__?/3 in the checker's process is a reviewed warnings-only site",
+         %{tmp_dir: dir} do
+      declarative = "Elixir.Phoenix.Component.Declarative"
+      component = "Elixir.Phoenix.LiveDashboard.NavBarComponent"
+
+      c =
+        dir
+        |> ctx(%{"phoenix_live_dashboard" => ["kernel"], "phoenix_live_view" => ["kernel"]})
+        |> with_modules(%{
+          declarative => "phoenix_live_view",
+          component => "phoenix_live_dashboard"
+        })
+
+      c = put_in(c.deps["phoenix_live_dashboard"].children, ["phoenix_live_view"])
+      release = &{nil, %{"phoenix_live_view" => %{name: "phoenix_live_view", version: &1}}}
+      c = %{c | hex: release.("1.2.15")}
+      checker = frame("Elixir.Module.ParallelChecker", "-spawn_checker/7-fun-0-", 7)
+
+      probe =
+        component
+        |> hex(mfa: "erlang:function_exported/3", caller: frame(declarative, "__global__?", 3))
+        |> Map.put("bottom", checker)
+
+      owner = "phoenix_live_dashboard"
+      assert Probes.decide(probe, c, owner) == :ignore
+      # Elixir 1.19's checker process (`inner_spawn/6`).
+      older = put_in(probe["bottom"]["function"], "-inner_spawn/6-fun-0-")
+      assert Probes.decide(older, c, owner) == :ignore
+      assert Probes.decide(probe, %{c | hex: release.("0.20.0")}, owner) == :ignore
+
+      # Not in the checker's process (a module body calling the public
+      # function), no bottom frame, another function or arity, a release
+      # outside the reviewed range, the caller's module built by another
+      # application, or another probe function: refused as before.
+      for {event, ctx} <- [
+            {put_in(
+               probe["bottom"],
+               frame("Elixir.Kernel.ParallelCompiler", "-spawn_workers/8-fun-0-", 8)
+             ), c},
+            {Map.delete(probe, "bottom"), c},
+            {put_in(probe["caller"]["function"], "__global__"), c},
+            {put_in(probe["caller"]["arity"], 1), c},
+            {probe, %{c | hex: release.("0.19.5")}},
+            {probe, %{c | hex: release.("1.2.16")}},
+            {probe, %{c | hex: release.("1.3.0")}},
+            {probe, %{c | modules: Map.put(c.modules, declarative, owner)}},
+            {%{probe | "mfa" => "erlang:module_loaded/1"}, c}
+          ] do
+        assert {:refuse, _} = Probes.decide(event, ctx, owner),
+               inspect(Map.take(event, ["caller", "bottom"]))
+      end
+    end
+
     # An installed OTP module on the owner's path is the same: listed, it
     # can be found, but whether it is loaded is the earlier compiles' doing.
     test "an on-path OTP module's loaded-now probe refuses unless ensured first",

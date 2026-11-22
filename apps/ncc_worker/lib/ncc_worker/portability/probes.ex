@@ -192,7 +192,10 @@ defmodule NccWorker.Portability.Probes do
   process ensure-loaded it earlier (`ensured`), or the probe comes right
   after a reviewed call site's own direct call of the module
   (`@reviewed_direct_calls`: plug's `init_module_plug/4`, LiveView's tag
-  engine). The owner's own module is no exception: whether another file's
+  engine), or is made at a reviewed site whose answer reaches only a
+  warning, in the type checker's process (`@reviewed_warning_sites`:
+  LiveView's `__global__?/3`, from a component's `@after_verify`, which
+  Elixir runs after the beam is written). The owner's own module is no exception: whether another file's
   compile-time code called into it first is the parallel compiler's
   schedule (round 3, R2-2). A module loaded before the tracer started, or by Mix in every
   compile, is loaded either way and never traced.
@@ -239,6 +242,25 @@ defmodule NccWorker.Portability.Probes do
     {"Elixir.Phoenix.LiveView.TagEngine.Compiler", "maybe_anno_caller", 5, "phoenix_live_view",
      {"1.2.0", "1.2.15"}}
   ]
+  # Call sites whose loaded-now probe's answer reaches only a warning, in
+  # the type checker's verification process (the probe's bottom frame is
+  # `Module.ParallelChecker`'s, which runs a module's `@after_verify`
+  # callbacks after its beam is written), reviewed in every release of the
+  # range (coverage drop 2026-11-22, F2). phoenix_live_view's
+  # `Phoenix.Component.Declarative.__global__?/3` asks
+  # `function_exported?(module, :__global__?, 1)` of the component module
+  # its private `verify/3` checks, called from that module's own
+  # `@after_verify` (`__phoenix_component_verify__/1`), and the answer only
+  # filters which attributes get an "undefined attribute" warning; `verify/3`'s
+  # result is dropped, and dependencies compile with
+  # `--no-warnings-as-errors`. The body and the call site are the same in
+  # every release 0.20.0 to 1.2.15 (read 2026-11-22). The process check
+  # keeps out a module body that calls the public function itself.
+  @reviewed_warning_sites [
+    {"Elixir.Phoenix.Component.Declarative", "__global__?", 3, "phoenix_live_view",
+     {"0.20.0", "1.2.15"}}
+  ]
+  @checker_process "Elixir.Module.ParallelChecker"
   # The stacks the tracer judged (`NccWorker.Portability.Events`).
   @extents ~w(frame dispatcher truncated lineage)
 
@@ -527,7 +549,8 @@ defmodule NccWorker.Portability.Probes do
     module = event["arg"]["module"]
 
     if event["mfa"] in @path_probes or event["arg"]["by_package"] != true or
-         ensured?(event, ctx, owner) or reviewed_direct_call?(event, ctx, owner),
+         ensured?(event, ctx, owner) or reviewed_direct_call?(event, ctx, owner) or
+         reviewed_warning_site?(event, ctx, owner),
        do: :ignore,
        else: {:refuse, Reasons.loaded_probe() <> "#{module} via #{via(event)}"}
   end
@@ -550,6 +573,25 @@ defmodule NccWorker.Portability.Probes do
   end
 
   defp reviewed_direct_call?(_event, _ctx, _owner), do: false
+
+  # A reviewed warnings-only site (`@reviewed_warning_sites`): matched as a
+  # direct-call site is, and made in the type checker's process.
+  defp reviewed_warning_site?(
+         %{
+           "mfa" => "erlang:function_exported/3",
+           "caller" => %{"module" => m, "function" => f, "arity" => a},
+           "bottom" => %{"module" => @checker_process}
+         },
+         ctx,
+         owner
+       ) do
+    Enum.any?(@reviewed_warning_sites, fn {rm, rf, ra, app, range} ->
+      {m, f, a} == {rm, rf, ra} and Map.get(ctx.modules, m) == app and
+        app in Context.closure_of(ctx, owner) and reviewed_release?(ctx, app, range)
+    end)
+  end
+
+  defp reviewed_warning_site?(_event, _ctx, _owner), do: false
 
   defp reviewed_release?(%Context{hex: {_home, releases}}, app, {oldest, newest}) do
     with %{version: v} when is_binary(v) <- Map.get(releases, app),
