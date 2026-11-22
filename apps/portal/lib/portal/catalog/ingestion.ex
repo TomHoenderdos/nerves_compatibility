@@ -1325,25 +1325,41 @@ defmodule Portal.Catalog.Ingestion do
   # only a declared, absent dependency defines, which another popular
   # package defines too (`Portal.Catalog.ModuleIndex.refusal/2`), is a
   # refusal like the judge's own: skipped, no files.
+  #
+  # S10: first each module `probe` compile input gets every popular definer
+  # the index shows (`ModuleIndex.settle_inputs/1`; refused while the index
+  # is not complete), and a declared-absent record whose collision the
+  # settled input names passes: client 0.9 checks its project for them.
   defp gate_declared_absent(%{"status" => "pass"} = build) do
-    case ModuleIndex.refusal(declared_absent(build), locked_names(build["deps_lock"])) do
-      nil ->
-        build
-
-      reason ->
-        Map.merge(build, %{
-          "status" => "skipped",
-          "reason" => reason,
-          "file_manifest" => nil,
-          "compile_env" => nil,
-          "compile_inputs" => nil,
-          "foreign_priv" => nil,
-          "foreign_priv_rule" => nil
-        })
+    with {:ok, inputs} <- ModuleIndex.settle_inputs(build["compile_inputs"]),
+         build = put_settled(build, inputs),
+         nil <-
+           ModuleIndex.refusal(declared_absent(build), locked_names(build["deps_lock"]), inputs) do
+      build
+    else
+      {:refuse, reason} -> declared_absent_skip(build, reason)
+      reason when is_binary(reason) -> declared_absent_skip(build, reason)
     end
   end
 
   defp gate_declared_absent(build), do: build
+
+  defp declared_absent_skip(build, reason),
+    do:
+      Map.merge(build, %{
+        "status" => "skipped",
+        "reason" => reason,
+        "file_manifest" => nil,
+        "compile_env" => nil,
+        "compile_inputs" => nil,
+        "foreign_priv" => nil,
+        "foreign_priv_rule" => nil
+      })
+
+  defp put_settled(build, inputs) when is_map_key(build, "compile_inputs"),
+    do: Map.put(build, "compile_inputs", inputs)
+
+  defp put_settled(build, _inputs), do: build
 
   defp declared_absent(%{"compile_observations" => %{"declared_absent" => items}})
        when is_list(items),
@@ -1356,13 +1372,25 @@ defmodule Portal.Catalog.Ingestion do
 
   # A `pure_elixir` result keeps its run's `host_portability` record (round
   # 6, R5-6), for `ModuleIndex.recheck/1`.
+  # S10: and its module probe inputs settled, as a toolchain build's are; one
+  # the index cannot settle stays as it is, and `declared_absent_hold/1`
+  # holds the result.
   defp with_pure_elixir_record(%{"pure_elixir" => %{} = pe} = systems, result) do
+    pe =
+      case ModuleIndex.settle_inputs(pe["compile_inputs"]) do
+        {:ok, inputs} when is_map_key(pe, "compile_inputs") ->
+          Map.put(pe, "compile_inputs", inputs)
+
+        _ ->
+          pe
+      end
+
     case get_in(result, ["host_portability", "compile_observations", "declared_absent"]) do
       items when is_list(items) and items != [] ->
         Map.put(systems, "pure_elixir", Map.put(pe, "declared_absent", items))
 
       _ ->
-        systems
+        Map.put(systems, "pure_elixir", pe)
     end
   end
 
@@ -1374,9 +1402,14 @@ defmodule Portal.Catalog.Ingestion do
   # The same refusal for a run's `pure_elixir` result, which the judge
   # passed (`host_portability`): held back as unpublished, with the reason.
   defp declared_absent_hold(%{"host_portability" => %{"status" => "pass"} = hp} = result) do
-    case ModuleIndex.refusal(declared_absent(hp), locked_names(result["deps_lock"])) do
-      nil -> nil
-      reason -> {DateTime.utc_now(), reason}
+    with {:ok, inputs} <-
+           ModuleIndex.settle_inputs(get_in(result, ["systems", "pure_elixir", "compile_inputs"])),
+         nil <-
+           ModuleIndex.refusal(declared_absent(hp), locked_names(result["deps_lock"]), inputs) do
+      nil
+    else
+      {:refuse, reason} -> {DateTime.utc_now(), reason}
+      reason when is_binary(reason) -> {DateTime.utc_now(), reason}
     end
   end
 

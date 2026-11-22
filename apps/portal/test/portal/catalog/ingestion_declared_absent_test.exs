@@ -68,7 +68,7 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
     :ok
   end
 
-  defp toolchain!(observations, lock \\ %{}) do
+  defp toolchain!(observations, lock \\ %{}, inputs \\ []) do
     name = "abs_#{System.unique_integer([:positive])}"
 
     result = %{
@@ -84,7 +84,7 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
         "deps_lock" => lock,
         "package_checksum" => "outer",
         "compile_env" => [],
-        "compile_inputs" => [],
+        "compile_inputs" => inputs,
         "file_manifest" => nil,
         "compile_observations" => observations
       }
@@ -198,5 +198,82 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
 
     assert sr.unpublished_reason =~
              "Elixir.Money via Code.ensure_loaded?/1 (also defined by money)"
+  end
+
+  # S10: the worker's module probe inputs, settled at ingest: every popular
+  # definer the index shows joins `definers`, and a declared-absent record
+  # whose collision the settled input names passes for client 0.9.
+  describe "module probe inputs" do
+    defp probe(definers),
+      do: %{
+        "kind" => "probe",
+        "of" => "module",
+        "name" => "Elixir.Money",
+        "answer" => "absent",
+        "definers" => definers
+      }
+
+    test "a probe input gets every popular definer, and the colliding record passes" do
+      tb = toolchain!(%{"declared_absent" => [@money]}, %{}, [probe(["ex_money"])])
+
+      assert tb.status == :pass
+      assert tb.compile_inputs == [probe(["ex_money", "money"])]
+    end
+
+    test "a probe input alone gets them too" do
+      tb = toolchain!(%{}, %{}, [probe([])])
+      assert tb.status == :pass
+      assert tb.compile_inputs == [probe(["ex_money", "money"])]
+    end
+
+    test "a probe input refuses while the index is not complete" do
+      Repo.query!("UPDATE catalog_module_index_runs SET complete = false")
+      Repo.query!("DELETE FROM catalog_module_index_packages WHERE package = 'money'")
+
+      tb = toolchain!(%{}, %{}, [probe([])])
+      assert tb.status == :skipped
+
+      assert tb.reason ==
+               "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
+                 "a probe (module index not complete)"
+
+      assert tb.compile_inputs == nil
+    end
+
+    test "a pure_elixir result's probe input is settled, and its record passes" do
+      name = "abs_pe_probe_#{System.unique_integer([:positive])}"
+
+      result = %{
+        "package" => %{"name" => name, "version" => "1.0.0"},
+        "finished_at" => "2026-11-21T10:00:00Z",
+        "scope" => "full",
+        "systems" => %{
+          "pure_elixir" => %{"status" => "pass", "compile_inputs" => [probe(["ex_money"])]}
+        },
+        "host_portability" => %{
+          "status" => "pass",
+          "reason" => nil,
+          "portability_rule" => 2,
+          "compile_observations" => %{"declared_absent" => [@money]}
+        }
+      }
+
+      {:ok, run} =
+        Ingestion.ingest(result, %{
+          package: name,
+          version: "1.0.0",
+          run_id: "r-#{System.unique_integer([:positive])}",
+          image_digest: "sha256:x",
+          files_dir: System.tmp_dir!()
+        })
+
+      [sr] =
+        SystemResult
+        |> Ash.Query.filter(run_id == ^run.id and system_pkg == "pure_elixir")
+        |> Ash.read!(domain: @domain)
+
+      assert sr.unpublished_at == nil
+      assert sr.compile_inputs == [probe(["ex_money", "money"])]
+    end
   end
 end
