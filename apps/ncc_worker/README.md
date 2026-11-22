@@ -774,7 +774,9 @@ of these skips the build:
   plugin from Hex (rebar3_hex, rebar3_ex_doc, rebar3_lint, rebar3_proper, coveralls, covertool: `Rebar`'s
   `@reviewed_plugins`) runs in the traced child VM instead, and its code's reads, writes and network use are judged like
   any compile code. rebar3 resolves a plugin and its dependencies from its own registry cache and no lock names them, so
-  every release it installed under the app's `_build/*/plugins` must be one reviewed to only register providers, pinned
+  every release it installed under the app's `_build/*/plugins` (and `<base_dir>/*/plugins` when the
+  `mix.rebar.config` rebar3 read, or the compile's `REBAR_BASE_DIR`, sets another `base_dir`: jhn_stdlib's `.build`; one
+  that is not a relative path inside the app's dir could not be judged) must be one reviewed to only register providers, pinned
   by version and Hex outer checksum (`Compatibility.RebarPlugins.pins/0`, 205 releases): its cached tarball in
   rebar3's cache (`REBAR_CACHE_DIR` or `$HOME/.cache/rebar3`) hashes to the pin and its dir holds exactly that tarball's
   files plus its own compiled `ebin`. Any other release refuses (`rebar3 build runs plugin <name> <version>, a release not

@@ -73,6 +73,7 @@ defmodule NccWorker.Portability.Context do
     trees: %{},
     hook_scripts: %{},
     rebar_cache: nil,
+    rebar_base: nil,
     moved_deps: [],
     drivers: %{},
     foreign_priv: nil,
@@ -108,6 +109,7 @@ defmodule NccWorker.Portability.Context do
           trees: %{String.t() => Trees.tree()},
           hook_scripts: %{String.t() => String.t()},
           rebar_cache: String.t() | nil,
+          rebar_base: String.t() | nil,
           moved_deps: [{String.t(), String.t()}],
           deps_path: String.t() | nil,
           drivers: %{String.t() => String.t()},
@@ -140,6 +142,9 @@ defmodule NccWorker.Portability.Context do
       tarballs of the plugins it installed
       (`NccWorker.Portability.RebarPlugins`); without it no installed
       plugin can be judged;
+    * `:rebar_base`, the compile's `REBAR_BASE_DIR`, which rebar3 builds
+      every rebar3 app under instead of its config's `base_dir`
+      (`NccWorker.Portability.Rebar.base_dirs/2`); unset, `nil`;
     * `:moved_deps`, the dirs the compile's deps dir was moved from before
       it ran (a firmware target's trace compiles the run's `deps/` renamed
       to `deps_<target>`, `NccWorker.FirmwareInputs`), each paired with the
@@ -170,6 +175,7 @@ defmodule NccWorker.Portability.Context do
       trees: trees(Keyword.get(opts, :trees)),
       hook_scripts: trees(Keyword.get(opts, :hook_scripts)),
       rebar_cache: rebar_cache(Keyword.get(opts, :rebar_cache)),
+      rebar_base: rebar_cache(Keyword.get(opts, :rebar_base)),
       deps_path: install_root(Keyword.get(opts, :deps_path) || Path.join(project_dir, "deps")),
       drivers: drivers(report.sentinels),
       holders: holders(Keyword.get(opts, :holders)),

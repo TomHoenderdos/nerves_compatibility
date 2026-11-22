@@ -2120,6 +2120,54 @@ defmodule NccWorker.Portability.JudgeTest do
              ]
     end
 
+    # Coverage drop 2026-11-22, F9: jhn_stdlib 5.12.8's rebar.config sets
+    # `{base_dir, ".build"}`, so rebar3 installs its plugins under
+    # `.build/default/plugins` (linked from `.build/prod/plugins`), and the
+    # check finds them there, by the mix.rebar.config rebar3 read.
+    test "a dependency's plugins under the base_dir its config sets are judged",
+         %{proj: proj} do
+      File.write!(
+        Path.join([proj, "deps/dep/rebar.config"]),
+        ~s({base_dir, ".build"}.\n{plugins, [rebar3_ex_doc]}.\n)
+      )
+
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      cache = Path.join(Path.dirname(proj), "rebar3-cache")
+      opts = rebar_opts(proj, ["dep"]) ++ [rebar_cache: cache]
+
+      dir = Path.join(proj, "deps/dep/.build/default/plugins/rebar3_ex_doc")
+      File.mkdir_p!(Path.join(dir, "ebin"))
+
+      File.write!(
+        Path.join(dir, "hex_metadata.config"),
+        ~s({<<"name">>,<<"rebar3_ex_doc">>}.\n{<<"version">>,<<"0.3.99">>}.\n)
+      )
+
+      prod = Path.join(proj, "deps/dep/.build/prod/plugins")
+      File.mkdir_p!(prod)
+      File.ln_s!(dir, Path.join(prod, "rebar3_ex_doc"))
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (rebar3 build runs plugin " <>
+                   "rebar3_ex_doc 0.3.99, a release not reviewed)",
+               observations: obs
+             } = judge(proj, r, opts)
+
+      assert [%{"name" => "rebar3_ex_doc", "version" => "0.3.99"}] = obs["rebar3_plugins"]
+
+      # A base_dir that cannot be judged could not be judged, as before.
+      File.write!(
+        Path.join(proj, "_build/host/lib/dep/mix.rebar.config"),
+        ~s({base_dir, "../elsewhere"}.\n{plugins, [rebar3_ex_doc]}.\n)
+      )
+
+      assert %{status: :skip, reason: @cnj, observations: obs} = judge(proj, r, opts)
+
+      assert Enum.any?(obs["problems"], &(&1 =~ "rebar3 base_dir cannot be judged")),
+             inspect(obs["problems"])
+    end
+
     # S8 pilot (F382): a firmware target's trace compiles the run's `deps/`
     # renamed to `deps_<target>`, so the `prod` profile's absolute link to a
     # plugin names the old deps dir. `moved_deps:` (the dirs the trace's deps

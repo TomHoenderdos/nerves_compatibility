@@ -420,6 +420,103 @@ defmodule NccWorker.Portability.RebarPluginsTest do
     assert rebar_cache.([{"REBAR_CACHE_DIR", ""}, {"HOME", nil}]) == nil
   end
 
+  # Coverage drop 2026-11-22, F9: rebar3 keeps its build, plugins included,
+  # under the `base_dir` its config sets (`<base_dir>/<profile>/plugins`),
+  # relative to the app's dir, and the compile's `REBAR_BASE_DIR` wins over
+  # the config. `_build` is always judged too: a plugin planted there is
+  # held to the pins as before.
+  describe "base_dir" do
+    alias NccWorker.Portability.Rebar
+
+    defp config(root, text) do
+      path = Path.join(root, "mix.rebar.config")
+      File.write!(path, text)
+      path
+    end
+
+    test "the dirs rebar3 builds under", %{tmp_dir: root} do
+      assert Rebar.base_dirs(nil, nil) == {:ok, ["_build"]}
+      assert Rebar.base_dirs(Path.join(root, "absent"), nil) == {:ok, ["_build"]}
+      assert Rebar.base_dirs(config(root, "{erl_opts, []}.\n"), nil) == {:ok, ["_build"]}
+
+      for text <- [
+            ~s({base_dir, ".build"}.\n),
+            ~s({base_dir, <<".build">>}.\n),
+            ~s({base_dir, "./.build/"}.\n),
+            ~s({profiles, [{prod, [{base_dir, ".build"}]}]}.\n)
+          ] do
+        assert Rebar.base_dirs(config(root, text), nil) == {:ok, ["_build", ".build"]}, text
+      end
+
+      # A profile rebar3 does not apply here names nothing.
+      assert Rebar.base_dirs(config(root, ~s({profiles, [{test, [{base_dir, "t"}]}]}.\n)), nil) ==
+               {:ok, ["_build"]}
+
+      # The compile's REBAR_BASE_DIR wins over the config.
+      assert Rebar.base_dirs(config(root, ~s({base_dir, ".build"}.\n)), "out") ==
+               {:ok, ["_build", "out"]}
+    end
+
+    test "a base_dir that cannot be judged", %{tmp_dir: root} do
+      for text <- [
+            ~s({base_dir, "/abs"}.\n),
+            ~s({base_dir, "../up"}.\n),
+            ~s({base_dir, "a/../../up"}.\n),
+            ~s({base_dir, ""}.\n),
+            ~s({base_dir, build}.\n),
+            ~s({base_dir, ".a"}.\n{profiles, [{prod, [{base_dir, ".b"}]}]}.\n),
+            "{base_dir, \n"
+          ] do
+        assert {:unjudged, "rebar3 base_dir cannot be judged" <> _} =
+                 Rebar.base_dirs(config(root, text), nil),
+               text
+      end
+
+      assert {:unjudged, "rebar3 base_dir cannot be judged" <> _} =
+               Rebar.base_dirs(nil, "/abs")
+    end
+
+    test "plugins under the base_dir are judged, and under _build still", %{tmp_dir: root} do
+      i = install(root, "fx_plugin", "1.0.0")
+      pins = pins("fx_plugin", "1.0.0", i.sha)
+      File.rename!(Path.join(i.dest, "_build"), Path.join(i.dest, ".build"))
+      prod = Path.join([i.dest, ".build", "prod", "plugins", "fx_plugin"])
+      File.rm!(prod)
+      File.ln_s!(Path.join([i.dest, ".build", "default", "plugins", "fx_plugin"]), prod)
+
+      assert {:unjudged, "rebar3 plugin fx_plugin is named but not installed"} =
+               RebarPlugins.check(i.dest, i.cache, ["fx_plugin"], pins)
+
+      bases = ["_build", ".build"]
+      assert RebarPlugins.check(i.dest, i.cache, ["fx_plugin"], pins, [], bases) == :ok
+
+      assert [%{"name" => "fx_plugin", "version" => "1.0.0"}] =
+               RebarPlugins.releases(i.dest, i.cache, [], bases)
+
+      # A link out of the base_dir it sits in cannot be judged.
+      File.rm!(prod)
+      File.ln_s!(i.dir <> "-elsewhere", prod)
+      File.mkdir_p!(i.dir <> "-elsewhere")
+
+      assert {:refuse, "rebar3 build runs a plugin from a dir it cannot judge (fx_plugin)"} =
+               RebarPlugins.check(i.dest, i.cache, ["fx_plugin"], pins, [], bases)
+
+      # A release planted under _build is judged as before.
+      File.rm!(prod)
+      File.ln_s!(Path.join([i.dest, ".build", "default", "plugins", "fx_plugin"]), prod)
+      planted = Path.join([i.dest, "_build", "default", "plugins", "fx_plugin"])
+      File.mkdir_p!(planted)
+
+      File.write!(
+        Path.join(planted, "hex_metadata.config"),
+        "{<<\"name\">>,<<\"fx_plugin\">>}.\n"
+      )
+
+      assert {:refuse, "rebar3 build runs a plugin from a dir it cannot judge (fx_plugin)"} =
+               RebarPlugins.check(i.dest, i.cache, ["fx_plugin"], pins, [], bases)
+    end
+  end
+
   test "no plugins installed and none named passes", %{tmp_dir: root} do
     assert RebarPlugins.check(Path.join(root, "nothing"), nil, []) == :ok
 

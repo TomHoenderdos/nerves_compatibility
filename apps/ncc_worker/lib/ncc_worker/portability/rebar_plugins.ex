@@ -34,8 +34,10 @@ defmodule NccWorker.Portability.RebarPlugins do
       or left out.
 
   Every entry of every `_build/<profile>/plugins` dir is judged (a link must
-  name a plugin dir of the same name under `_build`), and every reviewed
-  plugin the app's config names must be installed. A dir that cannot be
+  name a plugin dir of the same name under `_build`), and the same under the
+  `base_dir` the app's config sets (`NccWorker.Portability.Rebar.base_dirs/2`:
+  jhn_stdlib's `.build`), and every reviewed plugin the app's config names
+  must be installed. A dir that cannot be
   read, a missing tarball or an unknown cache dir cannot be judged.
 
   A new release of a plugin or of one of its dependencies refuses until it
@@ -68,10 +70,10 @@ defmodule NccWorker.Portability.RebarPlugins do
   link into `from` is read at `to` (a firmware target's trace, S8 pilot
   F382), and judged there as any.
   """
-  @spec check(String.t(), String.t() | nil, [String.t()], map()) ::
+  @spec check(String.t(), String.t() | nil, [String.t()], map(), list(), [String.t()]) ::
           :ok | {:refuse, String.t()} | {:unjudged, String.t()}
-  def check(dest, cache, named, pins \\ pins(), moved \\ []) do
-    with {:ok, installed} <- installed(dest, moved),
+  def check(dest, cache, named, pins \\ pins(), moved \\ [], bases \\ ["_build"]) do
+    with {:ok, installed} <- installed(dest, moved, bases),
          :ok <- all_named(named, installed) do
       installed
       |> Enum.sort()
@@ -110,9 +112,9 @@ defmodule NccWorker.Portability.RebarPlugins do
   tarball in `cache` (nil when it cannot be read), sorted by name, pinned or
   not; `[]` when nothing can be read. Only a record: `check/4` judges.
   """
-  @spec releases(String.t(), String.t() | nil) :: [map()]
-  def releases(dest, cache, moved \\ []) do
-    case installed(dest, moved) do
+  @spec releases(String.t(), String.t() | nil, list(), [String.t()]) :: [map()]
+  def releases(dest, cache, moved \\ [], bases \\ ["_build"]) do
+    case installed(dest, moved, bases) do
       {:ok, installed} ->
         for {name, dir} <- Enum.sort(installed),
             {:ok, version} <- [metadata_version(name, dir)],
@@ -144,11 +146,27 @@ defmodule NccWorker.Portability.RebarPlugins do
     end
   end
 
-  # `%{name => real dir}` of every plugin under `dest/_build/*/plugins`.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp installed(dest, moved) do
-    build = Path.join(dest, "_build")
+  # `%{name => real dir}` of every plugin under `dest/<base>/*/plugins`, for
+  # each of `bases` (`Rebar.base_dirs/2`: `_build`, and the `base_dir`
+  # rebar3 built the app under, coverage drop 2026-11-22, F9). A name found
+  # in two dirs that are not one dir cannot be judged.
+  defp installed(dest, moved, bases) do
+    Enum.reduce_while(bases, {:ok, %{}}, fn base, {:ok, acc} ->
+      case installed_under(Path.join(dest, base), moved) do
+        {:ok, found} ->
+          case merge(acc, found) do
+            {:ok, merged} -> {:cont, {:ok, merged}}
+            other -> {:halt, other}
+          end
 
+        other ->
+          {:halt, other}
+      end
+    end)
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp installed_under(build, moved) do
     case File.lstat(build) do
       {:error, :enoent} -> {:ok, %{}}
       {:ok, %File.Stat{type: :directory}} -> profiles(build, moved)

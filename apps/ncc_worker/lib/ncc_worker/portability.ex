@@ -682,6 +682,8 @@ defmodule NccWorker.Portability do
           rebar_cache(
             env ++ Keyword.get(opts, :extra_env, []) ++ Keyword.get(opts, :late_env, [])
           ),
+        rebar_base:
+          rebar_base(env ++ Keyword.get(opts, :extra_env, []) ++ Keyword.get(opts, :late_env, [])),
         deps_path: deps,
         build_path: build_path(project_dir, env)
       ] ++
@@ -2376,21 +2378,41 @@ defmodule NccWorker.Portability do
 
       own
       |> Rebar.check_sources(inherited, mix_config)
-      |> installed_plugins(ctx, dest, Rebar.named_plugins(own, mix_config))
+      |> installed_plugins(ctx, dest, Rebar.named_plugins(own, mix_config), mix_config)
     end
   end
 
   # The static rules passed: every plugin rebar3 installed for the app must
-  # be a reviewed release (`RebarPlugins`), every reviewed one it names too.
-  defp installed_plugins(result, ctx, dest, named)
+  # be a reviewed release (`RebarPlugins`), every reviewed one it names too,
+  # under `_build` and the `base_dir` rebar3 built the app under
+  # (`Rebar.base_dirs/2`, coverage drop 2026-11-22, F9), which, when it
+  # cannot be judged, cannot be judged either.
+  defp installed_plugins(result, ctx, dest, named, mix_config)
        when result == :ok or elem(result, 0) == :inputs do
-    case RebarPlugins.check(dest, ctx.rebar_cache, named, RebarPlugins.pins(), ctx.moved_deps) do
-      :ok -> result
-      other -> other
+    with {:ok, bases} <- Rebar.base_dirs(mix_config, ctx.rebar_base),
+         :ok <-
+           RebarPlugins.check(
+             dest,
+             ctx.rebar_cache,
+             named,
+             RebarPlugins.pins(),
+             ctx.moved_deps,
+             bases
+           ) do
+      result
     end
   end
 
-  defp installed_plugins(result, _ctx, _dest, _named), do: result
+  defp installed_plugins(result, _ctx, _dest, _named, _mix_config), do: result
+
+  # The compile's `REBAR_BASE_DIR`, the last value `env` gives it, else this
+  # VM's, which the compile inherits (as `rebar_cache/1` reads its names).
+  defp rebar_base(env) do
+    case env |> Enum.reverse() |> List.keyfind("REBAR_BASE_DIR", 0) do
+      {_name, value} -> value
+      nil -> System.get_env("REBAR_BASE_DIR")
+    end
+  end
 
   # rebar3's cache dir of a compile with `env` (`rebar_dir:global_cache_dir/1`):
   # `REBAR_CACHE_DIR`, else `$HOME/.cache/rebar3`, each the last value `env`
@@ -3464,9 +3486,24 @@ defmodule NccWorker.Portability do
     |> Enum.sort()
     |> Enum.filter(&(Context.manager(ctx, &1) == "rebar3" and is_binary(Context.dest(ctx, &1))))
     |> Enum.map(
-      &{&1, RebarPlugins.releases(Context.dest(ctx, &1), ctx.rebar_cache, ctx.moved_deps)}
+      &{&1,
+       RebarPlugins.releases(
+         Context.dest(ctx, &1),
+         ctx.rebar_cache,
+         ctx.moved_deps,
+         record_bases(ctx, &1)
+       )}
     )
     |> RebarPlugins.record()
+  end
+
+  # The dirs a rebar3 app's record reads its plugins from: `Rebar.base_dirs/2`'s,
+  # or `_build` alone when they cannot be judged (the check refuses then).
+  defp record_bases(ctx, app) do
+    case Rebar.base_dirs(mix_rebar_config(ctx, app), ctx.rebar_base) do
+      {:ok, bases} -> bases
+      _ -> ["_build"]
+    end
   end
 
   defp rebar3_plugins(%{plugins: {_ok_or_over, record}}), do: record

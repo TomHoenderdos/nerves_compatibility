@@ -264,6 +264,77 @@ defmodule NccWorker.Portability.Rebar do
   end
 
   @doc """
+  The dirs, relative to the app's own dir, that rebar3 builds the app under
+  (`<dir>/<profile>/plugins` holds the plugins it installs): `_build`, and
+  the `base_dir` the compile's `REBAR_BASE_DIR` (`env_base`, rebar3 lets it
+  win) or else the `mix.rebar.config` rebar3 read (`mix_config`, a path; it
+  holds the dependency's rebar.config as Mix loaded it, its parents'
+  overrides applied) sets in an active section (coverage drop 2026-11-22,
+  F9: jhn_stdlib's `{base_dir, ".build"}`). `_build` is always one of them,
+  so a plugin planted there is still judged. A `base_dir` that is not one
+  relative path inside the app's dir (absolute, empty, with a `..` that
+  leaves it, not a string), two that differ, or a config that cannot be
+  read cannot be judged. No config, or none that sets it, is `_build`.
+  """
+  @spec base_dirs(String.t() | term(), String.t() | nil) ::
+          {:ok, [String.t()]} | {:unjudged, String.t()}
+  def base_dirs(mix_config, env_base) do
+    with {:ok, configured} <- configured_base(mix_config),
+         {:ok, base} <- chosen_base(env_base, configured) do
+      {:ok, Enum.uniq(["_build", base])}
+    end
+  end
+
+  defp chosen_base(env_base, _configured) when is_binary(env_base) and env_base != "",
+    do: relative_base(env_base)
+
+  defp chosen_base(_env_base, nil), do: {:ok, "_build"}
+  defp chosen_base(_env_base, configured), do: {:ok, configured}
+
+  defp configured_base(path) when is_binary(path) do
+    with {:ok, text} <- read_file(path),
+         {:ok, terms} <- HexFiles.parse(text) do
+      values =
+        for section <- active_sections(terms),
+            {{:atom, "base_dir"}, value} <- List.wrap(section),
+            uniq: true,
+            do: value
+
+      case values do
+        [] -> {:ok, nil}
+        [value] -> relative_base(value)
+        _ -> unjudged_base(values)
+      end
+    else
+      :absent -> {:ok, nil}
+      _ -> {:unjudged, "rebar3 base_dir cannot be judged: mix.rebar.config cannot be read"}
+    end
+  end
+
+  defp configured_base(_path), do: {:ok, nil}
+
+  defp relative_base(value) when is_list(value) do
+    if Enum.all?(value, &(is_integer(&1) and &1 in 1..0x10FFFF)),
+      do: relative_base(List.to_string(value)),
+      else: unjudged_base(value)
+  rescue
+    _ -> unjudged_base(value)
+  end
+
+  defp relative_base(value) when is_binary(value) do
+    parts = value |> Path.split() |> Enum.reject(&(&1 == "."))
+
+    if Path.type(value) == :relative and parts != [] and ".." not in parts,
+      do: {:ok, Path.join(parts)},
+      else: unjudged_base(value)
+  end
+
+  defp relative_base(value), do: unjudged_base(value)
+
+  defp unjudged_base(value),
+    do: {:unjudged, "rebar3 base_dir cannot be judged: #{inspect(value, limit: 5)}"}
+
+  @doc """
   The reviewed plugins (`@reviewed_plugins`) that `sources`' config and the
   `mix.rebar.config` rebar3 read (a path, or anything else for none) name in
   their active sections: what rebar3 installs for the app, which
