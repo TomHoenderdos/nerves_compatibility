@@ -39,7 +39,7 @@ defmodule Compatibility.CompileInputsTest do
           [%{"kind" => "env_all", "name" => "X"}],
           [%{"kind" => "teleport"}],
           [@host, :not_a_map],
-          List.duplicate(%{"kind" => "env_all"}, 257),
+          List.duplicate(%{"kind" => "env_all"}, 321),
           %{"kind" => "env_all"}
         ] do
       assert CompileInputs.validate(bad) == :error, inspect(bad, limit: 3)
@@ -269,6 +269,59 @@ defmodule Compatibility.CompileInputsTest do
         ] do
       assert CompileInputs.validate([bad]) == :error, inspect(bad)
     end
+  end
+
+  @probe %{
+    "kind" => "probe",
+    "of" => "module",
+    "name" => "Elixir.Poison",
+    "answer" => "absent",
+    "definers" => ["poison", "poison_fork"]
+  }
+
+  test "a probe item is accepted in its exact shapes and needs a check" do
+    app = %{"kind" => "probe", "of" => "app", "name" => "phoenix_html", "answer" => "absent"}
+    otp = %{"kind" => "probe", "of" => "otp_app", "name" => "wx", "answer" => "absent"}
+    erlang = %{@probe | "name" => "cowboy_websocket", "definers" => []}
+    items = [@probe, erlang, app, otp]
+
+    assert CompileInputs.validate(items) == {:ok, items}
+    assert CompileInputs.needs_check?([app])
+    assert CompileInputs.max_probe_items() == 64
+    assert CompileInputs.probe_kinds() == ["module", "app", "otp_app"]
+  end
+
+  test "a malformed probe item is malformed" do
+    app = %{"kind" => "probe", "of" => "app", "name" => "phoenix_html", "answer" => "absent"}
+
+    for bad <- [
+          Map.put(@probe, "extra", 1),
+          Map.delete(@probe, "definers"),
+          Map.delete(@probe, "answer"),
+          %{@probe | "answer" => "present"},
+          %{@probe | "answer" => true},
+          %{@probe | "of" => "process"},
+          %{@probe | "name" => ""},
+          %{@probe | "name" => "Elixir.Bad Name"},
+          %{@probe | "name" => String.duplicate("a", 256)},
+          %{@probe | "name" => :poison},
+          %{@probe | "definers" => ["poison", "poison"]},
+          %{@probe | "definers" => ["poison_fork", "poison"]},
+          %{@probe | "definers" => ["Poison"]},
+          %{@probe | "definers" => "poison"},
+          %{@probe | "definers" => for(i <- 1..65, do: "p#{1000 + i}")},
+          Map.put(app, "definers", []),
+          %{app | "name" => "Elixir.Phoenix"},
+          %{app | "name" => "phoenix-html"}
+        ] do
+      assert CompileInputs.validate([bad]) == :error, inspect(bad, limit: 5)
+    end
+  end
+
+  test "the shared cap holds 320 items" do
+    item = fn i -> %{@host | "name" => "V#{i}"} end
+    assert {:ok, _} = CompileInputs.validate(for(i <- 1..320, do: item.(i)))
+    assert CompileInputs.validate(for(i <- 1..321, do: item.(i))) == :error
   end
 
   test "split/2 cuts a value at every root, leftmost and longest first" do

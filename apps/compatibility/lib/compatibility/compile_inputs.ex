@@ -57,6 +57,23 @@ defmodule Compatibility.CompileInputs do
       recorded value, at most 128 of them. An empty list is an app the
       config leaves alone. A client compares its own config for `app`,
       the whole map: the same keys with the same values, nothing more.
+    * `%{"kind" => "probe", "of" => "module", "name", "answer" => "absent",
+      "definers" => [name]}`: the closure asked at compile time whether the
+      module `name` (as its atom renders, `Elixir.Poison`, `cowboy_websocket`)
+      is there, and nothing in the build defines it. `definers` are the Hex
+      package and application names known to define it (the declared ones
+      the worker found, and every one the portal's module index shows), sorted
+      and each once, at most 64. A client misses when its project can supply
+      the module: a dependency named in `definers`, a dependency outside the
+      build's closure whose sources define it, or the module on its code path.
+    * `%{"kind" => "probe", "of" => "app", "name", "answer" => "absent"}`: the
+      same for an application that is no package of the build. A client
+      misses when a dependency of its project is that application, or the
+      application is on its code path.
+    * `%{"kind" => "probe", "of" => "otp_app", "name", "answer" => "absent"}`:
+      the same for an installed OTP or Elixir application that no closure
+      application lists, so the builder's pruned path never held it. A client
+      misses when the application is installed on its side.
 
   An env item's `value` is a recorded value (`Compatibility.RecordedValue`: base64url ETF
   of `:error` or `{:ok, binary}`) or `"unrecordable"`, which matches nothing.
@@ -65,7 +82,9 @@ defmodule Compatibility.CompileInputs do
   alias Compatibility.RecordedValue
 
   @unrecordable "unrecordable"
-  @max_items 256
+  # 128 `env`, 96 `config_order`, 32 of every other kind and 64 `probe`
+  # items, as the worker caps them.
+  @max_items 320
   @max_name_bytes 256
   @max_regex_bytes 1024
   @os_families ["unix", "win32"]
@@ -78,6 +97,12 @@ defmodule Compatibility.CompileInputs do
   # 128 `env` items and 32 of every other kind.
   @max_config_order_items 96
   @max_config_all_entries 128
+  @max_probe_items 64
+  @probe_kinds ["module", "app", "otp_app"]
+  # A module as its atom renders (`Elixir.Jason.Encoder`, `cowboy_websocket`)
+  # and an application name.
+  @module_name ~r/\A[A-Za-z_][A-Za-z0-9_.@]{0,254}\z/
+  @app_name ~r/\A[a-z][a-z0-9_]{0,254}\z/
 
   @doc "The value of an item whose value was not recorded: it matches nothing."
   @spec unrecordable() :: String.t()
@@ -172,6 +197,21 @@ defmodule Compatibility.CompileInputs do
   defp item?(%{"kind" => "config_all", "app" => app, "entries" => entries} = item),
     do: map_size(item) == 3 and name?(app) and entries?(entries)
 
+  defp item?(
+         %{
+           "kind" => "probe",
+           "of" => "module",
+           "name" => name,
+           "answer" => "absent",
+           "definers" => definers
+         } = item
+       ),
+       do: map_size(item) == 5 and module_name?(name) and definers?(definers)
+
+  defp item?(%{"kind" => "probe", "of" => of, "name" => name, "answer" => "absent"} = item)
+       when of in ["app", "otp_app"],
+       do: map_size(item) == 4 and app_name?(name)
+
   defp item?(_item), do: false
 
   # A `config_all` item's entries: a list of `%{"key", "value"}`, each key a
@@ -189,6 +229,31 @@ defmodule Compatibility.CompileInputs do
     do: map_size(entry) == 2 and name?(key) and value?(value)
 
   defp entry?(_entry), do: false
+
+  # A probe item's definers: package or application names, strictly sorted
+  # (so each once), at most `@max_probe_items`.
+  defp definers?(definers) when is_list(definers) and length(definers) <= @max_probe_items,
+    do: Enum.all?(definers, &app_name?/1) and definers == Enum.sort(Enum.uniq(definers))
+
+  defp definers?(_definers), do: false
+
+  @doc "The most `probe` items a build records; more record `config_unrecorded`."
+  @spec max_probe_items() :: pos_integer()
+  def max_probe_items, do: @max_probe_items
+
+  @doc "What a `probe` item may ask about (`of`)."
+  @spec probe_kinds() :: [String.t()]
+  def probe_kinds, do: @probe_kinds
+
+  @doc "Whether `name` may stand as a module `probe` item's name."
+  @spec module_name?(term()) :: boolean()
+  def module_name?(name) when is_binary(name), do: Regex.match?(@module_name, name)
+  def module_name?(_name), do: false
+
+  @doc "Whether `name` may stand as an application `probe` item's name, or a definer."
+  @spec app_name?(term()) :: boolean()
+  def app_name?(name) when is_binary(name), do: Regex.match?(@app_name, name)
+  def app_name?(_name), do: false
 
   @doc "The most entries a `config_all` item may carry."
   @spec max_config_all_entries() :: pos_integer()
