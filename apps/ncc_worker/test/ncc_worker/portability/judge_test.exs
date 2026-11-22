@@ -2336,6 +2336,51 @@ defmodule NccWorker.Portability.JudgeTest do
       assert %{reason: ^refusal} = judge(proj, r, other ++ [trees: %{"dep" => {:ok, members}}])
     end
 
+    # gproc 1.2.0's and 1.3.0's `src/gproc.app.src.script` (byte-identical)
+    # returns CONFIG unchanged unless the `.app.src`'s vsn is "zomp", which
+    # neither release's is; it reads no env, argument, release, path or
+    # clock. Let through by each release's Hex outer checksum.
+    for {version, outer} <- [
+          {"1.2.0", "70c6f8c91fa5974296cd87974949d8eab953230414f31c4a623ff75131e0827a"},
+          {"1.3.0", "143a8ce6eb59610a351178482b629d2b052c69df84c9c50b9c13ae38354c8c14"}
+        ] do
+      @gproc_version version
+      @gproc_outer outer
+
+      test "gproc #{version}'s reviewed .app.src.script passes by its outer checksum",
+           %{proj: proj} do
+        version = @gproc_version
+        tar = Path.expand("../../fixtures/hex/gproc-#{version}.tar", __DIR__)
+        bytes = File.read!(tar)
+        assert :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == @gproc_outer
+
+        {:ok, contents} = NccWorker.Portability.Rebar.contents_tar(bytes)
+        {:ok, files} = :erl_tar.extract({:binary, contents}, [:memory])
+        files = Map.new(files, fn {name, body} -> {List.to_string(name), body} end)
+        assert files["src/gproc.app.src"] =~ ~s({vsn,"#{version}"})
+
+        File.write!(Path.join([proj, "deps/dep/rebar.config"]), files["rebar.config"])
+        r = rebar_report(proj, "dep", %{"dep" => child([])})
+
+        home = Path.join(Path.dirname(proj), "hex-gproc")
+        File.mkdir_p!(Path.join(home, "packages/hexpm"))
+        File.cp!(tar, Path.join(home, "packages/hexpm/gproc-#{version}.tar"))
+        release = %{name: "gproc", version: version, checksum: @gproc_outer}
+        {:ok, members} = NccWorker.Portability.Trees.members(bytes)
+        opts = fn trees -> [releases: %{"dep" => release}, hex_home: home, trees: trees] end
+
+        verdict = judge(proj, r, opts.(%{"dep" => {:ok, members}}))
+        assert %{status: :pass} = verdict, inspect(verdict.reason)
+
+        # Another copy of the script in the tree counts.
+        refusal =
+          "closure dependency observed the host: dep (rebar3 build evaluates an .app.src.script)"
+
+        changed = Map.put(members, "src/gproc.app.src.script", String.duplicate("0", 64))
+        assert %{reason: ^refusal} = judge(proj, r, opts.(%{"dep" => {:ok, changed}}))
+      end
+    end
+
     test "rebar.config is read from the verified tarball, not deps/ after the build",
          %{proj: proj} do
       hook = ~s({erl_opts, []}.\n{pre_hooks, [{compile, "sh evil.sh"}]}.\n)

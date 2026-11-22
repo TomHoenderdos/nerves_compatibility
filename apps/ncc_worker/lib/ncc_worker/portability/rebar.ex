@@ -103,7 +103,8 @@ defmodule NccWorker.Portability.Rebar do
 
   What rebar3 evaluates itself refuses (review S5 S2): an app's
   `.app.src.script` (`rebar_app_utils`, `app_src_script`; but for a
-  reviewed one, `allowed_app_src_scripts/2`: jesse 1.8.2's) and a `.app.src`
+  reviewed one, `allowed_app_src_scripts/2`: jesse 1.8.2's, gproc 1.2.0's
+  and 1.3.0's) and a `.app.src`
   whose `vsn` is not a plain string (`git`, `semver`, `{git, _}`, `{cmd,
   Cmd}`, and the strings `"git"`, `"semver"`, `"hg"`, `"pkg"` and
   `"git_subdir"`, which rebar3 takes as the same directives:
@@ -207,8 +208,23 @@ defmodule NccWorker.Portability.Rebar do
   # input is `erlang:system_info(otp_release)` of the VM rebar3 runs in: no
   # file, env, command, node or other host fact. A toolchain build is per
   # OTP major and the client checks it, so the `.app` it writes is the one
-  # a user's rebar3 on that OTP major writes. Any other release, script or
-  # copy counts as before.
+  # a user's rebar3 on that OTP major writes.
+  #
+  # gproc 1.2.0's and 1.3.0's `src/gproc.app.src.script` (byte-identical,
+  # read 2026-11-22, S2 review) binds `[{application, Name, Opts}]` to
+  # CONFIG and returns CONFIG unchanged unless `Opts`' vsn is "zomp"; only
+  # then does it consult a `zomp.meta` beside the app. Each release's
+  # `.app.src` vsn is its own plain version (pinned with it by the outer
+  # checksum) and neither tarball holds a `zomp.meta`, so that branch cannot
+  # run. It reads no env, argument, release, path or clock: the `.app`
+  # rebar3 writes is the one the plain `.app.src` gives, on every host.
+  #
+  # Any other release, script or copy counts as before.
+  @gproc_app_src_script %{
+    "src/gproc.app.src.script" =>
+      "35edb4115b4a43cff9ca220cb0402af1181e8633389aed86ec78259e84b4816c"
+  }
+
   @reviewed_app_src_scripts %{
     "46c9c46f673f07d9df4158d1acf62b0d0188db35e8996833075e28b4fe639bad" => %{
       release: {"jesse", "1.8.2"},
@@ -216,6 +232,14 @@ defmodule NccWorker.Portability.Rebar do
         "src/jesse.app.src.script" =>
           "eb6aaa74916f560f5f5998277f22c187c38ce657c79f4c837e384e9d5784e04d"
       }
+    },
+    "70c6f8c91fa5974296cd87974949d8eab953230414f31c4a623ff75131e0827a" => %{
+      release: {"gproc", "1.2.0"},
+      scripts: @gproc_app_src_script
+    },
+    "143a8ce6eb59610a351178482b629d2b052c69df84c9c50b9c13ae38354c8c14" => %{
+      release: {"gproc", "1.3.0"},
+      scripts: @gproc_app_src_script
     }
   }
 
