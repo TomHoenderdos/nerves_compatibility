@@ -310,7 +310,7 @@ defmodule NccWorker.Portability.Relocate do
       {:ok, done} ->
         case pass(held, done[second], done[third]) do
           {:refuse, why} -> refused(verdict, why)
-          passed -> passed
+          passed -> with_first_stats(passed, verdict)
         end
 
       {:refuse, why} ->
@@ -529,6 +529,19 @@ defmodule NccWorker.Portability.Relocate do
       _ -> {:refuse, "#{held.package}: unreadable ebin"}
     end
   end
+
+  # The pilot's could-not-judge: the held pass was judged from the first
+  # build's facts, but its trace stats are only the judge's own. The first
+  # build's (`judge_compile`, `trace_mode`, the compile's timings, the
+  # options it ran with) are what the worker reads to take the traced
+  # compile as the build (`NccWorker.HostTrace`), so the pass carries them,
+  # its own stats (`relocate`) over them.
+  defp with_first_stats(%{observations: obs} = passed, %{observations: first}) do
+    stats = Map.merge(Map.get(first, "trace_stats") || %{}, Map.get(obs, "trace_stats") || %{})
+    %{passed | observations: Map.put(obs, "trace_stats", stats)}
+  end
+
+  defp with_first_stats(passed, _verdict), do: passed
 
   defp own_ebin(held) do
     case read_ebin(held.ebins[held.package]) do

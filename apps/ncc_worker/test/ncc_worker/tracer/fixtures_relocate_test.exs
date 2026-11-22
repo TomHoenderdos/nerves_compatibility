@@ -135,7 +135,14 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
         {app, verdict}
       end
 
-    %{proj: proj, root: root, verdicts: verdicts}
+    # The worker's toolchain build traces in `:host` mode, in a project of
+    # the package alone, and takes `_build` as the build only when the
+    # verdict says so (`NccWorker.HostTrace`).
+    alone = TracerFixtures.project(Path.join(root, "h"), ["fx_fine"], Map.take(deps, ["fx_fine"]))
+    deps_from_env!(alone)
+    host = run(root, alone, "fx_fine", mode: :host)
+
+    %{proj: proj, root: root, verdicts: verdicts, host: host}
   end
 
   # The wrapper's own dependencies at `MIX_DEPS_PATH`, as Hex dependencies
@@ -151,11 +158,11 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
     File.write!(file, body)
   end
 
-  defp run(root, proj, app) do
+  defp run(root, proj, app, opts \\ []) do
     Portability.run(proj, app,
       env: TracerFixtures.container_env(proj, root),
       releases: %{},
-      mode: :judge,
+      mode: Keyword.get(opts, :mode, :judge),
       trace_dir: Path.join(root, "trace-#{app}"),
       log_file: Path.join(root, "#{app}.log"),
       timeout_ms: 240_000,
@@ -167,6 +174,28 @@ defmodule NccWorker.Tracer.FixturesRelocateTest do
 
   defp log(ctx, app), do: inspect(ctx.verdicts[app], pretty: true, limit: 60)
   defp stat(v), do: v.observations["trace_stats"]["relocate"]
+
+  # The pilot's could-not-judge: a pass the hold kept is the first build's
+  # verdict for every stat it does not set, its traced compile's included,
+  # so the worker takes the traced build as the build (`NccWorker.HostTrace`
+  # needs `judge_compile` "finished" and `trace_mode` the mode it asked for).
+  test "a relocated or dependent pass keeps the first build's trace stats", ctx do
+    passes = for {app, %{status: :pass} = v} <- ctx.verdicts, do: {app, v}
+    assert length(passes) >= 3
+
+    for {app, v} <- passes do
+      stats = v.observations["trace_stats"]
+      assert stats["judge_compile"] == "finished", app
+      assert stats["trace_mode"] == "judge", app
+      assert is_integer(stats["compile_ms"]), app
+      assert stats["relocate"] in ["relocated", "dependencies"], app
+    end
+
+    assert %{status: :pass, relocation: %{"files" => [_]}} = ctx.host, inspect(ctx.host)
+    assert ctx.host.observations["trace_stats"]["trace_mode"] == "host"
+    assert ctx.host.observations["trace_stats"]["judge_compile"] == "finished"
+    assert ctx.host.observations["trace_stats"]["transient"] == false
+  end
 
   test "a package that bakes its deps path passes with the occurrences to rewrite", ctx do
     v = ctx.verdicts["fx_fine"]
