@@ -1107,11 +1107,14 @@ build fails as the reason it was not used:
       project's Mix loads in its env and target (every `mix.lock` entry when the dependencies did
       not load), by app or Hex package name, is in `definers`; no
       such dependency outside the build's `deps` and the package itself defines the module in its
-      sources (every literal `defmodule`, `defprotocol` and `defimpl` name, through nesting and the
-      file's aliases, every Erlang `-module`, and each leex and yecc file's base name; a file that
+      sources or its `mix.exs` (every literal `defmodule`, `defprotocol` and `defimpl` name,
+      through nesting and the file's aliases, a module another macro may define from a literal
+      alias such as `defenum Name` or an inline `embeds_one :x, Name do`, each implementation an
+      `@derive` defines, every Erlang `-module`, and each leex and yecc file's base name; a file that
       names the module's last segment and defines a module under a computed name, or one inside a
       `quote`, a symlink, a source that does not parse or a dependency without a readable dir is
-      `probe_unknown`); and the client's code path holds no `<name>.beam`. Else `probe_definer`,
+      `probe_unknown`); and the client's code path holds no `<name>.beam` and its VM has no such
+      module loaded. Else `probe_definer`,
       with the module and the dependency (or `code_path`) as its arguments. For an application: no
       dependency is that application, and no `<name>.app` is on the code path or under OTP's or
       Elixir's lib dir; else `probe_definer`. For an OTP application: it is installed nowhere on
