@@ -685,7 +685,14 @@ passes on what the failed fetch did not know. Such a probe that passes is record
 item): another package may define the same module, and a user with that one and not the declared one has the build's
 closure. The portal refuses the build at ingest when a package with 1,000 or more recent downloads that neither the
 lock nor the record names defines the module (`Portal.Catalog.ModuleIndex`); client 0.9 is to check the record
-itself. It is not a `compile_inputs` item yet: client 0.8 reads an unknown kind as a malformed entry and misses. The package's own probe
+itself. A closure dependency's refusal of a reviewed guarded-module site (`NccWorker.Portability.Guarded`:
+websock_adapter's `WebSockAdapter.CowboyAdapter`, jose's `JOSE.Poison*`, ymlr's `Ymlr.Encoder.Decimal`, each by
+release range with a ceiling) does not taint the package when the probe only decided whether the dependency defines
+its guarded modules and the package's compile could not see them: none of them is built, no Elixir beam of the
+closure outside them refers to one by a call, capture, `apply` or `make_fun` (read from the Elixir debug info), no
+traced probe of one was made anywhere, and nothing probed the dependency's application. The dependency's own build
+still refuses, and so does a firmware target's or host-native verdict. The waived refusals are recorded in
+`compile_observations.guarded_taint`. It is not a `compile_inputs` item yet: client 0.8 reads an unknown kind as a malformed entry and misses. The package's own probe
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path
 application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier
 dependency used URI), refuses as `compile-time probe of whether a module is loaded: ` unless the same process

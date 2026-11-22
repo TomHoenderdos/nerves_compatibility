@@ -30,9 +30,12 @@ defmodule NccWorker.Portability do
        (`BuildRoot.program_source_paths/3`);
     6. the rebar3 rules on the package (`Rebar`);
     7. host taint of a closure dependency (R3), the first in compile order:
-       its window broken or without a sentinel, a refusal in its window, a
-       compile-time call into a natively built dependency in its window
-       (`native_calls`), R2, the rebar3 static rules or rebar3 trace coverage.
+       its window broken or without a sentinel, a refusal in its window (but
+       a reviewed guarded-module probe whose modules the package's compile
+       could not see, `Guarded`, never in a firmware target's or host-native
+       verdict), a compile-time call into a natively built dependency in its
+       window (`native_calls`), R2, the rebar3 static rules or rebar3 trace
+       coverage.
 
   A read in a natively built dependency's `ebin` (`Events`'
   `native_beam_reads`) is settled before steps 3 and 7: allowed when that
@@ -164,6 +167,7 @@ defmodule NccWorker.Portability do
     ElixirVersion,
     Events,
     ForeignPriv,
+    Guarded,
     MappedLibs,
     PrivRepro,
     Probes,
@@ -1122,10 +1126,10 @@ defmodule NccWorker.Portability do
 
     side = side_mode(opts, ctx, scope, native)
 
-    decided =
-      report
-      |> decide_all(ctx, scope, target_mode(opts, ctx, scope, native), side)
-      |> tool_events(ctx.package)
+    {decided, guarded_tags} =
+      decide_all(report, ctx, scope, target_mode(opts, ctx, scope, native), side)
+
+    decided = tool_events(decided, ctx.package)
 
     host_native = host_native?(opts)
     # A probe's text names its window (`keep/3`); the portal's reason cause
@@ -1170,7 +1174,14 @@ defmodule NccWorker.Portability do
     {decided, settled} = ForeignPriv.settle(decided, ctx)
 
     package_r2 = package_build_root(ctx)
-    {decided, deps} = dep_results(ctx, report, decided, libs, {target(opts) != nil, side != nil})
+
+    # A firmware target's or host-native verdict refuses on any refusal of
+    # the closure (`target_verdict_of/1`): no taint is waived there.
+    waivers = if target(opts), do: %{}, else: Guarded.waivers(ctx, report, guarded_tags)
+
+    {decided, deps} =
+      dep_results(ctx, report, decided, libs, {target(opts) != nil, side != nil}, waivers)
+
     {package_rebar, package_inputs} = rebar(ctx, report, ctx.package)
     rebar_inputs = Enum.uniq(package_inputs ++ Enum.flat_map(deps, &elem(&1, 1).inputs))
     endian = endian_of(report)
@@ -1201,6 +1212,7 @@ defmodule NccWorker.Portability do
       libs: libs,
       plugins: plugin_record(ctx, scope),
       package_window: window_problem(report, ctx.package),
+      guarded: waivers,
       package_r2: package_r2,
       package_rebar: package_rebar,
       deps: deps,
@@ -1374,19 +1386,30 @@ defmodule NccWorker.Portability do
     owned = Enum.flat_map(vms, &elem(&1, 1))
     slices = Events.mix_exs_slices(ctx, Enum.reject(owned, &match?({:quiet, _}, &1)))
 
-    for {vm_name, vm} <- vms,
-        vm_ctx = %{ctx | ensured: Probes.ensured(vm)},
-        {owner, event} <- vm,
-        decision =
-          event
-          |> Events.decide(vm_ctx, owner, slices)
-          |> in_vm(vm_name)
-          |> targeted(event, vm_name, target_mode)
-          |> sided(event, owner, vm_name, side),
-        kept = keep(owner, decision, scope),
-        kept != nil,
-        do: kept
+    decided =
+      for {vm_name, vm} <- vms,
+          vm_ctx = %{ctx | ensured: Probes.ensured(vm)},
+          {owner, event} <- vm,
+          decision =
+            event
+            |> Events.decide(vm_ctx, owner, slices)
+            |> in_vm(vm_name)
+            |> targeted(event, vm_name, target_mode)
+            |> sided(event, owner, vm_name, side),
+          kept = keep(owner, decision, scope),
+          kept != nil,
+          do: {kept, guarded_site(kept, event, vm_ctx)}
+
+    # Every refusal with the reviewed guarded site it came from, if any
+    # (`Guarded`, coverage drop 2026-11-22, F4).
+    tags = for {{owner, {:refuse, reason}}, site} <- decided, do: {owner, reason, site}
+    {Enum.map(decided, &elem(&1, 0)), tags}
   end
+
+  defp guarded_site({owner, {:refuse, _reason}}, event, ctx) when is_binary(owner),
+    do: Guarded.site(event, ctx, owner)
+
+  defp guarded_site(_kept, _event, _ctx), do: nil
 
   # Env reads and writes keep the VM they were made in: timestamps compare
   # only within one VM (`CompileInputs`). So does a read of a natively built
@@ -2502,7 +2525,7 @@ defmodule NccWorker.Portability do
   # `native_beam_reads` observation settled (`beam_reads/5`): a dependency's
   # own reads before its R3 result, since a refused one taints it, then
   # everyone else's (the package's, outside every window).
-  defp dep_results(ctx, report, decided, libs, {target?, side?}) do
+  defp dep_results(ctx, report, decided, libs, {target?, side?}, waivers) do
     scope = Context.closure_of(ctx, ctx.package)
 
     order =
@@ -2520,7 +2543,7 @@ defmodule NccWorker.Portability do
     {decided, results} =
       Enum.reduce(order, {decided, %{}}, fn app, {decided, results} ->
         decided = beam_reads(decided, ctx, report, {results, libs}, &(&1 == app))
-        result = dep_result(ctx, report, decided, app, {libs, sided})
+        result = dep_result(ctx, report, decided, app, {libs, sided, Map.get(waivers, app)})
         {decided, Map.put(results, app, result)}
       end)
 
@@ -2819,7 +2842,7 @@ defmodule NccWorker.Portability do
 
   defp closure_deps(_report), do: []
 
-  defp dep_result(ctx, report, decided, app, {libs, sided}) do
+  defp dep_result(ctx, report, decided, app, {libs, sided, waiver}) do
     r2 = build_root(ctx, app)
     {rebar, inputs} = rebar(ctx, report, app)
     side? = MapSet.member?(sided, app)
@@ -2828,7 +2851,7 @@ defmodule NccWorker.Portability do
       Enum.find_value(
         [
           fn -> window_problem(report, app) end,
-          fn -> first_refusal(decided, app) end,
+          fn -> first_refusal(unwaived(decided, app, waiver), app) end,
           fn -> native_call(decided, app) end,
           fn -> holder_call(decided, app) end,
           fn -> refusal_of(r2) end,
@@ -3117,6 +3140,17 @@ defmodule NccWorker.Portability do
   defp rebar_taint({:refuse, reason}), do: reason
   defp rebar_taint({:error, why}), do: why
   defp rebar_taint(_result), do: nil
+
+  # A dependency's refusals but those a guarded-module waiver covers
+  # (`Guarded.waivers/3`).
+  defp unwaived(decided, _app, nil), do: decided
+
+  defp unwaived(decided, app, %{reasons: reasons}) do
+    Enum.reject(decided, fn
+      {^app, {:refuse, reason}} -> MapSet.member?(reasons, reason)
+      _ -> false
+    end)
+  end
 
   defp first_refusal(decided, owner) do
     Enum.find_value(decided, fn
@@ -3473,6 +3507,7 @@ defmodule NccWorker.Portability do
       "trace_stats" => stats(facts),
       "refusals" => refusals |> Enum.uniq() |> Enum.take(@max_refusals),
       "taint" => for({app, %{taint: t}} when is_binary(t) <- facts.deps, into: %{}, do: {app, t}),
+      "guarded_taint" => guarded_taint(facts.guarded),
       "rebar" => rebar_refusals(facts),
       "native_libs" => Enum.take(facts.libs.native, 50),
       "config_unreviewed" => Enum.take(facts.config.unreviewed, 50),
@@ -3481,6 +3516,14 @@ defmodule NccWorker.Portability do
       "rebar3_plugins" => rebar3_plugins(facts),
       "problems" => problems |> Enum.uniq() |> Enum.take(@max_problems)
     })
+  end
+
+  # The dependencies whose reviewed guarded-module refusals were waived
+  # (`Guarded`), each with the entries and the refusal texts.
+  defp guarded_taint(waivers) do
+    for {app, %{reasons: reasons, entries: entries}} <- Enum.sort(waivers) do
+      %{"app" => app, "entries" => Enum.sort(entries), "reasons" => Enum.sort(reasons)}
+    end
   end
 
   # The rebar3 plugin releases installed for every rebar3 app in the
