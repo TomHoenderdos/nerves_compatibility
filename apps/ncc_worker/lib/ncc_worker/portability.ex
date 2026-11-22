@@ -217,7 +217,8 @@ defmodule NccWorker.Portability do
     "foreign_priv" => 50,
     "holder_calls" => 50,
     "declared_absent" => 200,
-    "varied_reads" => 50
+    "varied_reads" => 50,
+    "probe_inputs" => 64
   }
   @max_refusals 100
   @max_problems 20
@@ -1403,6 +1404,7 @@ defmodule NccWorker.Portability do
             |> Events.decide(vm_ctx, owner, slices)
             |> in_vm(vm_name)
             |> targeted(event, vm_name, target_mode)
+            |> probe_refusal(target_mode)
             |> sided(event, owner, vm_name, side),
           kept = keep(owner, decision, scope),
           kept != nil,
@@ -1418,6 +1420,17 @@ defmodule NccWorker.Portability do
     do: Guarded.site(event, ctx, owner)
 
   defp guarded_site(_kept, _event, _ctx), do: nil
+
+  # S10: a probe the builder answered "absent" is a compile input only where
+  # a client checks it against the user's project. A firmware target's or a
+  # host-native trace (`target:`) refuses it as before: a device has no
+  # project to check, and a firmware build's published variants carry no
+  # compile inputs.
+  defp probe_refusal({:observe, "probe_inputs", %{"refusal" => refusal}}, mode)
+       when mode != nil and is_binary(refusal),
+       do: {:refuse, refusal}
+
+  defp probe_refusal(decision, _mode), do: decision
 
   # Env reads and writes keep the VM they were made in: timestamps compare
   # only within one VM (`CompileInputs`). So does a read of a natively built

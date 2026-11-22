@@ -927,6 +927,61 @@ defmodule NccWorker.Portability.JudgeTest do
   # The setup's project with a report that passes as it is.
   defp clean_judged_project(proj), do: {proj, report(proj)}
 
+  # S10: jose's `Code.ensure_loaded?(Poison)` in a dependency's window, with
+  # nothing in the build defining Poison: a compile input client 0.9 checks,
+  # no taint. A firmware target's trace refuses it as before.
+  describe "a probe the builder answered absent" do
+    defp poison_probe(ts, file) do
+      ts
+      |> event("code:ensure_loaded/1", file, "probe")
+      |> Map.merge(%{
+        "arg" => %{"module" => "Elixir.Poison", "by_package" => true},
+        "caller" => %{"module" => "Elixir.Code", "function" => "ensure_loaded?", "arity" => 1}
+      })
+    end
+
+    test "is a compile input of the package's build, and taints nothing", %{proj: proj} do
+      r = report(proj, %{events: [poison_probe(15, "lib/dep.ex")]})
+
+      assert %{status: :pass, reason: nil, compile_inputs: inputs, observations: obs} =
+               judge(proj, r)
+
+      assert inputs == [
+               %{
+                 "kind" => "probe",
+                 "of" => "module",
+                 "name" => "Elixir.Poison",
+                 "answer" => "absent",
+                 "definers" => []
+               }
+             ]
+
+      assert obs["taint"] == %{}
+      assert [%{"owner" => "dep", "name" => "Elixir.Poison"} = seen] = obs["probe_inputs"]
+      refute Map.has_key?(seen, "refusal")
+    end
+
+    test "refuses in a firmware target's trace", %{proj: proj} do
+      r = report(proj, %{events: [poison_probe(15, "lib/dep.ex")]})
+
+      assert %{status: :skip, reason: reason} =
+               judge(proj, r, nif_waiver: true, target: "rpi4")
+
+      assert reason =~
+               "compile-time probe of a dependency outside the closure: Elixir.Poison via Code.ensure_loaded?/1"
+    end
+
+    test "outside every window it refuses", %{proj: proj} do
+      r = report(proj, %{events: [poison_probe(5, "lib/x.ex")]})
+
+      assert %{
+               status: :skip,
+               reason: "compile-time probe of a dependency outside the closure" <> _
+             } =
+               judge(proj, r)
+    end
+  end
+
   describe "the byte order (judge revision 13)" do
     defp endian_event(ts, file),
       do: %{event(ts, "erlang:system_info/1", file) | "arg" => %{"key" => "endian"}}
