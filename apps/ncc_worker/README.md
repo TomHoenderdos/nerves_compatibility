@@ -692,13 +692,19 @@ closure. The portal refuses the build at ingest when a package with 1,000 or mor
 lock nor the record names defines the module (`Portal.Catalog.ModuleIndex`); client 0.9 is to check the record
 itself. A closure dependency's refusal of a reviewed guarded-module site (`NccWorker.Portability.Guarded`:
 websock_adapter's `WebSockAdapter.CowboyAdapter`, jose's `JOSE.Poison*`, ymlr's `Ymlr.Encoder.Decimal`, each by
-release range with a ceiling) does not taint the package when the probe only decided whether the dependency defines
-its guarded modules and the package's compile could not see them: none of them is built, no Elixir beam of the
-closure outside them refers to one by a call, capture, `apply` or `make_fun` (read from the Elixir debug info), no
-traced probe of one was made anywhere, nothing probed the dependency's application, and nothing read, listed or
-copied a file in the dependency's ebin (a wildcard whose literal dir reaches it included; its `include` and `priv` are
-the same either way). The dependency's own build
-still refuses, and so does a firmware target's or host-native verdict. The waived refusals are recorded in
+release range with a ceiling) does not taint the package when the package builds the same with the guarded package
+present. A cheap pre-filter first: none of the guarded modules is built, no Elixir beam of the closure outside them
+refers to one by a call, capture, `apply` or `make_fun` (read from the Elixir debug info), no traced probe of one was
+made anywhere, nothing probed the dependency's application, and nothing read, listed or copied a file in the
+dependency's ebin (a wildcard whose literal dir reaches it included; its `include` and `priv` are the same either way).
+Then the proof (`NccWorker.Portability.GuardedProof`): the project dir is moved aside whole, a copy without `_build`
+takes its place at the same paths, the entry's guarded package (cowboy, poison, decimal) is added to its `mix.exs` with
+`prune_code_paths: false` and fetched (every release of the first lock must stay locked the same), and the package's
+closure is compiled again, traced, with the guarded package's closure first (`NCC_TRACE_FIRST`). The guarded modules
+must be built there, and the package's app must be the first build's: the same ebin names, non-beam bytes and chunks
+(`Dbgi`, `ExCk` and `Docs` as decoded terms) and the same `priv` tree. Then the first project is put back and must hash
+the same. Anything else refuses with the taint; `trace_stats.guarded_proof` says what happened. The dependency's own
+build still refuses, and so does a firmware target's or host-native verdict. The waived refusals are recorded in
 `compile_observations.guarded_taint`. It is not a `compile_inputs` item yet: client 0.8 reads an unknown kind as a malformed entry and misses. The package's own probe
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path
 application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier

@@ -261,7 +261,13 @@ defmodule NccWorker.Portability.Probes do
   # result is dropped, and dependencies compile with
   # `--no-warnings-as-errors`. The body and the call site are the same in
   # every release 0.20.0 to 1.2.15 (read 2026-11-22). The process check
-  # keeps out a module body that calls the public function itself.
+  # keeps out a module body that calls the public function itself, nothing
+  # more (S9 review N1): the pin sees only the caller frame and the bottom
+  # one, so it trusts every caller of the public `@doc false`
+  # `__global__?/3` in the checker's process, another package's own
+  # `@after_verify` callback included, and it does not ask for a whole
+  # stack (`extent` "frame"). Such a callback runs after the verified
+  # module's beam is written; no route from it into a beam was found.
   @reviewed_warning_sites [
     {"Elixir.Phoenix.Component.Declarative", "__global__?", 3, "phoenix_live_view",
      {"0.20.0", "1.2.15"}}
@@ -523,6 +529,13 @@ defmodule NccWorker.Portability.Probes do
   # tarball: it defines that module, and not the probed one (a module its
   # sources define but the build left out, as a guarded module, may exist in
   # another world). A tarball that cannot be read in full proves nothing.
+  # Two blind spots (S9 review N2): `Compatibility.HexModules` reads only
+  # literal `defmodule`, `defprotocol` and `defimpl`, so a module a macro
+  # makes (`@derive`, `Protocol.derive/3`, `Module.create/3`, a `define`
+  # macro) is not seen here nor by the module index; and under a
+  # protocol's namespace other packages define impl modules by design, so
+  # a probe of `Proto.Some.Struct` passes as namespace-absent, and the gate
+  # refuses it only for a popular literal `defimpl`. No real case was found.
   defp namespace_owner("Elixir." <> rest = module, ctx, owner) do
     parts = String.split(rest, ".")
 

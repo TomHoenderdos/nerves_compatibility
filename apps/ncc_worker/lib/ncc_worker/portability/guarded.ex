@@ -9,9 +9,17 @@ defmodule NccWorker.Portability.Guarded do
       end
 
   P's own build refuses as before: a Mix.install user who has the probed
-  module gets A, the builder does not. A dependent's beams cannot depend on
-  whether A exists when its compile never touched A, so P's refusal does
-  not taint the package then. Each reviewed site (`@entries`) names P, the
+  module gets A, the builder does not. A dependent whose beams are the
+  same whether A exists or not is not tainted by P's refusal. That is
+  proved by building, never by the conditions below alone (S9 review B1,
+  B2: the type checker reads A's signature through a value of A's atom's
+  type, untraced, and P's Mix manifest lists A): a pass these conditions
+  waive is held, and `NccWorker.Portability.GuardedProof` builds the
+  package again with the entry's guarded package present (`present`:
+  added to the closure, compiled first, on an unpruned code path) and
+  passes it only when its app is the same. The conditions are a cheap
+  pre-filter: a dependent that fails one refuses without that build. Each
+  reviewed site (`@entries`) names P, the
   releases read (oldest and newest: a newer one refuses until it is read),
   the probe (P's file, the probed module, a top-level form of that file)
   and A (exact module names, or `{:prefix, name}` for a name and every
@@ -47,6 +55,13 @@ defmodule NccWorker.Portability.Guarded do
     * no traced file event (a read, a listing, a stat) of P's ebin or a file
       in it, from any window: there the other world has A's beams. A read of
       P's `include` (joken's of jose's headers) is the same either way.
+
+  A rebar3 child VM traces probes of the modules its own tracer loaded
+  only (review N3), and its code path holds every built dependency's
+  ebin, P's included, so a parse transform's probe of A there is no
+  event. The pre-filter does not see it; the proof build does when it
+  changes what the package publishes, and the rebar3 app's own build is
+  judged in its own closure.
 
   Never raises: a beam or debug info that cannot be read fails the waiver.
   """
