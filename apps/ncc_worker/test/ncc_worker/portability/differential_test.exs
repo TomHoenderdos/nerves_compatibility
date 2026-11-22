@@ -67,6 +67,9 @@ defmodule NccWorker.Portability.DifferentialTest do
     fn _project, "pkg", opts ->
       assert opts[:differential] == :variant
       assert opts[:priv_repro] == false
+      # A variant runs no relocation builds of its own (S4): a variant that
+      # R2 refuses refuses the differential build.
+      refute Keyword.has_key?(opts, :relocate)
       assert opts[:mode] == :judge
       assert opts[:trees] == %{"pkg" => {:ok, %{"lib/pkg.ex" => "sha"}}}
       {"MIX_BUILD_PATH", path} = List.keyfind(opts[:env], "MIX_BUILD_PATH", 0)
@@ -134,6 +137,7 @@ defmodule NccWorker.Portability.DifferentialTest do
         [
           env: [{"MIX_BUILD_PATH", ctx.root}, {"HOME", "/home/nerves"}],
           differential: true,
+          relocate: true,
           differential_gap_ms: 0
         ]
 

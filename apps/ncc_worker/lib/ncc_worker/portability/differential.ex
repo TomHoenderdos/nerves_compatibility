@@ -325,8 +325,8 @@ defmodule NccWorker.Portability.Differential do
   # HOME (Mix's and Hex's homes kept where they were), its scheduler count
   # (`ERL_ZFLAGS`, which every VM the compile starts reads), its plain
   # arguments, its own trace dir and log, judge mode, the tree snapshot the
-  # first build was judged on and neither a second build nor variants of
-  # its own.
+  # first build was judged on and neither a second build, relocation builds
+  # (S4: a variant that R2 refuses refuses) nor variants of its own.
   defp variant_opts(opts, dir, root, home, values, trees) do
     env = Keyword.fetch!(opts, :env)
 
@@ -348,7 +348,17 @@ defmodule NccWorker.Portability.Differential do
       end)
 
     opts
-    |> Keyword.drop([:trees, :trace_dir, :log_file, :mode, :env, :extra_env, :plain_args, :fresh])
+    |> Keyword.drop([
+      :trees,
+      :trace_dir,
+      :log_file,
+      :mode,
+      :env,
+      :extra_env,
+      :plain_args,
+      :fresh,
+      :relocate
+    ])
     |> Keyword.merge(
       env: env,
       extra_env: extra,
