@@ -143,9 +143,9 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   CONFIG.
   """
 
-  # gproc 1.2.0's Hex tarball, vendored unchanged: a reviewed release
+  # gproc 1.0.0's Hex tarball, vendored unchanged: a reviewed release
   # (`ReviewedScripts`, by its outer checksum).
-  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0.tar")
+  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.0.0.tar")
 
   setup_all do
     # The real path: on macOS `/var` is a link to `/private/var`, and Mix
@@ -192,14 +192,14 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
       end
       |> Map.put(
         "gproc",
-        r3_run(root, "gproc", "gproc", [{"gproc", "1.2.0", {:tarball, @gproc_tar}}])
+        r3_run(root, "gproc", "gproc", [{"gproc", "1.0.0", {:tarball, @gproc_tar}}])
       )
       # Review N5: a reviewed gproc beside a release whose
       # rebar.config.script is a link to N1's script.
       |> Map.put(
         "fx_ln",
         r3_run(root, "fx_ln", "fx_ln", [
-          {"gproc", "1.2.0", {:tarball, @gproc_tar}},
+          {"gproc", "1.0.0", {:tarball, @gproc_tar}},
           {"fx_ln", "0.1.0",
            %{
              "real.script" => @position_script,
@@ -427,11 +427,13 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   end
 
   # Review N1, N2 (coordinator ruling): only reviewed scripts. gproc
-  # 1.2.0's own scripts, as Hex ships them, pass after the two variants.
-  test "gproc 1.2.0's reviewed scripts reading the plain arguments publish", ctx do
+  # 1.0.0's own scripts, as Hex ships them, pass after the two variants
+  # (1.0.0: 1.2.0 and 1.3.0 also ship an .app.src.script, which the rebar3
+  # rules refuse on their own).
+  test "gproc 1.0.0's reviewed scripts reading the plain arguments publish", ctx do
     v = ctx.scripts["gproc"]
     assert %{status: :pass} = v, log(v)
-    assert v.observations["differential"]["scripts"] == ["gproc 1.2.0"]
+    assert v.observations["differential"]["scripts"] == ["gproc 1.0.0"]
 
     assert [%{"read" => "plain_args", "owner" => "outside", "arg" => %{"rebar_script" => true}}] =
              v.observations["differential"]["reads"]

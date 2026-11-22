@@ -9,9 +9,9 @@ defmodule NccWorker.Portability.ReviewedScriptsTest do
 
   @moduletag :tmp_dir
 
-  # gproc 1.2.0's Hex tarball, vendored unchanged.
-  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0.tar")
-  @gproc_sum "70c6f8c91fa5974296cd87974949d8eab953230414f31c4a623ff75131e0827a"
+  # gproc 1.0.0's Hex tarball, vendored unchanged.
+  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.0.0.tar")
+  @gproc_sum "109f253c2787de8a371a51179d4973230cbec6239ee673fa12216a5ce7e4f902"
 
   # Its script files (and `extra`) in a tarball of our own.
   defp gproc_files(extra \\ %{}) do
@@ -84,29 +84,29 @@ defmodule NccWorker.Portability.ReviewedScriptsTest do
     assert {:unverified, "tarball unreadable"} = ReviewedScripts.script_members("not a tarball")
   end
 
-  test "gproc 1.2.0 as Hex ships it is reviewed, by its outer checksum" do
+  test "gproc 1.0.0 as Hex ships it is reviewed, by its outer checksum" do
     bytes = File.read!(@gproc_tar)
     assert :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == @gproc_sum
     assert {:ok, :scripted} = ReviewedScripts.script_members(bytes)
-    assert ReviewedScripts.reviewed?("gproc", "1.2.0", @gproc_sum)
+    assert ReviewedScripts.reviewed?("gproc", "1.0.0", @gproc_sum)
   end
 
   # Review R5: the outer checksum pins every byte, `rebar.config` (the
   # script's `CONFIG`) included; the same scripts in another tarball, or the
   # same tarball under another name or version, are not reviewed.
   test "another checksum, version or name is not", %{tmp_dir: dir} do
-    other = tarball(dir, "gproc", "1.2.0", gproc_files())
+    other = tarball(dir, "gproc", "1.0.0", gproc_files())
     sum = :sha256 |> :crypto.hash(other) |> Base.encode16(case: :lower)
-    refute ReviewedScripts.reviewed?("gproc", "1.2.0", sum)
+    refute ReviewedScripts.reviewed?("gproc", "1.0.0", sum)
     refute ReviewedScripts.reviewed?("gproc", "1.4.0", @gproc_sum)
-    refute ReviewedScripts.reviewed?("gproc_fork", "1.2.0", @gproc_sum)
-    refute ReviewedScripts.reviewed?("gproc", "1.2.0", nil)
+    refute ReviewedScripts.reviewed?("gproc_fork", "1.0.0", @gproc_sum)
+    refute ReviewedScripts.reviewed?("gproc", "1.0.0", nil)
   end
 
   # Review R11: `HexCache.package_tarball/4` takes the lock's checksum in
   # either case, so the table does too.
   test "the checksum in upper case is the same checksum" do
-    assert ReviewedScripts.reviewed?("gproc", "1.2.0", String.upcase(@gproc_sum))
+    assert ReviewedScripts.reviewed?("gproc", "1.0.0", String.upcase(@gproc_sum))
   end
 
   test "every entry is an outer checksum of 64 hex digits" do

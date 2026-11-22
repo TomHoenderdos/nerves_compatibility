@@ -11,16 +11,16 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
 
   @moduletag :tmp_dir
 
-  # gproc 1.2.0's Hex tarball, vendored unchanged: a reviewed release.
-  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.2.0.tar")
+  # gproc 1.0.0's Hex tarball, vendored unchanged: a reviewed release.
+  @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.0.0.tar")
 
   defp real_gproc(home) do
     dir = Path.join(home, "packages/hexpm")
     File.mkdir_p!(dir)
     bytes = File.read!(@gproc_tar)
-    File.write!(Path.join(dir, "gproc-1.2.0.tar"), bytes)
+    File.write!(Path.join(dir, "gproc-1.0.0.tar"), bytes)
     sum = :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
-    {"gproc", %{name: "gproc", version: "1.2.0", checksum: sum}}
+    {"gproc", %{name: "gproc", version: "1.0.0", checksum: sum}}
   end
 
   defp release(home, app, files, meta \\ []) do
@@ -81,7 +81,7 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
 
     assert Portability.script_releases(ctx) == [
              %{app: "gone", release: nil, status: :unverified, why: "no verified tarball"},
-             %{app: "gproc", release: "gproc 1.2.0", status: :reviewed},
+             %{app: "gproc", release: "gproc 1.0.0", status: :reviewed},
              %{
                app: "linked",
                release: nil,
@@ -118,7 +118,7 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
 
       assert %{
                status: :unverified,
-               release: "gproc 1.2.0",
+               release: "gproc 1.0.0",
                why: "its tree was not its verified tarball's"
              } =
                gproc,
