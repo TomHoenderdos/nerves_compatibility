@@ -995,6 +995,13 @@ defmodule NccWorker.Portability.ProbesTest do
 
       # Declared by a dependency outside the owner's closure.
       assert {:refuse, _} = Probes.decide(hex("Elixir.Poison"), c, "pkg")
+
+      # The module is built by a closure application outside the owner's
+      # closure (S9, found with F6): whether the owner's compile finds it
+      # is Mix's compile order, under Mix.install it does. Refused, even
+      # though a declared-absent dependency defines it too.
+      built = with_modules(c, Map.put(c.modules, "Elixir.Jason.Encoder", "other"))
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Jason.Encoder"), built, "pkg")
       assert {:refuse, _} = Probes.decide(hex("Elixir.Jason.Encoder"), c, "other")
       # A loaded-now probe of it: whether it is loaded is no question then
       # either, the module is on no path.
@@ -1081,6 +1088,12 @@ defmodule NccWorker.Portability.ProbesTest do
           "lib/pg.ex" =>
             "defmodule Pg do\nend\nif Code.ensure_loaded?(:x) do\n  defmodule Pg.Timestamp do\n  end\nend\n"
         })
+
+      # Built by a closure application outside the prober's closure: Mix's
+      # compile order decides whether the prober finds it, Mix.install finds
+      # it (the module is no namespace question then).
+      built = with_modules(c, Map.put(c.modules, "Elixir.Pg.Timestamp", "other"))
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Pg.Timestamp"), built, "pkg")
 
       for {h, release} <- [
             {Path.join(dir, "bare"), bare},

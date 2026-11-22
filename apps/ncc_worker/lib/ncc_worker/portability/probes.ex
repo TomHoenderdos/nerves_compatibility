@@ -494,6 +494,13 @@ defmodule NccWorker.Portability.Probes do
       Context.dep?(ctx, owner) and Map.get(ctx.modules, module) in Context.closure_of(ctx, owner) ->
         found_or_ensured(event, ctx, owner)
 
+      # Built by a closure application outside the owner's closure: whether
+      # the owner's compile finds it is Mix's compile order (a module an
+      # earlier dependency's compile loaded stays loaded), and Mix.install
+      # finds it. No declaration or namespace makes that the same (S9).
+      Map.has_key?(ctx.modules, module) ->
+        {:refuse, dependency(module, event)}
+
       declared?(ctx.declared.modules, module, ctx, owner) ->
         {:observe, "declared_absent", absent(module, ctx, event)}
 
