@@ -405,7 +405,10 @@ defmodule Portal.Catalog.Ingestion do
   `pass` or `skipped` row counts it too, and is retried after a day while
   under the cap. Any build with a verdict resets the count. A could-not-judge
   the package causes again on every run, or one from a worker that does not
-  report `transient`, stays `skipped`.
+  report `transient`, stays `skipped`. A transient from a failed declared
+  fetch (`trace_stats.declared_unknown`) keeps no row: today's judge refused
+  a probe it could not place, so the served build is withdrawn at once and
+  a retry that passes serves again.
 
   Another `:error` neither counts nor resets an `:error` row's count; on a
   kept row it ends the run of transient results and resets it, as a `fail`
@@ -1544,6 +1547,21 @@ defmodule Portal.Catalog.Ingestion do
         {:error, error}
     end
   end
+
+  # A transient from a failed declared fetch (`trace_stats.declared_unknown`,
+  # S9 review S1) is today's judge refusing a probe it could not place,
+  # which on its own would replace the row: the row's served build is
+  # withdrawn with it at once, not kept for the retries. A retry that passes
+  # serves again.
+  defp kept_toolchain_build(
+         {:error, _reason},
+         %{
+           "compile_observations" => %{"trace_stats" => %{"declared_unknown" => [_ | _]}}
+         },
+         _package_id,
+         _opts
+       ),
+       do: nil
 
   # An `:error` gives no verdict, so a pass or skipped row of the same
   # identity stays, files and memberships alike.

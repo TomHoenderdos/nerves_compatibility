@@ -772,6 +772,41 @@ defmodule Portal.Catalog.IngestionToolchainTest do
       assert length(memberships(kept)) == 2
     end
 
+    # S9 review S1: a transient from a failed declared fetch
+    # (`trace_stats.declared_unknown`) is today's judge refusing a probe it
+    # could not place. On main that refusal would replace the row at once,
+    # so the served pass is withdrawn now, not kept for the retries; a
+    # retry that passes serves again.
+    test "transiently from a failed declared fetch withdraws a served pass; a pass serves again" do
+      name = unique_name()
+      beam = blob("beam-#{name}")
+      priv = blob("priv-#{name}")
+      files = opts(name, files_dir_with([beam, priv]))
+
+      {:ok, passed} = Ingestion.ingest_toolchain(pass_result(name, beam, priv), files)
+
+      result =
+        could_not_judge(name, %{
+          "judge_compile" => "finished",
+          "transient" => true,
+          "declared_unknown" => ["plug_cowboy"]
+        })
+
+      assert {:ok, withdrawn} = Ingestion.ingest_toolchain(result, opts(name, files_dir_with([])))
+      assert withdrawn.id == passed.id
+      assert {withdrawn.status, withdrawn.transient_attempts} == {:error, 1}
+      assert memberships(withdrawn) == []
+      assert withdrawn.compile_observations["trace_stats"]["declared_unknown"] == ["plug_cowboy"]
+
+      assert {:ok, again} =
+               Ingestion.ingest_toolchain(
+                 pass_result(name, beam, priv),
+                 opts(name, files_dir_with([beam, priv]))
+               )
+
+      assert {again.status, length(memberships(again))} == {:pass, 2}
+    end
+
     # The backlog reopens a row by its last activity, the attempt if there is
     # one (`Portal.Catalog.toolchain_backlog/3`): an attempt the new build
     # left behind would make the build look a week old the day it landed,
