@@ -33,12 +33,13 @@ run(_Args) ->
     Input = driver_input(),
     ok = set_argv(Input),
     Packages = names("NCC_TRACE_PACKAGE"),
+    First = names("NCC_TRACE_FIRST"),
     Native = names("NCC_TRACE_NATIVE"),
     Holders = holders("NCC_TRACE_HOLDERS"),
     case ncc_tracer:start_main() of
         {ok, Token} ->
             _ = ncc_tracer:holders(Token, Holders),
-            traced(Token, Packages, Native, mode(), maps:get(late_env, Input, []));
+            traced(Token, {First, Packages}, Native, mode(), maps:get(late_env, Input, []));
         {error, _Why} -> erlang:exit({shutdown, 1})
     end.
 
@@ -89,7 +90,7 @@ mode() ->
         _ -> judge
     end.
 
-traced(Token, Packages, Native, Mode, Late) ->
+traced(Token, {First, Packages}, Native, Mode, Late) ->
     %% First, before Mix.Dep.load_and_cache/0 evaluates any dependency's
     %% mix.exs and before anything compiles: no package code has run in this
     %% VM yet, so the env is the one the project's config left (spec R5,
@@ -97,7 +98,7 @@ traced(Token, Packages, Native, Mode, Late) ->
     %% or with one written after the closure line.
     _ = ncc_tracer:config_env(Token, ncc_tracer_config:snapshot()),
     Config = 'Elixir.Mix.Project':config(),
-    Closure = with_build_lock(Config, fun() -> compile(Token, Packages, Native, Late) end),
+    Closure = with_build_lock(Config, fun() -> compile(Token, {First, Packages}, Native, Late) end),
     case project(Mode, Closure) of
         ok ->
             _ = consolidated(Token, Mode, Config),
@@ -153,19 +154,28 @@ consolidated(_Token, _Mode, _Config) -> skip.
 %% Unlike `mix deps.compile`, no `deps.precompile`: it is a hook, a no-op in a
 %% plain project, and in a full run's Nerves project nerves_bootstrap aliases
 %% it to work that would run package code outside every window.
-compile(Token, Packages, Native, Late) ->
+compile(Token, {First, Packages}, Native, Late) ->
     try
         Deps = load_deps(Late),
-        case resolve(Packages, Deps) of
-            {ok, Apps} -> compile_closure(Token, Apps, Deps, Native);
-            {error, Missing} -> {not_in_closure, Missing}
+        case {resolve_first(First, Deps), resolve(Packages, Deps)} of
+            {{ok, FirstApps}, {ok, Apps}} -> compile_closure(Token, {FirstApps, Apps}, Deps, Native);
+            {{error, Missing}, _} -> {not_in_closure, Missing};
+            {_, {error, Missing}} -> {not_in_closure, Missing}
         end
     catch
         Class:Reason:Stack -> {failed, Class, Reason, Stack}
     end.
 
-compile_closure(Token, Apps, Deps, Native) ->
-    Ordered = closure_order(Apps, Deps),
+%% `NCC_TRACE_FIRST` (S9, a guarded-module proof build,
+%% NccWorker.Portability.Guarded): packages whose closure compiles before
+%% the packages' own, in a project where they are no dependency of those.
+%% None is the usual: nothing first.
+resolve_first([], _Deps) -> {ok, []};
+resolve_first(Names, Deps) -> resolve(Names, Deps).
+
+compile_closure(Token, {FirstApps, Apps}, Deps, Native) ->
+    First = closure_order(FirstApps, Deps),
+    Ordered = First ++ [D || D <- closure_order(Apps, Deps), not lists:member(D, First)],
     _ = ncc_tracer:closure(Token, Apps, [dep_info(D) || D <- Ordered]),
     DepConfig = 'Elixir.Mix.Project':deps_config(),
     compile_deps(Token, Ordered, Native, DepConfig).

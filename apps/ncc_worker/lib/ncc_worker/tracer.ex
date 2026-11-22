@@ -62,6 +62,10 @@ defmodule NccWorker.Tracer do
   A differential build's variant (`NccWorker.Portability.Differential`)
   passes `plain_args:`, words put after the task on the command line: the
   Mix VM's plain arguments, which the driver ignores.
+
+  A guarded-module proof build (`NccWorker.Portability.GuardedProof`, S9)
+  asks for one more: `first:` (package names) compiles those packages'
+  closure before the packages' own.
   """
 
   alias NccWorker.{OptionalDepsTargets, OsKill, ProcessSweep}
@@ -413,9 +417,16 @@ defmodule NccWorker.Tracer do
       {"NCC_TRACE_MODE", Atom.to_string(mode)},
       {"NCC_TRACE_SWEEP", Keyword.get_lazy(opts, :window_sweep, &window_sweep/0)},
       {"NCC_TRACE_BASE", Path.join(trace_dir, @base_loaded)},
+      # S9's guarded-module proof build only (`NccWorker.Portability.GuardedProof`):
+      # packages whose closure compiles first. Unset otherwise, so every
+      # other compile's env is as before.
+      {"NCC_TRACE_FIRST", first_env(Keyword.get(opts, :first, []))},
       {"MIX_OS_DEPS_COMPILE_PARTITION_COUNT", nil}
     ]
   end
+
+  defp first_env([]), do: nil
+  defp first_env(names), do: Enum.join(names, ",")
 
   # `holders:` (S4, a relocation's second build): `[{app, module}]`, the
   # modules whose calls later windows record (`:ncc_tracer.holders/2`).
