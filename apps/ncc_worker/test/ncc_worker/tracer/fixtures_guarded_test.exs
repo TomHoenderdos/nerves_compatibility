@@ -2,22 +2,23 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
   # Starts real `elixir` and `mix` VMs (the :real_vm group).
   use ExUnit.Case, async: true, group: :real_vm
 
-  alias NccWorker.{BuildIdentity, TracerFixtures}
+  alias NccWorker.{Portability, TracerFixtures}
 
   @moduletag :tmp_dir
   @moduletag timeout: 300_000
 
-  # Coverage drop 2026-11-22, F4: websock_adapter's
+  @cnj "portability could not be judged"
+
+  # Coverage drop 2026-11-22, F4, and S9 fix round 1: websock_adapter's
   # `if Code.ensure_loaded?(:cowboy_websocket) do defmodule
   # WebSockAdapter.CowboyAdapter ... end`, as 0.7.2 ships it (the reviewed
   # entry keys on the file, the probe and the locked release). The builder
   # has no cowboy, so the module is not built and websock_adapter's own
-  # build refuses. A dependent that only calls `WebSockAdapter` builds the
-  # same beams in a world where the guarded module exists (an unpruned
-  # project with a `cowboy_websocket` compiled first, as Mix.install
-  # compiles), so websock_adapter's refusal does not taint it. One that
-  # refers to the guarded module, or probes it at compile time, stays
-  # refused.
+  # build refuses. A dependent's waiver is proved by building it again with
+  # the guarded package present (`NccWorker.Portability.GuardedProof`):
+  # here `fx_cowboy`, a path dependency that defines `cowboy_websocket`,
+  # in place of Hex's cowboy. The dependent passes only when its app is the
+  # same in both builds.
   @adapter """
   if Code.ensure_loaded?(:cowboy_websocket) do
     defmodule WebSockAdapter.CowboyAdapter do
@@ -27,15 +28,34 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
   end
   """
 
+  # As 0.5.0 to 0.7.2 ship it (review N4): `upgrade/4` returns what
+  # `Plug.Conn.upgrade_adapter/3` returns, so the guarded atom is in no
+  # public return type of `WebSockAdapter`.
   @main """
   defmodule WebSockAdapter do
-    def upgrade(websock, state), do: tuple_for(websock, state)
+    def upgrade(websock, state), do: deliver(tuple_for(websock, state))
     defp tuple_for(websock, state), do: {WebSockAdapter.CowboyAdapter, {websock, state}, %{}}
+    defp deliver(tuple), do: :persistent_term.put(:fx_upgrade, tuple)
   end
   """
 
   @refusal "compile-time probe of a dependency outside the closure: cowboy_websocket via " <>
              "Code.ensure_loaded?/1"
+  @taint "closure dependency observed the host: websock_adapter (#{@refusal})"
+
+  @cowboy %{
+    files: %{
+      "src/cowboy_websocket.erl" =>
+        "-module(cowboy_websocket).\n-export([upgrade/0]).\nupgrade() -> ok.\n"
+    }
+  }
+
+  @present %{
+    "websock_adapter:cowboy_adapter" => %{
+      deps: [~s({:fx_cowboy, path: "deps/fx_cowboy"})],
+      first: ["fx_cowboy"]
+    }
+  }
 
   defp project(dir, dep_body, extra \\ %{}) do
     TracerFixtures.project(
@@ -52,20 +72,48 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
           "fx_dep" => %{
             deps: ["websock_adapter"],
             files: %{"lib/fx_dep.ex" => dep_body}
-          }
+          },
+          "fx_cowboy" => @cowboy
         },
         extra
       )
     )
   end
 
-  defp opts(dir) do
+  defp hex(dir) do
     home = Path.join(dir, "hex")
 
     {app, release} =
       TracerFixtures.hex_release(home, "websock_adapter", ["lib"], %{}, [{"version", "0.7.2"}])
 
     [releases: %{app => release}, hex_home: home]
+  end
+
+  # The traced host compile and its judgement, the proof build included.
+  defp run(dir, proj, package, extra \\ []) do
+    # `extra` first: a keyword's first value is the one read.
+    Portability.run(
+      proj,
+      package,
+      extra ++
+        [
+          env: TracerFixtures.env(proj),
+          trace_dir: Path.join(dir, "trace"),
+          log_file: Path.join(dir, "trace.log"),
+          timeout_ms: 240_000,
+          mode: :host,
+          guarded_present: @present
+        ] ++ hex(dir)
+    )
+  end
+
+  defp app_files(proj, app) do
+    lib = Path.join([proj, "_build", "host", "lib", app])
+
+    for path <- Path.wildcard(Path.join(lib, "{ebin,priv}/**")),
+        File.regular?(path),
+        into: %{},
+        do: {Path.relative_to(path, lib), File.read!(path)}
   end
 
   defp compile(proj) do
@@ -79,67 +127,16 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
     assert status == 0, out
   end
 
-  defp app_beams(proj, app) do
-    ebin = Path.join([proj, "_build", "host", "lib", app, "ebin"])
-
-    for path <- Path.wildcard(Path.join(ebin, "*.beam")),
-        into: %{},
-        do: {Path.basename(path), File.read!(path)}
-  end
-
-  # The user's world: an unpruned project (Mix.install does not prune) with
-  # a `cowboy_websocket` that compiles before websock_adapter.
-  defp with_cowboy(dir, dep_body) do
-    proj =
-      project(dir, dep_body, %{
-        "fx_cowboy" => %{
-          files: %{
-            "src/cowboy_websocket.erl" =>
-              "-module(cowboy_websocket).\n-export([upgrade/0]).\nupgrade() -> ok.\n"
-          }
-        },
-        "websock_adapter" => %{
-          deps: ["fx_cowboy"],
-          files: %{
-            "lib/websock_adapter.ex" => @main,
-            "lib/websock_adapter/cowboy_adapter.ex" => @adapter
-          }
-        }
-      })
-
-    path = Path.join(proj, "mix.exs")
-
-    File.write!(
-      path,
-      String.replace(File.read!(path), "deps: [", "prune_code_paths: false, deps: [",
-        global: false
-      )
-    )
-
-    proj
-  end
-
   @dependent """
   defmodule FxDep do
     def connect(websock, state), do: WebSockAdapter.upgrade(websock, state)
   end
   """
 
-  test "a dependent that only calls the prober builds the same beams in both worlds",
+  test "a dependent that only calls the prober passes once the proof build shows the same app",
        %{tmp_dir: dir} do
-    # Both worlds in the same dir: `CInf` holds the source path.
-    root = Path.join(dir, "w")
-    proj = project(root, @dependent)
-    traced = TracerFixtures.trace(proj, ["fx_dep"], mode: :host)
-    assert {:ok, 0} = traced.result, traced.log
-
-    # The builder took the branch without the guarded module.
-    refute Map.has_key?(
-             app_beams(proj, "websock_adapter"),
-             "Elixir.WebSockAdapter.CowboyAdapter.beam"
-           )
-
-    verdict = TracerFixtures.judge(proj, "fx_dep", traced, [], opts(dir))
+    proj = project(Path.join(dir, "w"), @dependent)
+    verdict = run(dir, proj, "fx_dep")
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
 
     assert verdict.observations["guarded_taint"] == [
@@ -150,44 +147,155 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
              }
            ]
 
-    assert %{"owner" => "websock_adapter", "reason" => @refusal} in verdict.observations[
-             "refusals"
-           ]
+    assert %{"result" => "same", "present" => ["fx_cowboy"]} =
+             verdict.observations["trace_stats"]["guarded_proof"]
 
-    # The user's world: the guarded module exists, the dependent's beams
-    # are byte for byte the builder's.
-    # A firmware target's verdict refuses on any refusal of the closure:
-    # nothing is waived there.
-    firmware = TracerFixtures.judge(proj, "fx_dep", traced, [], opts(dir) ++ [target: "rpi4"])
-    assert %{status: :skip} = firmware
+    refute Portability.GuardedProof.hold_problem() in verdict.observations["problems"]
 
-    builder = app_beams(proj, "fx_dep")
-    File.rm_rf!(root)
-    user = with_cowboy(root, @dependent)
-    assert user == proj
-    compile(user)
-
-    assert Map.has_key?(
-             app_beams(user, "websock_adapter"),
-             "Elixir.WebSockAdapter.CowboyAdapter.beam"
+    # The first build is back where it was, without the guarded module, and
+    # the proof's dirs are gone.
+    refute Map.has_key?(
+             app_files(proj, "websock_adapter"),
+             "ebin/Elixir.WebSockAdapter.CowboyAdapter.beam"
            )
 
-    assert BuildIdentity.differences(app_beams(user, "fx_dep"), builder) == []
+    assert Map.has_key?(app_files(proj, "fx_dep"), "ebin/Elixir.FxDep.beam")
+    refute File.exists?(proj <> ".ncc-guarded-first")
+    refute File.exists?(Path.join(dir, "trace-guarded"))
+  end
+
+  test "judged alone, a waived pass waits for its proof; a firmware target is never waived",
+       %{tmp_dir: dir} do
+    proj = project(dir, @dependent)
+    traced = TracerFixtures.trace(proj, ["fx_dep"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+
+    verdict = TracerFixtures.judge(proj, "fx_dep", traced, [], hex(dir))
+    assert %{status: :skip, reason: @cnj} = verdict
+    assert Portability.GuardedProof.hold_problem() in verdict.observations["problems"]
+    assert [%{"app" => "websock_adapter"}] = verdict.observations["guarded_taint"]
+
+    firmware = TracerFixtures.judge(proj, "fx_dep", traced, [], hex(dir) ++ [target: "rpi4"])
+    assert %{status: :skip, reason: @refusal} = firmware
   end
 
   # The prober's own build is refused as before.
   test "the prober's own build still refuses", %{tmp_dir: dir} do
     proj = project(dir, @dependent)
-    traced = TracerFixtures.trace(proj, ["websock_adapter"], mode: :host)
-    assert {:ok, 0} = traced.result, traced.log
-
-    assert %{status: :skip, reason: @refusal} =
-             TracerFixtures.judge(proj, "websock_adapter", traced, [], opts(dir))
+    assert %{status: :skip, reason: @refusal} = run(dir, proj, "websock_adapter")
   end
 
-  # A dependent that refers to the guarded module (the checker reads its
-  # signature), or calls or probes it at compile time (a traced probe),
-  # stays tainted or refused.
+  # The review's counter-examples (S9 review B1, B2): both pass every static
+  # condition, and the proof build refuses them.
+  for {name, body, differs} <- [
+        # B1: a call through a value of the guarded atom's type. The type
+        # checker reads the guarded module's signature, untraced, and the
+        # dependent's `ExCk` differs.
+        {"calls through a value of the guarded atom's type",
+         """
+         defmodule FxDep do
+           def connect(req, state) do
+             mod = WebSockAdapter.CowboyAdapter
+             mod.init(req, state)
+           end
+         end
+         """, "ExCk differs"},
+        # B2: a read of the prober's Mix manifest, under its build dir but
+        # not its ebin: it lists the guarded module where it was built.
+        {"reads the prober's Mix manifest at compile time",
+         """
+         defmodule FxDep do
+           @x "../../_build/host/lib/websock_adapter/.mix/compile.elixir"
+              |> File.read!()
+              |> :erlang.binary_to_term()
+              |> elem(1)
+              |> Map.has_key?(WebSockAdapter.CowboyAdapter)
+           def x, do: @x
+         end
+         """, "differs"}
+      ] do
+    @body body
+    @differs differs
+    test "a dependent that #{name} is refused by the proof build", %{tmp_dir: dir} do
+      proj = project(Path.join(dir, "w"), @body)
+      verdict = run(dir, proj, "fx_dep")
+      assert %{status: :skip, reason: @taint} = verdict, inspect(verdict.reason)
+
+      assert %{"result" => "refused", "why" => why} =
+               verdict.observations["trace_stats"]["guarded_proof"]
+
+      assert why =~ "the package builds otherwise with the guarded packages present", why
+      assert why =~ @differs, why
+      assert verdict.observations["taint"]["websock_adapter"] == @refusal
+      assert verdict.observations["trace_stats"]["transient"] == false
+
+      # The first build is back.
+      assert Map.has_key?(app_files(proj, "fx_dep"), "ebin/Elixir.FxDep.beam")
+      refute File.exists?(proj <> ".ncc-guarded-first")
+    end
+  end
+
+  # The proof build refuses when it cannot be made, or proves nothing.
+  @lock ~s(%{"jason": {:hex, :jason, "1.4.4", "inner", [:mix], [], "hexpm", "outer"}}\n)
+  @moved ~s(%{"jason": {:hex, :jason, "1.4.5", "inner", [:mix], [], "hexpm", "other"}}\n)
+
+  for {name, extra, why} <- [
+        {"deps.get fails", [guarded_deps_get: &__MODULE__.failing_deps_get/2],
+         "the guarded packages cannot be added: deps.get failed"},
+        {"the guarded package moves a locked release",
+         [guarded_deps_get: &__MODULE__.moving_deps_get/2],
+         "the guarded packages cannot be added: jason would be locked otherwise"},
+        {"the build with the guarded package fails",
+         [
+           guarded_present: %{
+             "websock_adapter:cowboy_adapter" => %{
+               deps: [~s({:fx_broken, path: "deps/fx_broken"})],
+               first: ["fx_broken"]
+             }
+           }
+         ], "the build with the guarded packages did not finish"},
+        {"the guarded modules are not built",
+         [
+           guarded_present: %{
+             "websock_adapter:cowboy_adapter" => %{
+               deps: [~s({:fx_other, path: "deps/fx_other"})],
+               first: ["fx_other"]
+             }
+           }
+         ], "the guarded modules were not built with their package present: websock_adapter"}
+      ] do
+    @extra extra
+    @why why
+    test "#{name}: refused", %{tmp_dir: dir} do
+      proj =
+        project(Path.join(dir, "w"), @dependent, %{
+          "fx_broken" =>
+            TracerFixtures.lib("fx_broken", "defmodule FxBroken do\n  def f, do: \nend\n"),
+          "fx_other" => TracerFixtures.lib("fx_other", "defmodule FxOther do\nend\n")
+        })
+
+      File.write!(Path.join(proj, "mix.lock"), @lock)
+      verdict = run(dir, proj, "fx_dep", @extra)
+      assert %{status: :skip, reason: @taint} = verdict, inspect(verdict.reason)
+      assert %{"why" => why} = verdict.observations["trace_stats"]["guarded_proof"]
+      assert why =~ @why, why
+
+      # The first project is back as it was, its lock included.
+      assert Map.has_key?(app_files(proj, "fx_dep"), "ebin/Elixir.FxDep.beam")
+      assert File.read!(Path.join(proj, "mix.lock")) == @lock
+      refute File.exists?(proj <> ".ncc-guarded-first")
+    end
+  end
+
+  def failing_deps_get(_dir, _env), do: {:error, {:deps_get_failed, "no route to repo.hex.pm"}}
+
+  def moving_deps_get(dir, env) do
+    :ok = NccWorker.Project.run_deps_get(dir, env)
+    File.write!(Path.join(dir, "mix.lock"), @moved)
+  end
+
+  # The static conditions stay a pre-filter: a dependent that fails one
+  # refuses without a proof build.
   for {name, body, reason} <- [
         {"calls the guarded module",
          """
@@ -195,7 +303,7 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
            @compile {:no_warn_undefined, WebSockAdapter.CowboyAdapter}
            def init(req, state), do: WebSockAdapter.CowboyAdapter.init(req, state)
          end
-         """, "closure dependency observed the host: websock_adapter (#{@refusal})"},
+         """, @taint},
         {"probes the guarded module at compile time",
          TracerFixtures.attr_module("FxDep", "Code.ensure_loaded?(WebSockAdapter.CowboyAdapter)"),
          "compile-time probe of a dependency outside the closure: " <>
@@ -204,7 +312,7 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
          TracerFixtures.attr_module(
            "FxDep",
            ~S{"../../_build/host/lib/websock_adapter/ebin" |> File.ls!() |> Enum.sort()}
-         ), "closure dependency observed the host: websock_adapter (#{@refusal})"},
+         ), @taint},
         {"calls the guarded module at compile time",
          TracerFixtures.attr_module(
            "FxDep",
@@ -215,14 +323,12 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
       ] do
     @body body
     @reason reason
-    test "a dependent that #{name} is refused", %{tmp_dir: dir} do
+    test "a dependent that #{name} is refused without a proof build", %{tmp_dir: dir} do
       proj = project(dir, @body)
-      traced = TracerFixtures.trace(proj, ["fx_dep"], mode: :host)
-      assert {:ok, 0} = traced.result, traced.log
-
-      verdict = TracerFixtures.judge(proj, "fx_dep", traced, [], opts(dir))
+      verdict = run(dir, proj, "fx_dep")
       assert %{status: :skip, reason: @reason} = verdict, inspect(verdict.reason)
       assert verdict.observations["guarded_taint"] == []
+      refute Map.has_key?(verdict.observations["trace_stats"], "guarded_proof")
     end
   end
 end

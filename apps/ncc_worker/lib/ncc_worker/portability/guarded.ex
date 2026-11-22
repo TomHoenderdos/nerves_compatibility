@@ -62,7 +62,8 @@ defmodule NccWorker.Portability.Guarded do
       app: "websock_adapter",
       range: {"0.5.0", "0.7.2"},
       sites: [{"lib/websock_adapter/cowboy_adapter.ex", "cowboy_websocket"}],
-      guards: ["Elixir.WebSockAdapter.CowboyAdapter"]
+      guards: ["Elixir.WebSockAdapter.CowboyAdapter"],
+      present: %{deps: [~s({:cowboy, ">= 0.0.0"})], first: ["cowboy"]}
     },
     # jose 1.11.0 to 1.11.13: each file is one top-level `if` around the
     # `defmodule`, `defprotocol` and `defimpl` of `JOSE.Poison*` only; no
@@ -78,7 +79,8 @@ defmodule NccWorker.Portability.Guarded do
         {"lib/jose/poison.ex", "Elixir.Poison"},
         {"lib/jose/poison/lexical_encoder.ex", "Elixir.Poison"}
       ],
-      guards: [{:prefix, "Elixir.JOSE.Poison"}]
+      guards: [{:prefix, "Elixir.JOSE.Poison"}],
+      present: %{deps: [~s({:poison, ">= 0.0.0"})], first: ["poison"]}
     },
     # ymlr 5.1.4 to 5.1.6: the last top-level form of the file is an `if`
     # around one `defimpl Ymlr.Encoder, for: Decimal`, and no other form
@@ -90,7 +92,8 @@ defmodule NccWorker.Portability.Guarded do
       app: "ymlr",
       range: {"5.1.4", "5.1.6"},
       sites: [{"lib/ymlr/encoder.ex", "Elixir.Decimal"}],
-      guards: ["Elixir.Ymlr.Encoder.Decimal"]
+      guards: ["Elixir.Ymlr.Encoder.Decimal"],
+      present: %{deps: [~s({:decimal, ">= 0.0.0"})], first: ["decimal"]}
     }
   ]
 
@@ -390,14 +393,18 @@ defmodule NccWorker.Portability.Guarded do
   defp walk({:export, {:atom, m}, _f, _a}, guards), do: guarded?(m, guards)
   defp walk(_leaf, _guards), do: false
 
-  defp guarded?(module, guards) when is_binary(module) do
+  @doc false
+  # Whether `module` (an atom's text) is one of `guards`: an exact name, or
+  # `{:prefix, name}` for the name and every module under it.
+  @spec guarded?(term(), list()) :: boolean()
+  def guarded?(module, guards) when is_binary(module) do
     Enum.any?(guards, fn
       {:prefix, p} -> module == p or String.starts_with?(module, p <> ".")
       name -> module == name
     end)
   end
 
-  defp guarded?(_module, _guards), do: false
+  def guarded?(_module, _guards), do: false
 
   defp guard_name({:prefix, p}), do: p
   defp guard_name(name), do: name

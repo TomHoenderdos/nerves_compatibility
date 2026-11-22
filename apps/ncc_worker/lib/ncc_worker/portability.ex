@@ -168,6 +168,7 @@ defmodule NccWorker.Portability do
     Events,
     ForeignPriv,
     Guarded,
+    GuardedProof,
     MappedLibs,
     PrivRepro,
     Probes,
@@ -454,6 +455,7 @@ defmodule NccWorker.Portability do
     |> Relocate.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> Differential.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> put_differential_flag(opts)
+    |> GuardedProof.settle(project_dir, package, guarded_opts(opts, project_dir), &build_digest/1)
     |> settle_declared()
     |> put_stat("wall_ms", System.monotonic_time(:millisecond) - started)
     |> put_transient()
@@ -467,6 +469,12 @@ defmodule NccWorker.Portability do
     if Keyword.get(opts, :differential) == true,
       do: put_stat(verdict, "differential_flag", "on"),
       else: verdict
+  end
+
+  # The proof build's own trace dir, beside the first build's.
+  defp guarded_opts(opts, project_dir) do
+    trace_dir = Keyword.get_lazy(opts, :trace_dir, fn -> default_trace_dir(project_dir) end)
+    Keyword.put(opts, :guarded_trace_dir, trace_dir <> "-guarded")
   end
 
   @doc false
@@ -3196,8 +3204,22 @@ defmodule NccWorker.Portability do
       |> ForeignPriv.put_verdict(facts.foreign, status, facts.ctx.package)
 
     if status == :pass,
-      do: verdict |> PrivRepro.hold(own_priv(facts)) |> Differential.hold(varied(facts)),
+      do:
+        verdict
+        |> PrivRepro.hold(own_priv(facts))
+        |> Differential.hold(varied(facts))
+        |> GuardedProof.hold(facts.guarded, guarded_context(facts)),
       else: Relocate.hold(verdict, facts, &verdict_of(relocation_facts(facts, &1)))
+  end
+
+  # What a guarded-module proof needs of the first build
+  # (`GuardedProof.hold/3`): the package's build dir and the closure's apps
+  # in compile order.
+  defp guarded_context(%{ctx: ctx, deps: deps}) do
+    %{
+      build: Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build,
+      order: Enum.map(deps, &elem(&1, 0))
+    }
   end
 
   # S4 (`Relocate.hold/3`): `facts` as they would be had R2 not refused
