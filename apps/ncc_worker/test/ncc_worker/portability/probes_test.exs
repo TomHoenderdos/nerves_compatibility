@@ -431,22 +431,46 @@ defmodule NccWorker.Portability.ProbesTest do
           Keyword.update(opts, :arg, %{"otp_app" => app}, &Map.put(&1, "otp_app", app))
         )
 
-    test "is refused off the owner's path, by every probe function", %{tmp_dir: dir} do
+    # S10: no closure application lists wx, so nothing in the build could
+    # load it and the builder's answer is "absent"; client 0.9 hits only
+    # where wx is not installed at all.
+    test "is recorded off the owner's path, by every probe function", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
 
       assert Probes.decide(otp("wx", "wx"), c, "pkg") ==
-               {:refuse,
-                "compile-time probe of an OTP application outside the closure: " <>
-                  "wx via Code.ensure_loaded?/1"}
+               {:observe, "probe_inputs",
+                %{
+                  "of" => "otp_app",
+                  "name" => "wx",
+                  "via" => "Code.ensure_loaded?/1",
+                  "refusal" =>
+                    "compile-time probe of an OTP application outside the closure: " <>
+                      "wx via Code.ensure_loaded?/1"
+                }}
 
       for mfa <- ~w(code:which/1 code:get_object_code/1 code:is_loaded/1 code:module_status/1
                     erlang:module_loaded/1 erlang:function_exported/3) do
         event = otp("wxWebView", "wx", mfa: mfa, caller: frame("Elixir.FxProbe", "f", 0))
 
-        assert Probes.decide(event, c, "pkg") ==
-                 {:refuse,
-                  "compile-time probe of an OTP application outside the closure: wx via #{mfa}"}
+        assert {:observe, "probe_inputs", %{"of" => "otp_app", "name" => "wx"} = item} =
+                 Probes.decide(event, c, "pkg")
+
+        assert item["refusal"] ==
+                 "compile-time probe of an OTP application outside the closure: wx via #{mfa}"
       end
+    end
+
+    # Another closure application lists wx: its compile may have loaded wx's
+    # modules before the owner's probe, so the builder's own answer is not
+    # known.
+    test "is refused when another closure application lists it", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"], "child" => ["kernel"], "other" => ["wx"]})
+      c = put_in(c.deps["pkg"].children, ["child", "other"])
+
+      assert Probes.decide(otp("wx", "wx"), c, "child") ==
+               {:refuse,
+                "compile-time probe of an OTP application outside the closure: " <>
+                  "wx via Code.ensure_loaded?/1"}
     end
 
     test "names the Elixir function the package called", %{tmp_dir: dir} do
@@ -458,7 +482,9 @@ defmodule NccWorker.Portability.ProbesTest do
             {frame("elixir_compiler_1", "__MODULE__", 1), "code:ensure_loaded/1"},
             {nil, "code:ensure_loaded/1"}
           ] do
-        assert {:refuse, why} = Probes.decide(otp("mnesia", "mnesia", caller: caller), c, "pkg")
+        assert {:observe, "probe_inputs", %{"via" => ^via, "refusal" => why}} =
+                 Probes.decide(otp("mnesia", "mnesia", caller: caller), c, "pkg")
+
         assert String.ends_with?(why, ": mnesia via " <> via), why
       end
     end
@@ -470,7 +496,7 @@ defmodule NccWorker.Portability.ProbesTest do
 
       # Through a closure dependency's own list, and through an installed
       # application's (ssl lists public_key).
-      assert {:refuse, _} = Probes.decide(otp("wx", "wx"), c, "pkg")
+      assert {:observe, "probe_inputs", _} = Probes.decide(otp("wx", "wx"), c, "pkg")
       c = put_in(c.deps["pkg"].children, ["child"])
       assert Probes.decide(otp("wx", "wx"), c, "pkg") == :ignore
 
@@ -555,12 +581,12 @@ defmodule NccWorker.Portability.ProbesTest do
       event = otp("wx_object", "wx", arg: %{"attribute" => true})
       assert Probes.decide(event, c, "pkg") == :ignore
 
-      assert {:refuse, _} =
+      assert {:observe, "probe_inputs", _} =
                Probes.decide(otp("wx_object", "wx", arg: %{"attribute" => false}), c, "pkg")
 
       # Only the code:ensure_loaded/1 that lookup is.
       other = otp("wx_object", "wx", mfa: "code:which/1", arg: %{"attribute" => true})
-      assert {:refuse, _} = Probes.decide(other, c, "pkg")
+      assert {:observe, "probe_inputs", _} = Probes.decide(other, c, "pkg")
     end
 
     test "inside a traced probe, it is that probe's", %{tmp_dir: dir} do
@@ -577,10 +603,24 @@ defmodule NccWorker.Portability.ProbesTest do
       c = %{c | nested: %{"pkg" => "Elixir.Code:with_diagnostics/2"}}
 
       assert Probes.decide(event, c, "pkg") ==
-               {:refuse,
-                "compile-time probe of an OTP application outside the closure: wx via " <>
-                  "Code.ensure_loaded?/1, in a window with a nested compile " <>
-                  "(Elixir.Code:with_diagnostics/2)"}
+               {:observe, "probe_inputs",
+                %{
+                  "of" => "otp_app",
+                  "name" => "wx",
+                  "via" => "Code.ensure_loaded?/1",
+                  "refusal" =>
+                    "compile-time probe of an OTP application outside the closure: wx via " <>
+                      "Code.ensure_loaded?/1, in a window with a nested compile " <>
+                      "(Elixir.Code:with_diagnostics/2)"
+                }}
+
+      # A refusal there keeps its suffix: another closure application lists wx.
+      c = ctx(dir, %{"pkg" => ["kernel"], "third" => ["kernel"], "other" => ["wx"]})
+      c = put_in(c.deps["pkg"].children, ["third", "other"])
+      c = %{c | nested: %{"third" => "x:y/1"}}
+
+      assert {:refuse, why} = Probes.decide(event, c, "third")
+      assert why =~ "wx via Code.ensure_loaded?/1, in a window with a nested compile (x:y/1)"
     end
 
     # The trace's own load makes its answer wrong whatever the path: that
@@ -628,18 +668,32 @@ defmodule NccWorker.Portability.ProbesTest do
           do: assert(Probes.decide(app_probe(app, mfa: mfa), c, "pkg") == :ignore, app)
     end
 
-    test "of any other application refuses, an OTP one by its own reason", %{tmp_dir: dir} do
+    # S10: an application no package of the build is, and an OTP one no
+    # closure application lists, are recorded; client 0.9 checks them.
+    test "of any other application is recorded, an OTP one as such", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => ["kernel"]})
 
       assert Probes.decide(app_probe("mnesia", arg: %{"otp_app" => "mnesia"}), c, "pkg") ==
-               {:refuse,
-                "compile-time probe of an OTP application outside the closure: " <>
-                  "mnesia via Application.spec/2"}
+               {:observe, "probe_inputs",
+                %{
+                  "of" => "otp_app",
+                  "name" => "mnesia",
+                  "via" => "Application.spec/2",
+                  "refusal" =>
+                    "compile-time probe of an OTP application outside the closure: " <>
+                      "mnesia via Application.spec/2"
+                }}
 
       assert Probes.decide(app_probe("phoenix_html"), c, "pkg") ==
-               {:refuse,
-                "compile-time probe of a dependency outside the closure: " <>
-                  "phoenix_html via Application.spec/2"}
+               {:observe, "probe_inputs",
+                %{
+                  "of" => "app",
+                  "name" => "phoenix_html",
+                  "via" => "Application.spec/2",
+                  "refusal" =>
+                    "compile-time probe of a dependency outside the closure: " <>
+                      "phoenix_html via Application.spec/2"
+                }}
 
       load =
         app_probe("mnesia",
@@ -648,9 +702,26 @@ defmodule NccWorker.Portability.ProbesTest do
           arg: %{"otp_app" => "mnesia"}
         )
 
-      assert {:refuse, why} = Probes.decide(load, c, "pkg")
+      assert {:observe, "probe_inputs", %{"refusal" => why}} = Probes.decide(load, c, "pkg")
       assert why =~ "mnesia via application_controller:load_application/1"
       assert {:refuse, _} = Probes.decide(app_probe("mnesia"), c, :outside)
+      assert {:refuse, _} = Probes.decide(app_probe("phoenix_html"), c, "not_a_dep")
+    end
+
+    # Whether the owner's compile finds a build application outside its own
+    # closure, or an OTP one another closure application lists, is Mix's
+    # compile order: refused.
+    test "of a build application outside the owner's path refuses", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"], "child" => ["kernel"], "other" => ["mnesia"]})
+      c = put_in(c.deps["pkg"].children, ["child", "other"])
+
+      assert Probes.decide(app_probe("other"), c, "child") ==
+               {:refuse,
+                "compile-time probe of a dependency outside the closure: " <>
+                  "other via Application.spec/2"}
+
+      assert {:refuse, _} =
+               Probes.decide(app_probe("mnesia", arg: %{"otp_app" => "mnesia"}), c, "child")
     end
 
     test "from a closure dependency's mix.exs refuses, listed or not", %{tmp_dir: dir} do
@@ -679,7 +750,9 @@ defmodule NccWorker.Portability.ProbesTest do
       c = ctx(dir, %{"pkg" => ["kernel"]})
       event = app_probe("ssl", arg: %{"otp_app" => "ssl", "loaded_before" => true})
       assert Probes.decide(event, c, "pkg") == :ignore
-      assert {:refuse, _} = Probes.decide(put_in(event["arg"]["loaded_before"], false), c, "pkg")
+
+      assert {:observe, "probe_inputs", _} =
+               Probes.decide(put_in(event["arg"]["loaded_before"], false), c, "pkg")
     end
 
     test "is unreadable without an application name", %{tmp_dir: dir} do
@@ -691,7 +764,7 @@ defmodule NccWorker.Portability.ProbesTest do
   test "a where_is_file of a module's beam is a path probe", %{tmp_dir: dir} do
     c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
     on_path = otp_event("mnesia_lib", "mnesia", "code:where_is_file/1")
-    assert {:refuse, _} = Probes.decide(on_path, c, "pkg")
+    assert {:observe, "probe_inputs", %{"of" => "otp_app"}} = Probes.decide(on_path, c, "pkg")
     c = ctx(dir, %{"pkg" => ["kernel", "mnesia"]})
     assert Probes.decide(on_path, c, "pkg") == :ignore
   end
@@ -718,19 +791,52 @@ defmodule NccWorker.Portability.ProbesTest do
 
     defp with_modules(c, modules), do: %{c | modules: modules}
 
-    test "of a module outside the owner's closure refuses", %{tmp_dir: dir} do
+    # S10: nothing in the build defines it, so the builder's answer is
+    # "absent"; recorded for client 0.9, which misses where the user's
+    # project can supply the module.
+    test "of a module nothing in the build defines is recorded", %{tmp_dir: dir} do
       c =
         dir
         |> ctx(%{"pkg" => ["kernel"], "child" => ["kernel"], "other" => ["kernel"]})
         |> with_modules(%{"Elixir.Other" => "other", "Elixir.Child" => "child"})
 
       assert Probes.decide(hex("Elixir.Phoenix.HTML.Safe"), c, "pkg") ==
+               {:observe, "probe_inputs",
+                %{
+                  "of" => "module",
+                  "name" => "Elixir.Phoenix.HTML.Safe",
+                  "definers" => [],
+                  "via" => "Code.ensure_loaded?/1",
+                  "refusal" =>
+                    "compile-time probe of a dependency outside the closure: " <>
+                      "Elixir.Phoenix.HTML.Safe via Code.ensure_loaded?/1"
+                }}
+
+      # Every probe function: the module is on no path and loaded nowhere.
+      for mfa <- ~w(code:which/1 erlang:function_exported/3 erlang:module_loaded/1) do
+        assert {:observe, "probe_inputs", %{"name" => "Elixir.Poison"}} =
+                 Probes.decide(hex("Elixir.Poison", mfa: mfa), c, "pkg")
+      end
+
+      # Outside every window, or for no closure dependency, it refuses.
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Poison"), c, :outside)
+      assert {:refuse, _} = Probes.decide(hex("Elixir.Poison"), c, "not_a_dep")
+    end
+
+    # Built, but not in the owner's closure: whether the owner's compile
+    # finds it is Mix's compile order (a module an earlier dependency's
+    # compile loaded stays loaded), and Mix.install finds it.
+    test "of a module another build application defines refuses", %{tmp_dir: dir} do
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "child" => ["kernel"], "other" => ["kernel"]})
+        |> with_modules(%{"Elixir.Other" => "other", "Elixir.Child" => "child"})
+
+      assert Probes.decide(hex("Elixir.Other"), c, "pkg") ==
                {:refuse,
                 "compile-time probe of a dependency outside the closure: " <>
-                  "Elixir.Phoenix.HTML.Safe via Code.ensure_loaded?/1"}
+                  "Elixir.Other via Code.ensure_loaded?/1"}
 
-      # In the build, but not in the owner's closure.
-      assert {:refuse, _} = Probes.decide(hex("Elixir.Other"), c, "pkg")
       c = put_in(c.deps["pkg"].children, ["child"])
       assert Probes.decide(hex("Elixir.Child"), c, "pkg") == :ignore
       assert {:refuse, _} = Probes.decide(hex("Elixir.Child"), c, :outside)
@@ -993,8 +1099,13 @@ defmodule NccWorker.Portability.ProbesTest do
       assert Probes.decide(hex("Elixir.Jason.Encoder"), c, "pkg") ==
                {:observe, "declared_absent", absent}
 
-      # Declared by a dependency outside the owner's closure.
-      assert {:refuse, _} = Probes.decide(hex("Elixir.Poison"), c, "pkg")
+      # Declared by a dependency outside the owner's closure: no declaration
+      # holds, and the module is recorded as one nothing in the build defines.
+      assert {:observe, "probe_inputs", %{"name" => "Elixir.Poison", "definers" => []}} =
+               Probes.decide(hex("Elixir.Poison"), c, "pkg")
+
+      assert {:observe, "probe_inputs", %{"name" => "Elixir.Jason.Encoder"}} =
+               Probes.decide(hex("Elixir.Jason.Encoder"), c, "other")
 
       # The module is built by a closure application outside the owner's
       # closure (S9, found with F6): whether the owner's compile finds it
@@ -1002,7 +1113,7 @@ defmodule NccWorker.Portability.ProbesTest do
       # though a declared-absent dependency defines it too.
       built = with_modules(c, Map.put(c.modules, "Elixir.Jason.Encoder", "other"))
       assert {:refuse, _} = Probes.decide(hex("Elixir.Jason.Encoder"), built, "pkg")
-      assert {:refuse, _} = Probes.decide(hex("Elixir.Jason.Encoder"), c, "other")
+
       # A loaded-now probe of it: whether it is loaded is no question then
       # either, the module is on no path.
       assert Probes.decide(
@@ -1020,7 +1131,9 @@ defmodule NccWorker.Portability.ProbesTest do
       }
 
       assert Probes.decide(app, c, "pkg") == :ignore
-      assert {:refuse, _} = Probes.decide(put_in(app["arg"]["app"], "poison"), c, "pkg")
+
+      assert {:observe, "probe_inputs", %{"of" => "app", "name" => "poison"}} =
+               Probes.decide(put_in(app["arg"]["app"], "poison"), c, "pkg")
     end
 
     # Coverage drop 2026-11-22, F6: eventstore's

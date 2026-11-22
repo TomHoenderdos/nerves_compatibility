@@ -206,6 +206,30 @@ defmodule NccWorker.Portability.Probes do
   schedule (round 3, R2-2). A module loaded before the tracer started, or by Mix in every
   compile, is loaded either way and never traced.
 
+  **Recorded, not refused (S10).** Three of the refusals above are probes
+  the builder answered "absent", which client 0.9 can check against the
+  user's project before it installs. For a closure dependency's probe
+  (never one from a `mix.exs`, outside every window or of no closure
+  dependency) each is `{:observe, "probe_inputs", item}` instead, and
+  `NccWorker.Portability.CompileInputs` makes it a `probe` compile input:
+
+    * a package's probe of a module no application of the build defines
+      (`ctx.modules`) and no declaration covers (`"of" => "module"`); a
+      module another build application defines, outside the owner's
+      closure, still refuses, since whether the owner's compile finds it is
+      Mix's compile order;
+    * an application probe of an application that is no package of the
+      build (`"app"`);
+    * a probe of an installed OTP or Elixir application, by module or as an
+      application, that no closure application lists (`"otp_app"`): then
+      nothing in the build loaded it, so the builder's own answer is
+      "absent". One another closure application lists still refuses.
+
+  The item keeps the refusal text it replaces (`refusal`), with which a
+  firmware target's trace still refuses (`NccWorker.Portability`): no
+  client can check a device's project. A loaded-now probe of a module on
+  the owner's path stays refused, as its answer is the compile's schedule.
+
   An event this module cannot read could not be judged.
   """
 
@@ -341,6 +365,9 @@ defmodule NccWorker.Portability.Probes do
       declared?(ctx.declared.apps, app, ctx, owner) ->
         :ignore
 
+      absent_app?(app, arg, ctx, owner) ->
+        {:observe, "probe_inputs", app_input(app, arg, event, app_probe(app, arg, event))}
+
       true ->
         {:refuse, app_probe(app, arg, event)}
     end
@@ -457,9 +484,20 @@ defmodule NccWorker.Portability.Probes do
   end
 
   defp in_nested(event, ctx, owner, nested) do
+    suffix = ", in a window with a nested compile (#{nested})"
+
     case decide(put_in(event, ["arg", "checker"], false), ctx, owner) do
-      {kind, why} -> {kind, "#{why}, in a window with a nested compile (#{nested})"}
-      :ignore -> :ignore
+      {:observe, "probe_inputs", item} ->
+        {:observe, "probe_inputs", Map.update!(item, "refusal", &(&1 <> suffix))}
+
+      {:observe, _kind, _item} = observed ->
+        observed
+
+      {kind, why} ->
+        {kind, why <> suffix}
+
+      :ignore ->
+        :ignore
     end
   end
 
@@ -484,11 +522,15 @@ defmodule NccWorker.Portability.Probes do
       is_binary(Context.mix_exs(ctx, event, owner)) ->
         {:refuse, otp_probe(app, event) <> " in mix.exs"}
 
-      not (Context.dep?(ctx, owner) and app in path_of(ctx, owner)) ->
-        {:refuse, otp_probe(app, event)}
+      Context.dep?(ctx, owner) and app in path_of(ctx, owner) ->
+        found_or_ensured(event, ctx, owner)
+
+      Context.dep?(ctx, owner) and off_every_path?(app, ctx) ->
+        {:observe, "probe_inputs",
+         app_input(app, %{"otp_app" => app}, event, otp_probe(app, event))}
 
       true ->
-        found_or_ensured(event, ctx, owner)
+        {:refuse, otp_probe(app, event)}
     end
   end
 
@@ -512,6 +554,11 @@ defmodule NccWorker.Portability.Probes do
 
       app = namespace_owner(module, ctx, owner) ->
         {:observe, "declared_absent", namespaced(module, app, event)}
+
+      # S10: nothing in the build defines it, so the builder's answer is
+      # "absent"; client 0.9 checks the user's project can supply it nowhere.
+      Context.dep?(ctx, owner) ->
+        {:observe, "probe_inputs", module_input(module, event)}
 
       true ->
         {:refuse, dependency(module, event)}
@@ -575,6 +622,40 @@ defmodule NccWorker.Portability.Probes do
       "via" => via(event)
     }
   end
+
+  # S10: a probe the builder answered "absent" for, as the observation
+  # `NccWorker.Portability.CompileInputs` makes a `probe` compile input of.
+  # `refusal` is what it refused as before: a firmware target's trace, which
+  # no client can check against a project, refuses with it
+  # (`NccWorker.Portability`), and observations never publish it.
+  defp module_input(module, event) do
+    %{
+      "of" => "module",
+      "name" => module,
+      "definers" => [],
+      "via" => via(event),
+      "refusal" => dependency(module, event)
+    }
+  end
+
+  defp app_input(app, arg, event, refusal) do
+    of = if arg["otp_app"] == app, do: "otp_app", else: "app"
+    %{"of" => of, "name" => app, "via" => via(event), "refusal" => refusal}
+  end
+
+  # An application the owner's probe finds nowhere in the build, so the
+  # builder's answer is "absent": no package of the build is it, and no
+  # closure application lists it (an installed OTP one included: then
+  # nothing in the build could have loaded it). Only a closure dependency's
+  # probe (`mix.exs` refused before).
+  defp absent_app?(app, arg, ctx, owner) do
+    Context.dep?(ctx, owner) and not Context.dep?(ctx, app) and off_every_path?(app, ctx) and
+      (arg["otp_app"] in [nil, false] or arg["otp_app"] == app)
+  end
+
+  # On no closure application's path: not the package's closure, nor what
+  # any of them lists, transitively.
+  defp off_every_path?(app, ctx), do: app not in path_of(ctx, ctx.package)
 
   # Round 3, R2-1: a probe of a declared-absent dependency's module passes
   # here but is recorded (`compile_observations.declared_absent`): another
