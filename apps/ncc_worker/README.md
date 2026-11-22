@@ -649,6 +649,20 @@ inflate cap, a tree over 64 MiB, and anything left once the check's 60 s budget 
 today's verdict. `compile_observations.tree_check` says, per closure dependency, `ok`, `differs: ...` or
 `unverified: ...`; `trace_stats.trees_ms` is the check's time.
 
+**Probes recorded, not refused (S10).** A closure dependency's probe (not one from a `mix.exs`, outside every window
+or of no closure dependency) that the builder answered "absent" is a `probe` compile input instead of the refusal
+below, which client 0.9 checks against the user's project (`Compatibility.CompileInputs`): a package's probe of a
+module no application of the build defines and no declaration covers (`of: "module"`, the declared definers the judge
+knows in `definers`; the portal adds the module index's at ingest, `ModuleIndex.settle_inputs/1`, and refuses one while
+the index is not complete), an application probe of an application that is no package of the build (`app`), and a
+probe of an installed OTP application no closure application lists (`otp_app`). Every declared-absent probe is a
+`probe` input too. One item per question, at most 64, else `config_unrecorded`. A recorded probe taints no dependent:
+the dependent's build carries it. What stays refused: a module or application another build application provides
+outside the prober's closure (Mix's compile order decides whether the prober finds it), an OTP application another
+closure application lists (an earlier compile may have loaded it), an Elixir application (`eex`, installed wherever
+Elixir is), a loaded-now probe of a module on the prober's path, and any probe from a `mix.exs`. A firmware target's
+trace and a host-native build refuse every recorded probe as before (`observations.probe_inputs` lists them).
+
 A compile-time probe of a module of an installed OTP or Elixir application off every compile's code path (any
 application but kernel, stdlib, compiler, erts, elixir, mix, iex, ex_unit and logger) refuses as `compile-time probe
 of an OTP application outside the closure: <app> via <function>` unless that application is on the prober's path (the
@@ -689,8 +703,8 @@ probe is recorded like a declared-absent one, with `namespace` naming that packa
 `module_absent`, the `module`, the `declared` packages that define it, `via`; at most 200, then one `truncated`
 item): another package may define the same module, and a user with that one and not the declared one has the build's
 closure. The portal refuses the build at ingest when a package with 1,000 or more recent downloads that neither the
-lock nor the record names defines the module (`Portal.Catalog.ModuleIndex`); client 0.9 is to check the record
-itself. A closure dependency's refusal of a reviewed guarded-module site (`NccWorker.Portability.Guarded`:
+lock nor the record names defines the module (`Portal.Catalog.ModuleIndex`), unless the build's `probe` compile input
+for the module names it (below). A closure dependency's refusal of a reviewed guarded-module site (`NccWorker.Portability.Guarded`:
 websock_adapter's `WebSockAdapter.CowboyAdapter`, jose's `JOSE.Poison*`, ymlr's `Ymlr.Encoder.Decimal`, each by
 release range with a ceiling) does not taint the package when the package builds the same with the guarded package
 present. A cheap pre-filter first: none of the guarded modules is built, no Elixir beam of the closure outside them
@@ -708,7 +722,7 @@ and the package's app must be the first build's: the same ebin names, non-beam b
 release of a guarded package is no other world for the three entries (the prober declares no dependency on it and uses
 it only at run time or for a warning); a new entry's review must show the same. Anything else refuses with the taint; `trace_stats.guarded_proof` says what happened. The dependency's own
 build still refuses, and so does a firmware target's or host-native verdict. The waived refusals are recorded in
-`compile_observations.guarded_taint`. It is not a `compile_inputs` item yet: client 0.8 reads an unknown kind as a malformed entry and misses. The package's own probe
+`compile_observations.guarded_taint`. The package's own probe
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path
 application's module included (`function_exported?(URI, :new, 1)` is `false` alone and `true` after an earlier
 dependency used URI), refuses as `compile-time probe of whether a module is loaded: ` unless the same process

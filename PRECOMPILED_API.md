@@ -668,6 +668,22 @@ What it lists:
     item's (`{:ok, value}`) or `"unrecordable"`; at most 128. An empty list is an app the config
     leaves alone. Listed once per app. A read the snapshot cannot give whole is
     `config_unrecorded` instead.
+  - `{"kind": "probe", "of": "module", "name", "answer": "absent", "definers": [name]}` (S10, builds
+    since 2026-11-22): the closure asked at compile time whether the module `name` is there
+    (`Code.ensure_loaded?(Poison)`, `function_exported?/3`, `:code.which/1`), as its atom renders
+    (`Elixir.Poison`, `cowboy_websocket`), and nothing in the build defines it. `definers` are the
+    Hex package and application names known to define it, sorted, each once, at most 64: the
+    declared packages the judge found, and every package with 1,000 or more recent downloads the
+    portal's module index shows (`Portal.Catalog.ModuleIndex.settle_inputs/1`, at ingest; a build
+    with such an item is refused while the index is not complete, and a served one whose item misses
+    a definer the index later shows is withheld by the index's recheck).
+  - `{"kind": "probe", "of": "app", "name", "answer": "absent"}`: the same for an application
+    (`Application.spec/1,2`, `Application.load/1`, `:code.where_is_file/1` of its `.app`) that is no
+    package of the build.
+  - `{"kind": "probe", "of": "otp_app", "name", "answer": "absent"}`: the same for an installed OTP
+    application that no closure application lists, by module or as an application (vega_lite's
+    `Code.ensure_loaded?(:wx)`): the builder's pruned code path never held it. Listed once per
+    question, at most 64 probe items, else `config_unrecorded`. A firmware build never carries one.
 
   A firmware build (`target` a Nerves system) carries `compile_inputs` only when the worker's
   traced compile of the package's closure for the target recorded every input
@@ -1085,14 +1101,30 @@ build fails as the reason it was not used:
       its `.app` declares no env, else the item differs. So an item for an app Mix loads before
       every compile (`elixir`, `mix`, `ex_unit`, `iex`, `logger`), each of whose `.app` declares
       env, never holds: such a build is listed but no client takes it. Else `config_all_differs`, with `app` as
-      its argument. A client that does not know the kind treats the item as malformed: a miss.
+      its argument. A client that does not know the kind treats the item as malformed: a miss;
+    - a `probe` item (clients 0.9.0 and later) holds when nothing in the project can supply what
+      the build's closure asked for, as the builder could not. For a module: no dependency the
+      project's Mix loads and no `mix.lock` entry (app or Hex package name) is in `definers`; no
+      such dependency outside the build's `deps` and the package itself defines the module in its
+      sources (every literal `defmodule`, `defprotocol` and `defimpl` name, through nesting and the
+      file's aliases, every Erlang `-module`, and each leex and yecc file's base name; a file that
+      names the module's last segment and defines a module under a computed name, or one inside a
+      `quote`, a symlink, a source that does not parse or a dependency without a readable dir is
+      `probe_unknown`); and the client's code path holds no `<name>.beam`. Else `probe_definer`,
+      with the module and the dependency (or `code_path`) as its arguments. For an application: no
+      dependency is that application, and no `<name>.app` is on the code path or under OTP's or
+      Elixir's lib dir; else `probe_definer`. For an OTP application: it is installed nowhere on
+      the client's side, and no dependency has its name; else `probe_otp_app`. Under Mix.install
+      the project is the install's. A client that does not know the kind treats the item as
+      malformed: a miss.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
     being installed, `default` is `:error`, and the device's value for the key equals `seen`.
     On a device, an `env` item recorded unset holds, one recorded set or `set_by: "nerves"` is
     `env_set_at_build`, an `endian` item is `endian_differs`, an `os_type` item
     `os_type_differs` and a `mix_target` item `rule8_target` (the device cannot check the machine
-    its firmware was compiled on, nor its target), and a `config_all` item `config_all_differs`. A
+    its firmware was compiled on, nor its target), a `config_all` item `config_all_differs`, and a
+    `probe` item `probe_unknown` (a device cannot check the project its firmware was compiled in). A
     client never prints the project's value. A build that carries `compile_inputs` is exempt
     from the source scan's environment-variable rule (`rule8_env`).
 
@@ -1209,8 +1241,10 @@ later"), `relocation_refused` ("relocated build: the rewrite refused"), `relocat
 ("relocated build: this project's {0} path is not spelled as on disk"), `relocated_path_ascii`
 ("relocated build: this project's {0} path is not printable ASCII") and `relocated_path_envelope`
 ("relocated build: this project's {0} path is outside the paths it was proven at"), and client
-0.9.0's `config_all_differs` ("built with a different compile-time config of {0}"). Another code
-is stored as `unknown`.
+0.9.0's `config_all_differs` ("built with a different compile-time config of {0}"), `probe_definer`
+("built where {0} is absent; {1} can supply it here"), `probe_otp_app` ("built where OTP application
+{0} is absent; it is installed here") and `probe_unknown` ("built where {0} is absent; cannot tell
+whether this project supplies it"). Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300
