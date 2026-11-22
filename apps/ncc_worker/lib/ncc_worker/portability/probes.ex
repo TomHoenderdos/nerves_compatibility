@@ -175,8 +175,14 @@ defmodule NccWorker.Portability.Probes do
   user who has it never gets this build (jason's `Decimal`, swoosh's
   `Plug`). A declared dependency whose tarball neither the run's Hex cache
   holds nor the pre-judge fetch got owns no known module, so its probe
-  refuses. From a dependency's `mix.exs` such a probe refuses whatever the
-  closure holds or declares. The toolchain's own lookups of such a module
+  refuses. Nor when the module is under the namespace of a package of the
+  owner's closure whose locked release does not define it (eventstore's
+  `Postgrex.Timestamp`): the client matches the build's `deps` by version
+  and checksum, so every user has that release. The namespace's package
+  is proved by its verified tarball, which defines the enclosing module
+  and not the probed one. Both are recorded (`declared_absent`) for the
+  portal's module-index gate. From a dependency's `mix.exs` such a probe
+  refuses whatever the closure holds or declares. The toolchain's own lookups of such a module
   (the expander resolving an import, a struct or a require, the behaviour
   check) reach only the compile's errors and warnings and are no concern.
 
@@ -491,9 +497,63 @@ defmodule NccWorker.Portability.Probes do
       declared?(ctx.declared.modules, module, ctx, owner) ->
         {:observe, "declared_absent", absent(module, ctx, event)}
 
+      app = namespace_owner(module, ctx, owner) ->
+        {:observe, "declared_absent", namespaced(module, app, event)}
+
       true ->
         {:refuse, dependency(module, event)}
     end
+  end
+
+  # Coverage drop 2026-11-22, F6: a module under the namespace of a package
+  # of the owner's closure (eventstore's `Postgrex.Timestamp`, postgrex
+  # locked at a release without it). The client matches a build's `deps` by
+  # version and checksum, so every user with this closure has that release,
+  # which does not define the module: only a package outside the closure
+  # could, which is what a declared-absent record leaves to the portal's
+  # module-index gate (`absent/3`). The namespace's package is the one that
+  # builds the nearest enclosing module (`Postgrex`), proved by its verified
+  # tarball: it defines that module, and not the probed one (a module its
+  # sources define but the build left out, as a guarded module, may exist in
+  # another world). A tarball that cannot be read in full proves nothing.
+  defp namespace_owner("Elixir." <> rest = module, ctx, owner) do
+    parts = String.split(rest, ".")
+
+    with true <- length(parts) >= 2 and Context.dep?(ctx, owner),
+         {prefix, app} <- nearest_built(parts, ctx),
+         true <- app in Context.closure_of(ctx, owner),
+         {:ok, %{modules: modules}} <-
+           Compatibility.HexModules.read(Context.tarball(ctx, app)),
+         true <- prefix in modules and module not in modules do
+      app
+    else
+      _ -> nil
+    end
+  end
+
+  defp namespace_owner(_module, _ctx, _owner), do: nil
+
+  # The longest proper prefix of the module's name that the closure builds.
+  defp nearest_built(parts, ctx) do
+    (length(parts) - 1)..1//-1
+    |> Enum.map(&("Elixir." <> Enum.join(Enum.take(parts, &1), ".")))
+    |> Enum.find_value(fn prefix ->
+      case Map.fetch(ctx.modules, prefix) do
+        {:ok, app} -> {prefix, app}
+        :error -> nil
+      end
+    end)
+  end
+
+  defp namespaced(module, app, event) do
+    %{
+      "kind" => "module_absent",
+      "module" => module,
+      "declared" => [],
+      "declared_apps" => [],
+      "namespace" => app,
+      "via" => via(event)
+    }
   end
 
   # Round 3, R2-1: a probe of a declared-absent dependency's module passes

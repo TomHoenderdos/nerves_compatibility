@@ -3609,7 +3609,7 @@ defmodule NccWorker.Portability do
       |> Enum.map(
         &(&1
           |> elem(1)
-          |> Map.take(["kind", "module", "declared", "declared_apps", "via"]))
+          |> Map.take(["kind", "module", "declared", "declared_apps", "namespace", "via"]))
       )
       |> Enum.uniq()
       |> Enum.sort()

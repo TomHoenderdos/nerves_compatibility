@@ -680,7 +680,12 @@ fetched and what failed). A name whose fetch failed is tried once more a second 
 probe of a dependency outside the closure (not from a `mix.exs`) decides the verdict and the fetch failed, the verdict
 says nothing about the package: it is the transient "portability could not be judged" (`trace_stats.declared_unknown`
 names the failed packages, `trace_stats.transient` is `true`), which the portal retries up to its cap and never
-passes on what the failed fetch did not know. Such a probe that passes is recorded in `compile_observations.declared_absent` (`kind`
+passes on what the failed fetch did not know. A probe of a module under the namespace of a package of the prober's
+closure whose locked release does not define it (eventstore's `Postgrex.Timestamp`, postgrex 0.23 locked) is no
+concern either: the client matches the build's `deps` by version and checksum, so every user has that release. The
+namespace's package is the one that builds the nearest enclosing module, proved by its verified tarball, which must
+define that module and not the probed one (a module its sources define behind a probe of their own refuses). Such a
+probe is recorded like a declared-absent one, with `namespace` naming that package. Such a probe that passes is recorded in `compile_observations.declared_absent` (`kind`
 `module_absent`, the `module`, the `declared` packages that define it, `via`; at most 200, then one `truncated`
 item): another package may define the same module, and a user with that one and not the declared one has the build's
 closure. The portal refuses the build at ingest when a package with 1,000 or more recent downloads that neither the

@@ -1016,6 +1016,86 @@ defmodule NccWorker.Portability.ProbesTest do
       assert {:refuse, _} = Probes.decide(put_in(app["arg"]["app"], "poison"), c, "pkg")
     end
 
+    # Coverage drop 2026-11-22, F6: eventstore's
+    # `Code.ensure_loaded?(Postgrex.Timestamp)` with postgrex in its
+    # closure at a release that does not define it. Every user with this
+    # closure has that release (the client matches `deps` by version and
+    # checksum), so only a package outside the closure could define the
+    # module: recorded as a declared-absent probe is, for the portal's
+    # module-index gate. The namespace's package is proved by its verified
+    # tarball, which defines the namespace's module and not the probed one.
+    test "of an absent module under a closure package's namespace is recorded",
+         %{tmp_dir: dir} do
+      home = Path.join(dir, "hex")
+
+      {"pg", pg} =
+        NccWorker.TracerFixtures.hex_release(home, "pg", ["lib"], %{
+          "lib/pg.ex" => "defmodule Pg do\nend\ndefmodule Pg.Extensions.Int do\nend\n"
+        })
+
+      c =
+        dir
+        |> ctx(%{"pkg" => ["kernel"], "pg" => ["kernel"], "other" => ["kernel"]})
+        |> with_modules(%{"Elixir.Pg" => "pg", "Elixir.Pg.Extensions.Int" => "pg"})
+
+      c = put_in(c.deps["pkg"].children, ["pg"])
+      c = %{c | hex: {home, %{"pg" => pg}}}
+
+      record = %{
+        "kind" => "module_absent",
+        "module" => "Elixir.Pg.Timestamp",
+        "declared" => [],
+        "declared_apps" => [],
+        "namespace" => "pg",
+        "via" => "Code.ensure_loaded?/1"
+      }
+
+      assert Probes.decide(hex("Elixir.Pg.Timestamp"), c, "pkg") ==
+               {:observe, "declared_absent", record}
+
+      # Deeper: the nearest namespace module the closure builds.
+      assert {:observe, "declared_absent", %{"namespace" => "pg"}} =
+               Probes.decide(hex("Elixir.Pg.Extensions.Int.Sub"), c, "pkg")
+
+      # The namespace's package outside the prober's closure; a namespace
+      # no closure package builds; an Erlang module; a top-level module.
+      for {module, owner} <- [
+            {"Elixir.Pg.Timestamp", "other"},
+            {"Elixir.Other.Timestamp", "pkg"},
+            {"pg_timestamp", "pkg"},
+            {"Elixir.Timestamp", "pkg"}
+          ] do
+        assert {:refuse, _} = Probes.decide(hex(module), c, owner), module
+      end
+
+      # Built by name alone: the tarball does not define the namespace's
+      # module. Or the tarball defines the probed module itself (the build
+      # left it out, so another world may not).
+      {"pg", bare} =
+        NccWorker.TracerFixtures.hex_release(Path.join(dir, "bare"), "pg", ["lib"], %{
+          "lib/pg/other.ex" => "defmodule Pg.Other do\nend\n"
+        })
+
+      {"pg", both} =
+        NccWorker.TracerFixtures.hex_release(Path.join(dir, "both"), "pg", ["lib"], %{
+          "lib/pg.ex" =>
+            "defmodule Pg do\nend\nif Code.ensure_loaded?(:x) do\n  defmodule Pg.Timestamp do\n  end\nend\n"
+        })
+
+      for {h, release} <- [
+            {Path.join(dir, "bare"), bare},
+            {Path.join(dir, "both"), both},
+            {nil, pg}
+          ] do
+        assert {:refuse, _} =
+                 Probes.decide(
+                   hex("Elixir.Pg.Timestamp"),
+                   %{c | hex: {h, %{"pg" => release}}},
+                   "pkg"
+                 )
+      end
+    end
+
     test "the compiler's own lookup is no concern", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => ["kernel"]})
       lookup = hex("Elixir.Phoenix.HTML.Safe", arg: %{"by_package" => false})
