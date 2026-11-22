@@ -35,6 +35,107 @@ defmodule NccWorker.Portability.CompileInputsTest do
   defp endian_read(owner \\ "pkg"),
     do: {owner, {:observe, "endian_reads", %{"mfa" => "erlang:system_info/1"}}}
 
+  describe "probes the builder answered absent (S10)" do
+    defp probed(of, name, opts \\ []) do
+      item =
+        %{"of" => of, "name" => name, "via" => "Code.ensure_loaded?/1", "refusal" => "r"}
+        |> Map.merge(if of == "module", do: %{"definers" => []}, else: %{})
+
+      {Keyword.get(opts, :owner, "pkg"), {:observe, "probe_inputs", item}}
+    end
+
+    defp declared(module, declared, apps, owner \\ "pkg") do
+      {owner,
+       {:observe, "declared_absent",
+        %{
+          "kind" => "module_absent",
+          "module" => module,
+          "declared" => declared,
+          "declared_apps" => apps,
+          "via" => "Code.ensure_loaded?/1"
+        }}}
+    end
+
+    test "each distinct question is one probe item, whichever window asked" do
+      decided = [
+        probed("module", "Elixir.Poison"),
+        probed("module", "Elixir.Poison", owner: "dep"),
+        probed("app", "phoenix_html"),
+        probed("otp_app", "wx", owner: "dep")
+      ]
+
+      items = CompileInputs.build(decided, [])
+
+      assert items == [
+               %{
+                 "kind" => "probe",
+                 "of" => "app",
+                 "name" => "phoenix_html",
+                 "answer" => "absent"
+               },
+               %{
+                 "kind" => "probe",
+                 "of" => "module",
+                 "name" => "Elixir.Poison",
+                 "answer" => "absent",
+                 "definers" => []
+               },
+               %{"kind" => "probe", "of" => "otp_app", "name" => "wx", "answer" => "absent"}
+             ]
+
+      assert Compatibility.CompileInputs.validate(items) == {:ok, items}
+    end
+
+    test "a declared-absent probe is one too, its declared packages and apps the definers" do
+      decided = [
+        declared("Elixir.Jason.Encoder", ["jason"], ["jason"]),
+        declared("Elixir.Money", ["ex_money"], ["ex_money_app"], "dep"),
+        probed("module", "Elixir.Money")
+      ]
+
+      assert CompileInputs.build(decided, []) == [
+               %{
+                 "kind" => "probe",
+                 "of" => "module",
+                 "name" => "Elixir.Jason.Encoder",
+                 "answer" => "absent",
+                 "definers" => ["jason"]
+               },
+               %{
+                 "kind" => "probe",
+                 "of" => "module",
+                 "name" => "Elixir.Money",
+                 "answer" => "absent",
+                 "definers" => ["ex_money", "ex_money_app"]
+               }
+             ]
+    end
+
+    test "a name the shared shape cannot carry, or more than 64, record config_unrecorded" do
+      assert CompileInputs.build([probed("module", "Elixir.Bad Name")], []) ==
+               [%{"kind" => "config_unrecorded"}]
+
+      many = for i <- 1..65, do: probed("module", "Elixir.M#{i}")
+      assert CompileInputs.build(many, []) == [%{"kind" => "config_unrecorded"}]
+
+      at_cap = for i <- 1..64, do: probed("module", "Elixir.M#{i}")
+      assert length(CompileInputs.build(at_cap, [])) == 64
+    end
+
+    test "probes come with every other kind at its cap, within the shared cap" do
+      env = for i <- 1..128, do: read("V#{i}", rec(:error))
+      orders = for i <- 1..96, do: order(i)
+      probes = for i <- 1..64, do: probed("module", "Elixir.M#{i}")
+
+      extras =
+        for i <- 1..32, do: %{"kind" => "platform_define", "regex" => "R#{i}", "matched" => false}
+
+      items = CompileInputs.build(env ++ probes, orders ++ extras)
+      assert length(items) == 320
+      assert Compatibility.CompileInputs.validate(items) == {:ok, items}
+    end
+  end
+
   describe "the byte order" do
     test "a read records one endian item with the builder's byte order" do
       decided = [endian_read(), endian_read("dep"), endian_read(:outside)]
@@ -451,7 +552,7 @@ defmodule NccWorker.Portability.CompileInputsTest do
 
     items = CompileInputs.build([all | env], orders ++ extras)
     assert length(items) == 128 + 96 + 2
-    assert length(items) <= 256
+    assert length(items) <= 320
     assert %{"kind" => "env_all"} in items
     assert %{"kind" => "config_unrecorded"} in items
     assert Compatibility.CompileInputs.validate(items) == {:ok, items}

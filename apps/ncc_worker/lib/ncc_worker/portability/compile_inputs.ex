@@ -38,10 +38,10 @@ defmodule NccWorker.Portability.CompileInputs do
   over 256 bytes, not a string: `Compatibility.CompileInputs.name?/1`) is
   `env_all`.
 
-  Each kind has its own cap, and the caps together fit the shared 256-item
+  Each kind has its own cap, and the caps together fit the shared 320-item
   cap of `Compatibility.CompileInputs`: 128 `env` items, 96 `config_order`
-  items (`Compatibility.CompileInputs.max_config_order_items/0`) and 32 of
-  every other kind (`platform_define` items among them, rebar3's
+  items (`Compatibility.CompileInputs.max_config_order_items/0`), 64 `probe`
+  items and 32 of every other kind (`platform_define` items among them, rebar3's
   `platform_define` regexes the OTP major does not decide, `Rebar`). A `config_order` input the shared shape rejects (a
   name no item may carry) records `config_unrecorded` instead. A kind over its cap records that it
   was not recorded instead (`env_all` for `env`, `config_unrecorded` for
@@ -61,6 +61,15 @@ defmodule NccWorker.Portability.CompileInputs do
   reading `system_info(os_type)` for a caller its own read names) and at
   least one is `"family"`. Without a known OS type it is
   `config_unrecorded`.
+
+  A probe the builder answered "absent" (`probe_inputs`, S10:
+  `NccWorker.Portability.Probes`) and a declared-absent one
+  (`declared_absent`) are one `probe` item per question, whichever window
+  asked: `of` the module, the application or the OTP application, `name`
+  what was asked about, and for a module `definers`, the declared packages
+  and their applications, sorted. They have a cap of their own,
+  `Compatibility.CompileInputs.max_probe_items/0`; over it, or with a name
+  the shared shape cannot carry, they record `config_unrecorded`.
 
   A firmware build's trace (`NccWorker.Portability.target_inputs/3`) adds
   three things, through `build/5`'s options:
@@ -135,8 +144,64 @@ defmodule NccWorker.Portability.CompileInputs do
           endian_inputs(decided, endian) ++
           os_type_inputs(decided, os_type) ++
           target_inputs(decided, Keyword.get(opts, :target)) ++ config_inputs
-      )
+      ) ++ probe_inputs(decided)
   end
+
+  # S10: every probe the builder answered "absent" (`probe_inputs`, from
+  # `NccWorker.Portability.Probes`), and every declared-absent one, its
+  # declared packages and their applications the definers. One item per
+  # question, whichever window asked; the portal adds the module index's
+  # definers at ingest. A name the shared shape cannot carry, or more than
+  # `Compatibility.CompileInputs.max_probe_items/0`, record
+  # `config_unrecorded`: never nothing.
+  defp probe_inputs(decided) do
+    probes =
+      for {_owner, {:observe, kind, item}} <- decided,
+          kind in ["probe_inputs", "declared_absent"],
+          do: probe_item(kind, item)
+
+    probes =
+      probes
+      |> Enum.group_by(&{&1["of"], &1["name"]})
+      |> Enum.map(fn {_question, [first | _] = same} -> merge_definers(first, same) end)
+      |> Enum.sort_by(&{&1["of"], &1["name"]})
+
+    cond do
+      probes == [] -> []
+      length(probes) > CompileInputs.max_probe_items() -> [@unrecorded]
+      match?({:ok, _}, CompileInputs.validate(probes)) -> probes
+      true -> [@unrecorded]
+    end
+  end
+
+  defp probe_item("probe_inputs", %{"of" => "module"} = item),
+    do: module_probe(item["name"], List.wrap(item["definers"]))
+
+  defp probe_item("probe_inputs", item),
+    do: %{"kind" => "probe", "of" => item["of"], "name" => item["name"], "answer" => "absent"}
+
+  defp probe_item("declared_absent", item),
+    do:
+      module_probe(
+        item["module"],
+        List.wrap(item["declared"]) ++ List.wrap(item["declared_apps"])
+      )
+
+  defp module_probe(name, definers),
+    do: %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => name,
+      "answer" => "absent",
+      "definers" => definers
+    }
+
+  defp merge_definers(%{"of" => "module"} = first, same) do
+    definers = same |> Enum.flat_map(& &1["definers"]) |> Enum.uniq() |> Enum.sort()
+    %{first | "definers" => definers}
+  end
+
+  defp merge_definers(first, _same), do: first
 
   # The firmware build's target, for its `Mix.target/0` reads: an item a
   # client compares, never nothing.
