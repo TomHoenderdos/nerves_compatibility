@@ -675,7 +675,12 @@ traced, it fetches the missing ones with `mix hex.package fetch` after the trace
 at most 64 packages, 120 s kept by the BEAM, which kills the fetch past it. Only a package the fetch reports fetched
 goes into the run's cache; a checksum error, a crash or a kill leaves it unknown, and an unknown package owns no known
 module, so its probe refuses (`NCC_DECLARED_FETCH=0` turns the fetch off; `trace_stats.declared_fetch` names what was
-fetched and what failed). Such a probe that passes is recorded in `compile_observations.declared_absent` (`kind`
+fetched and what failed). A name whose fetch failed is tried once more a second later: Hex's update check can crash
+`Hex.Registry.Server` after the first fetch closed the registry, and a fetch in flight then exits `:noproc`. When a
+probe of a dependency outside the closure (not from a `mix.exs`) decides the verdict and the fetch failed, the verdict
+says nothing about the package: it is the transient "portability could not be judged" (`trace_stats.declared_unknown`
+names the failed packages, `trace_stats.transient` is `true`), which the portal retries up to its cap and never
+passes on what the failed fetch did not know. Such a probe that passes is recorded in `compile_observations.declared_absent` (`kind`
 `module_absent`, the `module`, the `declared` packages that define it, `via`; at most 200, then one `truncated`
 item): another package may define the same module, and a user with that one and not the declared one has the build's
 closure. The portal refuses the build at ingest when a package with 1,000 or more recent downloads that neither the

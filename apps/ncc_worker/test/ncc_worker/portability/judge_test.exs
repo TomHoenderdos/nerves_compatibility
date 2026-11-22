@@ -3303,6 +3303,68 @@ defmodule NccWorker.Portability.JudgeTest do
                Portability.unsplit(pass, "p")
     end
 
+    # Coverage drop 2026-11-22, F7: a declared-absent dependency whose
+    # fetch failed holds no known module, so a probe of one of its modules
+    # refuses. When such a probe decides the verdict, the verdict says
+    # nothing about the package: it is a transient could-not-judge, which
+    # the portal retries, and never a pass.
+    test "settle_declared/1: a probe refusal after a failed declared fetch is transient" do
+      probe =
+        "compile-time probe of a dependency outside the closure: Elixir.Igniter via " <>
+          "Code.ensure_loaded?/1"
+
+      refused = fn reason, fetch ->
+        %{
+          status: :skip,
+          reason: reason,
+          compile_env: nil,
+          compile_inputs: nil,
+          observations: %{
+            "problems" => [],
+            "trace_stats" => %{"judge_compile" => "finished", "declared_fetch" => fetch}
+          }
+        }
+      end
+
+      failed = %{"fetched" => ["jason-1.4.5"], "failed" => ["igniter"], "ms" => 9}
+
+      for reason <- [probe, "closure dependency observed the host: phoenix_live_view (#{probe})"] do
+        assert %{status: :skip, reason: @cnj, observations: obs} =
+                 Portability.settle_declared(refused.(reason, failed))
+
+        assert obs["trace_stats"]["declared_unknown"] == ["igniter"]
+        assert [problem] = obs["problems"]
+        assert problem =~ "declared dependencies could not be fetched: igniter"
+        assert problem =~ reason
+      end
+
+      # A fetch that errored as a whole leaves every declared module unknown.
+      timeout = %{"error" => ":timeout", "ms" => 120_000}
+
+      assert %{
+               reason: @cnj,
+               observations: %{"trace_stats" => %{"declared_unknown" => [":timeout"]}}
+             } =
+               Portability.settle_declared(refused.(probe, timeout))
+
+      # Final, whatever the fetch did: another refusal decides; a mix.exs
+      # probe refuses whatever the closure declares; nothing failed; the
+      # fetch was off (the test helper's NCC_DECLARED_FETCH=0); a pass.
+      for {reason, fetch} <- [
+            {"compile-time host read: os:getenv/1 in X", failed},
+            {probe <> " in mix.exs", failed},
+            {probe, %{"fetched" => [], "failed" => [], "ms" => 1}},
+            {probe, %{"error" => ":off", "ms" => 0}},
+            {probe, nil}
+          ] do
+        verdict = refused.(reason, fetch)
+        assert Portability.settle_declared(verdict) == verdict
+      end
+
+      pass = %{refused.(nil, failed) | status: :pass}
+      assert Portability.settle_declared(pass) == pass
+    end
+
     test "with makefile_rule2 a deps/ that cannot be listed is could-not-judge",
          %{proj: proj, dir: dir} do
       File.rm_rf!(Path.join(proj, "deps"))

@@ -392,7 +392,9 @@ defmodule NccWorker.Portability do
       revision 25), and R2 on the package's ebin; `host_native:` without
       `target:` is off;
     * `trace_dir:` (default `<project_dir>/../trace`), `log_file:`,
-      `timeout_ms:`, `extra_env:`, `reap:`, `cmd:`, `sweep:` (tests).
+      `timeout_ms:`, `extra_env:`, `reap:`, `cmd:`, `sweep:` (tests);
+      `declared_fetch:` replaces the declared fetch (`Declared.fetch/4`'s
+      `fetch:`, tests).
 
   Before anything else it sweeps the container (`NccWorker.Tracer.sweep/2`):
   every process but the worker's own is killed, so nothing an untraced step
@@ -418,7 +420,10 @@ defmodule NccWorker.Portability do
   crash) or its
   report was over the read budget (`"report_over_budget"`,
   `NccWorker.Tracer.Report`). A later run may judge it, so the portal retries
-  such a build. `false` otherwise: a pass, a refusal, or a could-not-judge the
+  such a build. Also `true` when a probe of what may be a module of a
+  declared-absent dependency the fetch could not get decided the verdict
+  (`trace_stats["declared_unknown"]`, `settle_declared/1`). `false`
+  otherwise: a pass, a refusal, or a could-not-judge the
   same package and lock would get again (a missing or unverified tarball, a
   rebar3 parent's script, a beam R2 cannot read, a missing `ebin`).
 
@@ -445,6 +450,7 @@ defmodule NccWorker.Portability do
     |> Relocate.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> Differential.settle(project_dir, package, opts, &run/3, &build_digest/1)
     |> put_differential_flag(opts)
+    |> settle_declared()
     |> put_stat("wall_ms", System.monotonic_time(:millisecond) - started)
     |> put_transient()
   end
@@ -457,6 +463,64 @@ defmodule NccWorker.Portability do
     if Keyword.get(opts, :differential) == true,
       do: put_stat(verdict, "differential_flag", "on"),
       else: verdict
+  end
+
+  @doc false
+  # Public for tests (coverage drop 2026-11-22, F7). A declared-absent
+  # dependency the pre-judge fetch could not get holds no known module
+  # (`Declared`), so a probe of what may be its module refuses. When such a
+  # probe decides the verdict (its reason, the package's own or a closure
+  # dependency's taint, is a probe of a dependency outside the closure, not
+  # from a `mix.exs`, which refuses whatever is declared), the verdict says
+  # nothing about the package: it becomes the transient could-not-judge
+  # (`trace_stats["declared_unknown"]`, read by `put_transient/1`), which
+  # the portal retries, up to its cap, after which it stays skipped. A
+  # retry judges afresh and never passes on what this one did not know. A
+  # verdict another refusal decides, a pass, or a fetch that failed for
+  # nothing (or was off, `NCC_DECLARED_FETCH=0`) is left as it is.
+  @spec settle_declared(verdict()) :: verdict()
+  def settle_declared(%{status: :skip, reason: reason, observations: obs} = verdict)
+      when is_binary(reason) do
+    case unfetched(get_in(obs, ["trace_stats", "declared_fetch"])) do
+      [] ->
+        verdict
+
+      names ->
+        if declared_probe?(reason) do
+          problem =
+            "declared dependencies could not be fetched: #{Enum.join(names, ", ")} " <>
+              "(the probe that decided: #{reason})"
+
+          verdict
+          |> unsplit(problem)
+          |> put_stat("declared_unknown", names)
+        else
+          verdict
+        end
+    end
+  end
+
+  def settle_declared(verdict), do: verdict
+
+  defp unfetched(%{"failed" => [_ | _] = failed}), do: failed
+  defp unfetched(%{"error" => ":off"}), do: []
+  defp unfetched(%{"error" => why}) when is_binary(why), do: [why]
+  defp unfetched(_fetch), do: []
+
+  defp declared_probe?("closure dependency observed the host: " <> rest) do
+    case :binary.match(rest, " (") do
+      {at, 2} ->
+        inner = binary_part(rest, at + 2, byte_size(rest) - at - 2)
+        String.ends_with?(inner, ")") and declared_probe?(String.slice(inner, 0..-2//1))
+
+      :nomatch ->
+        false
+    end
+  end
+
+  defp declared_probe?(reason) do
+    String.starts_with?(reason, Reasons.dependency_probe()) and
+      not String.ends_with?(reason, " in mix.exs")
   end
 
   # The digest the tracer takes of a build dir when its window closes, taken
@@ -502,7 +566,8 @@ defmodule NccWorker.Portability do
 
     transient =
       stats["judge_compile"] != "finished" or stats["report_over_budget"] == true or
-        stats["priv_repro"] == "not_finished" or stats["differential"] == "not_finished"
+        stats["priv_repro"] == "not_finished" or stats["differential"] == "not_finished" or
+        match?([_ | _], stats["declared_unknown"])
 
     put_stat(verdict, "transient", transient)
   end
@@ -600,8 +665,11 @@ defmodule NccWorker.Portability do
     # After the traced compile, so nothing it fetches is seen by it: the
     # modules of the dependencies the closure declares and lacks
     # (`Declared`, round-2 ruling 1).
-    {fetch_ms, fetched} =
-      timed(fn -> Declared.fetch(home, releases, env, relevant: declared_relevant?(read)) end)
+    fetch_opts =
+      [relevant: declared_relevant?(read)] ++
+        Enum.map(Keyword.take(opts, [:declared_fetch]), fn {_, fun} -> {:fetch, fun} end)
+
+    {fetch_ms, fetched} = timed(fn -> Declared.fetch(home, releases, env, fetch_opts) end)
 
     ctx_opts =
       [

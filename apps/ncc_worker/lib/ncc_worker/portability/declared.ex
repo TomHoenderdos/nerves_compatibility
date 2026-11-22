@@ -31,7 +31,11 @@ defmodule NccWorker.Portability.Declared do
   signed registry), bounded in count and in time by the BEAM. What it
   downloads is a run's miss like any other: the host checks it against
   Hex.pm before it promotes it (`NccWorker.HexCache`). A failed, partial or
-  killed fetch leaves those modules unknown, so their probes refuse. `NCC_DECLARED_FETCH=0` turns the
+  killed fetch leaves those modules unknown, so their probes refuse; a
+  verdict such a probe decides says nothing about the package and is a
+  transient could-not-judge, which the portal retries
+  (`NccWorker.Portability.settle_declared/1`, coverage drop 2026-11-22,
+  F7). `NCC_DECLARED_FETCH=0` turns the
   download off (the ncc_worker test helper sets it: fixtures judge from the
   Hex cache they lay out themselves).
   """
@@ -164,24 +168,42 @@ defmodule NccWorker.Portability.Declared do
   # The `mix run` script that fetches `names`, one Hex task per name into
   # its own dir under `out`, and reports each: `NCC_FETCH ok <name> <file>`
   # or `NCC_FETCH error <name> <kind>`. Names match `@name`, so no quoting
-  # can break out.
+  # can break out. A name whose fetch failed is fetched once more, a second
+  # later, into an emptied dir (coverage drop 2026-11-22, F7): the first
+  # `hex.package` task of the VM starts Hex's update check, whose answer
+  # can crash `Hex.Registry.Server` after the task closed the registry, and
+  # a fetch in flight then exits `:noproc`. The second try reports.
   @spec fetch_script([String.t()], String.t()) :: String.t()
   def fetch_script(names, out) do
     true = Enum.all?(names, &Regex.match?(@name, &1))
 
     """
-    for n <- #{inspect(names)} do
-      dir = Path.join(#{inspect(out)}, n)
-
+    fetch = fn n, dir ->
       try do
         Mix.Task.rerun("hex.package", ["fetch", n, "--output", dir])
 
         case Path.wildcard(Path.join(dir, n <> "-*.tar")) do
-          [file] -> IO.puts("NCC_FETCH ok " <> n <> " " <> Path.basename(file))
-          _ -> IO.puts("NCC_FETCH error " <> n <> " no_file")
+          [file] -> {:ok, Path.basename(file)}
+          _ -> {:error, "no_file"}
         end
       catch
-        kind, _ -> IO.puts("NCC_FETCH error " <> n <> " " <> to_string(kind))
+        kind, _ -> {:error, to_string(kind)}
+      end
+    end
+
+    for n <- #{inspect(names)} do
+      dir = Path.join(#{inspect(out)}, n)
+
+      result =
+        with {:error, _first} <- fetch.(n, dir) do
+          Process.sleep(1_000)
+          File.rm_rf(dir)
+          fetch.(n, dir)
+        end
+
+      case result do
+        {:ok, file} -> IO.puts("NCC_FETCH ok " <> n <> " " <> file)
+        {:error, kind} -> IO.puts("NCC_FETCH error " <> n <> " " <> kind)
       end
     end
     """

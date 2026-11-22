@@ -229,4 +229,44 @@ defmodule NccWorker.Portability.DeclaredFetchTest do
     assert script =~ ~s(["jason", "sweet_xml"])
     assert script =~ ~s("/out")
   end
+
+  # Coverage drop 2026-11-22, F7: Hex's update check, which the first
+  # `hex.package` task of the VM starts, can crash `Hex.Registry.Server`
+  # after that task closed the registry (`:ets.insert(nil, {:last_update,
+  # ...})`); a fetch in flight then exits with `:noproc`. The script tries a
+  # failed name once more, so one crash costs no package.
+  test "the fetch script tries a failed name once more, then reports it", %{tmp_dir: dir} do
+    run = fn answers, out ->
+      {:ok, agent} = Agent.start_link(fn -> answers end)
+
+      stub = fn "hex.package", ["fetch", n, "--output", to] ->
+        case Agent.get_and_update(agent, fn [a | rest] -> {a, rest} end) do
+          :ok ->
+            File.mkdir_p!(to)
+            File.write!(Path.join(to, "#{n}-1.4.5.tar"), "tar")
+
+          {:exit, why} ->
+            exit(why)
+        end
+      end
+
+      script =
+        ["jason"]
+        |> Declared.fetch_script(out)
+        |> String.replace("Mix.Task.rerun(", "stub.(")
+        |> String.replace("Process.sleep(", "nap.(")
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        Code.eval_string(script, stub: stub, nap: fn _ -> :ok end)
+      end)
+    end
+
+    assert run.([{:exit, :noproc}, :ok], Path.join(dir, "a")) ==
+             "NCC_FETCH ok jason jason-1.4.5.tar\n"
+
+    assert run.([{:exit, :noproc}, {:exit, :noproc}], Path.join(dir, "b")) ==
+             "NCC_FETCH error jason exit\n"
+
+    assert run.([:ok], Path.join(dir, "c")) == "NCC_FETCH ok jason jason-1.4.5.tar\n"
+  end
 end
