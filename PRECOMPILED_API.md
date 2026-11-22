@@ -1104,7 +1104,8 @@ build fails as the reason it was not used:
       its argument. A client that does not know the kind treats the item as malformed: a miss;
     - a `probe` item (clients 0.9.0 and later) holds when nothing in the project can supply what
       the build's closure asked for, as the builder could not. For a module: no dependency the
-      project's Mix loads and no `mix.lock` entry (app or Hex package name) is in `definers`; no
+      project's Mix loads in its env and target (every `mix.lock` entry when the dependencies did
+      not load), by app or Hex package name, is in `definers`; no
       such dependency outside the build's `deps` and the package itself defines the module in its
       sources (every literal `defmodule`, `defprotocol` and `defimpl` name, through nesting and the
       file's aliases, every Erlang `-module`, and each leex and yecc file's base name; a file that
