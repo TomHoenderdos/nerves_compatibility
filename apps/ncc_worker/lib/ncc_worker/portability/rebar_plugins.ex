@@ -63,12 +63,15 @@ defmodule NccWorker.Portability.RebarPlugins do
   `:ok` when every plugin installed for the rebar3 app in `dest` is a
   reviewed release and every name in `named` is installed; `{:refuse,
   reason}` or `{:unjudged, why}` otherwise. `cache` is rebar3's cache dir of
-  the compile (`nil` when unknown), `pins` the table (`pins/0`).
+  the compile (`nil` when unknown), `pins` the table (`pins/0`), `moved` the
+  deps dirs the compile's deps dir was moved from, `{from, to}` each: a
+  link into `from` is read at `to` (a firmware target's trace, S8 pilot
+  F382), and judged there as any.
   """
   @spec check(String.t(), String.t() | nil, [String.t()], map()) ::
           :ok | {:refuse, String.t()} | {:unjudged, String.t()}
-  def check(dest, cache, named, pins \\ pins()) do
-    with {:ok, installed} <- installed(dest),
+  def check(dest, cache, named, pins \\ pins(), moved \\ []) do
+    with {:ok, installed} <- installed(dest, moved),
          :ok <- all_named(named, installed) do
       installed
       |> Enum.sort()
@@ -108,8 +111,8 @@ defmodule NccWorker.Portability.RebarPlugins do
   not; `[]` when nothing can be read. Only a record: `check/4` judges.
   """
   @spec releases(String.t(), String.t() | nil) :: [map()]
-  def releases(dest, cache) do
-    case installed(dest) do
+  def releases(dest, cache, moved \\ []) do
+    case installed(dest, moved) do
       {:ok, installed} ->
         for {name, dir} <- Enum.sort(installed),
             {:ok, version} <- [metadata_version(name, dir)],
@@ -143,29 +146,29 @@ defmodule NccWorker.Portability.RebarPlugins do
 
   # `%{name => real dir}` of every plugin under `dest/_build/*/plugins`.
   # sobelow_skip ["Traversal.FileModule"]
-  defp installed(dest) do
+  defp installed(dest, moved) do
     build = Path.join(dest, "_build")
 
     case File.lstat(build) do
       {:error, :enoent} -> {:ok, %{}}
-      {:ok, %File.Stat{type: :directory}} -> profiles(build)
+      {:ok, %File.Stat{type: :directory}} -> profiles(build, moved)
       _ -> {:unjudged, "rebar3 build dir cannot be read"}
     end
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp profiles(build) do
+  defp profiles(build, moved) do
     case File.ls(build) do
       {:ok, names} ->
-        names |> Enum.sort() |> Enum.reduce_while({:ok, %{}}, &profile(build, &1, &2))
+        names |> Enum.sort() |> Enum.reduce_while({:ok, %{}}, &profile(build, moved, &1, &2))
 
       _ ->
         {:unjudged, "rebar3 build dir cannot be read"}
     end
   end
 
-  defp profile(build, profile, {:ok, acc}) do
-    case plugins_dir(build, Path.join([build, profile, "plugins"])) do
+  defp profile(build, moved, profile, {:ok, acc}) do
+    case plugins_dir(build, moved, Path.join([build, profile, "plugins"])) do
       {:ok, found} -> {:cont, merge(acc, found)}
       other -> {:halt, other}
     end
@@ -182,15 +185,18 @@ defmodule NccWorker.Portability.RebarPlugins do
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp plugins_dir(build, dir) do
+  defp plugins_dir(build, moved, dir) do
     case File.lstat(dir) do
       {:error, :enoent} ->
         {:ok, %{}}
 
       {:ok, %File.Stat{type: :directory}} ->
         case File.ls(dir) do
-          {:ok, names} -> entries(build, dir, Enum.reject(names, &String.starts_with?(&1, ".")))
-          _ -> {:unjudged, "rebar3 plugin dir cannot be read"}
+          {:ok, names} ->
+            entries(build, moved, dir, Enum.reject(names, &String.starts_with?(&1, ".")))
+
+          _ ->
+            {:unjudged, "rebar3 plugin dir cannot be read"}
         end
 
       {:ok, _other} ->
@@ -201,9 +207,9 @@ defmodule NccWorker.Portability.RebarPlugins do
     end
   end
 
-  defp entries(build, dir, names) do
+  defp entries(build, moved, dir, names) do
     Enum.reduce_while(names, {:ok, %{}}, fn name, {:ok, acc} ->
-      case entry(build, Path.join(dir, name), name) do
+      case entry(build, moved, Path.join(dir, name), name) do
         {:ok, real} -> {:cont, {:ok, Map.put(acc, name, real)}}
         other -> {:halt, other}
       end
@@ -213,14 +219,14 @@ defmodule NccWorker.Portability.RebarPlugins do
   # A plugin's own dir, or rebar3's link from another profile to a plugin
   # dir of the same name under `_build`.
   # sobelow_skip ["Traversal.FileModule"]
-  defp entry(build, path, name) do
+  defp entry(build, moved, path, name) do
     case File.lstat(path) do
       {:ok, %File.Stat{type: :directory}} ->
         {:ok, path}
 
       {:ok, %File.Stat{type: :symlink}} ->
         with {:ok, target} <- File.read_link(path),
-             real = Path.expand(target, Path.dirname(path)),
+             real = moved(Path.expand(target, Path.dirname(path)), moved),
              true <- Path.basename(real) == name,
              true <- Path.basename(Path.dirname(real)) == "plugins",
              true <- Path.dirname(Path.dirname(Path.dirname(real))) == Path.expand(build),
@@ -233,6 +239,21 @@ defmodule NccWorker.Portability.RebarPlugins do
       _ ->
         odd(name)
     end
+  end
+
+  # A link's target under a deps dir the trace renamed (`moved`, each
+  # `{from, to}`: `NccWorker.FirmwareInputs.in_build_layout/4` moves the
+  # run's `deps/` to the target's `deps_<target>`), named in the dir it
+  # moved to. rebar3 links the `prod` profile's plugin to the `default`
+  # profile's dir by its absolute path, so after the rename the link names
+  # the old dir; the dir itself moved with the rename, is the one rebar3
+  # runs, and the checks below still hold it to its app's `_build` and to
+  # the pin. Any other target is as it is.
+  defp moved(real, moved) do
+    Enum.find_value(moved, real, fn {from, to} ->
+      if String.starts_with?(real, from <> "/"),
+        do: to <> String.replace_prefix(real, from, "")
+    end)
   end
 
   defp odd(name),

@@ -2120,6 +2120,50 @@ defmodule NccWorker.Portability.JudgeTest do
              ]
     end
 
+    # S8 pilot (F382): a firmware target's trace compiles the run's `deps/`
+    # renamed to `deps_<target>`, so the `prod` profile's absolute link to a
+    # plugin names the old deps dir. `moved_deps:` (the dirs the trace's deps
+    # dir was moved from) lets the check follow it to the dir that moved,
+    # which it then judges as any: here a release the table does not pin.
+    test "a plugin link into the deps dir the trace renamed is followed", %{proj: proj} do
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), "{plugins, [rebar3_ex_doc]}.\n")
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+      cache = Path.join(Path.dirname(proj), "rebar3-cache")
+      opts = rebar_opts(proj, ["dep"]) ++ [rebar_cache: cache]
+
+      dir = Path.join(proj, "deps/dep/_build/default/plugins/rebar3_ex_doc")
+      File.mkdir_p!(Path.join(dir, "ebin"))
+
+      File.write!(
+        Path.join(dir, "hex_metadata.config"),
+        ~s({<<"name">>,<<"rebar3_ex_doc">>}.\n{<<"version">>,<<"0.3.99">>}.\n)
+      )
+
+      old = Path.join(proj, "deps_before")
+      prod = Path.join(proj, "deps/dep/_build/prod/plugins")
+      File.mkdir_p!(prod)
+
+      File.ln_s!(
+        Path.join(old, "dep/_build/default/plugins/rebar3_ex_doc"),
+        Path.join(prod, "rebar3_ex_doc")
+      )
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (rebar3 build runs a plugin from " <>
+                   "a dir it cannot judge (rebar3_ex_doc))"
+             } = judge(proj, r, opts)
+
+      assert %{
+               reason:
+                 "closure dependency observed the host: dep (rebar3 build runs plugin " <>
+                   "rebar3_ex_doc 0.3.99, a release not reviewed)",
+               observations: obs
+             } = judge(proj, r, opts ++ [moved_deps: [old]])
+
+      assert [%{"name" => "rebar3_ex_doc", "version" => "0.3.99"}] = obs["rebar3_plugins"]
+    end
+
     # Review S5 R3: the record is never cut. More distinct plugin releases
     # than it holds refuse the build.
     test "a closure running more plugin releases than the record holds refuses", %{proj: proj} do

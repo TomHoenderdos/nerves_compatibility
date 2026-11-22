@@ -94,6 +94,74 @@ defmodule NccWorker.Portability.RebarPluginsTest do
              :ok
   end
 
+  # S8 pilot (F382/F383): a firmware target's trace compiles the run's own
+  # `deps/`, renamed to the target's `deps_<target>`
+  # (`NccWorker.FirmwareInputs.in_build_layout/4`). rebar3 linked the `prod`
+  # profile's plugin to the `default` profile's dir by its absolute path, so
+  # after the rename the link names the dir under the old `deps/`. The dir
+  # itself moved with the rename and is the one rebar3 runs; it is judged
+  # as before, against the pin.
+  describe "a deps dir the trace renamed" do
+    setup %{tmp_dir: root} do
+      old = Path.join(root, "deps")
+      i = install(old, "fx_plugin", "1.0.0")
+      new = Path.join(root, "deps_rpi4")
+      File.rename!(old, new)
+
+      %{
+        old: old,
+        new: new,
+        dest: Path.join(new, "dep"),
+        cache: Path.join(new, "cache"),
+        pins: pins("fx_plugin", "1.0.0", i.sha)
+      }
+    end
+
+    test "is no dir it cannot judge when the move is named", c do
+      assert RebarPlugins.check(c.dest, c.cache, ["fx_plugin"], c.pins) ==
+               {:refuse, "rebar3 build runs a plugin from a dir it cannot judge (fx_plugin)"}
+
+      assert RebarPlugins.check(c.dest, c.cache, ["fx_plugin"], c.pins, [{c.old, c.new}]) == :ok
+
+      assert [%{"name" => "fx_plugin", "version" => "1.0.0"}] =
+               RebarPlugins.releases(c.dest, c.cache, [{c.old, c.new}])
+    end
+
+    test "the moved dir is still judged against the pin", c do
+      File.write!(Path.join([c.dest, "_build", "default", "plugins", "fx_plugin", "README"]), "x")
+
+      assert RebarPlugins.check(c.dest, c.cache, ["fx_plugin"], c.pins, [{c.old, c.new}]) ==
+               {:refuse,
+                "rebar3 build runs plugin fx_plugin 1.0.0 from files that are not its reviewed release's"}
+    end
+
+    test "a link the move does not explain still cannot be judged", c do
+      link = Path.join([c.dest, "_build", "prod", "plugins", "fx_plugin"])
+
+      for target <- [
+            # Another app's plugin dir under the old deps dir.
+            Path.join([c.old, "other", "_build", "default", "plugins", "fx_plugin"]),
+            # Outside the old deps dir altogether.
+            Path.join([
+              Path.dirname(c.old),
+              "elsewhere",
+              "dep",
+              "_build",
+              "default",
+              "plugins",
+              "fx_plugin"
+            ])
+          ] do
+        File.rm!(link)
+        File.ln_s!(target, link)
+
+        assert RebarPlugins.check(c.dest, c.cache, ["fx_plugin"], c.pins, [{c.old, c.new}]) ==
+                 {:refuse, "rebar3 build runs a plugin from a dir it cannot judge (fx_plugin)"},
+               target
+      end
+    end
+  end
+
   # What a build records of the plugins it ran (review S5 S1): every
   # installed release, its version and its cached tarball's checksum, pinned
   # or not.

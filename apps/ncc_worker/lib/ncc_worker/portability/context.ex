@@ -73,6 +73,7 @@ defmodule NccWorker.Portability.Context do
     trees: %{},
     hook_scripts: %{},
     rebar_cache: nil,
+    moved_deps: [],
     drivers: %{},
     foreign_priv: nil,
     holders: %{},
@@ -106,6 +107,7 @@ defmodule NccWorker.Portability.Context do
           trees: %{String.t() => Trees.tree()},
           hook_scripts: %{String.t() => String.t()},
           rebar_cache: String.t() | nil,
+          moved_deps: [{String.t(), String.t()}],
           deps_path: String.t() | nil,
           drivers: %{String.t() => String.t()},
           foreign_priv: map() | nil,
@@ -135,7 +137,12 @@ defmodule NccWorker.Portability.Context do
     * `:rebar_cache`, rebar3's cache dir of the compile, which holds the
       tarballs of the plugins it installed
       (`NccWorker.Portability.RebarPlugins`); without it no installed
-      plugin can be judged.
+      plugin can be judged;
+    * `:moved_deps`, the dirs the compile's deps dir was moved from before
+      it ran (a firmware target's trace compiles the run's `deps/` renamed
+      to `deps_<target>`, `NccWorker.FirmwareInputs`), each paired with the
+      deps dir as `{from, deps_path}`, so a plugin link rebar3 wrote by its
+      absolute path before the move is read where it moved to.
 
   A dependency whose tarball is missing or does not match its lock entry has
   no file list, so none of its source files is readable.
@@ -167,7 +174,12 @@ defmodule NccWorker.Portability.Context do
       modules: modules(listed)
     }
 
-    %{ctx | cd: changed_dir(ctx, report), nested: nested(ctx, report)}
+    %{
+      ctx
+      | cd: changed_dir(ctx, report),
+        nested: nested(ctx, report),
+        moved_deps: moved_deps(Keyword.get(opts, :moved_deps), ctx.deps_path)
+    }
   end
 
   # Every module a closure dependency's build holds, as #{module => app},
@@ -219,6 +231,18 @@ defmodule NccWorker.Portability.Context do
 
   defp rebar_cache(dir) when is_binary(dir) and dir != "", do: dir
   defp rebar_cache(_dir), do: nil
+
+  # Absolute dirs only, each once, never the deps dir itself.
+  defp moved_deps(froms, deps) when is_list(froms) and is_binary(deps) do
+    for from <- froms,
+        is_binary(from) and Path.type(from) == :absolute,
+        from = Path.expand(from),
+        from != deps,
+        uniq: true,
+        do: {from, deps}
+  end
+
+  defp moved_deps(_froms, _deps), do: []
 
   # The process each window's sentinel fired in: the driver's, which
   # compiles every dependency in turn (`Mix.Tasks.Deps.Compile.compile_single/3`),

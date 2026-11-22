@@ -141,6 +141,7 @@ defmodule NccWorker.FirmwareInputs do
 
   alias Compatibility.CompileInputs
   alias NccWorker.{BeamScan, FirmwareJudge, HexHome, Portability, TargetScan, Tracer}
+  alias NccWorker.Portability.Context
   alias NccWorker.FirmwareInputs.LayoutNotRestored
 
   @env_task :"Elixir.Mix.Tasks.Ncc.NervesEnv"
@@ -453,9 +454,11 @@ defmodule NccWorker.FirmwareInputs do
            {:ok, nerves} <- nerves_env.(ctx.project_dir, env, dir),
            {:ok, artifacts, roots} <- roots(nerves),
            {:ok, moved, roots} <- move(nerves, artifacts, roots, dir),
+           # Named before the move, while it is there to resolve.
+           moved_from = moved_from(layout),
            {:ok, verdict, traced} <-
              in_build_layout(layout, dir, kept, fn ->
-               trace(target_inputs, {name, target, env}, moved, roots, ctx, dir)
+               trace(target_inputs, {name, target, env}, moved, roots, {ctx, moved_from}, dir)
              end),
            :ok <- bound(traced, layout.build, ctx.package) do
         {:ok, %{compile_inputs: verdict.compile_inputs, compile_env: verdict.compile_env}}
@@ -618,7 +621,7 @@ defmodule NccWorker.FirmwareInputs do
   # process it left running that the tracer could not kill (`Tracer.left_running/0`,
   # as `NccWorker.HostTrace` reads them) could go on writing them once they
   # are back: that fails the run, as a dir that cannot be put back does.
-  defp trace(target_inputs, {name, target, env}, nerves, roots, ctx, dir) do
+  defp trace(target_inputs, {name, target, env}, nerves, roots, {ctx, moved_from}, dir) do
     {wrapper, argv} = firmware_command()
 
     verdict =
@@ -635,7 +638,8 @@ defmodule NccWorker.FirmwareInputs do
         trace_dir: Path.join(dir, "trace"),
         log_file: Path.join(ctx.log_dir, "#{name}-inputs-trace.log"),
         target: target,
-        roots: roots
+        roots: roots,
+        moved_deps: moved_from
       )
 
     HexHome.publish(env_value(env, "HEX_HOME"))
@@ -716,6 +720,14 @@ defmodule NccWorker.FirmwareInputs do
       {fn -> dir?(build) and dir?(host_deps) end, "no published build or deps dir to trace"},
       {fn -> not lexists?(deps) or dir?(deps) end, "the target's deps dir is no dir"}
     ]
+  end
+
+  # The run's `deps/` as the compiles before the trace wrote it, expanded and
+  # real: the trace compiles it at the target's deps dir, so an absolute path
+  # a build wrote into it, rebar3's link from the `prod` profile to a plugin
+  # dir, names the old place (S8 pilot, F382; `RebarPlugins`).
+  defp moved_from(%{host_deps: host_deps}) do
+    Enum.uniq(Enum.reject([host_deps, Context.realpath(host_deps)], &is_nil/1))
   end
 
   defp overlapping?(%{build: build, deps: deps, host_deps: host_deps}),

@@ -581,6 +581,7 @@ defmodule NccWorker.Portability do
         build_path: build_path(project_dir, env)
       ] ++
         Keyword.take(opts, [
+          :moved_deps,
           :target,
           :roots,
           :host_native,
@@ -2270,7 +2271,7 @@ defmodule NccWorker.Portability do
   # be a reviewed release (`RebarPlugins`), every reviewed one it names too.
   defp installed_plugins(result, ctx, dest, named)
        when result == :ok or elem(result, 0) == :inputs do
-    case RebarPlugins.check(dest, ctx.rebar_cache, named) do
+    case RebarPlugins.check(dest, ctx.rebar_cache, named, RebarPlugins.pins(), ctx.moved_deps) do
       :ok -> result
       other -> other
     end
@@ -3252,7 +3253,9 @@ defmodule NccWorker.Portability do
     scope
     |> Enum.sort()
     |> Enum.filter(&(Context.manager(ctx, &1) == "rebar3" and is_binary(Context.dest(ctx, &1))))
-    |> Enum.map(&{&1, RebarPlugins.releases(Context.dest(ctx, &1), ctx.rebar_cache)})
+    |> Enum.map(
+      &{&1, RebarPlugins.releases(Context.dest(ctx, &1), ctx.rebar_cache, ctx.moved_deps)}
+    )
     |> RebarPlugins.record()
   end
 

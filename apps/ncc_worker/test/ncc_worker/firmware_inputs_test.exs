@@ -727,6 +727,32 @@ defmodule NccWorker.FirmwareInputsTest do
       assert which(c.proj, "_build/rpi4") == {:ok, "build"}
     end
 
+    # S8 pilot (F382): the trace compiles the run's `deps/` renamed to the
+    # target's deps dir, so it names the dir it was moved from, as Mix and
+    # rebar3 wrote it, for the plugin check (`RebarPlugins`).
+    test "the trace is told the dir its deps were moved from", c do
+      toolchain = Path.join([c.tmp_dir, "artifacts", "nerves_toolchain_fx-1.0.0"])
+      File.mkdir_p!(toolchain)
+      nerves_env = fn _proj, _env, _dir -> {:ok, [{"NERVES_TOOLCHAIN", toolchain}]} end
+      ctx = %{ctx(c.proj, []) | work_dir: c.tmp_dir, log_dir: c.tmp_dir}
+      test_pid = self()
+
+      seen = fn _proj, _package, opts ->
+        send(test_pid, {:moved_deps, opts[:moved_deps]})
+        %{status: :skip, reason: "not traced", observations: %{}}
+      end
+
+      _ =
+        FirmwareInputs.record("rpi4", {"rpi4", c.env}, ctx, pass(),
+          nerves_env: nerves_env,
+          target_inputs: seen
+        )
+
+      assert_received {:moved_deps, moved}
+      assert Path.join(c.proj, "deps") in moved
+      assert NccWorker.Portability.Context.realpath(Path.join(c.proj, "deps")) in moved
+    end
+
     # The trace builds into the published build's own paths, so a process it
     # left running that the tracer could not kill (a writer on
     # `_build/<target>` or `deps_<target>`) would write into the published
