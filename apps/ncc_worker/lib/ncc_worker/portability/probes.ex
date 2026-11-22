@@ -47,7 +47,12 @@ defmodule NccWorker.Portability.Probes do
       deliberate attack on the trace, which the spec leaves out of scope.
 
   The tracer's own modules (application `ncc_tracer`) do not exist in an
-  untraced compile and are on no path. The few modules Mix itself loads in
+  untraced compile and are on no path: the tracer takes its ebin off the
+  code path once they are loaded, so a scan of the path finds none of them,
+  and any probe of one but the application controller's (no loaded
+  application lists one, so it answers `undefined` either way; a Mix
+  compiler's warning formats a stack through the driver's frames) could
+  not be judged. The few modules Mix itself loads in
   every compile before it evaluates a dependency's `mix.exs` (`crypto`,
   `gen_tcp`: `:ncc_tracer.loaded_by_mix/0`) answer every probe the same
   either way; the tracer leaves them out of the Mix VM's `preloaded`.
@@ -353,7 +358,7 @@ defmodule NccWorker.Portability.Probes do
   defp decide(event, module, app, ctx, owner) do
     cond do
       nested?(event) -> :ignore
-      event["mfa"] in @path_probes -> on_path(module, app, ctx, owner)
+      event["mfa"] in @path_probes -> on_path(module, app, ctx, owner, event["mfa"])
       ensured_before?(event, module, app, ctx, owner) -> :ignore
       true -> {:unjudged, "#{why(module, app)} by #{event["mfa"]}"}
     end
@@ -388,6 +393,25 @@ defmodule NccWorker.Portability.Probes do
     do: function in @probe_functions
 
   defp nested?(_event), do: false
+
+  # The application controller's lookup of which application holds one of
+  # the tracer's modules (`Exception.format_application/1` of a stack frame
+  # in the driver's process, when a Mix compiler prints a warning): the
+  # tracer loads no application and installs no `.app`, so no loaded
+  # application lists its modules and the answer is `undefined` traced and
+  # untraced (coverage drop 2026-11-22, F1). Any other probe of a tracer
+  # module stays unjudged: the tracer hides its ebin from the code path
+  # once it is loaded, so only code that names a tracer module reaches one.
+  defp on_path(
+         _module,
+         @tracer_app,
+         _ctx,
+         _owner,
+         "application_controller:get_application_module/1"
+       ),
+       do: :ignore
+
+  defp on_path(module, app, ctx, owner, _mfa), do: on_path(module, app, ctx, owner)
 
   defp on_path(module, app, ctx, owner) do
     cond do

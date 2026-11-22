@@ -286,6 +286,31 @@ defmodule NccWorker.Portability.ProbesTest do
             "compile-time probe of a module the trace loaded: " <>
               "ncc_tracer_digest (ncc_tracer)"} =
              Probes.decide(probe("ncc_tracer_digest"), c, "pkg")
+
+    for mfa <- ~w(code:which/1 erlang:function_exported/3) do
+      assert {:unjudged, _} = Probes.decide(probe("ncc_tracer_digest", mfa: mfa), c, "pkg")
+    end
+  end
+
+  # Coverage drop 2026-11-22, F1: `Exception.format_application/1` of a
+  # stack frame in the driver's process. The tracer loads no application, so
+  # no loaded application lists its modules: the controller's answer is
+  # `undefined` traced, and untraced too.
+  test "the application controller's lookup of a tracer module is the same answer",
+       %{tmp_dir: dir} do
+    c = ctx(dir, %{"pkg" => ["kernel"]})
+
+    lookup =
+      probe("ncc_tracer_digest",
+        mfa: "application_controller:get_application_module/1",
+        caller: frame("Elixir.Exception", "format_application", 1),
+        arg: %{"by_package" => false}
+      )
+
+    assert Probes.decide(lookup, c, "pkg") == :ignore
+    assert Probes.decide(lookup, c, :outside) == :ignore
+    by_package = put_in(lookup, ["arg", "by_package"], true)
+    assert Probes.decide(by_package, c, "pkg") == :ignore
   end
 
   test "a child VM's probe names its own application", %{tmp_dir: dir} do

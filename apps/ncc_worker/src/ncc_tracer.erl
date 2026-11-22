@@ -365,7 +365,8 @@ init(Parent, Role, Dir, App, Depth, Script, Libs, Before) ->
         ++ [?PREPARE_LOADING, ?FINISH_LOADING],
     Canaries = canary_patterns(),
     _ = [quietly(fun() -> code:ensure_loaded(M) end) || {M, _, _} <- Patterns ++ Canaries],
-    Wanted = [wanted(Session, MFA, match_spec(MFA, Role, Depth))
+    ok = hide_ebin(),
+    Wanted =[wanted(Session, MFA, match_spec(MFA, Role, Depth))
               || MFA <- Patterns ++ mix_patterns(Role)]
         ++ [wanted(Session, MFA, ?NEVER) || MFA <- Canaries],
     Preloaded = preloaded(Before, Role),
@@ -595,6 +596,22 @@ tracer_owned() ->
     lists:usort([?PROBE, ?MODULE, ?DRIVER | Beams]).
 
 loaded_by_mix() -> ?LOADED_BY_MIX.
+
+%% No untraced compile has the tracer's ebin on its code path (coverage
+%% drop 2026-11-22, F1). By the time this runs every module in it is loaded
+%% (load_uses/0; in the Mix VM the driver runs already), so it leaves the
+%% path: a scan of the path then finds what an untraced compile's finds
+%% (Mix.Task.load_all/0 in a dependency's mix.exs, which Mix evaluates
+%% before its first compile prunes the path). Before any pattern is set, so
+%% the code server's work is no event. Every entry that names the dir goes
+%% (a child VM's ERL_AFLAGS can name it more than once); an entry left
+%% behind only leaves a scan's probe of a tracer module unjudged, as
+%% before. Child VMs still find the tracer: their ERL_AFLAGS name the dir
+%% by ebin_dir/0, the loaded module's own file.
+hide_ebin() ->
+    Ebin = ebin_dir(),
+    _ = [code:del_path(P) || P <- code:get_path(), filename:absname(P) =:= Ebin],
+    ok.
 
 %% Every module loaded now that was not loaded before the tracer started
 %% (nor, in the Mix VM, by Mix anyway), and every tracer-owned one, with the
