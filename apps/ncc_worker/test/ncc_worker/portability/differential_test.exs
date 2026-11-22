@@ -121,12 +121,20 @@ defmodule NccWorker.Portability.DifferentialTest do
       status: :skip,
       reason: Reasons.could_not_judge(),
       differential: held,
-      observations: %{
-        "env_reads" => Map.get(merge, :env_reads, []),
-        "config_reads" => Map.get(merge, :config_reads, []),
-        "problems" => [Differential.hold_problem()],
-        "trace_stats" => %{"judge_compile" => "finished"}
-      }
+      observations:
+        Map.merge(
+          %{
+            "env_reads" => Map.get(merge, :env_reads, []),
+            "config_reads" => Map.get(merge, :config_reads, []),
+            "problems" => [Differential.hold_problem()],
+            "trace_stats" => %{"judge_compile" => "finished"}
+          },
+          for(
+            {key, list} <- Map.take(merge, [:declared_absent, :rebar3_plugins]),
+            into: %{},
+            do: {Atom.to_string(key), list}
+          )
+        )
     }
   end
 
@@ -320,6 +328,98 @@ defmodule NccWorker.Portability.DifferentialTest do
     v = settle(held, ctx, variant(%{}, held_variant(%{env_reads: reads ++ [extra]})))
     assert v.reason == Reasons.could_not_judge()
     assert Enum.any?(v.observations["problems"], &(&1 =~ "env reads over their cap"))
+  end
+
+  # Review N6: the portal's module-index gate and the client decide on the
+  # pass's `declared_absent` list, which is the first build's. A probe only
+  # a variant made (a count above 64 gating `Code.ensure_loaded?/1`) would
+  # never be gated, so each variant item must be one of the first's.
+  @probe %{
+    "kind" => "module_absent",
+    "module" => "Elixir.FxOpt.Codec",
+    "declared" => ["fx_opt"],
+    "declared_apps" => ["fx_opt"],
+    "via" => "Code.ensure_loaded?/1"
+  }
+
+  @same %{"pkg.app" => "{application,pkg,[]}.\n", "x.beam" => "same"}
+
+  test "a declared-absent probe only a variant made refuses", ctx do
+    v = settle(held(ctx), ctx, variant(@same, held_variant(%{declared_absent: [@probe]})))
+    assert v.status == :skip
+
+    assert v.reason ==
+             @sched["refusal"] <>
+               "; a differential build (low) read what the first did not: " <>
+               "declared-absent probe Elixir.FxOpt.Codec"
+
+    assert v.observations["trace_stats"]["differential"] == "differs"
+  end
+
+  test "the same declared-absent probes pass, and the pass keeps the first build's", ctx do
+    first = Map.put(@probe, "declared", ["fx_opt", "fx_other"])
+    pass = put_in(ctx.pass, [:observations, "declared_absent"], [first])
+    held = Differential.hold(pass, ctx.varied)
+    # The same item, its lists in another order: the gate reads them as sets.
+    again = Map.put(@probe, "declared", ["fx_other", "fx_opt"])
+    v = settle(held, ctx, variant(@same, held_variant(%{declared_absent: [again]})))
+    assert v.status == :pass, inspect(v.reason)
+    assert v.observations["declared_absent"] == [first]
+  end
+
+  test "a variant's probe that names other declared packages is another probe", ctx do
+    pass = put_in(ctx.pass, [:observations, "declared_absent"], [@probe])
+    held = Differential.hold(pass, ctx.varied)
+    other = Map.put(@probe, "declared_apps", ["fx_opt", "fx_other"])
+    v = settle(held, ctx, variant(@same, held_variant(%{declared_absent: [other]})))
+    assert v.status == :skip
+    assert v.reason =~ "read what the first did not: declared-absent probe Elixir.FxOpt.Codec"
+  end
+
+  test "a truncated declared-absent list on either side cannot be compared, and refuses", ctx do
+    truncated = %{"kind" => "truncated"}
+    pass = put_in(ctx.pass, [:observations, "declared_absent"], [@probe, truncated])
+
+    for {first, theirs} <- [
+          {ctx.pass, [@probe, truncated]},
+          {pass, [@probe]},
+          {pass, [@probe, truncated]}
+        ] do
+      held = Differential.hold(first, ctx.varied)
+      v = settle(held, ctx, variant(@same, held_variant(%{declared_absent: theirs})))
+      assert v.status == :skip
+
+      assert v.reason ==
+               @sched["refusal"] <>
+                 "; declared-absent probes over their cap: " <>
+                 "a differential build (low) cannot be compared"
+
+      assert v.observations["trace_stats"]["differential"] == "differs"
+    end
+  end
+
+  # The plugin watch (`Portal.Precompiled.PluginWatch`) records the rebar3
+  # plugin releases a pass's record names, to withhold the run should one
+  # turn out bad: one only a variant ran would not be recorded.
+  @plugin %{
+    "name" => "fx_plugin",
+    "version" => "1.0.0",
+    "sha256" => String.duplicate("a", 64),
+    "owners" => ["pkg"]
+  }
+
+  test "a rebar3 plugin release only a variant ran refuses", ctx do
+    v = settle(held(ctx), ctx, variant(@same, held_variant(%{rebar3_plugins: [@plugin]})))
+    assert v.status == :skip
+    assert v.reason =~ "; a differential build (low) read what the first did not: "
+    assert v.reason =~ "rebar3 plugin fx_plugin 1.0.0"
+
+    pass = put_in(ctx.pass, [:observations, "rebar3_plugins"], [@plugin])
+    held = Differential.hold(pass, ctx.varied)
+    # Ran by another app of the closure: the same release.
+    again = Map.put(@plugin, "owners", ["pkg", "other"])
+    v = settle(held, ctx, variant(@same, held_variant(%{rebar3_plugins: [again]})))
+    assert v.status == :pass, inspect(v.reason)
   end
 
   # Review R3: a variant must have run with the count it asked for (the

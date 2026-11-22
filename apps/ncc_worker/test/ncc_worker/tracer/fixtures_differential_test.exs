@@ -143,6 +143,25 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   CONFIG.
   """
 
+  # Review N6 (the reviewer's fixture): `fx_opt`, declared optional and
+  # absent from the build, defines FxOpt.Codec; the probe is made only above
+  # 64 schedulers, so the first build (8) records no declared-absent probe.
+  @gated_probe """
+  defmodule FxProbe do
+    @x if System.schedulers_online() > 64, do: Code.ensure_loaded?(FxOpt.Codec), else: false
+    def x, do: @x
+  end
+  """
+
+  # The same probe at every count, beside a count read that reaches no beam.
+  @always_probe """
+  defmodule FxProbeAlways do
+    @x Code.ensure_loaded?(FxOpt.Codec)
+    _ = System.schedulers_online()
+    def x, do: @x
+  end
+  """
+
   # gproc 1.0.0's Hex tarball, vendored unchanged: a reviewed release
   # (`ReviewedScripts`, by its outer checksum).
   @gproc_tar Path.join(__DIR__, "../../fixtures/rebar/gproc-1.0.0.tar")
@@ -177,6 +196,13 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
       end
 
     gate = run(root, proj, "fx_dv_gate", env: [{"ERL_ZFLAGS", "+S 8:8"}, {"FX_GATE", nil}])
+
+    # Review N6: a probe of a declared-absent module only above 64
+    # schedulers, and one made at every count beside a count read.
+    probes = %{
+      "gated" => probe_run(root, "fx_probe", @gated_probe),
+      "always" => probe_run(root, "fx_probe_always", @always_probe)
+    }
 
     # Each rebar3 script in a project of its own: a read outside every
     # window counts against everything in it.
@@ -214,6 +240,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
       pow2: pow2,
       divisors: divisors,
       gate: gate,
+      probes: probes,
       scripts: scripts
     }
   end
@@ -304,6 +331,42 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     proj = TracerFixtures.project(dir, Map.keys(deps), deps)
     File.write!(Path.join(proj, "mix.lock"), "%{}\n")
     run(dir, proj, package, releases: Map.new(releases), hex_home: hex_home)
+  end
+
+  # A project of the Hex release `app`, whose module is `body` and which
+  # declares `fx_opt` (optional, absent from the build; its cached tarball
+  # defines FxOpt.Codec), judged at 8 schedulers.
+  defp probe_run(root, app, body) do
+    dir = Path.join(root, "probe-#{app}")
+    hex_home = Path.join(dir, "hex")
+
+    req = [
+      {"name", "fx_opt"},
+      {"app", "fx_opt"},
+      {"optional", true},
+      {"requirement", "~> 0.1"},
+      {"repository", "hexpm"}
+    ]
+
+    {^app, release} =
+      TracerFixtures.hex_release(hex_home, app, ["lib", "mix.exs"], %{}, [
+        {"requirements", [req]}
+      ])
+
+    TracerFixtures.hex_release(hex_home, "fx_opt", ["lib"], %{
+      "lib/fx_opt.ex" => "defmodule FxOpt do\n  defmodule Codec do\n  end\nend\n"
+    })
+
+    proj =
+      TracerFixtures.project(dir, [app], %{
+        app => %{files: %{"lib/#{app}.ex" => body}}
+      })
+
+    run(dir, proj, app,
+      env: [{"ERL_ZFLAGS", "+S 8:8"}],
+      releases: %{app => release},
+      hex_home: hex_home
+    )
   end
 
   defp real_release(hex_home, app, version, path, releases) do
@@ -402,6 +465,34 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
     assert v.reason =~ ~r/\Acompile-time host read: erlang:system_info\/1 \(schedulers_online\)/
     assert v.reason =~ "; a differential build (high) read what the first did not: env FX_GATE"
     assert v.compile_inputs == nil
+  end
+
+  # Review N6: the pass's `declared_absent` list is the first build's, the
+  # one the portal's module-index gate and the client decide on. A user
+  # with more than 64 schedulers makes the probe: a popular package that
+  # defines FxOpt.Codec would be found, and another `@x` compiled.
+  test "a declared-absent probe only the high variant makes refuses", ctx do
+    v = ctx.probes["gated"]
+    assert v.status == :skip, log(v)
+    assert v.reason =~ ~r/\Acompile-time host read: erlang:system_info\/1 \(schedulers_online\)/
+
+    assert v.reason =~
+             "; a differential build (high) read what the first did not: " <>
+               "declared-absent probe Elixir.FxOpt.Codec"
+
+    assert v.compile_inputs == nil
+    assert v.observations["trace_stats"]["differential"] == "differs"
+  end
+
+  test "a declared-absent probe every variant makes publishes, recorded once", ctx do
+    v = ctx.probes["always"]
+    assert %{status: :pass} = v, log(v)
+    assert v.observations["trace_stats"]["differential"] == "same"
+
+    assert [%{"kind" => "module_absent", "module" => "Elixir.FxOpt.Codec"} = item] =
+             v.observations["declared_absent"]
+
+    assert item["declared"] == ["fx_opt"]
   end
 
   test "HOME read and not kept publishes; HOME baked refuses", ctx do

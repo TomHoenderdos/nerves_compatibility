@@ -40,7 +40,10 @@ defmodule NccWorker.Portability.Differential do
       no proof of anything). Each must pass the judge, its own varied
       reads held as the first's were, and read nothing the first build did
       not (review B1: a compile input, config item, varied read, or env or
-      config read, by what it names, never its value);
+      config read, by what it names, never its value; review N6: a
+      declared-absent probe or a rebar3 plugin release, the lists the
+      portal and the client decide on and the pass keeps as the first
+      build's; a truncated probe list on either side refuses);
     * the package's app in each must be the first build's
       (`NccWorker.Portability.DifferentialBeams.compare_app/3`), and the
       first build must hash the same before the check and after the last
@@ -448,6 +451,14 @@ defmodule NccWorker.Portability.Differential do
   # alone), a varied read, or an env or config read its observations list.
   # Never added with the builder's value (coordinator ruling). A first
   # build whose observed list reached its cap cannot tell.
+  #
+  # Review N6: likewise every observation list the portal or the client
+  # decides on, which the pass keeps as the first build's: a
+  # `declared_absent` probe (the module-index gate,
+  # `Portal.Catalog.ModuleIndex`) and a `rebar3_plugins` release (the plugin
+  # watch, `Portal.Precompiled.PluginWatch`) only a variant made would never
+  # be decided on. A `truncated` probe list on either side cannot be
+  # compared, and refuses.
   defp read_no_more(held, built, name) do
     case variant_reads(built) do
       {:ok, theirs} -> read_no_more(more(held, theirs), name)
@@ -462,6 +473,9 @@ defmodule NccWorker.Portability.Differential do
     do:
       {:unjudged, "#{kind} over their cap: a differential build (#{name}) cannot be compared",
        false}
+
+  defp read_no_more({:truncated, kind}, name),
+    do: {:refuse, "#{kind} over their cap: a differential build (#{name}) cannot be compared"}
 
   defp read_no_more(:ok, _name), do: :ok
 
@@ -485,18 +499,33 @@ defmodule NccWorker.Portability.Differential do
   @config_cap 200
 
   # The env and config reads a verdict's observations list, by what they
-  # name, and whether a list reached its cap (`NccWorker.Portability`'s).
+  # name, and whether a list reached its cap (`NccWorker.Portability`'s);
+  # its declared-absent probes as recorded, and the rebar3 plugin releases
+  # it ran, by name, version and checksum.
   defp observed(verdict) do
     obs = Map.get(verdict, :observations) || %{}
     env = list(obs["env_reads"])
     config = list(obs["config_reads"])
+    declared = list(obs["declared_absent"])
 
     %{
       env: MapSet.new(env, &{&1["name"], &1["all"]}),
       config: MapSet.new(config, &config_read/1),
       env_capped: length(env) >= @env_cap,
-      config_capped: length(config) >= @config_cap
+      config_capped: length(config) >= @config_cap,
+      declared: MapSet.new(declared, &probe_identity/1),
+      declared_truncated: Enum.any?(declared, &(&1["kind"] == "truncated")),
+      plugins: MapSet.new(list(obs["rebar3_plugins"]), &Map.take(&1, ~w(name version sha256)))
     }
+  end
+
+  # A probe as the gate reads it: its `declared` and `declared_apps` as
+  # sets, so their order is not a difference.
+  defp probe_identity(item) do
+    Map.new(item, fn
+      {key, value} when is_list(value) -> {key, Enum.sort(value)}
+      pair -> pair
+    end)
   end
 
   defp list(items) when is_list(items), do: Enum.filter(items, &is_map/1)
@@ -509,7 +538,9 @@ defmodule NccWorker.Portability.Differential do
 
   # The first thing a variant read that the first build did not, in this
   # order: a compile input, a config item, a varied read, an env read, a
-  # config read (the last two `:capped` when the first's list was full).
+  # config read (the last two `:capped` when the first's list was full), a
+  # declared-absent probe (`:truncated` when either list was), a rebar3
+  # plugin release.
   defp more(held, theirs) do
     Enum.find_value(
       [
@@ -533,10 +564,36 @@ defmodule NccWorker.Portability.Differential do
             "config reads",
             &"config read #{&1["app"]} #{&1["key"]}"
           )
+        end,
+        fn -> extra_probe(held.observed, theirs.observed) end,
+        fn ->
+          extra_observed(
+            theirs.observed.plugins,
+            held.observed.plugins,
+            false,
+            "rebar3 plugins",
+            &"rebar3 plugin #{&1["name"]} #{&1["version"]}"
+          )
         end
       ],
       :ok,
       & &1.()
+    )
+  end
+
+  defp extra_probe(%{declared_truncated: true}, _theirs),
+    do: {:truncated, "declared-absent probes"}
+
+  defp extra_probe(_first, %{declared_truncated: true}),
+    do: {:truncated, "declared-absent probes"}
+
+  defp extra_probe(first, theirs) do
+    extra_observed(
+      theirs.declared,
+      first.declared,
+      false,
+      "declared-absent probes",
+      &"declared-absent probe #{&1["module"] || &1["kind"]}"
     )
   end
 
