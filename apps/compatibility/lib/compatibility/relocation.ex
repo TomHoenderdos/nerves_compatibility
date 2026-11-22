@@ -720,9 +720,49 @@ defmodule Compatibility.Relocation do
   end
 
   defp equal_but_metadata(moved, b) do
-    case Enum.find(moved, fn {id, data} -> id not in @metadata and data != chunk(b, id) end) do
+    case Enum.find(moved, fn {id, data} ->
+           id not in @metadata and differs?(id, data, chunk(b, id))
+         end) do
       nil -> :ok
       {id, _} -> {:refuse, "#{id} differs at another root"}
+    end
+  end
+
+  # `ExCk` (Elixir's checker info) and `Attr` are plain `term_to_binary/1`
+  # of a term with maps in it, and OTP orders a small map's atom keys by
+  # atom index, so two compiles of one source may write one term in other
+  # bytes (the pilot's bamboo and digital_token). Both are read only as terms
+  # (Elixir's checker and `beam_lib` decode them, and neither is in the
+  # module's md5), so they are compared in a normal form: the term,
+  # `:deterministic`. Every other chunk byte for byte.
+  @as_terms ~w(ExCk Attr)
+
+  defp differs?(id, a, b) when id in @as_terms and is_binary(a) and is_binary(b),
+    do: a != b and normal_form(a) != normal_form(b)
+
+  defp differs?(_id, a, b), do: a != b
+
+  # The worker's own VM decodes it, as `prove/4` decodes literals.
+  # sobelow_skip ["Misc.BinToTerm"]
+  defp normal_form(data) do
+    :erlang.term_to_binary(:erlang.binary_to_term(data), [:deterministic])
+  rescue
+    _ -> {:unreadable, data}
+  end
+
+  @doc """
+  The chunk `id` of `beam` in the normal form `prove/4` compares it in:
+  `ExCk` and `Attr` as their term, `term_to_binary(term, [:deterministic])`;
+  any other chunk as it is; nil when the beam has none. Decodes the term,
+  which can make atoms: for the worker's VM and tests.
+  """
+  @spec normal_chunk(binary(), String.t()) :: binary() | nil
+  def normal_chunk(beam, id) do
+    with {:ok, chunks} <- chunks(beam),
+         data when is_binary(data) <- chunk(chunks, id) do
+      if id in @as_terms, do: normal_form(data), else: data
+    else
+      _ -> nil
     end
   end
 

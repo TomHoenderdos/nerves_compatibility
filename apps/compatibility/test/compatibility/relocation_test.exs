@@ -178,6 +178,98 @@ defmodule Compatibility.RelocationTest do
     assert {:refuse, _} = Relocation.relocate(b, occs, slots(ra), slots(ru))
   end
 
+  # The pilot's refusal: Elixir writes `ExCk` (and the compiler `Attr`)
+  # with plain term_to_binary/1, and OTP orders a small map's atom keys by
+  # atom index, so two compiles of the same source can write the same term
+  # in other bytes (bamboo's Bamboo.Formatter.Map: `fun` and `tuple`
+  # swapped). Both are compared as terms, in one normal form
+  # (`term_to_binary(term, [:deterministic])`), as Elixir and beam_lib read
+  # them; any other difference still refuses.
+  describe "ExCk and Attr compared as terms" do
+    @exck_term {:elixir_checker_v3, %{exports: [], mode: :elixir}}
+
+    # `term` encoded as term_to_binary/1 would, every map's keys in reverse
+    # term order: the bytes another VM's atom table order gives the same
+    # term.
+    defp reversed(term), do: <<131>> <> enc(term)
+
+    defp enc(atom) when is_atom(atom) do
+      name = Atom.to_string(atom)
+      <<119, byte_size(name), name::binary>>
+    end
+
+    defp enc(n) when is_integer(n) and n in 0..255, do: <<97, n>>
+    defp enc([]), do: <<106>>
+
+    defp enc(list) when is_list(list),
+      do: <<108, length(list)::32>> <> Enum.map_join(list, &enc/1) <> <<106>>
+
+    defp enc(tuple) when is_tuple(tuple),
+      do: <<104, tuple_size(tuple)>> <> Enum.map_join(Tuple.to_list(tuple), &enc/1)
+
+    defp enc(map) when is_map(map) do
+      pairs = map |> Enum.sort() |> Enum.reverse()
+      <<116, length(pairs)::32>> <> Enum.map_join(pairs, fn {k, v} -> enc(k) <> enc(v) end)
+    end
+
+    # Anything else (a big integer, a binary) as term_to_binary/1 writes it.
+    defp enc(other) do
+      <<131, rest::binary>> = :erlang.term_to_binary(other)
+      rest
+    end
+
+    defp with_chunk(beam, id, data) do
+      {:ok, _, chunks} = :beam_lib.all_chunks(beam)
+      {:ok, bytes} = :beam_lib.build_module(List.keystore(chunks, id, 0, {id, data}))
+      bytes
+    end
+
+    test "the reversed bytes are the same term" do
+      assert reversed(@exck_term) != :erlang.term_to_binary(@exck_term, [:deterministic])
+      assert :erlang.binary_to_term(reversed(@exck_term)) == @exck_term
+    end
+
+    test "an ExCk in other bytes but the same term proves; another term refuses", ctx do
+      [{ra, a}, {rb, b}, {ru, u}] = three(ctx, &compile_ex(&1, "Exck", "def d, do: __DIR__"))
+      a = with_chunk(a, ~c"ExCk", :erlang.term_to_binary(@exck_term, [:deterministic]))
+      b = with_chunk(b, ~c"ExCk", reversed(@exck_term))
+      assert {:ok, occs} = Relocation.prove(a, slots(ra), b, slots(rb))
+
+      other =
+        with_chunk(b, ~c"ExCk", reversed({:elixir_checker_v3, %{exports: [], mode: :erlang}}))
+
+      assert {:refuse, "ExCk differs at another root"} =
+               Relocation.prove(a, slots(ra), other, slots(rb))
+
+      # The relocated beam's ExCk is the user's own compile's, as Elixir
+      # reads it: the same normal form.
+      u = with_chunk(u, ~c"ExCk", reversed(@exck_term))
+      {:ok, moved} = Relocation.relocate(a, occs, slots(ra), slots(ru))
+      assert Relocation.normal_chunk(moved, "ExCk") == Relocation.normal_chunk(u, "ExCk")
+      refute :beam_lib.chunks(moved, [~c"ExCk"]) == :beam_lib.chunks(u, [~c"ExCk"])
+    end
+
+    test "an Attr in other bytes but the same term proves; another term refuses", ctx do
+      [{ra, a}, {rb, b}, _] = three(ctx, &compile_ex(&1, "Attr", "def d, do: __DIR__"))
+
+      # Each beam's own attributes (its vsn is its md5) and a map in them.
+      attrs = fn beam, map ->
+        {:ok, {_, [{~c"Attr", attr}]}} = :beam_lib.chunks(beam, [~c"Attr"])
+        :erlang.binary_to_term(attr) ++ [meta: [map]]
+      end
+
+      map = %{exports: [], mode: :elixir}
+      a = with_chunk(a, ~c"Attr", :erlang.term_to_binary(attrs.(a, map), [:deterministic]))
+      same = with_chunk(b, ~c"Attr", reversed(attrs.(b, map)))
+      assert {:ok, _} = Relocation.prove(a, slots(ra), same, slots(rb))
+
+      changed = with_chunk(b, ~c"Attr", reversed(attrs.(b, %{exports: [], mode: :erlang})))
+
+      assert {:refuse, "Attr differs at another root"} =
+               Relocation.prove(a, slots(ra), changed, slots(rb))
+    end
+  end
+
   test "slots must be absolute and distinct" do
     assert {:refuse, _} = Relocation.prove(<<>>, %{"deps" => "deps"}, <<>>, %{"deps" => "/x"})
     assert {:refuse, _} = Relocation.prove(<<>>, slots("/a"), <<>>, slots("/a"))
