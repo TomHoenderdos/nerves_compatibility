@@ -164,7 +164,7 @@ defmodule Portal.Reports.PayloadTest do
   end
 
   test "known codes are the shared table" do
-    assert length(Payload.known_codes()) == 65
+    assert length(Payload.known_codes()) == 68
     assert "not_built_target" in Payload.known_codes()
 
     # In the client's table order (`Precompiled.Reason`).
@@ -173,16 +173,16 @@ defmodule Portal.Reports.PayloadTest do
 
     refute "unknown" in Payload.known_codes()
     # Appended: earlier codes keep their place.
-    assert List.last(Payload.known_codes()) == "closure_source"
+    assert List.last(Payload.known_codes()) == "probe_unknown"
 
-    assert Enum.take(Payload.known_codes(), -20) ==
-             ~w(endian_differs os_type_differs triple_differs
+    assert Enum.take(Payload.known_codes(), -24) ==
+             ~w(platform_define_differs endian_differs os_type_differs triple_differs
                 nif_version_newer origin_unverified deterministic_not_built
                 foreign_priv_target_compiles foreign_priv_target_missing
                 foreign_priv_target_linked foreign_priv_conflict foreign_priv_rule_unknown
                 foreign_priv_device relocated_paths relocated_otp relocation_refused
                 relocated_path_spelling relocated_path_ascii relocated_path_envelope
-                config_all_differs closure_source)
+                config_all_differs closure_source probe_definer probe_otp_app probe_unknown)
   end
 
   describe "type confusion" do
