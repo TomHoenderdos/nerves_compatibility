@@ -293,17 +293,22 @@ defmodule NccWorker.Portability.GuardedProof do
   defp copy_project(first, project_dir) do
     with :ok <- File.mkdir(project_dir),
          {:ok, names} <- File.ls(first) do
-      Enum.reduce_while(Enum.reject(names, &(&1 == "_build")), :ok, fn name, :ok ->
-        case File.cp_r(Path.join(first, name), Path.join(project_dir, name)) do
-          {:ok, _} ->
-            {:cont, :ok}
-
-          {:error, why, file} ->
-            {:halt, {:refuse, "the project cannot be copied: #{file} #{inspect(why)}"}}
-        end
-      end)
+      names
+      |> Enum.reject(&(&1 == "_build"))
+      |> Enum.reduce_while(:ok, &copy_entry(&1, &2, first, project_dir))
     else
       {:error, why} -> {:refuse, "the project cannot be copied: #{inspect(why)}"}
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp copy_entry(name, :ok, first, project_dir) do
+    case File.cp_r(Path.join(first, name), Path.join(project_dir, name)) do
+      {:ok, _} ->
+        {:cont, :ok}
+
+      {:error, why, file} ->
+        {:halt, {:refuse, "the project cannot be copied: #{file} #{inspect(why)}"}}
     end
   end
 
@@ -338,22 +343,25 @@ defmodule NccWorker.Portability.GuardedProof do
   end
 
   defp inject_one(content, dep) do
-    with [_, name] <- Regex.run(~r/\A\{:([a-z][a-z0-9_]*),/, dep) do
-      cond do
-        Regex.match?(~r/\{:#{name},/, content) ->
-          {:ok, content}
-
-        index = list_start(content, ~r/defp\s+deps\s+do\s*\n\s*\[/) ->
-          {:ok, insert(content, index, "\n      #{dep},")}
-
-        index = list_start(content, ~r/deps:\s*\[/) ->
-          {:ok, insert(content, index, "#{dep}, ")}
-
-        true ->
-          {:error, :no_deps_list}
-      end
-    else
+    case Regex.run(~r/\A\{:([a-z][a-z0-9_]*),/, dep) do
+      [_, name] -> inject_named(content, dep, name)
       _ -> {:error, {:not_a_dep, dep}}
+    end
+  end
+
+  defp inject_named(content, dep, name) do
+    cond do
+      Regex.match?(~r/\{:#{name},/, content) ->
+        {:ok, content}
+
+      index = list_start(content, ~r/defp\s+deps\s+do\s*\n\s*\[/) ->
+        {:ok, insert(content, index, "\n      #{dep},")}
+
+      index = list_start(content, ~r/deps:\s*\[/) ->
+        {:ok, insert(content, index, "#{dep}, ")}
+
+      true ->
+        {:error, :no_deps_list}
     end
   end
 
@@ -395,15 +403,14 @@ defmodule NccWorker.Portability.GuardedProof do
   defp same_lock(first, project_dir) do
     with {:ok, a} <- lock(first),
          {:ok, b} <- lock(project_dir) do
-      case Enum.find(a, fn {app, release} -> Map.get(b, app) != release end) do
-        nil ->
-          :ok
-
-        {app, _} ->
-          {:refuse, "the guarded packages cannot be added: #{app} would be locked otherwise"}
-      end
+      a |> Enum.find(fn {app, release} -> Map.get(b, app) != release end) |> moved_release()
     end
   end
+
+  defp moved_release(nil), do: :ok
+
+  defp moved_release({app, _release}),
+    do: {:refuse, "the guarded packages cannot be added: #{app} would be locked otherwise"}
 
   # sobelow_skip ["Traversal.FileModule"]
   defp lock(dir) do
@@ -543,10 +550,9 @@ defmodule NccWorker.Portability.GuardedProof do
   def compare_beam(x, y) do
     with {:ok, a} <- chunks(x),
          {:ok, b} <- chunks(y) do
-      cond do
-        Enum.map(a, &elem(&1, 0)) != Enum.map(b, &elem(&1, 0)) -> {:differs, "other chunks"}
-        true -> a |> Enum.zip(b) |> Enum.find_value(:ok, &chunk_difference/1)
-      end
+      if Enum.map(a, &elem(&1, 0)) == Enum.map(b, &elem(&1, 0)),
+        do: a |> Enum.zip(b) |> Enum.find_value(:ok, &chunk_difference/1),
+        else: {:differs, "other chunks"}
     end
   end
 
