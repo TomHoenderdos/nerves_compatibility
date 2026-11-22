@@ -146,28 +146,34 @@ defmodule NccWorker.Portability.Guarded do
           uniq: true,
           do: {owner, reason}
 
-    if candidates == [] do
-      %{}
-    else
-      events = events(report)
-      checked = %{}
-
-      {waivers, _checked} =
-        Enum.reduce(candidates, {%{}, checked}, fn {owner, reason}, {acc, checked} ->
-          ids = for {^owner, ^reason, tag} <- tags, do: tag
-
-          if nil in ids do
-            {acc, checked}
-          else
-            {ok?, checked} = entries_hold?(Enum.uniq(ids), ctx, scope, events, checked)
-            {if(ok?, do: add(acc, owner, reason, ids), else: acc), checked}
-          end
-        end)
-
-      waivers
-    end
+    waive_all(candidates, tags, {ctx, scope, report})
   rescue
     _ -> %{}
+  end
+
+  defp waive_all([], _tags, _run), do: %{}
+
+  defp waive_all(candidates, tags, {ctx, scope, report}) do
+    run = {ctx, scope, events(report)}
+
+    {waivers, _checked} =
+      Enum.reduce(candidates, {%{}, %{}}, fn {owner, reason}, {acc, checked} ->
+        ids = for {^owner, ^reason, tag} <- tags, do: tag
+        waive(owner, reason, ids, acc, checked, run)
+      end)
+
+    waivers
+  end
+
+  # A refusal text is waived only when every occurrence of it is a site
+  # (`nil` is not) whose entries hold.
+  defp waive(owner, reason, ids, acc, checked, {ctx, scope, events}) do
+    if nil in ids do
+      {acc, checked}
+    else
+      {ok?, checked} = entries_hold?(Enum.uniq(ids), ctx, scope, events, checked)
+      {if(ok?, do: add(acc, owner, reason, ids), else: acc), checked}
+    end
   end
 
   defp add(acc, owner, reason, ids) do

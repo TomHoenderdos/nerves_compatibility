@@ -152,15 +152,11 @@ defmodule NccWorker.Portability.RebarPlugins do
   # in two dirs that are not one dir cannot be judged.
   defp installed(dest, moved, bases) do
     Enum.reduce_while(bases, {:ok, %{}}, fn base, {:ok, acc} ->
-      case installed_under(Path.join(dest, base), moved) do
-        {:ok, found} ->
-          case merge(acc, found) do
-            {:ok, merged} -> {:cont, {:ok, merged}}
-            other -> {:halt, other}
-          end
-
-        other ->
-          {:halt, other}
+      with {:ok, found} <- installed_under(Path.join(dest, base), moved),
+           {:ok, merged} <- merge(acc, found) do
+        {:cont, {:ok, merged}}
+      else
+        other -> {:halt, other}
       end
     end)
   end
