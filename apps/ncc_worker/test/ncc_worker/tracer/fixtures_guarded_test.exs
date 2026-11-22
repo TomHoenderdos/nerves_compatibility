@@ -200,6 +200,11 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
          TracerFixtures.attr_module("FxDep", "Code.ensure_loaded?(WebSockAdapter.CowboyAdapter)"),
          "compile-time probe of a dependency outside the closure: " <>
            "Elixir.WebSockAdapter.CowboyAdapter via Code.ensure_loaded?/1"},
+        {"lists the prober's ebin at compile time",
+         TracerFixtures.attr_module(
+           "FxDep",
+           ~S{"../../_build/host/lib/websock_adapter/ebin" |> File.ls!() |> Enum.sort()}
+         ), "closure dependency observed the host: websock_adapter (#{@refusal})"},
         {"calls the guarded module at compile time",
          TracerFixtures.attr_module(
            "FxDep",

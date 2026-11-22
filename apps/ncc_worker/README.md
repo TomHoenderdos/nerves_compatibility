@@ -695,7 +695,9 @@ websock_adapter's `WebSockAdapter.CowboyAdapter`, jose's `JOSE.Poison*`, ymlr's 
 release range with a ceiling) does not taint the package when the probe only decided whether the dependency defines
 its guarded modules and the package's compile could not see them: none of them is built, no Elixir beam of the
 closure outside them refers to one by a call, capture, `apply` or `make_fun` (read from the Elixir debug info), no
-traced probe of one was made anywhere, and nothing probed the dependency's application. The dependency's own build
+traced probe of one was made anywhere, nothing probed the dependency's application, and nothing read, listed or
+copied a file in the dependency's ebin (a wildcard whose literal dir reaches it included; its `include` and `priv` are
+the same either way). The dependency's own build
 still refuses, and so does a firmware target's or host-native verdict. The waived refusals are recorded in
 `compile_observations.guarded_taint`. It is not a `compile_inputs` item yet: client 0.8 reads an unknown kind as a malformed entry and misses. The package's own probe
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path

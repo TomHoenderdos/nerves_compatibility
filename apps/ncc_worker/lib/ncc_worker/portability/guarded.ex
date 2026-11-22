@@ -43,7 +43,10 @@ defmodule NccWorker.Portability.Guarded do
       `@behaviour` lookup. A `require`, `import`, `use`, struct or `@derive`
       of an absent module fails the compile;
     * no traced application probe of P's application: P's `.app` lists A
-      among its `modules`.
+      among its `modules`;
+    * no traced file event (a read, a listing, a stat) of P's ebin or a file
+      in it, from any window: there the other world has A's beams. A read of
+      P's `include` (joken's of jose's headers) is the same either way.
 
   Never raises: a beam or debug info that cannot be read fails the waiver.
   """
@@ -154,7 +157,7 @@ defmodule NccWorker.Portability.Guarded do
   defp waive_all([], _tags, _run), do: %{}
 
   defp waive_all(candidates, tags, {ctx, scope, report}) do
-    run = {ctx, scope, events(report)}
+    run = {ctx, scope, events(ctx, report)}
 
     {waivers, _checked} =
       Enum.reduce(candidates, {%{}, %{}}, fn {owner, reason}, {acc, checked} ->
@@ -202,14 +205,18 @@ defmodule NccWorker.Portability.Guarded do
     guards = entry.guards
 
     not built?(ctx, scope, guards) and not probed?(events, guards, entry.app) and
-      not referred?(ctx, scope, guards)
+      not ebin_read?(ctx, events, entry.app) and not referred?(ctx, scope, guards)
   end
 
-  defp events(report),
+  # `{owner, event}`: the Mix VM's by `Context.owner/2`, a child VM's by
+  # its app, as the judge attributes them.
+  defp events(ctx, report),
     do:
       Enum.concat(
-        Map.get(report, :events, []),
-        Enum.flat_map(Map.get(report, :children, %{}), fn {_app, c} -> c.events end)
+        Enum.map(Map.get(report, :events, []), &{Context.owner(ctx, &1), &1}),
+        Enum.flat_map(Map.get(report, :children, %{}), fn {app, c} ->
+          Enum.map(c.events, &{app, &1})
+        end)
       )
 
   # A module of A in a closure application's ebin.
@@ -220,13 +227,71 @@ defmodule NccWorker.Portability.Guarded do
   # A traced probe of a module of A, or an application probe of P's
   # application, anywhere in the trace.
   defp probed?(events, guards, app) do
-    Enum.any?(events, fn
+    events
+    |> Enum.map(&elem(&1, 1))
+    |> Enum.any?(fn
       %{"channel" => "probe", "arg" => %{"module" => m}} when is_binary(m) -> guarded?(m, guards)
       %{"channel" => "app_probe", "arg" => %{"app" => ^app}} -> true
       %{"channel" => "app_probe", "arg" => %{"app" => a}} when not is_binary(a) -> true
       _ -> false
     end)
   end
+
+  # A traced file event (a read, a listing, a stat, a write, a copy's
+  # source) of P's ebin or a file in it, from any window or VM: in the other
+  # world it holds A's beams and an `.app` that lists them. A relative path
+  # is the owner's compile's (Mix compiles a dependency in its source dir);
+  # one that cannot be placed, or an unreadable path, counts, and so does a wildcard whose literal prefix
+  # reaches the ebin (`_build/host/lib/*/ebin`). P's `include` and `priv`
+  # are the same either way, and `file:get_cwd/0` names no file.
+  defp ebin_read?(ctx, events, app) do
+    case Context.ebin(ctx, app) do
+      ebin when is_binary(ebin) ->
+        Enum.any?(events, fn
+          {owner, %{"channel" => ch, "arg" => arg}}
+          when ch in ["file_read", "file_write"] and is_map(arg) ->
+            arg
+            |> Map.take(["path", "from"])
+            |> Map.values()
+            |> Enum.any?(&reaches?(&1, ebin, ctx, owner))
+
+          {_owner, %{"channel" => ch}} when ch in ["file_read", "file_write"] ->
+            true
+
+          _ ->
+            false
+        end)
+
+      _ ->
+        true
+    end
+  end
+
+  # A relative path is the owner's compile's (`Context.resolve/3`).
+  defp reaches?(path, ebin, ctx, owner) when is_binary(path) do
+    case :binary.match(path, ["*", "?", "{", "["]) do
+      :nomatch ->
+        in_ebin?(Context.resolve(ctx, path, owner), ebin)
+
+      {at, _} ->
+        dir = Path.dirname(binary_part(path, 0, at) <> "x")
+        glob_reaches?(Context.resolve(ctx, dir, owner), ebin)
+    end
+  end
+
+  defp reaches?(_path, _ebin, _ctx, _owner), do: true
+
+  defp in_ebin?(real, ebin) when is_binary(real), do: under?(real, ebin)
+  defp in_ebin?(nil, _ebin), do: true
+
+  # The wildcard's literal dir: the ebin under it, or it under the ebin.
+  defp glob_reaches?(real, ebin) when is_binary(real),
+    do: under?(ebin, real) or under?(real, ebin)
+
+  defp glob_reaches?(nil, _ebin), do: true
+
+  defp under?(path, dir),
+    do: path == dir or String.starts_with?(path, String.trim_trailing(dir, "/") <> "/")
 
   # An Elixir beam of the closure outside A that refers to a module of A.
   defp referred?(ctx, scope, guards) do

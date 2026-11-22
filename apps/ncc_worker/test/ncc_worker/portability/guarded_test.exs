@@ -200,6 +200,52 @@ defmodule NccWorker.Portability.GuardedTest do
     end
   end
 
+  # The prober's ebin holds the guarded beam in the other world, and its
+  # `.app` lists it: a compile-time read or listing of that ebin, from any
+  # window, sees what the builder did not. A read of its `include` (an
+  # Erlang header, joken's of jose's) is the same either way.
+  test "a read or listing of the prober's ebin keeps the taint", %{tmp_dir: dir} do
+    c = ctx(dir, %{"websock_adapter" => [adapter(unique())]})
+    ebin = Path.join([dir, "_build", "host", "lib", "websock_adapter", "ebin"])
+    read = &%{"channel" => "file_read", "mfa" => "file:list_dir/1", "arg" => %{"path" => &1}}
+
+    for path <- [ebin, Path.join(ebin, "websock_adapter.app")] do
+      assert Guarded.waivers(c, %{events: [read.(path)], children: %{}}, tags(c)) == %{}
+
+      child = %{events: [read.(path)]}
+      assert Guarded.waivers(c, %{events: [], children: %{"x" => child}}, tags(c)) == %{}
+    end
+
+    # A wildcard whose literal dir reaches the ebin; a relative path; a
+    # copy out of the ebin.
+    lib = Path.join([dir, "_build", "host", "lib"])
+
+    for event <- [
+          read.(Path.join(lib, "*/ebin/*.beam")),
+          read.("ebin/websock_adapter.app"),
+          %{
+            "channel" => "file_write",
+            "mfa" => "file:copy/2",
+            "arg" => %{"from" => Path.join(ebin, "websock_adapter.app"), "path" => "/tmp/x"}
+          }
+        ] do
+      assert Guarded.waivers(c, %{events: [event], children: %{}}, tags(c)) == %{}, inspect(event)
+    end
+
+    # The cwd, a wildcard elsewhere: no concern.
+    cwd = %{"channel" => "file_read", "mfa" => "file:get_cwd/0", "arg" => %{"cwd" => true}}
+    other = read.(Path.join([dir, "deps", "pkg", "priv", "*.json"]))
+
+    assert %{"websock_adapter" => _} =
+             Guarded.waivers(c, %{events: [cwd, other], children: %{}}, tags(c))
+
+    header =
+      read.(Path.join([dir, "_build", "host", "lib", "websock_adapter", "include", "x.hrl"]))
+
+    assert %{"websock_adapter" => _} =
+             Guarded.waivers(c, %{events: [header], children: %{}}, tags(c))
+  end
+
   test "a build that holds the guarded module, or a refusal not of the site, keeps the taint",
        %{tmp_dir: dir} do
     n = unique()
