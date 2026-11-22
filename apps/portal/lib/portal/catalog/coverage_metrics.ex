@@ -29,10 +29,14 @@ defmodule Portal.Catalog.CoverageMetrics do
   A package is served by a passing, unrevoked toolchain build of that
   version, of the default config and a `with` or `without` variant, as
   `Portal.Catalog.Coverage` counts one, a build whose closure is withheld
-  included. A relocated pass (S4, `Portal.Precompiled.Relocated`) is not:
-  it serves only a client of 0.9.0 or later, and only while the
-  `relocated_enabled` setting is on, so it is counted apart (`relocated`,
-  `relocated_downloads`) and neither share counts it. It is a compile failure when nothing serves it and a toolchain
+  included. Builds only the newest client installs count (F390): a pass
+  with a `probe` or `config_all` compile input (S10, S5), which clients
+  before 0.9.0 miss, and a relocated pass (S4, `Portal.Precompiled.Relocated`)
+  while the `relocated_enabled` setting is on; while it is off a relocated
+  pass serves no one. A package served only by such builds is counted as
+  well in `newest_only` (`newest_only_downloads`). One whose only passes
+  are relocated is counted in `relocated` (`relocated_downloads`), served
+  or not. It is a compile failure when nothing serves it and a toolchain
   build of the version failed to compile (`"compile failed: ..."`, but not
   one a signal killed, which is no verdict:
   `Portal.Catalog.killed_compile_sql/1`), or, with no toolchain build of the
@@ -74,6 +78,8 @@ defmodule Portal.Catalog.CoverageMetrics do
           compile_failure_downloads: non_neg_integer(),
           nothing_to_compile: non_neg_integer(),
           gleam: non_neg_integer(),
+          newest_only: non_neg_integer(),
+          newest_only_downloads: non_neg_integer(),
           download_percent: float(),
           compile_percent: float()
         }
@@ -90,7 +96,17 @@ defmodule Portal.Catalog.CoverageMetrics do
           AND t.config_variant = 'default' AND t.variant = ANY($4::text[])
           AND t.revoked_at IS NULL AND t.status = 'pass'
           AND NOT coalesce(t.relocation_run_id = t.run_id, false)
-      ) AS served,
+      ) AS plain_pass,
+      EXISTS (
+        SELECT 1 FROM catalog_toolchain_builds t
+        WHERE t.package_id = p.id AND t.version = l.version AND t.toolchain = $3
+          AND t.config_variant = 'default' AND t.variant = ANY($4::text[])
+          AND t.revoked_at IS NULL AND t.status = 'pass'
+          AND NOT coalesce(t.relocation_run_id = t.run_id, false)
+          AND NOT EXISTS (
+            SELECT 1 FROM unnest(t.compile_inputs) i
+            WHERE i->>'kind' IN ('probe', 'config_all'))
+      ) AS old_client_pass,
       EXISTS (
         SELECT 1 FROM catalog_toolchain_builds t
         WHERE t.package_id = p.id AND t.version = l.version AND t.toolchain = $3
@@ -133,6 +149,8 @@ defmodule Portal.Catalog.CoverageMetrics do
        LIMIT 1) AS host
     FROM catalog_packages p
     JOIN latest l ON l.name = p.name
+  ), served AS (
+    SELECT b.*, b.plain_pass OR (b.relocated_pass AND $5::boolean) AS served FROM builds b
   ), judged AS (
     -- The runs are read only for a package with no toolchain build of the
     -- version, a few thousand, not for every package.
@@ -143,11 +161,12 @@ defmodule Portal.Catalog.CoverageMetrics do
         WHERE r.package_id = b.id AND r.revoked_at IS NULL
           AND s.status = 'skipped' AND s.log_tail LIKE 'Package uses gleam build tool%'
       ))) AS gleam
-    FROM builds b
+    FROM served b
     WHERE b.served OR NOT b.no_beams
   ), counted AS (
     SELECT *,
-      NOT served AND relocated_pass AS relocated,
+      NOT plain_pass AND relocated_pass AS relocated,
+      served AND NOT old_client_pass AS newest_only,
       NOT served AND NOT gleam
         AND (compile_failed OR (NOT built AND host IS NOT DISTINCT FROM 'fail')) AS failure
     FROM judged
@@ -156,8 +175,9 @@ defmodule Portal.Catalog.CoverageMetrics do
     count(*) FILTER (WHERE served), coalesce(sum(downloads) FILTER (WHERE served), 0),
     count(*) FILTER (WHERE relocated), coalesce(sum(downloads) FILTER (WHERE relocated), 0),
     count(*) FILTER (WHERE failure), coalesce(sum(downloads) FILTER (WHERE failure), 0),
-    (SELECT count(*) FROM builds WHERE NOT served AND no_beams),
-    count(*) FILTER (WHERE gleam)
+    (SELECT count(*) FROM served WHERE NOT served AND no_beams),
+    count(*) FILTER (WHERE gleam),
+    count(*) FILTER (WHERE newest_only), coalesce(sum(downloads) FILTER (WHERE newest_only), 0)
   FROM counted
   """
 
@@ -184,11 +204,12 @@ defmodule Portal.Catalog.CoverageMetrics do
       |> Enum.unzip()
 
     variants = Enum.map(ToolchainBuild.optional_deps_variants(), &Atom.to_string/1)
+    relocated = Portal.Precompiled.Relocated.enabled?()
 
     %{
       toolchains:
         for %{toolchain: toolchain} <- Portal.Toolchains.images() do
-          row(toolchain, names, versions, variants)
+          row(toolchain, names, versions, variants, relocated)
         end
     }
   end
@@ -196,16 +217,16 @@ defmodule Portal.Catalog.CoverageMetrics do
   # `counts_sql/0` is a module constant with a literal clause put in;
   # every value is a bound parameter.
   # sobelow_skip ["SQL.Query"]
-  defp row(toolchain, names, versions, variants) do
+  defp row(toolchain, names, versions, variants, relocated_enabled) do
     %{rows: [[packages, downloads, served, served_dl, relocated, relocated_dl | rest]]} =
-      Repo.query!(counts_sql(), [names, versions, toolchain, variants],
+      Repo.query!(counts_sql(), [names, versions, toolchain, variants, relocated_enabled],
         timeout: :timer.minutes(5)
       )
 
-    [failures, failure_dl, nothing, gleam] = rest
+    [failures, failure_dl, nothing, gleam, newest_only, newest_dl] = rest
 
-    [downloads, served_dl, relocated_dl, failure_dl] =
-      Enum.map([downloads, served_dl, relocated_dl, failure_dl], &integer/1)
+    [downloads, served_dl, relocated_dl, failure_dl, newest_dl] =
+      Enum.map([downloads, served_dl, relocated_dl, failure_dl, newest_dl], &integer/1)
 
     %{
       toolchain: toolchain,
@@ -219,6 +240,8 @@ defmodule Portal.Catalog.CoverageMetrics do
       compile_failure_downloads: failure_dl,
       nothing_to_compile: nothing,
       gleam: gleam,
+      newest_only: newest_only,
+      newest_only_downloads: newest_dl,
       download_percent: percent(served_dl, downloads),
       compile_percent: percent(served, packages - failures - gleam)
     }
@@ -277,11 +300,13 @@ defmodule Portal.Catalog.CoverageMetrics do
 
   @fields ~w(toolchain packages downloads served served_downloads relocated
              relocated_downloads compile_failures compile_failure_downloads
-             nothing_to_compile gleam download_percent compile_percent)a
+             nothing_to_compile gleam newest_only newest_only_downloads
+             download_percent compile_percent)a
 
   # The row holds the metrics as JSON, string keys; only the names
   # `compute/1` writes are read back. A row stored before S4 has no
-  # relocated counts: none were counted apart then.
+  # relocated counts, and one before S10 no newest-only counts: none were
+  # counted then.
   defp from_stored(stored) do
     %{
       toolchains:
@@ -289,6 +314,8 @@ defmodule Portal.Catalog.CoverageMetrics do
           Map.new(@fields, &{&1, Map.get(row, Atom.to_string(&1))})
           |> Map.update!(:relocated, &(&1 || 0))
           |> Map.update!(:relocated_downloads, &(&1 || 0))
+          |> Map.update!(:newest_only, &(&1 || 0))
+          |> Map.update!(:newest_only_downloads, &(&1 || 0))
           |> Map.update!(:download_percent, &as_float/1)
           |> Map.update!(:compile_percent, &as_float/1)
         end

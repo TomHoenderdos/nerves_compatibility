@@ -1164,6 +1164,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     <th class="text-right">Packages</th>
                     <th class="text-right">Served</th>
                     <th class="text-right">Relocated</th>
+                    <th class="text-right" title="Served only by builds client 0.9 installs">
+                      Client 0.9 only
+                    </th>
                     <th class="text-right">Download-weighted</th>
                     <th class="text-right">Of packages that compile</th>
                     <th class="text-right">Compile failures</th>
@@ -1181,6 +1184,9 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     <td class="text-right tabular-nums">{row.served}</td>
                     <td data-column="relocated" class="text-right tabular-nums">
                       {row.relocated}
+                    </td>
+                    <td data-column="newest_only" class="text-right tabular-nums">
+                      {row.newest_only}
                     </td>
                     <td data-column="download_percent" class="text-right tabular-nums">
                       {format_percent(row.download_percent)}

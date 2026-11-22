@@ -211,9 +211,10 @@ defmodule Portal.Catalog.CoverageMetricsTest do
   end
 
   # S4: a relocated pass serves only a client of 0.9.0 or later, and only
-  # while the `relocated_enabled` setting is on, so it is counted apart and
-  # not as served.
-  test "a relocated pass is counted apart, not as served" do
+  # while the `relocated_enabled` setting is on. F390: a build only the
+  # newest client installs counts as served, so it is served while the
+  # setting is on and counted apart while it is off.
+  test "a relocated pass is served while relocated_enabled is on, apart while it is off" do
     package!("plain", 100)
     build!("plain", "1.0.0", status: :pass)
 
@@ -233,16 +234,73 @@ defmodule Portal.Catalog.CoverageMetricsTest do
     assert row.served_downloads == 100
     assert row.relocated == 1
     assert row.relocated_downloads == 300
+    assert row.newest_only == 0
     assert row.download_percent == 10.0
     assert row.compile_failures == 0
     # 1 served of the 3 that compile.
     assert row.compile_percent == 33.3
 
+    {:ok, _} = Portal.Settings.save(%{relocated_enabled: true})
+
+    assert %{toolchains: [row]} = CoverageMetrics.compute(registry)
+    assert row.served == 2
+    assert row.served_downloads == 400
+    assert row.relocated == 1
+    assert row.newest_only == 1
+    assert row.newest_only_downloads == 300
+    assert row.download_percent == 40.0
+
     assert {:ok, _} = CoverageMetrics.store(%{toolchains: [row]})
 
-    assert %{metrics: %{toolchains: [%{relocated: 1, relocated_downloads: 300}]}} =
-             CoverageMetrics.latest()
+    assert %{
+             metrics: %{
+               toolchains: [%{relocated: 1, relocated_downloads: 300, newest_only: 1}]
+             }
+           } = CoverageMetrics.latest()
   end
+
+  # S10: a pass with a probe input (or S5's config_all) is served; only a
+  # client of 0.9.0 or later checks it, so it is also counted as newest only,
+  # unless another serving build of the version needs no such client.
+  test "a pass with a probe or config_all input is served, and newest only" do
+    probe = %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => "Elixir.Poison",
+      "answer" => "absent",
+      "definers" => ["poison"]
+    }
+
+    for {name, downloads, inputs} <- [
+          {"probed", 200, [probe]},
+          {"whole_env", 50, [%{"kind" => "config_all", "app" => "tz", "entries" => []}]},
+          {"env_only", 70, [%{"kind" => "env_all"}]}
+        ] do
+      package!(name, downloads)
+      tb = build!(name, "1.0.0", status: :pass)
+      set_inputs!(tb.id, inputs)
+    end
+
+    # Both variants pass, one of them without an input only 0.9 checks.
+    package!("both", 500)
+    set_inputs!(build!("both", "1.0.0", status: :pass).id, [probe])
+    build!("both", "1.0.0", status: :pass, variant: :without)
+
+    registry = for name <- ~w(probed whole_env env_only both), do: entry(name, ["1.0.0"])
+
+    assert %{toolchains: [row]} = CoverageMetrics.compute(registry)
+    assert row.served == 4
+    assert row.served_downloads == 820
+    assert row.newest_only == 2
+    assert row.newest_only_downloads == 250
+  end
+
+  defp set_inputs!(id, inputs),
+    do:
+      Repo.query!("UPDATE catalog_toolchain_builds SET compile_inputs = $2 WHERE id = $1", [
+        Ecto.UUID.dump!(id),
+        inputs
+      ])
 
   test "an empty registry is all zeros, not an error" do
     assert %{toolchains: [%{packages: 0, download_percent: +0.0, compile_percent: +0.0}]} =
