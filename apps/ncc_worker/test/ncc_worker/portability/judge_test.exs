@@ -2279,6 +2279,63 @@ defmodule NccWorker.Portability.JudgeTest do
       assert taint == %{}
     end
 
+    # Coverage drop 2026-11-22, F8: jesse 1.8.2's `src/jesse.app.src.script`
+    # reads only `erlang:system_info(otp_release)`, to add jsx below OTP 27,
+    # and a toolchain build is per OTP major. It is let through by the
+    # release's Hex outer checksum, and only when the tree on disk before the
+    # compile was that tarball's (`trees:`); any other script still refuses.
+    @jesse Path.expand("../../fixtures/hex/jesse-1.8.2.tar", __DIR__)
+    @jesse_outer "46c9c46f673f07d9df4158d1acf62b0d0188db35e8996833075e28b4fe639bad"
+
+    test "jesse 1.8.2's reviewed .app.src.script passes by its outer checksum", %{proj: proj} do
+      bytes = File.read!(@jesse)
+      assert :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower) == @jesse_outer
+
+      {:ok, tar} = NccWorker.Portability.Rebar.contents_tar(bytes)
+      {:ok, files} = :erl_tar.extract({:binary, tar}, [:memory])
+      files = Map.new(files, fn {name, body} -> {List.to_string(name), body} end)
+
+      File.write!(Path.join([proj, "deps/dep/rebar.config"]), files["rebar.config"])
+      r = rebar_report(proj, "dep", %{"dep" => child([])})
+
+      home = Path.join(Path.dirname(proj), "hex-jesse")
+      File.mkdir_p!(Path.join(home, "packages/hexpm"))
+      File.cp!(@jesse, Path.join(home, "packages/hexpm/jesse-1.8.2.tar"))
+      release = %{name: "jesse", version: "1.8.2", checksum: @jesse_outer}
+      {:ok, members} = NccWorker.Portability.Trees.members(bytes)
+
+      opts = fn trees ->
+        [releases: %{"dep" => release}, hex_home: home, trees: trees]
+      end
+
+      verdict = judge(proj, r, opts.(%{"dep" => {:ok, members}}))
+      assert %{status: :pass} = verdict, inspect(verdict.reason)
+      assert verdict.observations["taint"] == %{}
+
+      # The tree on disk not shown to be the tarball's: the script counts.
+      refusal =
+        "closure dependency observed the host: dep (rebar3 build evaluates an .app.src.script)"
+
+      for trees <- [
+            %{},
+            %{"dep" => {:unverified, "no time left"}},
+            %{
+              "dep" =>
+                {:ok, Map.put(members, "src/jesse.app.src.script", String.duplicate("0", 64))}
+            }
+          ] do
+        assert %{reason: ^refusal} = judge(proj, r, opts.(trees)), inspect(trees)
+      end
+
+      # A tree that differs from its tarball refuses before any rebar3 rule.
+      assert %{status: :skip, reason: "dependency tree differs from its tarball: " <> _} =
+               judge(proj, r, opts.(%{"dep" => {:differs, "x"}}))
+
+      # The same script in another release (another outer checksum) counts.
+      other = rebar_opts(proj, ["dep"], %{"dep" => files})
+      assert %{reason: ^refusal} = judge(proj, r, other ++ [trees: %{"dep" => {:ok, members}}])
+    end
+
     test "rebar.config is read from the verified tarball, not deps/ after the build",
          %{proj: proj} do
       hook = ~s({erl_opts, []}.\n{pre_hooks, [{compile, "sh evil.sh"}]}.\n)

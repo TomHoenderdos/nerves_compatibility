@@ -102,7 +102,8 @@ defmodule NccWorker.Portability.Rebar do
   rules to the files on disk (tests, and nothing the judge trusts).
 
   What rebar3 evaluates itself refuses (review S5 S2): an app's
-  `.app.src.script` (`rebar_app_utils`, `app_src_script`) and a `.app.src`
+  `.app.src.script` (`rebar_app_utils`, `app_src_script`; but for a
+  reviewed one, `allowed_app_src_scripts/2`: jesse 1.8.2's) and a `.app.src`
   whose `vsn` is not a plain string (`git`, `semver`, `{git, _}`, `{cmd,
   Cmd}`, and the strings `"git"`, `"semver"`, `"hg"`, `"pkg"` and
   `"git_subdir"`, which rebar3 takes as the same directives:
@@ -174,7 +175,8 @@ defmodule NccWorker.Portability.Rebar do
           optional(:app_src_scripts) => [String.t()],
           optional(:app_srcs) => [{String.t(), binary() | :unreadable}],
           optional(:mix_config) => String.t() | {:unjudged, String.t()},
-          optional(:reviewed) => [{String.t(), String.t()}]
+          optional(:reviewed) => [{String.t(), String.t()}],
+          optional(:reviewed_scripts) => [String.t()]
         }
 
   # Reviewed rebar3 compile hooks, by app: the `{Arch, compile, Script}`
@@ -192,6 +194,28 @@ defmodule NccWorker.Portability.Rebar do
       file: "c_src/build_nif.sh",
       sha256: ["e92786641bbfba08e0640db6eca95247b468bd923729d0e5b199e9a278b2ab0b"],
       env: "QUIC_BUILD_NIF"
+    }
+  }
+
+  # Reviewed `.app.src.script`s (coverage drop 2026-11-22, F8), by the Hex
+  # outer checksum of the one release each was read in: the script's path
+  # and the sha256 of the reviewed copy. jesse 1.8.2's
+  # `src/jesse.app.src.script` (read 2026-11-22) takes the `.app.src` term
+  # rebar3 binds to CONFIG and only prepends `{applications, Apps}`, where
+  # Apps is the `.app.src`'s own list for OTP 27 and later, with `jsx`
+  # added for OTP 21 to 26 and `jsx` and `rfc3339` below that. Its one
+  # input is `erlang:system_info(otp_release)` of the VM rebar3 runs in: no
+  # file, env, command, node or other host fact. A toolchain build is per
+  # OTP major and the client checks it, so the `.app` it writes is the one
+  # a user's rebar3 on that OTP major writes. Any other release, script or
+  # copy counts as before.
+  @reviewed_app_src_scripts %{
+    "46c9c46f673f07d9df4158d1acf62b0d0188db35e8996833075e28b4fe639bad" => %{
+      release: {"jesse", "1.8.2"},
+      scripts: %{
+        "src/jesse.app.src.script" =>
+          "eb6aaa74916f560f5f5998277f22c187c38ce657c79f4c837e384e9d5784e04d"
+      }
     }
   }
 
@@ -374,7 +398,9 @@ defmodule NccWorker.Portability.Rebar do
   defp app_src(sources, dirs) do
     read? = fn path -> dirs == :any or Path.dirname(path) in dirs end
 
-    if Enum.any?(Map.get(sources, :app_src_scripts, []), read?) do
+    scripts = Map.get(sources, :app_src_scripts, []) -- Map.get(sources, :reviewed_scripts, [])
+
+    if Enum.any?(scripts, read?) do
       {:refuse, "rebar3 build evaluates an .app.src.script"}
     else
       sources
@@ -512,6 +538,23 @@ defmodule NccWorker.Portability.Rebar do
       _ -> []
     end
   end
+
+  @doc """
+  The `.app.src.script`s of a rebar3 app that are let through
+  (`@reviewed_app_src_scripts`, coverage drop 2026-11-22, F8): those of the
+  release whose Hex outer checksum `tarball` (its verified bytes) has, when
+  the app's tree on disk before the compile (`tree`, `NccWorker.Portability.Trees`)
+  was that tarball's and holds the reviewed copy. `[]` otherwise.
+  """
+  @spec allowed_app_src_scripts(binary() | nil, term()) :: [String.t()]
+  def allowed_app_src_scripts(tarball, {:ok, members}) when is_binary(tarball) do
+    case Map.get(@reviewed_app_src_scripts, sha256(tarball)) do
+      %{scripts: scripts} -> for {path, sha} <- scripts, Map.get(members, path) == sha, do: path
+      nil -> []
+    end
+  end
+
+  def allowed_app_src_scripts(_tarball, _tree), do: []
 
   defp tarball_file(bytes, path) when is_binary(bytes) do
     with {:ok, tar} <- contents_tar(bytes),

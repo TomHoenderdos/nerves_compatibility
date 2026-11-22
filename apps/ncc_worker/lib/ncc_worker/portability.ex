@@ -2374,6 +2374,13 @@ defmodule NccWorker.Portability do
 
       own = Map.put(own, :reviewed, reviewed_hooks(ctx, report, app))
 
+      own =
+        Map.put(
+          own,
+          :reviewed_scripts,
+          Rebar.allowed_app_src_scripts(Context.tarball(ctx, app), Map.get(ctx.trees, app))
+        )
+
       mix_config = mix_rebar_config(ctx, app)
 
       own

@@ -786,7 +786,9 @@ of these skips the build:
   `rebar_prv_escriptize` runs its own hooks, and a provider hook on `compile` (cuttlefish's) runs it (review S5 R1).
   What rebar3 evaluates itself refuses too (review S5 S2), in each src dir rebar3 reads (`src` and every dir a
   `src_dirs` entry in the config names; a template under `priv` is never read): an `.app.src.script`
-  (`rebar3 build evaluates an .app.src.script`; jesse 1.8.2, plain_fsm 1.4.9), an `.app.src` whose `vsn` is not a
+  (`rebar3 build evaluates an .app.src.script`; plain_fsm 1.4.9; jesse 1.8.2's is reviewed: it reads only the OTP
+  release, and is let through by the release's Hex outer checksum when the tree on disk before the compile was that
+  tarball's, `Rebar.allowed_app_src_scripts/2`), an `.app.src` whose `vsn` is not a
   plain string (`git`, `semver`, `{cmd, ...}`, and the strings `"git"`, `"semver"`, `"hg"`, `"pkg"` and `"git_subdir"`,
   which rebar3 takes as the same directives: `rebar3 build computes its .app.src vsn`; poolboy 1.3.0 to 1.4.1, yamerl 0.3.3)
   and an `.app.src` the bounded parser cannot read (`rebar3 build .app.src unreadable`; a `fun` in opentelemetry
