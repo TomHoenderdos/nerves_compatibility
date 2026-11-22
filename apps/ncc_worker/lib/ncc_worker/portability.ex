@@ -1042,6 +1042,7 @@ defmodule NccWorker.Portability do
     ctx = Context.build(project_dir, package, report, native, opts)
     scope = MapSet.new(Context.closure_of(ctx, ctx.package))
     gate = ForeignPriv.gate(ctx, scope, opts)
+
     ctx = %{
       ctx
       | foreign_priv: gate,
