@@ -95,7 +95,11 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     refute Map.has_key?(mods, "ncc_tracer")
   end
 
-  test "a probe of an OTP application the package does not list is refused", %{tmp_dir: dir} do
+  # S10: the builder's answer, "absent", is recorded instead, and client
+  # 0.9 takes the build only where mnesia is not installed at all.
+  @mnesia %{"kind" => "probe", "of" => "otp_app", "name" => "mnesia", "answer" => "absent"}
+
+  test "a probe of an OTP application the package does not list is recorded", %{tmp_dir: dir} do
     proj = probe_fixture(dir, [])
 
     # The class itself: the same project compiles `false` pruned, `true`
@@ -111,13 +115,15 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     # The trace builds what a Mix project builds.
     assert BuildIdentity.differences(published(proj), untraced) == []
 
-    assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
-    assert reason == @refusal <> "mnesia via Code.ensure_loaded?/1"
+    assert %{status: :pass, compile_inputs: [@mnesia]} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
 
-    # A firmware target's trace refuses it too: `mix firmware` prunes, but
-    # what an earlier compile loaded stays visible (below).
+    # A firmware target's trace refuses it as before: a device has no project
+    # to check, and `mix firmware` prunes, but what an earlier compile loaded
+    # stays visible (below).
     firmware = TracerFixtures.judge(proj, "fx_probe", traced, [], target: "rpi4")
-    assert %{status: :skip, reason: ^reason} = firmware
+    assert %{status: :skip, reason: reason} = firmware
+    assert reason == @refusal <> "mnesia via Code.ensure_loaded?/1"
 
     # The event shape the judge reads (pinned on this toolchain). The code
     # server's own module_loaded/1 inside it is not written (round 2).
@@ -260,20 +266,28 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     @expr expr
     @via via
     @app app
-    test "probe form #{i}: #{expr} refuses", %{tmp_dir: dir} do
+    test "probe form #{i}: #{expr} is recorded, or refuses as a host read", %{tmp_dir: dir} do
       proj = probe_fixture(dir, [], @expr)
       traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
       assert {:ok, 0} = traced.result, traced.log
-      assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
+      verdict = TracerFixtures.judge(proj, "fx_probe", traced)
 
       case @via do
         :host_read ->
+          assert %{status: :skip, reason: reason} = verdict
           assert reason =~ "compile-time host read: code:all_available/0 in ", reason
 
         :host_read_atomic ->
+          assert %{status: :skip, reason: reason} = verdict
           assert reason =~ "compile-time host read: code:atomic_load/1 in ", reason
 
         via ->
+          # S10: recorded; the firmware trace keeps the refusal.
+          assert %{status: :pass, compile_inputs: [@mnesia]} = verdict
+
+          assert %{status: :skip, reason: reason} =
+                   TracerFixtures.judge(proj, "fx_probe", traced, [], target: "rpi4")
+
           assert reason == @refusal <> "#{@app} via #{via}"
       end
     end
@@ -434,7 +448,9 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
   # path, and in a Mix project a module an earlier dependency's compile-time
   # code loaded stays loaded, so only a module the package's closure holds
   # answers the same.
-  test "a probe of a module only another dependency defines refuses", %{tmp_dir: dir} do
+  # S10: the builder's answer, "absent", is recorded; client 0.9 misses
+  # where the user's project holds fx_other (its sources define FxOther).
+  test "a probe of a module only another dependency defines is recorded", %{tmp_dir: dir} do
     proj =
       TracerFixtures.project(dir, ["fx_other", "fx_probe"], %{
         "fx_other" => %{
@@ -460,11 +476,19 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     traced = TracerFixtures.trace(proj, ["fx_probe"])
     assert {:ok, 0} = traced.result, traced.log
     assert built_value(proj) == "false"
-    assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
 
-    assert reason ==
-             "compile-time probe of a dependency outside the closure: Elixir.FxOther via " <>
-               "Code.ensure_loaded?/1"
+    assert %{status: :pass, compile_inputs: inputs} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert inputs == [
+             %{
+               "kind" => "probe",
+               "of" => "module",
+               "name" => "Elixir.FxOther",
+               "answer" => "absent",
+               "definers" => []
+             }
+           ]
 
     assert [event | _] =
              Enum.filter(probes(traced), &(&1["arg"]["module"] == "Elixir.FxOther"))
@@ -509,12 +533,13 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert {:ok, 0} = traced.result, traced.log
     opts = [releases: %{app => release}, hex_home: home]
 
-    # fx_opt's tarball is not cached: its modules are unknown, so it refuses.
-    assert %{status: :skip, reason: reason} =
+    # fx_opt's tarball is not cached: who defines the module is unknown here,
+    # so it is recorded with no definer (S10); the portal adds the index's,
+    # and client 0.9 reads the user's deps' sources itself.
+    assert %{status: :pass, compile_inputs: [%{"name" => "Elixir.FxOpt.Codec"} = unknown]} =
              TracerFixtures.judge(proj, "fx_probe", traced, [], opts)
 
-    assert reason ==
-             "compile-time probe of a dependency outside the closure: Elixir.FxOpt.Codec via Code.ensure_loaded?/1"
+    assert unknown["definers"] == []
 
     TracerFixtures.hex_release(home, "fx_opt", ["lib"], %{
       "lib/fx_opt.ex" => "defmodule FxOpt do\n  defmodule Codec do\n  end\nend\n"
@@ -522,6 +547,17 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
 
     verdict = TracerFixtures.judge(proj, "fx_probe", traced, [], opts)
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+    # A compile input client 0.9 checks, its declared definer named (S10).
+    assert verdict.compile_inputs == [
+             %{
+               "kind" => "probe",
+               "of" => "module",
+               "name" => "Elixir.FxOpt.Codec",
+               "answer" => "absent",
+               "definers" => ["fx_opt"]
+             }
+           ]
 
     # Recorded for the portal's module index and client 0.9 (round 3, R2-1).
     assert verdict.observations["declared_absent"] == [
@@ -539,8 +575,12 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
   # optional, with `targets: [:rpi4]`, which Hex metadata does not keep. A
   # host build lacks it, but Mix still makes it a child of fx_probe wherever
   # it is present, so the client's closure check does not tell the two
-  # apart: its module's probe refuses.
-  test "a probe of an absent non-optional declared dependency's module refuses",
+  # apart. S10: its module's probe is recorded as one nothing in the build
+  # defines. Client 0.9 reads the sources of every dep Mix loads in the
+  # project: on a target that brings fx_tgt in, fx_tgt defines the module
+  # and the build misses; on the host, where Mix leaves fx_tgt out, the
+  # user's own compile finds nothing either.
+  test "a probe of an absent non-optional declared dependency's module is recorded",
        %{tmp_dir: dir} do
     home = Path.join(dir, "hex")
 
@@ -574,14 +614,24 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     traced = TracerFixtures.trace(proj, ["fx_probe"])
     assert {:ok, 0} = traced.result, traced.log
 
-    assert %{status: :skip, reason: reason} =
+    assert %{status: :pass, compile_inputs: inputs, observations: obs} =
              TracerFixtures.judge(proj, "fx_probe", traced, [],
                releases: %{app => release},
                hex_home: home
              )
 
-    assert reason ==
-             "compile-time probe of a dependency outside the closure: Elixir.FxTgt.Mod via Code.ensure_loaded?/1"
+    assert inputs == [
+             %{
+               "kind" => "probe",
+               "of" => "module",
+               "name" => "Elixir.FxTgt.Mod",
+               "answer" => "absent",
+               "definers" => []
+             }
+           ]
+
+    # No declaration holds for it: it is no declared-absent record.
+    assert obs["declared_absent"] == []
   end
 
   # A closure dependency's module can be found the same way pruned or not;
@@ -812,13 +862,20 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
 
   # Whether a module is loaded now: untraced and pruned, nothing loads
   # mnesia; under Mix.install another compile may have.
-  test "a loaded-now probe of an OTP application the package does not list is refused",
+  # S10: where mnesia is installed nowhere, it is loaded nowhere either:
+  # recorded, as a path probe is.
+  test "a loaded-now probe of an OTP application the package does not list is recorded",
        %{tmp_dir: dir} do
     proj = probe_fixture(dir, [], "function_exported?(:mnesia, :start, 0)")
     traced = TracerFixtures.trace(proj, ["fx_probe"], mode: :host)
     assert {:ok, 0} = traced.result, traced.log
 
-    assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_probe", traced)
+    assert %{status: :pass, compile_inputs: [@mnesia]} =
+             TracerFixtures.judge(proj, "fx_probe", traced)
+
+    assert %{status: :skip, reason: reason} =
+             TracerFixtures.judge(proj, "fx_probe", traced, [], target: "rpi4")
+
     assert reason == @refusal <> "mnesia via erlang:function_exported/3"
   end
 
@@ -851,9 +908,11 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert reason == @refusal <> "mnesia via Code.ensure_loaded?/1 in mix.exs"
   end
 
-  # A closure dependency's probe is a refusal in its window, which taints
-  # every package that depends on it (R3), as any refusal there does.
-  test "a closure dependency's probe taints the package", %{tmp_dir: dir} do
+  # S10: a closure dependency's recorded probe taints nothing: the package's
+  # build carries it, as compile inputs are the closure's. A refusal there
+  # still taints every package that depends on it (R3), and the firmware
+  # trace refuses this one.
+  test "a closure dependency's probe is the package's input", %{tmp_dir: dir} do
     proj =
       TracerFixtures.project(dir, ["fx_top"], %{
         "fx_top" => %{
@@ -871,10 +930,14 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     traced = TracerFixtures.trace(proj, ["fx_top"])
     assert {:ok, 0} = traced.result, traced.log
 
-    assert %{status: :skip, reason: reason} = TracerFixtures.judge(proj, "fx_top", traced)
+    assert %{status: :pass, compile_inputs: [@mnesia], observations: %{"taint" => taint}} =
+             TracerFixtures.judge(proj, "fx_top", traced)
 
-    assert reason ==
-             "closure dependency observed the host: fx_probe (" <>
-               @refusal <> "mnesia via Code.ensure_loaded?/1)"
+    assert taint == %{}
+
+    assert %{status: :skip, reason: reason} =
+             TracerFixtures.judge(proj, "fx_top", traced, [], target: "rpi4")
+
+    assert reason == @refusal <> "mnesia via Code.ensure_loaded?/1"
   end
 end

@@ -185,19 +185,22 @@ defmodule NccWorker.Tracer.FixturesForeignPrivTest do
       )
 
   # kino 0.19.1's own compile probes Nx.Heatmap, of nx, an optional
-  # dependency this closure lacks: that taints every package with kino in
-  # its closure (fix/otp-app-probe round 1, F3). Its asset writes are
-  # accepted all the same, which is what this test shows.
-  @nx_probe "compile-time probe of a dependency outside the closure: Elixir.Nx.Heatmap via " <>
-              "Code.ensure_loaded?/1"
-
+  # dependency this closure lacks (fix/otp-app-probe round 1, F3). That
+  # tainted every package with kino in its closure until S10 recorded it.
+  # S10: kino's probe of `Nx.Heatmap`, which nothing in the build defines,
+  # is a compile input client 0.9 checks, so kino taints nothing.
   test "a non-writer with kino in its closure: kino's own writes accepted", ctx do
     v = ctx.verdicts["fx_plain"]
+    assert %{status: :pass, compile_inputs: inputs} = v, log(ctx, "fx_plain")
 
-    assert %{status: :skip, reason: "closure dependency observed the host: kino (" <> rest} = v,
-           log(ctx, "fx_plain")
+    assert %{
+             "kind" => "probe",
+             "of" => "module",
+             "name" => "Elixir.Nx.Heatmap",
+             "answer" => "absent",
+             "definers" => []
+           } in inputs
 
-    assert rest == @nx_probe <> ")"
     assert v.observations["trace_stats"]["foreign_priv"] == "on"
     refute "built outside the trace: kino" in v.observations["problems"]
 
@@ -210,7 +213,7 @@ defmodule NccWorker.Tracer.FixturesForeignPrivTest do
 
     assert "rm_rf" in calls and "mkdir_p" in calls
     assert length(v.observations["foreign_priv"]) == 50
-    assert v.observations["taint"] == %{"kino" => @nx_probe}
+    assert v.observations["taint"] == %{}
     no_read_refusals(v)
   end
 

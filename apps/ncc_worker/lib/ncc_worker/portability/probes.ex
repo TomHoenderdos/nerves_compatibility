@@ -558,7 +558,7 @@ defmodule NccWorker.Portability.Probes do
       # S10: nothing in the build defines it, so the builder's answer is
       # "absent"; client 0.9 checks the user's project can supply it nowhere.
       Context.dep?(ctx, owner) ->
-        {:observe, "probe_inputs", module_input(module, event)}
+        {:observe, "probe_inputs", module_input(module, ctx, event)}
 
       true ->
         {:refuse, dependency(module, event)}
@@ -628,11 +628,17 @@ defmodule NccWorker.Portability.Probes do
   # `refusal` is what it refused as before: a firmware target's trace, which
   # no client can check against a project, refuses with it
   # (`NccWorker.Portability`), and observations never publish it.
-  defp module_input(module, event) do
+  # The definers the worker knows: every declared package that defines the
+  # module, optional or not, and its application (R2-3's target-only one
+  # included); the portal adds the module index's at ingest.
+  defp module_input(module, ctx, event) do
+    declared = Map.get(ctx.declared.owners, module, [])
+    apps = Enum.map(declared, &Map.get(Map.get(ctx.declared, :packages, %{}), &1, &1))
+
     %{
       "of" => "module",
       "name" => module,
-      "definers" => [],
+      "definers" => (declared ++ apps) |> Enum.uniq() |> Enum.sort(),
       "via" => via(event),
       "refusal" => dependency(module, event)
     }
@@ -654,8 +660,21 @@ defmodule NccWorker.Portability.Probes do
   end
 
   # On no closure application's path: not the package's closure, nor what
-  # any of them lists, transitively.
-  defp off_every_path?(app, ctx), do: app not in path_of(ctx, ctx.package)
+  # any of them lists, transitively. And no Elixir application (eex):
+  # installed wherever Elixir is, so no client could take the build.
+  defp off_every_path?(app, ctx),
+    do: app not in path_of(ctx, ctx.package) and not elixir_app?(app)
+
+  defp elixir_app?(app) do
+    with dir when is_list(dir) <- :code.lib_dir(String.to_existing_atom(app)),
+         elixir when is_list(elixir) <- :code.lib_dir(:elixir) do
+      String.starts_with?(List.to_string(dir), Path.dirname(List.to_string(elixir)) <> "/")
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
 
   # Round 3, R2-1: a probe of a declared-absent dependency's module passes
   # here but is recorded (`compile_observations.declared_absent`): another

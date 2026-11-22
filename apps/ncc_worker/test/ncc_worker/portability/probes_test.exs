@@ -460,6 +460,17 @@ defmodule NccWorker.Portability.ProbesTest do
       end
     end
 
+    # eex ships with Elixir: installed wherever Elixir is, so no client could
+    # take a build that records it. Refused as before.
+    test "of an Elixir application is refused", %{tmp_dir: dir} do
+      c = ctx(dir, %{"pkg" => ["kernel"]})
+
+      assert Probes.decide(otp("Elixir.EEx", "eex"), c, "pkg") ==
+               {:refuse,
+                "compile-time probe of an OTP application outside the closure: " <>
+                  "eex via Code.ensure_loaded?/1"}
+    end
+
     # Another closure application lists wx: its compile may have loaded wx's
     # modules before the owner's probe, so the builder's own answer is not
     # known.
@@ -1100,8 +1111,9 @@ defmodule NccWorker.Portability.ProbesTest do
                {:observe, "declared_absent", absent}
 
       # Declared by a dependency outside the owner's closure: no declaration
-      # holds, and the module is recorded as one nothing in the build defines.
-      assert {:observe, "probe_inputs", %{"name" => "Elixir.Poison", "definers" => []}} =
+      # holds, and the module is recorded as one nothing in the build defines,
+      # its declared definer and that one's app named.
+      assert {:observe, "probe_inputs", %{"name" => "Elixir.Poison", "definers" => ["poison"]}} =
                Probes.decide(hex("Elixir.Poison"), c, "pkg")
 
       assert {:observe, "probe_inputs", %{"name" => "Elixir.Jason.Encoder"}} =
