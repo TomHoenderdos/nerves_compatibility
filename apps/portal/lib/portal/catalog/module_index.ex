@@ -163,27 +163,93 @@ defmodule Portal.Catalog.ModuleIndex do
   `compile_observations.declared_absent`) and whose lock names `locked`
   (its keys: application names), or `nil`. A module item refuses when an
   indexed package with at least `min_recent/0` recent downloads defines the
-  module and neither the item's `declared` packages, its `declared_apps`
-  nor `locked` name the package or its application; any item while the
-  index is not complete; a `truncated` item always.
+  module and neither the item's `declared` packages, its `declared_apps`,
+  `locked` nor the `definers` of a module `probe` compile input of the same
+  module (`inputs`, S10) name the package or its application; any item
+  while the index is not complete; a `truncated` item always. Each module
+  `probe` input is checked the same way against its own `definers`, so a
+  served one recorded before the index showed a definer collides
+  (`recheck/1`).
   """
-  @spec refusal([map()] | nil, [String.t()]) :: String.t() | nil
-  def refusal(items, locked) when is_list(items) and items != [] do
-    complete = complete?()
-    Enum.find_value(items, &item_refusal(&1, MapSet.new(locked), complete))
+  @spec refusal([map()] | nil, [String.t()], [map()] | nil) :: String.t() | nil
+  def refusal(items, locked, inputs \\ nil) do
+    probes = module_probes(inputs)
+    records = if(is_list(items), do: items, else: []) ++ Enum.map(probes, &probe_record/1)
+
+    if records == [] do
+      nil
+    else
+      complete = complete?()
+      covered = Map.new(probes, &{&1["name"], &1["definers"]})
+      Enum.find_value(records, &item_refusal(&1, MapSet.new(locked), complete, covered))
+    end
   end
 
-  def refusal(_items, _locked), do: nil
+  @doc """
+  S10: `inputs` (a build's `compile_inputs`) with each module `probe` item's
+  `definers` grown by every indexed package with at least `min_recent/0`
+  recent downloads that defines the module, and that package's
+  application, sorted and each once: what client 0.9 checks its project
+  for. `{:refuse, reason}` when there is such an item and the index is not
+  complete, as a declared-absent record refuses then. Anything that is not
+  a list, or holds no module probe, comes back as it is.
+  """
+  @spec settle_inputs(term()) :: {:ok, term()} | {:refuse, String.t()}
+  def settle_inputs(inputs) do
+    case module_probes(inputs) do
+      [] ->
+        {:ok, inputs}
 
-  defp item_refusal(%{"kind" => "truncated"}, _locked, _complete),
+      [first | _] ->
+        if complete?(),
+          do: {:ok, Enum.map(inputs, &settle_input/1)},
+          else: {:refuse, reason(first["name"], "a probe", "module index not complete")}
+    end
+  end
+
+  defp settle_input(%{"kind" => "probe", "of" => "module", "name" => module} = item)
+       when is_binary(module) do
+    found =
+      for {package, app} <- popular_definers(module), n <- [package, app], is_binary(n), do: n
+
+    %{item | "definers" => (List.wrap(item["definers"]) ++ found) |> Enum.uniq() |> Enum.sort()}
+  end
+
+  defp settle_input(item), do: item
+
+  defp module_probes(inputs) when is_list(inputs) do
+    for %{"kind" => "probe", "of" => "module", "name" => name} = item <- inputs,
+        is_binary(name),
+        do: Map.put(item, "definers", List.wrap(item["definers"]))
+  end
+
+  defp module_probes(_inputs), do: []
+
+  # A module probe input, checked as a declared-absent record whose definers
+  # are named: a popular definer it does not name collides (it was recorded
+  # before the index showed that package).
+  defp probe_record(item),
+    do: %{
+      "kind" => "module_absent",
+      "module" => item["name"],
+      "declared" => item["definers"],
+      "declared_apps" => []
+    }
+
+  defp item_refusal(%{"kind" => "truncated"}, _locked, _complete, _covered),
     do: Compatibility.Portability.dependency_probe() <> "too many declared-absent probes recorded"
 
-  defp item_refusal(%{"kind" => "module_absent", "module" => module} = item, locked, complete)
+  defp item_refusal(
+         %{"kind" => "module_absent", "module" => module} = item,
+         locked,
+         complete,
+         covered
+       )
        when is_binary(module) do
     via = if is_binary(item["via"]), do: item["via"], else: "a probe"
 
     named =
-      [item["declared"], item["declared_apps"]]
+      [item["declared"], item["declared_apps"], Map.get(covered, module)]
       |> Enum.flat_map(&List.wrap/1)
       |> MapSet.new()
       |> MapSet.union(locked)
@@ -206,7 +272,7 @@ defmodule Portal.Catalog.ModuleIndex do
     end
   end
 
-  defp item_refusal(_item, _locked, _complete),
+  defp item_refusal(_item, _locked, _complete, _covered),
     do: Compatibility.Portability.dependency_probe() <> "unreadable declared-absent probe record"
 
   defp reason(module, via, why),
@@ -673,28 +739,40 @@ defmodule Portal.Catalog.ModuleIndex do
   # `{kind, table, served rows with a record (id, records, lock), revoked-at
   # column, reason column}`; a `pure_elixir` result keeps its record in a
   # column of its own (round 6, R5-6).
-  @record_where "jsonb_typeof(RECORDS) = 'array' AND jsonb_array_length(RECORDS) > 0"
+  # S10: a row whose `compile_inputs` hold a module probe is checked too.
+  @record_where "(jsonb_typeof(RECORDS) = 'array' AND jsonb_array_length(RECORDS) > 0) OR " <>
+                  "EXISTS (SELECT 1 FROM unnest(INPUTS) i " <>
+                  "WHERE i->>'kind' = 'probe' AND i->>'of' = 'module')"
   @recheck_kinds [
     {"toolchain_build", "catalog_toolchain_builds",
-     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM catalog_toolchain_builds t " <>
-       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND " <>
-       String.replace(@record_where, "RECORDS", "t.compile_observations->'declared_absent'"),
-     "revoked_at", "revoked_reason"},
+     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock, t.compile_inputs " <>
+       "FROM catalog_toolchain_builds t " <>
+       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND (" <>
+       (@record_where
+        |> String.replace("RECORDS", "t.compile_observations->'declared_absent'")
+        |> String.replace("INPUTS", "t.compile_inputs")) <> ")", "revoked_at", "revoked_reason"},
     {"pinned_build", "catalog_pinned_builds",
-     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM catalog_pinned_builds t " <>
-       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND " <>
-       String.replace(@record_where, "RECORDS", "t.compile_observations->'declared_absent'"),
-     "revoked_at", "revoked_reason"},
+     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock, t.compile_inputs " <>
+       "FROM catalog_pinned_builds t " <>
+       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND (" <>
+       (@record_where
+        |> String.replace("RECORDS", "t.compile_observations->'declared_absent'")
+        |> String.replace("INPUTS", "t.compile_inputs")) <> ")", "revoked_at", "revoked_reason"},
     {"host_native_build", "catalog_host_native_builds",
-     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock FROM catalog_host_native_builds t " <>
-       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND " <>
-       String.replace(@record_where, "RECORDS", "t.compile_observations->'declared_absent'"),
-     "revoked_at", nil},
+     "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock, t.compile_inputs " <>
+       "FROM catalog_host_native_builds t " <>
+       "WHERE t.revoked_at IS NULL AND t.status = 'pass' AND (" <>
+       (@record_where
+        |> String.replace("RECORDS", "t.compile_observations->'declared_absent'")
+        |> String.replace("INPUTS", "t.compile_inputs")) <> ")", "revoked_at", nil},
     {"system_result", "catalog_system_results",
-     "SELECT t.id, t.declared_absent, coalesce(t.deps_lock, r.deps_lock) FROM catalog_system_results t " <>
+     "SELECT t.id, t.declared_absent, coalesce(t.deps_lock, r.deps_lock), t.compile_inputs " <>
+       "FROM catalog_system_results t " <>
        "JOIN catalog_runs r ON r.id = t.run_id " <>
-       "WHERE t.unpublished_at IS NULL AND t.status = 'pass' AND t.system_pkg = 'pure_elixir' AND " <>
-       String.replace(@record_where, "RECORDS", "t.declared_absent"), "unpublished_at",
+       "WHERE t.unpublished_at IS NULL AND t.status = 'pass' AND t.system_pkg = 'pure_elixir' AND (" <>
+       (@record_where
+        |> String.replace("RECORDS", "t.declared_absent")
+        |> String.replace("INPUTS", "t.compile_inputs")) <> ")", "unpublished_at",
      "unpublished_reason"}
   ]
 
@@ -716,8 +794,8 @@ defmodule Portal.Catalog.ModuleIndex do
     if complete?() do
       found =
         for {kind, _table, select, _at, _reason} <- @recheck_kinds,
-            [id, items, lock] <- served_with_records(select),
-            refusal = refusal(items, lock_keys(lock)),
+            [id, items, lock, inputs] <- served_with_records(select),
+            refusal = refusal(items, lock_keys(lock), inputs),
             refusal != nil,
             do: {kind, Ecto.UUID.load!(id), refusal}
 

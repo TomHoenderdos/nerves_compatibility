@@ -520,4 +520,72 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
     assert ModuleIndex.refusal([%{amqp | "declared_apps" => ["amqp19"]}], ["amqp"]) == nil
   end
+
+  # S10: a module probe input carries every popular definer the index
+  # shows, and its application, so client 0.9 can check its project for
+  # them. Ingest refuses one while the index is not complete.
+  describe "probe inputs" do
+    defp probe(module, definers),
+      do: %{
+        "kind" => "probe",
+        "of" => "module",
+        "name" => module,
+        "answer" => "absent",
+        "definers" => definers
+      }
+
+    @app_probe %{"kind" => "probe", "of" => "app", "name" => "poison", "answer" => "absent"}
+
+    test "settle_inputs adds every popular definer and its app, on a complete index",
+         %{opts: opts} do
+      env = %{"kind" => "env_all"}
+
+      assert {:refuse, why} = ModuleIndex.settle_inputs([probe("Elixir.Money", [])])
+
+      assert why ==
+               "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
+                 "a probe (module index not complete)"
+
+      # Nothing to settle needs no index.
+      assert ModuleIndex.settle_inputs([@app_probe, env]) == {:ok, [@app_probe, env]}
+      assert ModuleIndex.settle_inputs(nil) == {:ok, nil}
+      assert ModuleIndex.settle_inputs(:malformed) == {:ok, :malformed}
+
+      assert %{complete: true} = ModuleIndex.refresh(opts)
+
+      assert {:ok, [settled, @app_probe]} =
+               ModuleIndex.settle_inputs([probe("Elixir.Money", ["ex_money"]), @app_probe])
+
+      assert settled == probe("Elixir.Money", ["ex_money", "money"])
+
+      # amqp's application is amqp; money_tiny is below the threshold; a
+      # module no indexed package defines keeps what the worker found.
+      assert {:ok, [%{"definers" => ["amqp"]}]} =
+               ModuleIndex.settle_inputs([probe("Elixir.AMQP", [])])
+
+      assert {:ok, [%{"definers" => ["jason"]}]} =
+               ModuleIndex.settle_inputs([probe("Elixir.Poison", ["jason"])])
+    end
+
+    test "a collision a probe input names is no refusal; a stale input is one", %{opts: opts} do
+      assert %{complete: true} = ModuleIndex.refresh(opts)
+      named = probe("Elixir.Money", ["ex_money", "money"])
+
+      assert ModuleIndex.refusal([money()], ["ecto"], [named]) == nil
+      assert ModuleIndex.refusal([], [], [named]) == nil
+      assert ModuleIndex.refusal(nil, [], [@app_probe, named]) == nil
+
+      assert ModuleIndex.refusal([money()], [], [probe("Elixir.Money", ["ex_money"])]) =~
+               "also defined by money"
+
+      # A probe input alone, recorded before money was indexed.
+      assert ModuleIndex.refusal([], [], [probe("Elixir.Money", ["ex_money"])]) ==
+               "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
+                 "a probe (also defined by money)"
+
+      # Another module's input covers nothing.
+      assert ModuleIndex.refusal([money()], [], [probe("Elixir.Jason", ["money"])]) =~
+               "also defined by money"
+    end
+  end
 end

@@ -121,6 +121,45 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
     assert revoked(colliding) == {false, nil}
   end
 
+  # S10: a served row whose module probe input was recorded before the index
+  # showed a popular definer is withheld like a colliding record; one whose
+  # input names every definer stays.
+  test "a served probe input that misses a popular definer is withheld", %{opts: opts} do
+    probe = fn definers ->
+      %{
+        "kind" => "probe",
+        "of" => "module",
+        "name" => "Elixir.Money",
+        "answer" => "absent",
+        "definers" => definers
+      }
+    end
+
+    stale = served_with_inputs!("stale_probe", [probe.(["ex_money"])])
+    named = served_with_inputs!("named_probe", [probe.(["ex_money", "money"])])
+
+    covered =
+      served!("covered_record", %{"declared_absent" => [@money]})
+      |> tap(&set_inputs!(&1, [probe.(["ex_money", "money"])]))
+
+    assert %{complete: true, withheld: 1} = ModuleIndex.refresh(opts)
+    assert {true, _} = revoked(stale)
+    assert revoked(named) == {false, nil}
+    assert revoked(covered) == {false, nil}
+    # The two still served, each read for its input.
+    assert %{checked: 2, withheld: 0} = ModuleIndex.recheck(dry_run: true)
+  end
+
+  defp served_with_inputs!(name, inputs),
+    do: name |> served!(%{}) |> tap(&set_inputs!(&1, inputs))
+
+  defp set_inputs!(id, inputs),
+    do:
+      Repo.query!("UPDATE catalog_toolchain_builds SET compile_inputs = $2 WHERE id = $1", [
+        id,
+        inputs
+      ])
+
   # Round 6, R5-5: a build refused only because the index was not complete
   # is no final skip: after each complete run its toolchain build is queued
   # again, once.
