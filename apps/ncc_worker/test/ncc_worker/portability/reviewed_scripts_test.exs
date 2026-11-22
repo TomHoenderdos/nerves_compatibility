@@ -97,6 +97,12 @@ defmodule NccWorker.Portability.ReviewedScriptsTest do
     refute ReviewedScripts.reviewed?("gproc", "1.2.0", nil)
   end
 
+  # Review R11: `HexCache.package_tarball/4` takes the lock's checksum in
+  # either case, so the table does too.
+  test "the checksum in upper case is the same checksum" do
+    assert ReviewedScripts.reviewed?("gproc", "1.2.0", String.upcase(@gproc_sum))
+  end
+
   test "every entry is an outer checksum of 64 hex digits" do
     for {{name, version}, sum} <- ReviewedScripts.table() do
       assert is_binary(name) and is_binary(version)

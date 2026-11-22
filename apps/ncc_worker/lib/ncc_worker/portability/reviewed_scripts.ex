@@ -102,11 +102,12 @@ defmodule NccWorker.Portability.ReviewedScripts do
 
   @doc """
   Whether `name` `version` with this outer checksum (the lock's, which the
-  verified tarball matched) is a reviewed release.
+  verified tarball matched, in either case as `HexCache.package_tarball/4`
+  takes it; review R11) is a reviewed release.
   """
   @spec reviewed?(String.t(), String.t(), String.t() | nil) :: boolean()
   def reviewed?(name, version, checksum) when is_binary(checksum),
-    do: Map.get(table(), {name, version}) == checksum
+    do: Map.get(table(), {name, version}) == String.downcase(checksum)
 
   def reviewed?(_name, _version, _checksum), do: false
 
