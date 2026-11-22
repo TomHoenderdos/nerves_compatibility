@@ -11,7 +11,14 @@ defmodule NccWorker.Portability.ReviewedScripts do
   told apart by release (the trace names no script), so one release that is
   not on the list refuses the read. Which releases are scripted at all comes
   from the tarball's member table (`script_members/1`; review N5: an
-  in-memory extract drops a link member). Nothing here runs a script.
+  in-memory extract drops a link member). The table names members, not
+  every directory a path implies: a `rebar.config.script/a` member with no
+  `rebar.config.script` entry of its own reads as no script here, and it is
+  the check of the unpacked tree (`NccWorker.Portability.script_releases/1`,
+  an `lstat` of `deps/<app>/rebar.config.script`, which then finds a
+  directory) that makes that release unverified (review R10). Mix's
+  evaluation of a directory fails and keeps `rebar.config` anyway. Nothing
+  here runs a script.
 
   Each entry was read whole. What a Mix user's plain arguments can reach
   (`[<install>/bin/mix, Task | Args]`, `["--no-halt", "+iex", "-S", "mix" |

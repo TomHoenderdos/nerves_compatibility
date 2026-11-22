@@ -48,7 +48,11 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
           "rebar.config.script" => {:symlink, "real.script"}
         }),
         # A script on disk its tarball does not hold.
-        release(home, "on_disk", %{})
+        release(home, "on_disk", %{}),
+        # Review R10: a member under `rebar.config.script/`, with no entry of
+        # its own: no script in the table; the unpacked tree holds a
+        # directory there, which the on-disk check finds.
+        release(home, "prefix_dir", %{"rebar.config.script/a" => "x"})
       ])
       # A release whose tarball is not in the cache cannot be told.
       |> Map.put("gone", %{name: "gone", version: "1.0.0", checksum: String.duplicate("0", 64)})
@@ -58,6 +62,8 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
     deps_path = Path.join(dir, "deps")
     File.mkdir_p!(Path.join(deps_path, "on_disk"))
     File.write!(Path.join([deps_path, "on_disk", "rebar.config.script"]), "CONFIG.\n")
+    File.mkdir_p!(Path.join([deps_path, "prefix_dir", "rebar.config.script"]))
+    File.write!(Path.join([deps_path, "prefix_dir", "rebar.config.script", "a"]), "x")
 
     ctx = %Context{
       deps_path: deps_path,
@@ -89,6 +95,12 @@ defmodule NccWorker.Portability.ScriptedAppsTest do
                why: "a rebar.config.script on disk its tarball does not hold"
              },
              %{app: "outside", release: "outside 0.1.0", status: :unreviewed},
+             %{
+               app: "prefix_dir",
+               release: nil,
+               status: :unverified,
+               why: "a rebar.config.script on disk its tarball does not hold"
+             },
              %{app: "r3_dep", release: "r3_dep 0.1.0", status: :unreviewed},
              %{app: "unknown_dep", release: "unknown_dep 0.1.0", status: :unreviewed}
            ]

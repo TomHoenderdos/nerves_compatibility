@@ -75,6 +75,12 @@ defmodule NccWorker.Portability.ReviewedScriptsTest do
     assert {:unverified, "rebar.config.script is a symlink in its tarball"} =
              ReviewedScripts.script_members(tarball(dir, "dot", "0.1.0", dotted))
 
+    # Review R10: the table holds no entry for a directory a path implies.
+    assert {:ok, :none} =
+             ReviewedScripts.script_members(
+               tarball(dir, "prefix", "0.1.0", %{"rebar.config.script/a" => "x"})
+             )
+
     assert {:unverified, "tarball unreadable"} = ReviewedScripts.script_members("not a tarball")
   end
 
