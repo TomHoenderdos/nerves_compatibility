@@ -10,7 +10,7 @@
 # and linux/arm64 sha256:964e8f59abe64a837f66881aa7b1375cb2d0e05a42036c1939b81beee134565e.
 # To bump: `docker buildx imagetools inspect ghcr.io/nerves-project/nerves_system_br:<tag>`
 # and copy its top-level Digest.
-FROM ghcr.io/nerves-project/nerves_system_br:1.35.3@sha256:acc9bf8904678ff83b64a295064425f72ab6cd649cba363329cf066f05b4ddfb
+FROM ghcr.io/nerves-project/nerves_system_br:1.35.4@sha256:b26a78ab4752b6b5c4d1bf9b76bbdbdc5034ea6a9580cd0cd7ec27b324db2e88
 
 # Install Elixir from GitHub releases
 RUN wget https://repo.hex.pm/builds/elixir/v1.20.3-otp-29.zip && \
