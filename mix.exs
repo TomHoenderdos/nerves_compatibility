@@ -46,7 +46,7 @@ defmodule NervesCompatibility.MixProject do
     [
       {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:sobelow, "~> 0.15.0", only: [:dev, :test], runtime: false}
+      {:sobelow, "~> 0.19.0", only: [:dev, :test], runtime: false}
     ]
   end
 end
