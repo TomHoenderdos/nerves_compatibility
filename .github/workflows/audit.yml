@@ -30,7 +30,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Match the release container in ops/build-release.sh. The audit only
       # reads mix.lock, so the versions are not load-bearing for the result —
@@ -46,7 +46,7 @@ jobs:
       # runs on main restore only what runs on main saved. Keep it that way: a
       # pull_request_target or workflow_run trigger here would run pull request
       # code in main's scope and let it seed the deps this audit trusts.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             deps

@@ -17,7 +17,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1
         with:
@@ -26,7 +26,7 @@ jobs:
 
       # The same cache as audit.yml: a schedule run on main restores only
       # what runs on main saved.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             deps
