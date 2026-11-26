@@ -1115,10 +1115,14 @@ build fails as the reason it was not used:
       list of no such dependency outside the build's `deps` (and not the package itself); and the
       client's code path holds no `<name>.beam` and its VM has no such module loaded. A
       dependency's exact module list is that of its own served build that matches the project
-      by every rule here (the build's probe items left unread: such a build gives no list): the
-      beams of its `ebin` and its `build.defined_modules`. A dependency Mix loads that is no Hex
-      dependency (path or git, or a closure dependency switched to one with `override: true`), a
-      release with no matching build, or a build without `defined_modules` is `probe_unknown`.
+      by every rule here, that build's own probe items included, checked against the same
+      project (a cycle of such builds, or a chain deeper than eight, gives no list): the beams of
+      its `ebin` and its `build.defined_modules`. In a Mix project, a path or git dependency with
+      no manager (no `mix.exs`, `rebar.config` or `Makefile`), `compile: false`, and `app: false`
+      or no `.app` (`mix phx.new`'s `heroicons`) lists the beams on disk in its `ebin` dirs. Any
+      other dependency Mix loads that is no Hex dependency (path or git, or a closure dependency
+      switched to one with `override: true`), a release with no matching build, or a build
+      without `defined_modules` is `probe_unknown`.
       Else `probe_definer`, with the module and the dependency (or `code_path`) as its
       arguments. For an application: no dependency is that application, and no `<name>.app` is
       on the code path, under OTP's or Elixir's lib dir, or loaded; else `probe_definer`. For an
