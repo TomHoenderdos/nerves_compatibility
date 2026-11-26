@@ -39,9 +39,7 @@ defmodule Portal.Catalog.SystemGroups do
   defp br(system, releases) do
     with {:ok, list} when is_list(list) <- releases.(system),
          %{deps: deps} <- newest(list) do
-      Enum.find_value(deps, fn dep ->
-        if dep.package == "nerves_system_br", do: dep.requirement
-      end)
+      Enum.find_value(deps, &(&1.package == "nerves_system_br" && &1.requirement))
     else
       _ -> nil
     end

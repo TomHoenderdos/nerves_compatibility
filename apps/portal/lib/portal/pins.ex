@@ -215,9 +215,7 @@ defmodule Portal.Pins do
   defp at_release(entries, {name, _version}, release, hex) when is_binary(release) do
     with {:ok, releases} <- hex.releases(name, []),
          %{deps: deps} <- Enum.find(releases, &(&1.version == release)) do
-      requirement =
-        Enum.find_value(deps, fn dep -> if dep.package == "nerves", do: dep.requirement end)
-
+      requirement = Enum.find_value(deps, &(&1.package == "nerves" && &1.requirement))
       entry = entries[name]
 
       edges =

@@ -55,7 +55,9 @@ defmodule Portal.Pins.DeterministicTest do
       hex("nif", "1.0.0", "1", [{"elixir_make", "~> 0.6", false}], "[:make, :mix]") <>
         hex("elixir_make", "0.8.4", "2") <>
         hex("nerves", "1.11.0", "3") <>
-        hex("nerves_system_rpi4", "2.1.2", "9", [{"nerves", "~> 1.0", false}]) <>
+        hex("nerves_system_rpi4", "2.1.2", "9", [
+          {"nerves", "~> 1.11 or ~> 2.0 or ~> 2.0.0-dev", false}
+        ]) <>
         hex("nerves_system_br", "1.35.3", "8")
     )
   end
