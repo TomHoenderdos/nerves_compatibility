@@ -176,6 +176,36 @@ defmodule Portal.Workers.ClosureDriftFirmwareTest do
              Build.scope_args(name, "0.4.0", job.args)
   end
 
+  # Stream S11: one targets run resolves one lock, which holds one
+  # nerves_system_br, so systems whose newest releases want different ones
+  # are rebuilt in a targets run each, and each gets its newest release.
+  test "drifted targets whose newest releases want another nerves_system_br are queued apart" do
+    name = name()
+    world([name])
+
+    nerves2 = [{"nerves", "~> 1.11 or ~> 2.0 or ~> 2.0.0-dev"}]
+
+    Process.put(
+      {Portal.Test.FakeHexDeps, :releases},
+      Process.get({Portal.Test.FakeHexDeps, :releases})
+      |> Map.put("nerves_system_rpi4", [
+        release("2.2.2", nerves2 ++ [{"nerves_system_br", "1.35.4"}])
+      ])
+      |> Map.put("nerves_system_x86_64", [
+        release("1.35.2", nerves2 ++ [{"nerves_system_br", "1.35.3"}])
+      ])
+    )
+
+    run!(name, "0.4.0")
+
+    assert {:ok, %{firmware: %{enqueued: 1, drifted: 1, targets: 2}}} = ClosureDrift.run()
+
+    assert firmware_jobs() |> Enum.map(& &1.args["systems"]) |> Enum.sort() == [
+             ["nerves_system_rpi4"],
+             ["nerves_system_x86_64"]
+           ]
+  end
+
   # An older release's run built since is not the package's latest run
   # (`Portal.Catalog.LatestRun`), so it neither hides the newest release's
   # drifted targets nor is rebuilt itself.

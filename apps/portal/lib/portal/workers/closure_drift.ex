@@ -69,8 +69,11 @@ defmodule Portal.Workers.ClosureDrift do
   package's latest run of its newest release, with the same registry and
   Hex reads, most downloaded package first, `firmware_scan_limit` runs a
   page, reading on past pages whose runs are all current until the cap is
-  reached or the runs run out, and queues one forced targets
+  reached or the runs run out, and queues a forced targets
   build (`Portal.Workers.Build.scope_args/3`) of only the targets it names,
+  one per group of them whose systems' newest releases want the same
+  `nerves_system_br` (`Portal.Catalog.SystemGroups`: one lock holds one, so
+  a build of all of them would hold some at an older release), each
   through `Portal.Builders.Routing`, at priority 8: below a new release of a
   tracked package, above bulk sweeps. Its args carry `reason` and `drift`
   as above, a system bump naming the system as its `dep`. A package with a
@@ -112,6 +115,7 @@ defmodule Portal.Workers.ClosureDrift do
   alias Portal.Catalog.FirmwareDrift
   alias Portal.Catalog.FirmwareDrift.Attempts
   alias Portal.Catalog.Ingestion
+  alias Portal.Catalog.SystemGroups
   alias Portal.Catalog.ToolchainBuild, as: ToolchainRow
   alias Portal.Catalog.ToolchainBuild.EarlierBuilds
   alias Portal.Precompiled.SystemAbi
@@ -512,7 +516,12 @@ defmodule Portal.Workers.ClosureDrift do
 
         if context.dry_run?,
           do: acc,
-          else: Map.update!(acc, rebuild_firmware(run, targets, changes, fingerprint), &(&1 + 1))
+          else:
+            Map.update!(
+              acc,
+              rebuild_firmware(run, {targets, releases}, changes, fingerprint),
+              &(&1 + 1)
+            )
 
       :current ->
         acc
@@ -533,15 +542,32 @@ defmodule Portal.Workers.ClosureDrift do
   # queued yesterday at this priority may still be waiting. With nothing on
   # the way, an attempt on this same run with the same inputs landed no run,
   # and is not queued again until they change (`FirmwareDrift.Attempts`).
-  defp rebuild_firmware(run, targets, changes, fingerprint) do
+  defp rebuild_firmware(run, {targets, releases}, changes, fingerprint) do
     cond do
       firmware_pending?(run.package) -> :pending
       Attempts.failed?(run.run_id, fingerprint) -> :failed
-      true -> queue_firmware(run, targets, changes, fingerprint)
+      true -> queue_firmware(run, {targets, releases}, changes, fingerprint)
     end
   end
 
-  defp queue_firmware(run, targets, changes, fingerprint) do
+  # One targets build per group of systems whose newest releases want the
+  # same `nerves_system_br` (`Portal.Catalog.SystemGroups`): one lock holds
+  # one, so a build of them all would hold some of them back at an older
+  # release (stream S11). `:enqueued` when any group was queued.
+  defp queue_firmware(run, {targets, releases}, changes, fingerprint) do
+    statuses =
+      for group <- SystemGroups.split(targets, releases),
+          do: queue_group(run, group, changes)
+
+    if :enqueued in statuses do
+      :ok = Attempts.record(run, targets, fingerprint)
+      :enqueued
+    else
+      if :pending in statuses, do: :pending, else: :unknown
+    end
+  end
+
+  defp queue_group(run, targets, changes) do
     args = %{
       package: run.package,
       version: run.version,
@@ -557,7 +583,6 @@ defmodule Portal.Workers.ClosureDrift do
         :pending
 
       {:ok, _job} ->
-        :ok = Attempts.record(run, targets, fingerprint)
         :enqueued
 
       {:error, reason} ->
