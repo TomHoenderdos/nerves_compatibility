@@ -1742,6 +1742,7 @@ defmodule Portal.Catalog.Ingestion do
       declared: declared(build["declared"]),
       compile_env: compiled_env,
       compile_inputs: inputs,
+      defined_modules: defined_modules(status, build),
       file_manifest:
         if(relocation(status, build), do: nil, else: file_manifest(build["file_manifest"])),
       relocated_file_manifest:
@@ -1779,6 +1780,20 @@ defmodule Portal.Catalog.Ingestion do
 
   defp optional_deps(%{} = optional_deps), do: optional_deps
   defp optional_deps(_), do: nil
+
+  # S10 fix round 1: a pass build's in-memory modules, as the worker sorted
+  # them: strictly sorted (so each once), each a module name, at most 4,000.
+  # Anything else is no list, which a client reads as an unknown module set.
+  @max_defined_modules 4000
+
+  defp defined_modules(:pass, %{"defined_modules" => list})
+       when is_list(list) and length(list) <= @max_defined_modules do
+    if Enum.all?(list, &Compatibility.CompileInputs.module_name?/1) and
+         list == Enum.sort(Enum.uniq(list)),
+       do: list
+  end
+
+  defp defined_modules(_status, _build), do: nil
 
   # A pass build's foreign priv list and rule, as the host checked them
   # (`ToolchainForeignPriv`); none on any other status, a gate's skip

@@ -102,7 +102,8 @@ defmodule Portal.Catalog.ToolchainBuild do
     :manager,
     :compile_observations,
     :compile_env_rule,
-    :transient_attempts
+    :transient_attempts,
+    :defined_modules
   ]
 
   @transient_cap 5
@@ -399,6 +400,14 @@ defmodule Portal.Catalog.ToolchainBuild do
     # (`Compatibility.CompileInputs`); nil before they were recorded, or when
     # the build's list was malformed (then `compile_env` is nil too).
     attribute :compile_inputs, {:array, :map} do
+      public?(true)
+    end
+
+    # S10 fix round 1: the modules a passing build's compile defined outside
+    # its ebin (`NccWorker.Portability.DefinedModules`), sorted; nil when
+    # they cannot be told, or before they were recorded. With the ebin they
+    # are the package's exact module list, which format 2 serves.
+    attribute :defined_modules, {:array, :string} do
       public?(true)
     end
 

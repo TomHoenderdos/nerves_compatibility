@@ -45,6 +45,14 @@ defmodule PortalWeb.ApiSchemas.BuildInfoV2 do
               "made before they were recorded. A build with any item to check is listed " <>
               "under `builds_with_inputs`."
         },
+        defined_modules: %Schema{
+          type: :array,
+          items: %Schema{type: :string},
+          description:
+            "Optional (S10): the modules the build's compile defined outside its ebin, " <>
+              "sorted. With the entry's `ebin` names, the package's exact module list. " <>
+              "Absent when unknown."
+        },
         package_checksum: %Schema{
           type: :string,
           description: "The package's own outer Hex checksum."

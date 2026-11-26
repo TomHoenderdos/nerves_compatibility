@@ -47,7 +47,7 @@ defmodule Portal.PrecompiledFixtures do
   `:mode` (`33_188`), `:config_variant` (`"default"`, both the result's echo
   and the job's value), `:portability_rule`, `:rule1_reason`, `:declared`,
   `:manager`, `:judge_revision`, `:app_file` (an app name: the ebin also
-  lists `ebin/<app>.app`), `:compile_inputs` and
+  lists `ebin/<app>.app`), `:compile_inputs`, `:defined_modules` and
   `:compile_observations` (each absent from the result unless given), and `:variant` (the job's optional-deps variant and
   the result's echo of it; absent, a `with` build that echoes nothing).
   """
@@ -157,7 +157,8 @@ defmodule Portal.PrecompiledFixtures do
           :judge_revision,
           :compile_inputs,
           :relocation,
-          :compile_observations
+          :compile_observations,
+          :defined_modules
         ])
         |> Map.new(fn {k, v} -> {Atom.to_string(k), v} end)
       )

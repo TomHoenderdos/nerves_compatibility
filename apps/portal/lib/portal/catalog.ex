@@ -4437,6 +4437,7 @@ defmodule Portal.Catalog do
       |> put_declared(tb.declared)
       |> put_manager(tb.manager)
       |> put_inputs(tb.compile_inputs)
+      |> put_defined(tb.defined_modules)
 
     {tb.version, tb.finished_at, Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
   end
@@ -4472,6 +4473,13 @@ defmodule Portal.Catalog do
   # bytes it always did.
   defp put_inputs(build, nil), do: build
   defp put_inputs(build, inputs), do: Map.put(build, "compile_inputs", inputs)
+
+  # S10 fix round 1: the modules the build's compile defined outside its
+  # ebin; with the entry's `ebin` names, the package's exact module list,
+  # which client 0.10 reads for a dependency outside a probe build's
+  # closure. Left out while unknown (nil), which a client reads as unknown.
+  defp put_defined(build, nil), do: build
+  defp put_defined(build, modules), do: Map.put(build, "defined_modules", modules)
 
   # Format 2 only, each left out while unknown, so a build made before they
   # were recorded renders the bytes it always did: whether its priv holds ELF
@@ -4594,6 +4602,7 @@ defmodule Portal.Catalog do
       :manager,
       :compile_env,
       :compile_inputs,
+      :defined_modules,
       :compile_env_rule,
       :compile_env_run_id,
       :file_manifest,
