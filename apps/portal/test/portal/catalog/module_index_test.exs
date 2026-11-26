@@ -63,7 +63,9 @@ defmodule Portal.Catalog.ModuleIndexTest do
   defp sha(bytes), do: :sha256 |> :crypto.hash(bytes) |> Base.encode16(case: :lower)
 
   # money and ex_money define Money; amqp (app amqp) defines AMQP; jason
-  # defines Jason; money_tiny is below the threshold.
+  # defines Jason; money_tiny, below 1,000 recent downloads, defines Money
+  # too: since S10 round 3 every package is indexed, and only a record's
+  # refusal still counts popular definers alone.
   setup do
     tarballs = %{
       {"money", "1.14.0"} => tarball(%{"lib/money.ex" => "defmodule Money do\nend\n"}),
@@ -114,9 +116,9 @@ defmodule Portal.Catalog.ModuleIndexTest do
   test "a complete run indexes every candidate's latest release, and only then decides",
        %{opts: opts} do
     refute ModuleIndex.complete?()
-    assert %{indexed: 4, failed: 0, complete: true} = ModuleIndex.refresh(opts)
+    assert %{indexed: 5, failed: 0, complete: true} = ModuleIndex.refresh(opts)
     assert ModuleIndex.complete?()
-    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money", "money_tiny"]
 
     # bitcrowd_ecto declares ex_money; money also defines Money.
     assert ModuleIndex.refusal([money()], ["ecto"]) ==
@@ -142,9 +144,9 @@ defmodule Portal.Catalog.ModuleIndexTest do
            ).rows ==
              [[0]]
 
-    assert %{to_fetch: 4} = ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
-    assert %{indexed: 4, complete: true} = ModuleIndex.refresh(opts)
-    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
+    assert %{to_fetch: 5} = ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
+    assert %{indexed: 5, complete: true} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money", "money_tiny"]
     assert ModuleIndex.refusal([money()], ["ecto"]) =~ "also defined by money"
   end
 
@@ -165,7 +167,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
         _n, _v -> {:error, :hex_registry_unavailable}
       end)
 
-    assert %{indexed: 1, failed: 3, complete: false} = ModuleIndex.refresh(only_jason)
+    assert %{indexed: 1, failed: 4, complete: false} = ModuleIndex.refresh(only_jason)
     assert ModuleIndex.definers("Elixir.Jason") == ["jason"]
     refute ModuleIndex.complete?()
 
@@ -183,7 +185,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
     assert ModuleIndex.refusal([money()], []) =~ "module index not complete"
 
     # The next run fetches money and completes.
-    assert %{indexed: 1, unchanged: 3, complete: true} = ModuleIndex.refresh(opts)
+    assert %{indexed: 1, unchanged: 4, complete: true} = ModuleIndex.refresh(opts)
     assert ModuleIndex.refusal([money()], []) =~ "also defined by money"
   end
 
@@ -231,11 +233,11 @@ defmodule Portal.Catalog.ModuleIndexTest do
         outer_checksum: checksum
       )
 
-    assert %{to_fetch: 4, releases_to_fetch: 5} =
+    assert %{to_fetch: 5, releases_to_fetch: 6} =
              ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
 
-    assert %{indexed: 4, complete: true} = ModuleIndex.refresh(opts)
-    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
+    assert %{indexed: 5, complete: true} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money", "money_tiny"]
     assert ModuleIndex.definers("Elixir.MoneyNext") == ["money"]
     assert ModuleIndex.refusal([money()], ["ecto"]) =~ "also defined by money"
 
@@ -296,7 +298,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
         big_parse_bytes: 4_000
       )
 
-    assert %{indexed: 10, complete: true} = ModuleIndex.refresh(opts)
+    assert %{indexed: 11, complete: true} = ModuleIndex.refresh(opts)
     assert :counters.get(counter, 2) == 1
   end
 
@@ -309,23 +311,29 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
   # Round 6, R5-4: completeness is judged when the index is used, against
   # the current candidates and the releases the last run read.
-  test "a package that crosses 1,000 after a complete run makes the index incomplete",
-       %{opts: opts, latest: latest} do
-    Repo.query!("UPDATE catalog_packages SET hex_downloads_recent = 500 WHERE name = 'money'")
+  # S10 round 3: every catalog package is a candidate. One the catalog gains
+  # after a complete run is seen from the next run on (new ones arrive every
+  # day); that run indexes it and re-checks the served rows.
+  test "a package new to the catalog after a complete run is indexed by the next run",
+       %{opts: opts, latest: latest, tarballs: tarballs} do
     assert %{complete: true} = ModuleIndex.refresh(opts)
     assert ModuleIndex.complete?()
-    assert ModuleIndex.definers("Elixir.Money") == ["ex_money"]
 
-    # money crosses 1,000 (HexMetaRefresh): it is a candidate the index does
-    # not hold, so the index decides nothing until a run indexes it.
-    Repo.query!("UPDATE catalog_packages SET hex_downloads_recent = 398436 WHERE name = 'money'")
-    refute ModuleIndex.complete?()
-    assert ModuleIndex.refusal([money()], []) =~ "module index not complete"
+    packages!([{"money_new", "0.1.0", 3}])
+    assert ModuleIndex.complete?()
+    refute "money_new" in ModuleIndex.definers("Elixir.Money")
 
-    assert %{indexed: 1, complete: true} =
-             ModuleIndex.refresh(Keyword.put(opts, :registry, registry(latest)))
+    newer = tarball(%{"lib/m.ex" => "defmodule Money do\nend\n"})
+    tarballs = Map.put(tarballs, {"money_new", "0.1.0"}, newer)
 
-    assert ModuleIndex.refusal([money()], []) =~ "also defined by money"
+    opts = [
+      registry: registry(Map.put(latest, "money_new", "0.1.0")),
+      tarball: fn n, v -> Map.fetch(tarballs, {n, v}) end,
+      outer_checksum: fn n, v -> {:ok, sha(Map.fetch!(tarballs, {n, v}))} end
+    ]
+
+    assert %{indexed: 1, complete: true} = ModuleIndex.refresh(opts)
+    assert "money_new" in ModuleIndex.definers("Elixir.Money")
   end
 
   test "a new latest release makes the index incomplete until it is indexed",
@@ -365,26 +373,14 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
   test "a dry run counts what a run would fetch and writes nothing", %{opts: opts} do
     assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
-             %{
-               to_fetch: 4,
-               releases_to_fetch: 4,
-               unchanged: 0,
-               below_threshold: 1,
-               not_in_registry: 0
-             }
+             %{to_fetch: 5, releases_to_fetch: 5, unchanged: 0, not_in_registry: 0}
 
     refute ModuleIndex.complete?()
     assert %{runs: 0} = ModuleIndex.status()
     ModuleIndex.refresh(failing(opts, "amqp"))
 
     assert ModuleIndex.refresh(Keyword.put(opts, :dry_run, true)) ==
-             %{
-               to_fetch: 1,
-               releases_to_fetch: 1,
-               unchanged: 3,
-               below_threshold: 1,
-               not_in_registry: 0
-             }
+             %{to_fetch: 1, releases_to_fetch: 1, unchanged: 4, not_in_registry: 0}
   end
 
   test "at most 4 downloads at a time, whatever is asked", %{opts: opts, latest: latest} do
@@ -418,7 +414,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
       concurrency: 50
     ]
 
-    assert %{indexed: 14, failed: 0, complete: true} = ModuleIndex.refresh(opts)
+    assert %{indexed: 15, failed: 0, complete: true} = ModuleIndex.refresh(opts)
     assert :counters.get(counter, 2) in 2..4
   end
 
@@ -431,13 +427,13 @@ defmodule Portal.Catalog.ModuleIndexTest do
       n, v -> opts[:tarball].(n, v)
     end
 
-    assert %{indexed: 3, failed: 1, complete: false} =
+    assert %{indexed: 4, failed: 1, complete: false} =
              ModuleIndex.refresh(Keyword.put(opts, :tarball, crash))
 
-    assert ModuleIndex.definers("Elixir.Money") == ["money"]
-    assert %{to_fetch: 1, unchanged: 3} = ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
-    assert %{indexed: 1, unchanged: 3, complete: true} = ModuleIndex.refresh(opts)
-    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money"]
+    assert ModuleIndex.definers("Elixir.Money") == ["money", "money_tiny"]
+    assert %{to_fetch: 1, unchanged: 4} = ModuleIndex.refresh(Keyword.put(opts, :dry_run, true))
+    assert %{indexed: 1, unchanged: 4, complete: true} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money", "money_tiny"]
   end
 
   test "a newer latest release replaces a package's modules", %{opts: opts, latest: latest} do
@@ -456,8 +452,8 @@ defmodule Portal.Catalog.ModuleIndexTest do
       end
     ]
 
-    assert %{indexed: 1, unchanged: 3, complete: true} = ModuleIndex.refresh(opts)
-    assert ModuleIndex.definers("Elixir.Money") == ["ex_money"]
+    assert %{indexed: 1, unchanged: 4, complete: true} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.definers("Elixir.Money") == ["ex_money", "money_tiny"]
     assert ModuleIndex.definers("Elixir.MoneyTwo") == ["money"]
   end
 
@@ -470,8 +466,9 @@ defmodule Portal.Catalog.ModuleIndexTest do
       """
       INSERT INTO catalog_toolchain_builds
         (id, package_id, version, toolchain, builder_version, variant, config_variant, status,
-         file_manifest, inserted_at, updated_at)
-      VALUES (gen_random_uuid(), $1, '1.4.4', '1.20/29', 1, 'with', 'default', 'pass', $2, now(), now())
+         file_manifest, defined_modules, inserted_at, updated_at)
+      VALUES (gen_random_uuid(), $1, '1.4.4', '1.20/29', 1, 'with', 'default', 'pass', $2,
+              ARRAY['Elixir.Jason.InMemory'], now(), now())
       """,
       [
         Ecto.UUID.dump!(id),
@@ -503,6 +500,8 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
     assert %{complete: true} = ModuleIndex.refresh(opts)
     assert ModuleIndex.definers("Elixir.Jason.MacroMade") == ["jason"]
+    # S10 round 3: and what their compile defined outside the ebin.
+    assert ModuleIndex.definers("Elixir.Jason.InMemory") == ["jason"]
     assert ModuleIndex.definers("jason_lexer") == ["jason"]
     assert ModuleIndex.definers("jason") == []
   end
@@ -536,7 +535,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
     @app_probe %{"kind" => "probe", "of" => "app", "name" => "poison", "answer" => "absent"}
 
-    test "settle_inputs adds every popular definer and its app, on a complete index",
+    test "settle_inputs adds every definer and its app, on a complete index",
          %{opts: opts} do
       env = %{"kind" => "env_all"}
 
@@ -556,10 +555,11 @@ defmodule Portal.Catalog.ModuleIndexTest do
       assert {:ok, [settled, @app_probe]} =
                ModuleIndex.settle_inputs([probe("Elixir.Money", ["ex_money"]), @app_probe])
 
-      assert settled == probe("Elixir.Money", ["ex_money", "money"])
+      # S10 round 3: money_tiny too, below 1,000 recent downloads.
+      assert settled == probe("Elixir.Money", ["ex_money", "money", "money_tiny"])
 
-      # amqp's application is amqp; money_tiny is below the threshold; a
-      # module no indexed package defines keeps what the worker found.
+      # amqp's application is amqp; a module no indexed package defines
+      # keeps what the worker found.
       assert {:ok, [%{"definers" => ["amqp"]}]} =
                ModuleIndex.settle_inputs([probe("Elixir.AMQP", [])])
 
@@ -569,7 +569,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
     test "a collision a probe input names is no refusal; a stale input is one", %{opts: opts} do
       assert %{complete: true} = ModuleIndex.refresh(opts)
-      named = probe("Elixir.Money", ["ex_money", "money"])
+      named = probe("Elixir.Money", ["ex_money", "money", "money_tiny"])
 
       assert ModuleIndex.refusal([money()], ["ecto"], [named]) == nil
       assert ModuleIndex.refusal([], [], [named]) == nil
@@ -579,13 +579,89 @@ defmodule Portal.Catalog.ModuleIndexTest do
                "also defined by money"
 
       # A probe input alone, recorded before money was indexed.
-      assert ModuleIndex.refusal([], [], [probe("Elixir.Money", ["ex_money"])]) ==
+      assert ModuleIndex.refusal([], [], [probe("Elixir.Money", ["ex_money", "money_tiny"])]) ==
                "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
                  "a probe (also defined by money)"
+
+      # S10 round 3: client 0.10 trusts a probe input's definers, so one
+      # that misses even an unpopular definer collides; a record (for
+      # clients up to 0.9) still counts the popular ones alone.
+      assert ModuleIndex.refusal([], [], [probe("Elixir.Money", ["ex_money", "money"])]) =~
+               "also defined by money_tiny"
+
+      assert ModuleIndex.refusal([absent("Elixir.Money", ["ex_money", "money"])], []) == nil
 
       # Another module's input covers nothing.
       assert ModuleIndex.refusal([money()], [], [probe("Elixir.Jason", ["money"])]) =~
                "also defined by money"
+    end
+
+    # S10 round 3: the declared-optional-dependency rule's `declared`
+    # packages stay only where the index confirms each one defines the
+    # module, in its own namespace.
+    test "an input's declared packages stay only where the index confirms the gate",
+         %{opts: opts, latest: latest, tarballs: tarballs} do
+      ext =
+        tarball(%{
+          "lib/m.ex" =>
+            "defmodule Money do\nend\ndefmodule Money.Ext do\nend\ndefmodule Cldr.Money.Ext do\nend\n"
+        })
+
+      tarballs = Map.put(tarballs, {"money", "1.14.0"}, ext)
+
+      opts =
+        Keyword.merge(opts,
+          registry: registry(latest),
+          tarball: fn n, v -> Map.fetch(tarballs, {n, v}) end,
+          outer_checksum: fn n, v -> {:ok, sha(Map.fetch!(tarballs, {n, v}))} end
+        )
+
+      assert %{complete: true} = ModuleIndex.refresh(opts)
+      declared = &Map.put(probe(&1, &2), "declared", &3)
+
+      # money defines Money.Ext and its root Money: kept.
+      assert {:ok, [%{"declared" => ["money"], "definers" => ["money"]}]} =
+               ModuleIndex.settle_inputs([declared.("Elixir.Money.Ext", ["money"], ["money"])])
+
+      # money defines Cldr.Money.Ext, but not Cldr: not its namespace.
+      assert {:ok, [settled]} =
+               ModuleIndex.settle_inputs([
+                 declared.("Elixir.Cldr.Money.Ext", ["money"], ["money"])
+               ])
+
+      refute Map.has_key?(settled, "declared")
+
+      # jason does not define Money at all.
+      assert {:ok, [settled]} =
+               ModuleIndex.settle_inputs([declared.("Elixir.Money", ["jason"], ["jason"])])
+
+      refute Map.has_key?(settled, "declared")
+      assert settled["definers"] == ["ex_money", "jason", "money", "money_tiny"]
+
+      # An Erlang module in amqp's namespace (its app and `_`).
+      amqp = tarball(%{"src/amqp_conn.erl" => "-module(amqp_conn).\n"}, "amqp")
+      tarballs = Map.put(tarballs, {"amqp", "4.2.0"}, amqp)
+
+      opts =
+        Keyword.merge(opts,
+          registry: registry(Map.put(latest, "amqp", "4.2.0")),
+          tarball: fn n, v -> Map.fetch(tarballs, {n, v}) end,
+          outer_checksum: fn n, v -> {:ok, sha(Map.fetch!(tarballs, {n, v}))} end
+        )
+
+      assert %{complete: true} = ModuleIndex.refresh(opts)
+
+      assert {:ok, [%{"declared" => ["amqp"]}]} =
+               ModuleIndex.settle_inputs([declared.("amqp_conn", ["amqp"], ["amqp"])])
+    end
+
+    test "an input with more definers than the shape carries refuses", %{opts: opts} do
+      assert %{complete: true} = ModuleIndex.refresh(opts)
+      many = for i <- 1..65, do: %{module: "Elixir.Common", package: "p#{1000 + i}"}
+      Repo.insert_all("catalog_module_definers", many)
+
+      assert {:refuse, why} = ModuleIndex.settle_inputs([probe("Elixir.Common", [])])
+      assert why =~ "Elixir.Common via a probe (more than 64 definers)"
     end
   end
 end

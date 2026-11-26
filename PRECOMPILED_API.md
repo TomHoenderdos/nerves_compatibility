@@ -679,10 +679,18 @@ What it lists:
     (`Code.ensure_loaded?(Poison)`, `function_exported?/3`, `:code.which/1`), as its atom renders
     (`Elixir.Poison`, `cowboy_websocket`), and nothing in the build defines it. `definers` are the
     Hex package and application names known to define it, sorted, each once, at most 64: the
-    declared packages the judge found, and every package with 1,000 or more recent downloads the
-    portal's module index shows (`Portal.Catalog.ModuleIndex.settle_inputs/1`, at ingest; a build
-    with such an item is refused while the index is not complete, and a served one whose item misses
-    a definer the index later shows is withheld by the index's recheck).
+    declared packages the judge found, and every package the portal's module index shows, whatever
+    its downloads (S10 round 3: the index reads every Hex package's last and latest stable release,
+    and our passing builds' lists; `Portal.Catalog.ModuleIndex.settle_inputs/1`, at ingest; a build
+    with such an item is refused while the index is not complete or when the item would have more
+    than 64 definers, and a served one whose item misses a definer the index later shows is
+    withheld by the index's recheck). Optional `"declared": [package]` (S10 round 3, 1 to 8 names,
+    sorted, each a definer): the declared-optional-dependency rule. The module lies in the namespace
+    of a package that a closure member declares as an optional dependency: that package's own
+    tarball defines it, it defines the module's first segment (an Erlang module is its application
+    or starts with it and `_`), and the module is no protocol implementation (the worker's review
+    gate, `NccWorker.Portability.Declared.gate?/3`; the portal drops the key unless its index
+    confirms the first two).
   - `{"kind": "probe", "of": "app", "name", "answer": "absent"}`: the same for an application
     (`Application.spec/1,2`, `Application.load/1`, `:code.where_is_file/1` of its `.app`) that is no
     package of the build.
@@ -1117,7 +1125,11 @@ build fails as the reason it was not used:
       dependency's exact module list is that of its own served build that matches the project
       by every rule here, that build's own probe items included, checked against the same
       project (a cycle of such builds, or a chain deeper than eight, gives no list): the beams of
-      its `ebin` and its `build.defined_modules`. In a Mix project, a path or git dependency with
+      its `ebin` and its `build.defined_modules`. An item with `declared` needs no such list: it
+      holds when no dependency is in `definers`, the code path and the VM lack the module, and every
+      dependency is a Hex one (an inert one aside); its residual is a module another dependency
+      defines by a macro or at compile time, outside any tarball parse and any build list. In a Mix
+      project, a path or git dependency with
       no manager (no `mix.exs`, `rebar.config` or `Makefile`), `compile: false`, and `app: false`
       or no `.app` (`mix phx.new`'s `heroicons`) lists the beams on disk in its `ebin` dirs. Any
       other dependency Mix loads that is no Hex dependency (path or git, or a closure dependency

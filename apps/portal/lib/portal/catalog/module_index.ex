@@ -35,22 +35,38 @@ defmodule Portal.Catalog.ModuleIndex do
   lists it (round 6, R5-1), and the latest stable one when the last is a
   prerelease (final round, R6-1: Mix resolves the stable one by default),
   of every candidate
-  (`hex_downloads_recent >= min_recent/0`), its tarball checked against the
+  (every catalog package since S10 round 3; before, `hex_downloads_recent
+  >= min_recent/0`), its tarball checked against the
   registry's outer checksum, and takes the union of the modules its sources
   define (`Compatibility.HexModules`: literal definitions, leex and yecc
   files) and of the module names in our own passing builds' manifests of the
   package (R3-5b: modules a macro defines). A package already indexed at
   that release is confirmed without a fetch. The index is usable only when
-  it holds every current candidate at its latest release (`complete?/0`,
-  judged when it is used, round 6, R5-4). Until then (no run yet, a
-  candidate that crossed the threshold since the last run, a release not
-  fetched yet, a failed fetch or checksum, a tarball over the caps), every
-  recorded declared-absent probe refuses. A newer run supersedes an older
+  it holds every candidate of the last run at the release that run read
+  (`complete?/0`, judged when it is used, round 6, R5-4). Until then (no
+  run yet, a release not fetched yet, a failed fetch or checksum, a tarball
+  over the caps), every recorded declared-absent probe refuses. A newer run supersedes an older
   one, which stops at its next package.
 
   After a complete run the index re-checks every served row that carries a
   record and withholds (revokes, with a tag and an undo) any that now
   collides (`recheck/1`, R3-5a).
+
+  **Every package (S10 round 3).** The candidates are every package in the
+  catalog, not only the popular ones, at their last and latest stable
+  release, and the build lists are every passing toolchain and pinned host
+  build's ebin and `defined_modules`. A module `probe` compile input is
+  settled at ingest with every indexed definer (`settle_inputs/1`), which
+  client 0.10 trusts: a project holding any one misses. A declared-absent
+  record (for clients up to 0.9) still refuses only on a definer with at
+  least `min_recent/0` recent downloads. The declared-optional-dependency
+  rule (an input's `declared` packages) needs no module list of the user's
+  other dependencies, so its residual is exactly what this index cannot
+  see: a module that a package in the user's lock other than the declared
+  one defines by a macro or at compile time, outside any tarball parse
+  (also: in a release other than the last and latest stable ones this
+  index read) and outside any build list; and, until the next run and its
+  recheck, a package or release published since the last run's start.
   """
 
   alias Portal.Repo
@@ -77,16 +93,19 @@ defmodule Portal.Catalog.ModuleIndex do
   def max_concurrency, do: @max_concurrency
 
   @doc """
-  Whether the index holds, now, a successful entry for every current
-  candidate (`hex_downloads_recent >= min_recent/0` in the catalog as it is
-  now) at the releases the Hex registry listed at the last run's start: its
-  last version and, when that is a prerelease, its latest stable one too
-  (round 6, R5-4; final round, R6-1): the only state in which `refusal/2`
-  decides by the index.
-  A candidate the last run did not see (one that crossed the threshold
-  since), a release it did not index (a failed fetch, a run still going or
-  stopped before it) or no run at all makes it incomplete. A candidate the
-  registry did not list has no release to index and does not count.
+  Whether the index holds, now, a successful entry for every candidate the
+  last run started with (S10 round 3: every catalog package then) at the
+  releases the Hex registry listed at that run's start: its last version
+  and, when that is a prerelease, its latest stable one too (round 6, R5-4;
+  final round, R6-1): the only state in which `refusal/3` and
+  `settle_inputs/1` decide by the index. A release it did not index (a
+  failed fetch, a run still going or stopped before it) or no run at all
+  makes it incomplete. A candidate the registry did not list has no release
+  to index and does not count. A package or release published since that
+  run's start is not seen until the next run, which then re-checks the
+  served rows (`recheck/1`): with every Hex package a candidate, new ones
+  arrive every day, and counting them would leave the index incomplete
+  most of the time.
   """
   @spec complete?() :: boolean()
   def complete? do
@@ -95,16 +114,13 @@ defmodule Portal.Catalog.ModuleIndex do
         """
         SELECT EXISTS (SELECT 1 FROM catalog_module_index_runs)
            AND NOT EXISTS (
-             SELECT 1 FROM catalog_packages p
-             LEFT JOIN catalog_module_index_candidates c ON c.package = p.name
-             LEFT JOIN catalog_module_index_packages i ON i.package = p.name
-             WHERE coalesce(p.hex_downloads_recent, 0) >= $1
-               AND (c.package IS NULL
-                    OR (c.version IS NOT NULL
-                        AND (i.version IS DISTINCT FROM c.version
-                             OR i.stable IS DISTINCT FROM c.stable))))
+             SELECT 1 FROM catalog_module_index_candidates c
+             LEFT JOIN catalog_module_index_packages i ON i.package = c.package
+             WHERE c.version IS NOT NULL
+               AND (i.version IS DISTINCT FROM c.version
+                    OR i.stable IS DISTINCT FROM c.stable))
         """,
-        [@min_recent]
+        []
       )
 
     complete
@@ -167,14 +183,20 @@ defmodule Portal.Catalog.ModuleIndex do
   `locked` nor the `definers` of a module `probe` compile input of the same
   module (`inputs`, S10) name the package or its application; any item
   while the index is not complete; a `truncated` item always. Each module
-  `probe` input is checked the same way against its own `definers`, so a
-  served one recorded before the index showed a definer collides
-  (`recheck/1`).
+  `probe` input is checked the same way against its own `definers` and
+  every indexed definer, whatever its downloads (S10 round 3: client 0.10
+  trusts the input's definers), so a served one recorded before the index
+  showed a definer collides (`recheck/1`).
   """
   @spec refusal([map()] | nil, [String.t()], [map()] | nil) :: String.t() | nil
   def refusal(items, locked, inputs \\ nil) do
     probes = module_probes(inputs)
-    records = if(is_list(items), do: items, else: []) ++ Enum.map(probes, &probe_record/1)
+
+    # A record (for clients up to 0.9) collides with a popular definer, a
+    # probe input (client 0.10, which trusts its definers) with any one.
+    records =
+      Enum.map(if(is_list(items), do: items, else: []), &{&1, :popular}) ++
+        Enum.map(probes, &{probe_record(&1), :all})
 
     if records == [] do
       nil
@@ -187,12 +209,23 @@ defmodule Portal.Catalog.ModuleIndex do
 
   @doc """
   S10: `inputs` (a build's `compile_inputs`) with each module `probe` item's
-  `definers` grown by every indexed package with at least `min_recent/0`
-  recent downloads that defines the module, and that package's
-  application, sorted and each once: what client 0.10 checks its project
-  for. `{:refuse, reason}` when there is such an item and the index is not
-  complete, as a declared-absent record refuses then. Anything that is not
-  a list, or holds no module probe, comes back as it is.
+  `definers` grown by every indexed package that defines the module (S10
+  round 3: every Hex package's last and latest stable release, and our
+  builds' lists, whatever its downloads), and that package's application,
+  sorted and each once: what client 0.10 checks its project for.
+
+  An item's `declared` packages (the declared-optional-dependency rule,
+  which the worker's review gate set: `NccWorker.Portability.Declared.gate?/3`)
+  stay only when the index confirms the gate's two index-visible parts:
+  each one defines the module, and the module is in its namespace (it
+  defines the module's first segment; an Erlang module is its application
+  or starts with it and `_`). Otherwise the key is dropped and the item is
+  decided as any module probe, by every other dependency's module list.
+
+  `{:refuse, reason}` when there is a module item and the index is not
+  complete, as a declared-absent record refuses then, or when an item
+  would have more definers than the shared shape carries. Anything that is
+  not a list, or holds no module probe, comes back as it is.
   """
   @spec settle_inputs(term()) :: {:ok, term()} | {:refuse, String.t()}
   def settle_inputs(inputs) do
@@ -202,20 +235,61 @@ defmodule Portal.Catalog.ModuleIndex do
 
       [first | _] ->
         if complete?(),
-          do: {:ok, Enum.map(inputs, &settle_input/1)},
+          do: settled(Enum.map(inputs, &settle_input/1)),
           else: {:refuse, reason(first["name"], "a probe", "module index not complete")}
+    end
+  end
+
+  defp settled(inputs) do
+    max = Compatibility.CompileInputs.max_probe_items()
+
+    case Enum.find(module_probes(inputs), &(length(&1["definers"]) > max)) do
+      nil -> {:ok, inputs}
+      item -> {:refuse, reason(item["name"], "a probe", "more than #{max} definers")}
     end
   end
 
   defp settle_input(%{"kind" => "probe", "of" => "module", "name" => module} = item)
        when is_binary(module) do
-    found =
-      for {package, app} <- popular_definers(module), n <- [package, app], is_binary(n), do: n
+    definers = all_definers(module)
+    found = for {package, app} <- definers, n <- [package, app], is_binary(n), do: n
 
-    %{item | "definers" => (List.wrap(item["definers"]) ++ found) |> Enum.uniq() |> Enum.sort()}
+    item = %{
+      item
+      | "definers" => (List.wrap(item["definers"]) ++ found) |> Enum.uniq() |> Enum.sort()
+    }
+
+    case Map.fetch(item, "declared") do
+      {:ok, declared} when is_list(declared) ->
+        if Enum.all?(declared, &gate_holds?(module, &1, definers)),
+          do: item,
+          else: Map.delete(item, "declared")
+
+      _ ->
+        item
+    end
   end
 
   defp settle_input(item), do: item
+
+  # The review gate's index-visible parts: `package` defines `module`, in
+  # its own namespace.
+  defp gate_holds?(module, package, definers) do
+    by_package = Map.new(definers)
+
+    Map.has_key?(by_package, package) and
+      case module do
+        "Elixir." <> rest ->
+          [root | _] = String.split(rest, ".")
+
+          "Elixir." <> root == module or
+            package in Enum.map(all_definers("Elixir." <> root), &elem(&1, 0))
+
+        _ ->
+          app = Map.get(by_package, package) || package
+          module == app or String.starts_with?(module, app <> "_")
+      end
+  end
 
   defp module_probes(inputs) when is_list(inputs) do
     for %{"kind" => "probe", "of" => "module", "name" => name} = item <- inputs,
@@ -236,11 +310,11 @@ defmodule Portal.Catalog.ModuleIndex do
       "declared_apps" => []
     }
 
-  defp item_refusal(%{"kind" => "truncated"}, _locked, _complete, _covered),
+  defp item_refusal({%{"kind" => "truncated"}, _scope}, _locked, _complete, _covered),
     do: Compatibility.Portability.dependency_probe() <> "too many declared-absent probes recorded"
 
   defp item_refusal(
-         %{"kind" => "module_absent", "module" => module} = item,
+         {%{"kind" => "module_absent", "module" => module} = item, scope},
          locked,
          complete,
          covered
@@ -254,11 +328,13 @@ defmodule Portal.Catalog.ModuleIndex do
       |> MapSet.new()
       |> MapSet.union(locked)
 
+    definers = if scope == :all, do: all_definers(module), else: popular_definers(module)
+
     others =
       if complete,
         do:
           for(
-            {package, app} <- popular_definers(module),
+            {package, app} <- definers,
             not MapSet.member?(named, package),
             not (is_binary(app) and MapSet.member?(named, app)),
             do: package
@@ -274,6 +350,22 @@ defmodule Portal.Catalog.ModuleIndex do
 
   defp item_refusal(_item, _locked, _complete, _covered),
     do: Compatibility.Portability.dependency_probe() <> "unreadable declared-absent probe record"
+
+  # Every indexed package that defines `module`, with its application.
+  defp all_definers(module) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT d.package, i.app FROM catalog_module_definers d
+        LEFT JOIN catalog_module_index_packages i ON i.package = d.package
+        WHERE d.module = $1
+        ORDER BY d.package
+        """,
+        [module]
+      )
+
+    Enum.map(rows, &List.to_tuple/1)
+  end
 
   defp reason(module, via, why),
     do: Compatibility.Portability.dependency_probe() <> "#{module} via #{via} (#{why})"
@@ -303,8 +395,7 @@ defmodule Portal.Catalog.ModuleIndex do
   Safe to start by hand on a host short on memory (round 4):
 
     * `dry_run: true` reads only the registry and writes nothing: it
-      returns `%{to_fetch, releases_to_fetch, unchanged, below_threshold,
-      not_in_registry}`;
+      returns `%{to_fetch, releases_to_fetch, unchanged, not_in_registry}`;
     * at most `max_concurrency/0` (4) packages are fetched and parsed at
       once (`:concurrency` may lower it, never raise it), each with its
       tarball in memory only while it is read (at most 16 MiB), and killed
@@ -342,7 +433,6 @@ defmodule Portal.Catalog.ModuleIndex do
             to_fetch: length(todo),
             releases_to_fetch: todo |> Enum.map(&length(releases(&1))) |> Enum.sum(),
             unchanged: length(unchanged),
-            below_threshold: below_threshold(),
             not_in_registry: length(unlisted)
           }
         else
@@ -522,8 +612,8 @@ defmodule Portal.Catalog.ModuleIndex do
     latest != generation
   end
 
-  # Every package with at least `min_recent/0` recent downloads, most
-  # downloaded first, as `[name, registry latest version or nil, indexed
+  # Every package in the catalog (S10 round 3: not only the popular ones),
+  # most downloaded first, as `[name, registry latest version or nil, indexed
   # version or nil]`. Never `hex_latest_version`, a nomination column
   # (round 6, R5-1).
   defp candidates(limit, latest) do
@@ -533,27 +623,16 @@ defmodule Portal.Catalog.ModuleIndex do
         SELECT p.name, i.version, i.stable
         FROM catalog_packages p
         LEFT JOIN catalog_module_index_packages i ON i.package = p.name
-        WHERE coalesce(p.hex_downloads_recent, 0) >= $1
-        ORDER BY p.hex_downloads_recent DESC, p.name
-        LIMIT $2
+        ORDER BY coalesce(p.hex_downloads_recent, 0) DESC, p.name
+        LIMIT $1
         """,
-        [@min_recent, limit]
+        [limit]
       )
 
     for [name, il, is] <- rows do
       {last, stable} = Map.get(latest, name, {nil, nil})
       [name, last, stable, il, is]
     end
-  end
-
-  defp below_threshold do
-    %{rows: [[n]]} =
-      Repo.query!(
-        "SELECT count(*) FROM catalog_packages WHERE coalesce(hex_downloads_recent, 0) < $1",
-        [@min_recent]
-      )
-
-    n
   end
 
   # Indexed already at this release: confirmed in this generation, with the
@@ -621,26 +700,43 @@ defmodule Portal.Catalog.ModuleIndex do
 
   # The module names our passing builds of the package wrote (R3-5b), any
   # version and every config_variant (each one's modules count): a module a
-  # macro defines, or a leex/yecc file's.
+  # macro defines, or a leex/yecc file's. S10 round 3: pinned host builds'
+  # too, and both kinds' `defined_modules` (what the compile defined outside
+  # the ebin), the build lists the declared-optional-dependency rule reads.
   defp manifest_modules(name) do
     %{rows: rows} =
       Repo.query!(
         """
-        SELECT DISTINCT e->>'path'
-        FROM catalog_toolchain_builds t
-        JOIN catalog_packages p ON p.id = t.package_id
-        CROSS JOIN LATERAL jsonb_array_elements(
-          CASE WHEN jsonb_typeof(t.file_manifest->'ebin') = 'array' THEN t.file_manifest->'ebin'
-               ELSE '[]'::jsonb END) e
-        WHERE p.name = $1 AND t.status = 'pass'
+        SELECT DISTINCT m FROM (
+          SELECT regexp_replace(e->>'path', '^.*/|\\.beam$', '', 'g') AS m
+          FROM catalog_toolchain_builds t
+          JOIN catalog_packages p ON p.id = t.package_id
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(t.file_manifest->'ebin') = 'array' THEN t.file_manifest->'ebin'
+                 ELSE '[]'::jsonb END) e
+          WHERE p.name = $1 AND t.status = 'pass' AND e->>'path' LIKE '%.beam'
+          UNION
+          SELECT regexp_replace(e->>'path', '^.*/|\\.beam$', '', 'g')
+          FROM catalog_pinned_builds b
+          JOIN catalog_packages p ON p.id = b.package_id
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(b.file_manifest->'ebin') = 'array' THEN b.file_manifest->'ebin'
+                 ELSE '[]'::jsonb END) e
+          WHERE p.name = $1 AND b.status = 'pass' AND e->>'path' LIKE '%.beam'
+          UNION
+          SELECT unnest(t.defined_modules) FROM catalog_toolchain_builds t
+          JOIN catalog_packages p ON p.id = t.package_id
+          WHERE p.name = $1 AND t.status = 'pass'
+          UNION
+          SELECT unnest(b.defined_modules) FROM catalog_pinned_builds b
+          JOIN catalog_packages p ON p.id = b.package_id
+          WHERE p.name = $1 AND b.status = 'pass'
+        ) found
         """,
         [name]
       )
 
-    for [path] <- rows,
-        is_binary(path),
-        String.ends_with?(path, ".beam"),
-        do: Path.basename(path, ".beam")
+    for [m] <- rows, is_binary(m), m != "", do: m
   end
 
   defp store(name, {version, stable}, generation, app, modules) do
