@@ -163,6 +163,7 @@ defmodule NccWorker.Portability do
     ConfigReads,
     Context,
     Declared,
+    DefinedModules,
     Differential,
     ElixirVersion,
     Events,
@@ -1211,6 +1212,8 @@ defmodule NccWorker.Portability do
           os_type,
           Keyword.take(opts, [:roots, :target])
         ),
+      # S10 fix round 1: the package's in-memory modules (`DefinedModules`).
+      defined_modules: DefinedModules.of(ctx, report.ending),
       # S10: the inputs with the waived probes, for a refused proof.
       fallback_inputs:
         waived &&
@@ -3267,6 +3270,7 @@ defmodule NccWorker.Portability do
         observations: observations(facts, problems),
         compile_env: if(status == :pass, do: facts.config.items),
         compile_inputs: if(status == :pass, do: facts.inputs),
+        defined_modules: if(status == :pass, do: facts.defined_modules),
         manager: Context.manager(facts.ctx, facts.ctx.package)
       }
       |> ForeignPriv.put_verdict(facts.foreign, status, facts.ctx.package)

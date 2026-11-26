@@ -179,6 +179,10 @@ defmodule NccWorker.Worker do
           # Beside `relocation` only: the build's files, which `file_manifest`
           # (then nil) would list for any other pass.
           optional(:relocated_file_manifest) => map(),
+          # S10 fix round 1: the modules the package's compile defined that
+          # its ebin does not hold (`NccWorker.Portability.DefinedModules`),
+          # sorted; on a "pass" only, nil when they cannot be told.
+          optional(:defined_modules) => [String.t()] | nil,
           status: String.t(),
           reason: String.t() | nil,
           elixir: String.t(),
@@ -3137,6 +3141,7 @@ defmodule NccWorker.Worker do
             foreign_priv: Map.get(portability, :foreign_priv),
             foreign_priv_rule: Map.get(portability, :foreign_priv_rule)
         }
+        |> Map.put(:defined_modules, Map.get(portability, :defined_modules))
         |> relocated(Map.get(portability, :relocation))
 
       {:skip, reason} ->

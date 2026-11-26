@@ -59,6 +59,8 @@
 %% Prepared code references code_finished/2 waits on at once, either way
 %% round; past that every check fails.
 -define(MAX_REFS, 4096).
+%% The most in-memory modules the end line lists (in_memory/0).
+-define(MAX_IN_MEMORY, 4000).
 %% The distinct versions of one module's code code_prepared/3 keeps; past
 %% that the module's history is only `overflow`, which fails the check once
 %% the module is ever taken for the toolchain's.
@@ -1771,14 +1773,50 @@ finish_trace(Status, Ts, Delivered, #st{fd = Fd, session = Session} = St1) ->
                 dropped_probes => St#st.dropped_probes,
                 pending_returns => lists:sum([length(Fs) || Fs <- maps:values(St#st.returns)])}),
     Late = [atom_to_binary(M) || M <- St#st.unloaded, erlang:module_loaded(M)],
+    {InMemory, InMemoryOver} = in_memory(),
     write(St, (maps:merge(Checks, libs_fields(mapped_libs())))#{kind => 'end', ts => Ts,
                                                                 status => Status,
                       final_sentinel => St#st.final, overflow => St#st.overflow,
-                      late_loaded => Late}),
+                      late_loaded => Late, in_memory => InMemory,
+                      in_memory_over => InMemoryOver}),
     ok = write_out(Fd),
     _ = file:close(Fd),
     _ = quietly(fun() -> trace:session_destroy(Session) end),
     ok.
+
+%% S10 fix round 1: every module loaded now that no ebin dir holds, with the
+%% source its compile names (`compile` info, else the file it was loaded
+%% from): one a compile defined in memory (`code:which/1` is `[]`: a `.exs`
+%% file a `mix.exs` or a module body loads, `Code.compile_string/2`,
+%% `Module.create/3`) or loaded from a file outside an ebin. A dependency
+%% compiled after it in the same VM can find it. Not the tracer's own, and
+%% not a consolidated protocol (Mix's `consolidated` dir: the protocol's
+%% own ebin holds it). The worker attributes each to the closure
+%% application whose dir holds the source (`NccWorker.Portability`,
+%% `defined_modules`). At most ?MAX_IN_MEMORY, else the second element is
+%% true.
+in_memory() ->
+    Owned = tracer_owned(),
+    Found = lists:sort([in_memory_item(M, W) || {M, W} <- code:all_loaded(),
+                                                not lists:member(M, Owned), elsewhere(W)]),
+    case length(Found) > ?MAX_IN_MEMORY of
+        true -> {lists:sublist(Found, ?MAX_IN_MEMORY), true};
+        false -> {Found, false}
+    end.
+
+elsewhere([]) -> true;
+elsewhere(cover_compiled) -> true;
+elsewhere(Path) when is_list(Path) ->
+    not lists:member(filename:basename(filename:dirname(Path)), ["ebin", "consolidated"]);
+elsewhere(_Other) -> false.
+
+in_memory_item(M, Which) ->
+    Source = try proplists:get_value(source, M:module_info(compile)) catch _:_ -> undefined end,
+    #{module => atom_to_binary(M), source => source_bin(Source, Which)}.
+
+source_bin(Source, _Which) when is_list(Source), Source =/= [] -> unicode:characters_to_binary(Source);
+source_bin(_Source, Which) when is_list(Which), Which =/= [] -> unicode:characters_to_binary(Which);
+source_bin(_Source, _Which) -> null.
 
 check_limits(#st{calls = Calls, max_calls = Max} = St) when Calls > Max ->
     overflow(St, <<"calls">>);
