@@ -6,7 +6,8 @@ defmodule Compatibility.HexModules do
   modules each popular package's latest release defines).
 
   Every literal `defmodule`, `defprotocol` and `defimpl` name in the
-  tarball's `.ex` sources (an implementation is `Protocol.For`), parsed
+  tarball's `.ex` sources that Mix compiles (S10 review U9: `lib/` and the
+  dirs `mix.exs` names, not bundled examples) (an implementation is `Protocol.For`), parsed
   without creating atoms, and the module of every `.erl` source, its file's
   base name (S10 review S5: `compile:file` refuses a `-module` other than
   the file's name, and `-module (x).`, `-module(?M).` or a `-module` in an
@@ -65,7 +66,8 @@ defmodule Compatibility.HexModules do
          {:ok, gz} <- Map.fetch(outer, "contents.tar.gz") |> found(:no_contents),
          {:ok, tar} <- inflate(gz),
          {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory]) |> tar_files(),
-         files = Enum.filter(files, &source_file?/1),
+         compiled = compiled_dirs(files),
+         files = Enum.filter(files, &(source_file?(&1) and compiled?(&1, compiled))),
          :ok <- if(length(files) <= @max_files, do: :ok, else: {:error, :too_many_files}),
          {:ok, found} <- sources(files) do
       found = Enum.uniq(found)
@@ -115,6 +117,44 @@ defmodule Compatibility.HexModules do
       {:ok, modules, _used} -> {:ok, modules}
       {:error, _} = error -> error
     end
+  end
+
+  # S10 review U9: only the dirs Mix or rebar3 compiles. Elixir sources:
+  # `lib/`, and every dir a string literal in `mix.exs` names (an
+  # `elixirc_paths` clause names its dirs so, in any env: a superset of
+  # what a dep compiles). Erlang, leex and yecc sources: `src/`, and every
+  # dir a literal in `mix.exs` or `rebar.config` names (`erlc_paths`,
+  # `src_dirs`). A `mix.exs` or `rebar.config` that computes a path
+  # (`Path.join/2`, `Path.wildcard/1`, `filename:join`) reads every source,
+  # as before. Bundled examples (`examples/x/deps/postgrex`) are no source.
+  defp compiled_dirs(files) do
+    texts =
+      for {name, body} <- files,
+          List.to_string(name) in ["mix.exs", "rebar.config"],
+          is_binary(body),
+          do: body
+
+    if Enum.any?(
+         texts,
+         &Regex.match?(~r/Path\.(join|wildcard|expand)|filename:join|filelib:wildcard/, &1)
+       ) do
+      :all
+    else
+      named =
+        for text <- texts,
+            [_, dir] <- Regex.scan(~r/"([A-Za-z0-9_\-\.\/]+)"/, text),
+            not String.starts_with?(dir, "."),
+            do: String.trim_trailing(dir, "/")
+
+      Enum.uniq(["lib", "src" | named])
+    end
+  end
+
+  defp compiled?(_file, :all), do: true
+
+  defp compiled?({name, _body}, dirs) do
+    path = List.to_string(name)
+    Enum.any?(dirs, &(path == &1 or String.starts_with?(path, &1 <> "/")))
   end
 
   # A source file Mix would read: `.ex`, `.erl`, `.xrl`, `.yrl`, under no

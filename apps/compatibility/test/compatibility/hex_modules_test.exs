@@ -88,6 +88,36 @@ defmodule Compatibility.HexModulesTest do
              ~w(Elixir.HmP Elixir.HmP.Encoder Elixir.HmP.Encoder.Integer Elixir.String.Chars.HmP)
   end
 
+  # S10 review U9: only what Mix or rebar3 compiles (closure_table's
+  # bundled `examples/ct_ecto/deps/postgrex` defines no module of it).
+  test "only the dirs Mix compiles count" do
+    files = %{
+      "lib/a.ex" => "defmodule HmLibA do\nend\n",
+      "examples/ct/deps/postgrex/lib/p.ex" => "defmodule HmBundledPostgrex do\nend\n",
+      "src/hm_src.erl" => "-module(hm_src).\n",
+      "examples/ct/deps/x/src/hm_bundled.erl" => "-module(hm_bundled).\n"
+    }
+
+    modules = files |> tarball() |> HexModules.modules()
+    assert Enum.sort(modules) == ["Elixir.HmLibA", "hm_src"]
+
+    # A dir `mix.exs` names is compiled; a computed one reads everything.
+    named =
+      Map.put(
+        files,
+        "mix.exs",
+        ~s|def project, do: [elixirc_paths: ["lib", "examples/ct/deps/postgrex/lib"]]|
+      )
+
+    assert "Elixir.HmBundledPostgrex" in HexModules.modules(tarball(named))
+
+    computed =
+      Map.put(files, "mix.exs", ~s|def project, do: [elixirc_paths: Path.wildcard("x/*")]|)
+
+    assert Enum.sort(HexModules.modules(tarball(computed))) ==
+             ["Elixir.HmBundledPostgrex", "Elixir.HmLibA", "hm_bundled", "hm_src"]
+  end
+
   # Round 6: what a real index run of the 5,008 popular packages hit.
   test "hidden files, many non-source files and large Erlang sources are read" do
     many = for i <- 1..6_000, into: %{}, do: {"priv/icons/i#{i}.svg", "<svg/>"}
