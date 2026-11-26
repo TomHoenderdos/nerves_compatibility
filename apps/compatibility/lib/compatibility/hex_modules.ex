@@ -7,7 +7,9 @@ defmodule Compatibility.HexModules do
 
   Every literal `defmodule`, `defprotocol` and `defimpl` name in the
   tarball's `.ex` sources that Mix compiles (S10 review U9: `lib/` and the
-  dirs `mix.exs` names, not bundled examples) (an implementation is `Protocol.For`), parsed
+  dirs `mix.exs` names, not bundled examples; every source where a build
+  script or hook can compile more, re-review R5-2) (an implementation is
+  `Protocol.For`), parsed
   without creating atoms, and the module of every `.erl` source, its file's
   base name (S10 review S5: `compile:file` refuses a `-module` other than
   the file's name, and `-module (x).`, `-module(?M).` or a `-module` in an
@@ -43,7 +45,8 @@ defmodule Compatibility.HexModules do
   (`protocols`) and the ones a `defimpl` makes (`impls`, S10 round 3), or
   why they cannot be known in full: a tarball
   or its contents over the caps, more files or more source than the caps
-  allow, or a `.ex` file under `lib/` that does not parse. A leex or yecc
+  allow, or a `.ex` file read that does not parse (an EEx template outside
+  `lib/` aside). A leex or yecc
   file (`.xrl`, `.yrl`) defines the module of its base name. Options:
   `:max_tarball` (bytes, default `Compatibility.StaticPriv.max_tarball_bytes/0`).
   """
@@ -66,8 +69,8 @@ defmodule Compatibility.HexModules do
          {:ok, gz} <- Map.fetch(outer, "contents.tar.gz") |> found(:no_contents),
          {:ok, tar} <- inflate(gz),
          {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory]) |> tar_files(),
-         compiled = compiled_dirs(files),
-         files = Enum.filter(files, &(source_file?(&1) and compiled?(&1, compiled))),
+         {mode, named} = compiled_dirs(files),
+         files = Enum.filter(files, &(source_file?(&1) and (mode == :all or named?(&1, named)))),
          :ok <- if(length(files) <= @max_files, do: :ok, else: {:error, :too_many_files}),
          {:ok, found} <- sources(files) do
       found = Enum.uniq(found)
@@ -124,35 +127,43 @@ defmodule Compatibility.HexModules do
   # `elixirc_paths` clause names its dirs so, in any env: a superset of
   # what a dep compiles). Erlang, leex and yecc sources: `src/`, and every
   # dir a literal in `mix.exs` or `rebar.config` names (`erlc_paths`,
-  # `src_dirs`). A `mix.exs` or `rebar.config` that computes a path
-  # (`Path.join/2`, `Path.wildcard/1`, `filename:join`) reads every source,
-  # as before. Bundled examples (`examples/x/deps/postgrex`) are no source.
+  # `src_dirs`). Bundled examples (`examples/x/deps/postgrex`) are no
+  # source. Every source is read (re-review R5-2) when the build can compile
+  # what those files do not name: a build script (`rebar.config.script`, a
+  # Makefile, `erlang.mk`: gpb's post-compile hook compiles
+  # `descr_src/gpb_compile_descr.erl` into its ebin), a rebar3 hook, a Mix
+  # compiler list or a compile alias, a computed path (`Path.join/2`,
+  # `Path.wildcard/1`, `filename:join`), or paths that are no string
+  # literals (a sigil, a charlist, an interpolation, an attribute).
+  @build_scripts ["rebar.config.script", "Makefile", "makefile", "GNUmakefile", "erlang.mk"]
+
   defp compiled_dirs(files) do
+    names = for {name, _body} <- files, do: List.to_string(name)
+
     texts =
       for {name, body} <- files,
           List.to_string(name) in ["mix.exs", "rebar.config"],
           is_binary(body),
           do: body
 
-    if Enum.any?(
-         texts,
-         &Regex.match?(~r/Path\.(join|wildcard|expand)|filename:join|filelib:wildcard/, &1)
-       ) do
-      :all
-    else
-      named =
-        for text <- texts,
-            [_, dir] <- Regex.scan(~r/"([A-Za-z0-9_\-\.\/]+)"/, text),
-            not String.starts_with?(dir, "."),
-            do: String.trim_trailing(dir, "/")
+    named =
+      for text <- texts,
+          [_, dir] <- Regex.scan(~r/"([A-Za-z0-9_\-\.\/]+)"/, text),
+          not String.starts_with?(dir, "."),
+          do: String.trim_trailing(dir, "/")
 
-      Enum.uniq(["lib", "src" | named])
-    end
+    named = Enum.uniq(["lib", "src" | named])
+
+    if Enum.any?(names, &(&1 in @build_scripts)) or Enum.any?(texts, &builds_more?/1),
+      do: {:all, named},
+      else: {:named, named}
   end
 
-  defp compiled?(_file, :all), do: true
+  @builds_more ~r/Path\.(join|wildcard|expand)|filename:join|filelib:wildcard|\b(pre|post|provider)_hooks\b|\bcompilers\s*:|"compile[".]|\bcompile\s*:\s*[\[&"]|Mix\.Task\.run|(elixirc|erlc)_paths\b[^\n]*(~[wWcCsS]|'|#\{|@[a-z])/
 
-  defp compiled?({name, _body}, dirs) do
+  defp builds_more?(text), do: Regex.match?(@builds_more, text)
+
+  defp named?({name, _body}, dirs) do
     path = List.to_string(name)
     Enum.any?(dirs, &(path == &1 or String.starts_with?(path, &1 <> "/")))
   end
@@ -189,15 +200,18 @@ defmodule Compatibility.HexModules do
     end
   end
 
-  # A `.ex` file outside `lib/` that does not parse defines nothing; one in
-  # `lib/` makes the tarball unreadable.
+  # A `.ex` file read here that does not parse makes the tarball unreadable
+  # (re-review R5-2: what a newer Elixir compiles, this one may not parse),
+  # unless it is an EEx template outside `lib/` (`<%`: phoenix's
+  # `priv/templates`, nerves_bootstrap's `templates/`), which nothing
+  # compiles as it is.
   defp elixir_source(name, body, used) do
     case elixir_modules(body) do
       {:ok, modules} ->
         {:ok, modules, used + byte_size(body)}
 
       :error ->
-        if String.starts_with?(name, "lib/"),
+        if String.starts_with?(name, "lib/") or not String.contains?(body, "<%"),
           do: {:error, {:unparsed, name}},
           else: {:ok, [], used}
     end

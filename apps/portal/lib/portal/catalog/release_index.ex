@@ -20,21 +20,23 @@ defmodule Portal.Catalog.ReleaseIndex do
     * one definer set per probed module (`catalog_release_probed_modules`,
       filled at ingest), `%{package => [version that defines it]}`.
 
-  Both come from one read of the index in the same batch, read-set first:
-  a release read in between is unread for the client (a miss), never a
-  definer the set leaves out. So the portal needs no global completeness
+  Both come from one statement, so one snapshot of the index: a release is
+  in the read set exactly when its definers are in the sets, from the same
+  tarball. So the portal needs no global completeness
   for these items, and nothing is re-checked or withheld when the index
   grows: the next batch carries the new set, and the client decides each
   user's lock.
 
   **What a release defines** (`Compatibility.HexModules`): the literal
   `defmodule`, `defprotocol` and `defimpl` names of the sources Mix or
-  rebar3 compiles, and every Erlang module by its file, plus the module
-  names our passing toolchain and pinned host builds of that release wrote
-  (`add_build_modules/3`: ebin and `defined_modules`). A release whose
+  rebar3 compiles (every source when a build script or hook can compile
+  more: gpb's `descr_src/`), and every Erlang module by its file, plus the
+  module names our passing toolchain and pinned host builds of that release
+  wrote (`add_build_modules/3`: ebin and `defined_modules`). A release whose
   tarball cannot be read (a failed fetch or checksum, over the caps, a
-  `lib/` file that does not parse) is `failed`, never read, so a client
-  with it locked misses; the daily run tries it again.
+  source read that does not parse, an EEx template outside `lib/` aside)
+  is `failed`, never read, so a client with it locked misses; the daily run
+  tries it again.
 
   **Runs** (`refresh/1`). The registry (`Portal.HexRegistry`, every
   package's every version, signed by hex.pm) is the list of releases, not
@@ -130,47 +132,60 @@ defmodule Portal.Catalog.ReleaseIndex do
   # window (review F2), with the checksum each was read at, to read again
   # when the registry's checksum differs.
   defp todo(listed, retry_failed, limit) do
-    tried = tried()
+    open = open(listed, retry_failed) |> Enum.group_by(&hd/1, &List.last/1)
+    recent = recent(listed)
 
-    listed
-    |> Enum.flat_map(fn {name, versions} ->
-      open = Enum.reject(versions, &skip?(Map.get(tried, {name, &1}), retry_failed))
-
-      recent =
-        for v <- versions,
-            {"read", outer, true} when is_binary(outer) <- [Map.get(tried, {name, v})],
-            into: %{},
-            do: {v, outer}
-
-      if open == [] and recent == %{}, do: [], else: [{name, Enum.sort(open), recent}]
-    end)
+    (Map.keys(open) ++ Map.keys(recent))
+    |> Enum.uniq()
     |> Enum.sort()
+    |> Enum.map(&{&1, Enum.sort(Map.get(open, &1, [])), Map.get(recent, &1, %{})})
     |> then(&if(is_integer(limit), do: Enum.take(&1, limit), else: &1))
   end
 
-  # A release read before the index stored checksums is read again.
-  defp skip?({"read", outer, _recent}, _retry), do: is_binary(outer)
-  defp skip?({"failed", _outer, _recent}, retry), do: not retry
-  defp skip?(_none, _retry), do: false
+  # The listed releases to read (re-review R5-4: an anti-join in the
+  # database, not every index row in memory): untried, failed when retried,
+  # or read before the index stored checksums.
+  defp open(listed, retry_failed) do
+    {packages, versions} =
+      listed |> Enum.flat_map(fn {n, vs} -> Enum.map(vs, &{n, &1}) end) |> Enum.unzip()
 
-  # Hex lets a public release be replaced (`mix hex.publish --replace`)
-  # within an hour of its publication, and the registry's CDN copy lags up
-  # to an hour: a release read within the last three hours is checked again.
-  @replace_window_hours 3
-
-  defp tried do
     %{rows: rows} =
       Repo.query!(
         """
-        SELECT package, version, state, outer_checksum,
-               tried_at > now() - make_interval(hours => $1)
-        FROM catalog_release_index
+        SELECT l.package, l.version
+        FROM unnest($1::text[], $2::text[]) AS l(package, version)
+        LEFT JOIN catalog_release_index i ON i.package = l.package AND i.version = l.version
+        WHERE i.package IS NULL
+           OR (i.state = 'read' AND i.outer_checksum IS NULL)
+           OR (i.state = 'failed' AND $3)
         """,
-        [@replace_window_hours],
+        [packages, versions, retry_failed],
         timeout: 600_000
       )
 
-    Map.new(rows, fn [p, v, s, outer, recent] -> {{p, v}, {s, outer, recent}} end)
+    rows
+  end
+
+  # Hex lets a public release be replaced (`mix hex.publish --replace`)
+  # within an hour of its publication, and the registry's CDN copy lags up
+  # to an hour: a listed release read within the last three hours is
+  # checked again, `%{package => %{version => outer checksum}}`.
+  @replace_window_hours 3
+
+  defp recent(listed) do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT package, version, outer_checksum FROM catalog_release_index
+        WHERE state = 'read' AND outer_checksum IS NOT NULL
+          AND tried_at > now() - make_interval(hours => $1)
+        """,
+        [@replace_window_hours]
+      )
+
+    for [p, v, outer] <- rows, v in Map.get(listed, p, []), reduce: %{} do
+      acc -> Map.update(acc, p, %{v => outer}, &Map.put(&1, v, outer))
+    end
   end
 
   defp run(todo, opts) do
@@ -255,9 +270,10 @@ defmodule Portal.Catalog.ReleaseIndex do
     e -> {:error, {:raised, Exception.message(e)}}
   end
 
+  # Our build lists are read after the delete, in the same transaction
+  # (re-review R5-3): a build an ingest adds in between is either read here
+  # or inserted after the delete, never deleted.
   defp store_read(name, version, app, modules, outer) do
-    modules = Enum.uniq(modules ++ build_modules(name, version))
-
     {:ok, :ok} =
       Repo.transaction(fn ->
         Repo.query!("DELETE FROM catalog_release_definers WHERE package = $1 AND version = $2", [
@@ -265,7 +281,7 @@ defmodule Portal.Catalog.ReleaseIndex do
           version
         ])
 
-        insert_definers(name, version, modules)
+        insert_definers(name, version, Enum.uniq(modules ++ build_modules(name, version)))
 
         Repo.query!(
           """
@@ -480,27 +496,24 @@ defmodule Portal.Catalog.ReleaseIndex do
 
   @doc """
   The batch's `release_index` object and its documents, `{object, [{sha,
-  body}]}`, or `nil` before any release was read: the read set first, in
-  256 shards, then each probed module's definer set, from the same index
-  (see the moduledoc for why in this order).
+  body}]}`, or `nil` before any release was read: the read set in 256
+  shards and each probed module's definer set, from one snapshot of the
+  index (see the moduledoc).
   """
   @spec render_docs() :: {map(), [{String.t(), binary()}]} | nil
   def render_docs do
-    read = read_set()
+    rows = snapshot() |> Enum.group_by(&hd/1, &tl/1)
+    read = Map.get(rows, "r", [])
 
-    if read == %{} do
+    if read == [] do
       nil
     else
-      sets = definer_sets(probed())
-      # A release read again while the sets were read (replaced, review F2)
-      # is unread in this batch: its read-set entry and its definers might
-      # come from different tarballs.
-      again = read_set()
-      read = for {release, outer} <- read, Map.get(again, release) == outer, do: {release, outer}
+      found = rows |> Map.get("d", []) |> Enum.group_by(&hd/1, fn [_m, p, v, _o] -> {p, v} end)
+      sets = for [m | _] <- Map.get(rows, "p", []), into: %{}, do: {m, Map.get(found, m, [])}
 
       shard_docs =
         read
-        |> Enum.group_by(fn {{p, _v}, _o} -> shard(p) end, fn {{p, v}, o} -> {p, [v, o]} end)
+        |> Enum.group_by(fn [_, p, _v, _o] -> shard(p) end, fn [_, p, v, o] -> {p, [v, o]} end)
         |> then(fn by_shard -> Map.new(@shards, &{&1, Map.get(by_shard, &1, [])}) end)
         |> Map.new(fn {shard, pairs} ->
           {shard, doc(%{"format" => 1, "shard" => shard, "read" => by_package(pairs)})}
@@ -521,41 +534,32 @@ defmodule Portal.Catalog.ReleaseIndex do
     end
   end
 
-  # `%{{package, version} => outer checksum}` of the read releases; one read
-  # before the index stored checksums is left out until it is read again.
-  defp read_set do
+  # The read releases (`["r", nil, package, version, outer]`; one read
+  # before the index stored checksums is left out until it is read again),
+  # the probed modules (`["p", module, ...]`) and their definers among the
+  # read releases (`["d", module, package, version, outer]`), in one
+  # statement and so one snapshot: a release read again (replaced, review
+  # F2) is in the read set and the sets at the same tarball, or in neither.
+  defp snapshot do
     %{rows: rows} =
       Repo.query!(
         """
-        SELECT package, version, outer_checksum FROM catalog_release_index
+        SELECT 'r', NULL::text, package, version, outer_checksum FROM catalog_release_index
         WHERE state = 'read' AND outer_checksum IS NOT NULL
+        UNION ALL
+        SELECT 'p', module, NULL, NULL, NULL FROM catalog_release_probed_modules
+        UNION ALL
+        SELECT 'd', d.module, d.package, d.version, i.outer_checksum
+        FROM catalog_release_definers d
+        JOIN catalog_release_index i ON i.package = d.package AND i.version = d.version
+        WHERE d.module IN (SELECT module FROM catalog_release_probed_modules)
+          AND i.state = 'read' AND i.outer_checksum IS NOT NULL
         """,
         [],
         timeout: 600_000
       )
 
-    Map.new(rows, fn [p, v, o] -> {{p, v}, o} end)
-  end
-
-  defp probed do
-    %{rows: rows} = Repo.query!("SELECT module FROM catalog_release_probed_modules", [])
-    List.flatten(rows)
-  end
-
-  defp definer_sets(modules) do
-    %{rows: rows} =
-      Repo.query!(
-        """
-        SELECT d.module, d.package, d.version FROM catalog_release_definers d
-        JOIN catalog_release_index i ON i.package = d.package AND i.version = d.version
-        WHERE d.module = ANY($1) AND i.state = 'read'
-        """,
-        [modules],
-        timeout: 600_000
-      )
-
-    found = Enum.group_by(rows, &hd/1, fn [_m, p, v] -> {p, v} end)
-    Map.new(modules, &{&1, Map.get(found, &1, [])})
+    rows
   end
 
   defp by_package(pairs) do
@@ -585,25 +589,59 @@ defmodule Portal.Catalog.ReleaseIndex do
 
   defp canonical(value), do: JSON.encode!(value)
 
-  @insert_doc """
-  INSERT INTO precompiled_release_docs (sha256, body, inserted_at)
-  VALUES ($1, $2, now()) ON CONFLICT (sha256) DO NOTHING
-  """
-
   @doc """
-  Stores the documents of `render_docs/0`; one already there is kept.
+  Stores the documents of `render_docs/0`; one already there is kept, and
+  marked as named (`named_at`, at most hourly). A document no batch named
+  for three days (a batch expires after 24 h) is deleted (re-review R5-5).
   `Portal.Precompiled.Batches` calls it in the transaction that inserts the
-  batch naming them.
+  batch naming them. A few statements, not one per document.
   """
   @spec store_docs([{String.t(), binary()}]) :: :ok | {:error, term()}
   def store_docs(docs) do
-    Enum.reduce_while(docs, :ok, fn {sha, body}, :ok ->
-      # sobelow_skip ["SQL.Query"]
-      case Repo.query(@insert_doc, [sha, body]) do
-        {:ok, _} -> {:cont, :ok}
-        {:error, why} -> {:halt, {:error, why}}
-      end
+    shas = Enum.map(docs, &elem(&1, 0))
+
+    with {:ok, %{rows: rows}} <-
+           Repo.query("SELECT sha256 FROM precompiled_release_docs WHERE sha256 = ANY($1)", [
+             shas
+           ]),
+         have = MapSet.new(List.flatten(rows)),
+         :ok <- insert_docs(for {sha, _} = doc <- docs, not MapSet.member?(have, sha), do: doc),
+         {:ok, _} <-
+           Repo.query(
+             """
+             UPDATE precompiled_release_docs SET named_at = now()
+             WHERE sha256 = ANY($1) AND named_at < now() - interval '1 hour'
+             """,
+             [shas]
+           ),
+         {:ok, _} <-
+           Repo.query(
+             "DELETE FROM precompiled_release_docs WHERE named_at < now() - interval '3 days'",
+             []
+           ) do
+      :ok
+    end
+  end
+
+  # New documents, in chunks of 32 (a shard is tens of kB).
+  defp insert_docs(docs) do
+    now = DateTime.utc_now()
+
+    docs
+    |> Enum.chunk_every(32)
+    |> Enum.each(fn chunk ->
+      Repo.insert_all(
+        "precompiled_release_docs",
+        for(
+          {sha, body} <- chunk,
+          do: %{sha256: sha, body: body, inserted_at: now, named_at: now}
+        ),
+        on_conflict: :nothing,
+        conflict_target: :sha256
+      )
     end)
+  rescue
+    e -> {:error, e}
   end
 
   @doc "A stored document's bytes, only while they still hash to `sha`."

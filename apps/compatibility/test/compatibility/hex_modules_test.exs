@@ -118,6 +118,81 @@ defmodule Compatibility.HexModulesTest do
              ["Elixir.HmBundledPostgrex", "Elixir.HmLibA", "hm_bundled", "hm_src"]
   end
 
+  # S10 re-review R5-2: a build script or hook can compile what neither
+  # `mix.exs` nor `rebar.config` names. gpb 4.21.7 has a
+  # `rebar.config.script` and a Makefile, and its post-compile hook
+  # compiles `descr_src/gpb_compile_descr.erl` and `gpb_parse_descr.erl`
+  # into its ebin. (The real release: `mix hex.package fetch gpb 4.21.7`.)
+  test "gpb 4.21.7: a build script reads every source" do
+    bytes = File.read!(Path.expand("../fixtures/hex/gpb-4.21.7.tar", __DIR__))
+
+    assert :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower) ==
+             "9b3c3adfea1a631fd1da6b2b08ec8f59b412982393950e0fd1b306def79a676a"
+
+    assert {:ok, %{app: "gpb", modules: modules}} = HexModules.read(bytes)
+    assert "gpb_compile_descr" in modules
+    assert "gpb_parse_descr" in modules
+    assert "gpb_compile" in modules
+  end
+
+  test "a build script, a rebar3 hook, a compile alias or a non-literal path reads every source" do
+    base = %{
+      "lib/a.ex" => "defmodule HmR52A do\nend\n",
+      "extra/b.ex" => "defmodule HmR52Extra do\nend\n",
+      "descr_src/hm_descr.erl" => "-module(hm_descr).\n"
+    }
+
+    read = fn files -> files |> tarball() |> HexModules.modules() |> Enum.sort() end
+    assert read.(base) == ["Elixir.HmR52A"]
+
+    all = ["Elixir.HmR52A", "Elixir.HmR52Extra", "hm_descr"]
+
+    for {file, body} <- [
+          {"rebar.config.script", "CONFIG."},
+          {"Makefile", "all:\n"},
+          {"erlang.mk", ""},
+          {"rebar.config", "{post_hooks, [{compile, \"make descr\"}]}."},
+          {"rebar.config", "{provider_hooks, [{post, [{compile, {pc, compile}}]}]}."},
+          {"mix.exs", "def project, do: [compilers: [:elixir_make] ++ Mix.compilers()]"},
+          {"mix.exs", ~s|defp aliases, do: [compile: ["compile", &extra/1]]|},
+          {"mix.exs", "defp elixirc_paths(_), do: ~w(lib extra)"},
+          {"mix.exs", "def project, do: [elixirc_paths: @paths]"}
+        ] do
+      assert read.(Map.put(base, file, body)) == all, file
+    end
+  end
+
+  # S10 re-review R5-2: a `.ex` in any dir read that does not parse makes
+  # the release unreadable (a newer Elixir may compile it), not only in
+  # `lib/`; an EEx template outside `lib/` (phoenix's `priv/templates`) is
+  # compiled by nothing as it is and defines nothing.
+  test "a source that does not parse is unreadable in any dir read, a template outside lib is not" do
+    named = %{
+      "mix.exs" => ~s|def project, do: [elixirc_paths: ["lib", "web"]]|,
+      "lib/a.ex" => "defmodule HmR52B do\nend\n"
+    }
+
+    assert {:error, {:unparsed, "web/x.ex"}} =
+             named |> Map.put("web/x.ex", "defmodule (") |> tarball() |> HexModules.read()
+
+    template = "defmodule <%= @mod %>.Html do\nend\n"
+
+    assert {:ok, %{modules: ["Elixir.HmR52B"]}} =
+             named |> Map.put("web/t.ex", template) |> tarball() |> HexModules.read()
+
+    assert {:error, {:unparsed, "lib/t.ex"}} =
+             named |> Map.put("lib/t.ex", template) |> tarball() |> HexModules.read()
+
+    # Every source read: a template defines nothing, anything else unparsed fails.
+    all = Map.put(named, "Makefile", "all:\n")
+
+    assert {:ok, %{modules: ["Elixir.HmR52B"]}} =
+             all |> Map.put("priv/templates/t.ex", template) |> tarball() |> HexModules.read()
+
+    assert {:error, {:unparsed, "test/x.ex"}} =
+             all |> Map.put("test/x.ex", "defmodule (") |> tarball() |> HexModules.read()
+  end
+
   # Round 6: what a real index run of the 5,008 popular packages hit.
   test "hidden files, many non-source files and large Erlang sources are read" do
     many = for i <- 1..6_000, into: %{}, do: {"priv/icons/i#{i}.svg", "<svg/>"}

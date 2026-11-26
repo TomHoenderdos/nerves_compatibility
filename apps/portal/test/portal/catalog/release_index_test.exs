@@ -242,6 +242,18 @@ defmodule Portal.Catalog.ReleaseIndexTest do
     assert %{"read" => %{"jason_uo" => [["1.4.99", ^outer]]}} = JSON.decode!(body)
   end
 
+  # Re-review R5-5: a document no batch has named for three days (a batch
+  # expires after 24 h) is deleted when the next batch stores its own.
+  test "a document no batch named for three days is deleted, a named one is kept" do
+    :ok = ReleaseIndex.store_docs([{sha("doc a"), "doc a"}, {sha("doc b"), "doc b"}])
+    Repo.query!("UPDATE precompiled_release_docs SET named_at = now() - interval '4 days'")
+
+    :ok = ReleaseIndex.store_docs([{sha("doc a"), "doc a"}, {sha("doc c"), "doc c"}])
+    assert ReleaseIndex.stored(sha("doc a")) == {:ok, "doc a"}
+    assert ReleaseIndex.stored(sha("doc c")) == {:ok, "doc c"}
+    assert ReleaseIndex.stored(sha("doc b")) == :error
+  end
+
   # Review F2: `mix hex.publish --replace` swaps a release's tarball within
   # an hour of publication. A release read within the replace window is
   # read again when the registry's checksum for it differs, and the shards

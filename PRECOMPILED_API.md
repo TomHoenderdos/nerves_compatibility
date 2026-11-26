@@ -308,9 +308,8 @@ hours again when the registry's checksum changes; `modules` holds, for each modu
 that defines it]}}`. Each is served at
 `/api/precompiled/release-index/by-sha/<sha256>.json` (content-addressed,
 immutable, and at each content origin's `release-index/by-sha/` path). Both
-come from one read of the index, the read set first: a release read in
-between is unread to a client, never a definer a set leaves out, and a
-release read again in between (replaced) is left out of the read set. Rendered
+come from one snapshot of the index: a release is in the read set exactly
+when its definers are in the sets, from the same tarball. Rendered
 for every batch; absent before any release was read. An added field.
 
 An `etag` header of the SHA256 of the envelope bytes (quoted, strong) is set,
