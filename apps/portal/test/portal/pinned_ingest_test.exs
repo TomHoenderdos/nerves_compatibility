@@ -99,6 +99,32 @@ defmodule Portal.PinnedIngestTest do
              )
   end
 
+  # S9 re-review R1-2, as S1 for toolchain rows: a transient from a failed
+  # declared fetch (`trace_stats.declared_unknown`) is today's judge
+  # refusing a probe it could not place, so the served pinned pass is
+  # withdrawn at once, not kept for the retries; a retry that passes
+  # serves again.
+  test "a transient from a failed declared fetch withdraws a served pass; a pass serves again" do
+    name = unique()
+    pins = pins(name)
+    assert {:ok, %PinnedBuild{status: :pass, id: id} = passed} = ingest(name, pins)
+    assert shas(passed) == [sha("beam-" <> name)]
+
+    assert {:ok, %PinnedBuild{id: ^id, status: :error} = withdrawn} =
+             ingest(name, pins,
+               status: "skipped",
+               reason: Compatibility.Portability.could_not_judge(),
+               observations: %{
+                 "trace_stats" => %{"transient" => true, "declared_unknown" => ["plug_cowboy"]}
+               }
+             )
+
+    assert shas(withdrawn) == []
+
+    assert {:ok, %PinnedBuild{id: ^id, status: :pass} = again} = ingest(name, pins)
+    assert shas(again) == [sha("beam-" <> name)]
+  end
+
   test "a could-not-judge names its cause" do
     name = unique()
 

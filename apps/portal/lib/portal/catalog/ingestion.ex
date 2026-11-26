@@ -1978,7 +1978,18 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   # As `kept_toolchain_build/4`: an `:error` keeps a pass or skipped row, a
-  # failed compile keeps a served pass.
+  # failed compile keeps a served pass. But a transient from a failed
+  # declared fetch keeps no row (S9 re-review R1-2, as S1 for toolchain
+  # rows): today's judge refused a probe it could not place, so the served
+  # pinned build is withdrawn at once, and a retry that passes serves again.
+  defp kept_pinned(
+         {:error, _reason},
+         %{"compile_observations" => %{"trace_stats" => %{"declared_unknown" => [_ | _]}}},
+         _id,
+         _opts
+       ),
+       do: nil
+
   defp kept_pinned({:error, _reason}, _build, package_id, opts),
     do: pinned_row(package_id, opts, [:pass, :skipped], false)
 
