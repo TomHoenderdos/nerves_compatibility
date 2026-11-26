@@ -669,10 +669,18 @@ What it lists:
     leaves alone. Listed once per app. A read the snapshot cannot give whole is
     `config_unrecorded` instead.
 
-  A firmware build (`target` a Nerves system) carries `compile_inputs` only when its package's
-  own `lib/` reads the environment at module level and the worker's traced compile of the
-  package's closure for the target recorded every input (`NccWorker.FirmwareInputs`); its
-  `compile_env` is then that trace's. Such a build's published variants carry none.
+  A firmware build (`target` a Nerves system) carries `compile_inputs` only when the worker's
+  traced compile of the package's closure for the target recorded every input
+  (`NccWorker.FirmwareInputs`): for a package whose own `lib/` reads the environment at module
+  level, and for any package the firmware judge passed. Its `compile_env` then lists that trace's
+  config reads after the `.app`'s own. Such a build's published variants carry none.
+
+  A firmware build without `compile_inputs` (its compile was not traced, or the trace did not
+  pass) lists three more `compile_env` items, unset (`:error`), unless it lists them already:
+  `logger` `[compile_time_purge_matching]`, `[compile_time_purge_level]` and
+  `[always_evaluate_messages]`. Every `Logger` macro reads them while its caller compiles and no
+  `.app` lists them; the builder's project leaves them unset. So does each of its published
+  variants.
 
   A `compile_env` value may also be `"unrecordable"`, which matches no config. A list the portal
   rejects as malformed is stored as `[{"kind": "config_unrecorded"}]` with the build's `compile_env`
@@ -688,7 +696,11 @@ What it lists:
   resolved, checked equal to that closure before it is stored; at most 8 closures per version,
   target and system version are listed, and format 1 never lists one. A pinned firmware build (a
   `nerves_system_*` target) was made on the project's exact system release and carries neither
-  `portable` nor `native: false`, so a client takes it at that `system_version` only.
+  `portable` nor `native: false`, so a client takes it at that `system_version` only, unless the
+  firmware judge passed it with its `compile_inputs` recorded: its trace ran with the Nerves
+  toolchain and system at other paths and artifact names and its beams bound to the published
+  ones, so it carries a system result's `native` and `portable` facts and a client applies the same
+  release rules.
 - `versions[v].builds_closure` — world builds, read only by clients 0.7.0 and later, which
   enforce env-closure equality: a build is taken only when the names in its whole `deps` closure
   equal the closure Mix gives the package in the project's env. A world is a named, pinned set of
