@@ -3141,13 +3141,21 @@ defmodule NccWorker.Worker do
             foreign_priv: Map.get(portability, :foreign_priv),
             foreign_priv_rule: Map.get(portability, :foreign_priv_rule)
         }
-        |> Map.put(:defined_modules, Map.get(portability, :defined_modules))
+        |> put_defined_modules(Map.get(portability, :defined_modules))
         |> relocated(Map.get(portability, :relocation))
 
       {:skip, reason} ->
         %{build | status: "skipped", reason: reason}
     end
   end
+
+  # S10 fix round 1: a pass's in-memory modules (`NccWorker.Portability.DefinedModules`),
+  # only when the judge could tell them: without a list the key is left
+  # out, and the result.json is the one it was before.
+  defp put_defined_modules(build, modules) when is_list(modules),
+    do: Map.put(build, :defined_modules, modules)
+
+  defp put_defined_modules(build, _modules), do: build
 
   # A relocated pass (`NccWorker.Portability.Relocate`) lists its files under
   # `relocated_file_manifest`, never `file_manifest`: a portal before S4
