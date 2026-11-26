@@ -67,6 +67,14 @@ defmodule Portal.Catalog.ModuleIndex do
   (also: in a release other than the last and latest stable ones this
   index read) and outside any build list; and, until the next run and its
   recheck, a package or release published since the last run's start.
+
+  **Following Hex (S10 round 4).** The hourly `Portal.Workers.UpdateCheck`
+  queues an incremental run whenever the registry lists a release the index
+  does not hold (`queue_incremental/1`): it reads only those packages and
+  moves their candidate rows with their index rows, so the window above is
+  about an hour, and the index is never incomplete because of it. The
+  daily full run stays the backstop and reads the changed packages first,
+  so it is incomplete only until those are read.
   """
 
   alias Portal.Repo
@@ -416,7 +424,9 @@ defmodule Portal.Catalog.ModuleIndex do
   why} end`), `:tarball` and `:outer_checksum` (`fn name, version -> {:ok,
   value} | {:error, why} end`, default `Portal.HexDeps`), `:read` (default
   `Compatibility.HexModules.read/2`), `:big_parse_bytes`, `:limit`,
-  `:concurrency`, `:dry_run`, `:recheck`.
+  `:concurrency`, `:dry_run`, `:recheck`, and `:incremental` (S10 round 4:
+  only the changed candidates, under the latest generation, never making
+  the index incomplete; see `queue_incremental/1`).
   """
   @spec refresh(keyword()) :: %{atom() => term()}
   def refresh(opts \\ []) do
@@ -424,23 +434,9 @@ defmodule Portal.Catalog.ModuleIndex do
 
     case registry.() do
       {:ok, latest} ->
-        rows = candidates(Keyword.get(opts, :limit, 100_000), latest)
-        {listed, unlisted} = Enum.split_with(rows, &listed?/1)
-        {todo, unchanged} = Enum.split_with(listed, &(not indexed?(&1)))
-
-        if Keyword.get(opts, :dry_run, false) do
-          %{
-            to_fetch: length(todo),
-            releases_to_fetch: todo |> Enum.map(&length(releases(&1))) |> Enum.sum(),
-            unchanged: length(unchanged),
-            not_in_registry: length(unlisted)
-          }
-        else
-          {:ok, generation} = start_run(length(listed))
-          :ok = store_candidates(rows, generation)
-          result = run(generation, listed, opts)
-          finish(generation, listed, result, opts)
-        end
+        if Keyword.get(opts, :incremental, false),
+          do: incremental(latest, opts),
+          else: full(latest, opts)
 
       {:error, why} ->
         Logger.warning(
@@ -450,6 +446,115 @@ defmodule Portal.Catalog.ModuleIndex do
         %{complete: false, error: why}
     end
   end
+
+  defp full(latest, opts) do
+    rows = candidates(Keyword.get(opts, :limit, 100_000), latest)
+    {listed, unlisted} = Enum.split_with(rows, &listed?/1)
+    {todo, unchanged} = Enum.split_with(listed, &(not indexed?(&1)))
+
+    if Keyword.get(opts, :dry_run, false) do
+      %{
+        to_fetch: length(todo),
+        releases_to_fetch: todo |> Enum.map(&length(releases(&1))) |> Enum.sum(),
+        unchanged: length(unchanged),
+        not_in_registry: length(unlisted)
+      }
+    else
+      {:ok, generation} = start_run(length(listed))
+      :ok = store_candidates(rows, generation)
+      # The changed packages first (S10 round 4): the index is incomplete
+      # only until they are read, not for the whole run.
+      result = run(generation, todo ++ unchanged, opts)
+      finish(generation, listed, result, opts)
+    end
+  end
+
+  @incremental_limit 2_000
+
+  @doc false
+  # S10 round 4: the event-driven run `Portal.Workers.UpdateCheck` queues
+  # hourly (`queue_incremental/1`). It reads only the candidates whose last or
+  # latest stable release the registry lists newer than the index holds (new
+  # packages included), at most #{@incremental_limit}, under the latest
+  # generation, with no run row of its own. Each one's candidate row moves to
+  # the new release in the same transaction as its index row (`store/6`), so
+  # this run never makes the index incomplete: a failed fetch leaves the
+  # package at the release it had, for the next hourly run or the daily one.
+  # When it read anything and the index is complete, it re-checks the served
+  # rows; it queues the rows refused for an incomplete index either way.
+  defp incremental(latest, opts) do
+    case latest_run() do
+      nil ->
+        %{incremental: true, skipped: :no_run}
+
+      %{generation: generation} ->
+        todo =
+          100_000
+          |> candidates(latest)
+          |> Enum.filter(&listed?/1)
+          |> Enum.reject(&indexed?/1)
+          |> Enum.take(Keyword.get(opts, :limit, @incremental_limit))
+
+        if Keyword.get(opts, :dry_run, false),
+          do: %{incremental: true, to_fetch: length(todo)},
+          else: incremental_run(generation, todo, opts)
+    end
+  end
+
+  defp incremental_run(generation, todo, opts) do
+    result = run(generation, todo, opts)
+    complete = complete?()
+
+    withheld =
+      if complete and result.indexed > 0 and Keyword.get(opts, :recheck, true),
+        do: recheck(generation: generation).withheld
+
+    requeued = if complete, do: requeue_not_complete(), else: 0
+
+    Map.merge(result, %{
+      incremental: true,
+      generation: generation,
+      complete: complete,
+      withheld: withheld,
+      requeued: requeued
+    })
+  end
+
+  @doc """
+  S10 round 4: queues the incremental run (`refresh(incremental: true)`)
+  when the registry `entries` (`Portal.HexRegistry.snapshot/1`'s, as
+  `Portal.Workers.UpdateCheck` reads them hourly) list a release of a
+  candidate that the index does not hold, or a candidate it never read.
+  Only once a run has built the index; at most one such job waits. Returns
+  how many candidates changed. Never raises.
+  """
+  @spec queue_incremental([map()]) :: non_neg_integer()
+  def queue_incremental(entries) when is_list(entries) do
+    if latest_run() == nil do
+      0
+    else
+      latest =
+        Map.new(entries, fn entry ->
+          {entry.name, {entry.latest_version, latest_stable(Map.get(entry, :versions) || [])}}
+        end)
+
+      changed =
+        100_000
+        |> candidates(latest)
+        |> Enum.count(&(listed?(&1) and not indexed?(&1)))
+
+      if changed > 0,
+        do: Oban.insert(Portal.Workers.ModuleIndexRefresh.new(%{"incremental" => true}))
+
+      changed
+    end
+  rescue
+    e ->
+      Logger.warning("module index: no incremental run queued: #{Exception.message(e)}")
+      0
+  end
+
+  def queue_incremental(_entries), do: 0
 
   # Every package the registry lists, by name, with its last version and
   # its latest stable one (final round, R6-1: when the last version is a
@@ -757,6 +862,19 @@ defmodule Portal.Catalog.ModuleIndex do
           [name, version, length(modules), generation, app, stable]
         )
 
+        # The candidate moves with its index row (S10 round 4): a full run
+        # wrote the same at its start; an incremental one writes it only
+        # here, so it never makes the index incomplete.
+        Repo.query!(
+          """
+          INSERT INTO catalog_module_index_candidates (package, version, stable, generation)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (package) DO UPDATE
+          SET version = EXCLUDED.version, stable = EXCLUDED.stable, generation = EXCLUDED.generation
+          """,
+          [name, version, stable, generation]
+        )
+
         :ok
       end)
 
@@ -780,17 +898,32 @@ defmodule Portal.Catalog.ModuleIndex do
   @not_complete "(module index not complete)"
 
   @doc """
-  Queues again, once, the toolchain build of every live row at the current
-  builder version that ingest stored `skipped` only because the index was
-  not complete (its reason ends in `#{@not_complete}`; round 6, R5-5), so
-  such a refusal is no final verdict: `refresh/1` calls it after each
-  complete run. The job is unique while it waits, so a later run does not
-  queue it twice; its rebuild is judged by the complete index. Returns how
-  many it queued. Pinned and host-native builds and `pure_elixir` results
-  refused that way are not queued here (see the otp-probe report, round 6).
+  Queues again, once, every row that ingest refused only because the index
+  was not complete (its reason ends in `#{@not_complete}`; round 6, R5-5),
+  so such a refusal is no final verdict: `refresh/1` calls it after each
+  complete run, the incremental one too. Each kind a module probe input or
+  a declared-absent record reaches at ingest (S10 round 4):
+
+    * a toolchain build at the current builder version: its job again;
+    * a pinned build (host or firmware target) at the current builder
+      version, neither revoked nor withdrawn: its job again, from the row's
+      own pins;
+    * a held `pure_elixir` result (stored with its files, withdrawn with
+      that reason): judged again here, from the record and inputs the row
+      keeps, and published when it passes, with its inputs settled; one
+      that now collides keeps the hold with the real reason.
+
+  A job is unique while it waits, so a later run does not queue it twice;
+  its rebuild is judged by the complete index. Host-native builds never
+  reach the index at ingest (their judge refuses such a probe itself).
+  Returns how many it queued or published.
   """
   @spec requeue_not_complete() :: non_neg_integer()
   def requeue_not_complete do
+    requeue_toolchain() + requeue_pinned() + rejudge_pure_elixir()
+  end
+
+  defp requeue_toolchain do
     bv = Portal.Toolchains.builder_version()
     images = Map.new(Portal.Toolchains.images(), &{&1.toolchain, &1.image})
 
@@ -825,6 +958,106 @@ defmodule Portal.Catalog.ModuleIndex do
         true
       else
         _ -> false
+      end
+    end)
+  end
+
+  defp requeue_pinned do
+    bv = Portal.Toolchains.builder_version()
+    images = Map.new(Portal.Toolchains.images(), &{&1.toolchain, &1.image})
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT p.name, b.version, b.toolchain, b.target, b.system_version, b.pin_hash, b.pins
+        FROM catalog_pinned_builds b JOIN catalog_packages p ON p.id = b.package_id
+        WHERE b.builder_version = $1 AND b.status = 'skipped' AND b.revoked_at IS NULL
+          AND b.unpublished_at IS NULL AND b.reason LIKE $2
+        """,
+        [bv, "%" <> @not_complete]
+      )
+
+    queue_for = Portal.Toolchains.MemoryRouting.router(rows |> Enum.map(&hd/1) |> Enum.uniq())
+
+    Enum.count(rows, fn [name, version, toolchain, target, system_version, hash, pins] ->
+      args =
+        %{
+          "package" => name,
+          "version" => version,
+          "toolchain" => toolchain,
+          "builder_version" => bv,
+          "target" => target,
+          "pin_hash" => hash,
+          "pins" => pins,
+          "reason" => "module_index_complete"
+        }
+        |> pinned_path(target, system_version, Map.get(images, toolchain))
+
+      with %{} <- args,
+           {:ok, %Oban.Job{conflict?: false}} <-
+             args
+             |> Portal.Workers.PinnedBuild.new(priority: 3, queue: queue_for.(name))
+             |> Oban.insert() do
+        true
+      else
+        _ -> false
+      end
+    end)
+  end
+
+  # The toolchain path names its image, the firmware path its release
+  # (`Portal.Pins`); a toolchain with no image here queues nothing.
+  defp pinned_path(args, "pure_elixir", _system_version, image) when is_binary(image),
+    do: Map.put(args, "image", image)
+
+  defp pinned_path(args, "nerves_system_" <> _, system_version, _image)
+       when is_binary(system_version) and system_version != "",
+       do: Map.put(args, "system_version", system_version)
+
+  defp pinned_path(_args, _target, _system_version, _image), do: nil
+
+  defp rejudge_pure_elixir do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT s.id, s.declared_absent, coalesce(s.deps_lock, r.deps_lock), s.compile_inputs
+        FROM catalog_system_results s JOIN catalog_runs r ON r.id = s.run_id
+        WHERE s.system_pkg = 'pure_elixir' AND s.status = 'pass'
+          AND s.unpublished_at IS NOT NULL AND s.unpublished_reason LIKE $1
+        """,
+        ["%" <> @not_complete]
+      )
+
+    Enum.count(rows, fn [id, records, lock, inputs] ->
+      verdict =
+        case settle_inputs(inputs) do
+          {:ok, settled} -> {refusal(records, lock_keys(lock), settled), settled}
+          {:refuse, why} -> {why, inputs}
+        end
+
+      case verdict do
+        {nil, settled} ->
+          Repo.query!(
+            """
+            UPDATE catalog_system_results
+            SET unpublished_at = NULL, unpublished_reason = NULL, compile_inputs = $2, updated_at = now()
+            WHERE id = $1 AND unpublished_reason LIKE $3
+            """,
+            [id, settled, "%" <> @not_complete]
+          )
+
+          true
+
+        {why, _inputs} ->
+          Repo.query!(
+            """
+            UPDATE catalog_system_results SET unpublished_reason = $2, updated_at = now()
+            WHERE id = $1 AND unpublished_reason LIKE $3
+            """,
+            [id, why, "%" <> @not_complete]
+          )
+
+          false
       end
     end)
   end

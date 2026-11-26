@@ -2,8 +2,8 @@ defmodule Portal.Workers.ModuleIndexRefresh do
   @moduledoc """
   Daily cron (queue `:intake`) that refreshes the module index
   (`Portal.Catalog.ModuleIndex.refresh/1`): the modules the last and the
-  latest stable release of each package with 1,000 or more recent
-  downloads define. Fetches only the packages whose releases changed since
+  latest stable release of each catalog package define (every Hex package
+  since S10 round 3; before, those with 1,000 or more recent downloads). Fetches only the packages whose releases changed since
   the last run (the first run reads all of them). `limit`
   (job args) caps the packages one run reads.
 
@@ -18,6 +18,15 @@ defmodule Portal.Workers.ModuleIndexRefresh do
 
       Portal.Catalog.ModuleIndex.refresh(dry_run: true)
       Oban.insert(Portal.Workers.ModuleIndexRefresh.new(%{}))
+
+  **Incremental (S10 round 4).** `%{"incremental" => true}` reads only the
+  candidates whose last or latest stable release the index does not hold,
+  at most 2,000, and moves each one's candidate row with its index row, so
+  it never makes the index incomplete. `Portal.Workers.UpdateCheck` queues
+  it hourly when the registry shows such a release
+  (`Portal.Catalog.ModuleIndex.queue_incremental/1`); its args differ from
+  the daily run's, so one of each may wait. The daily run stays the
+  backstop: it records every candidate and reads the changed ones first.
 
   It fetches and parses at most 4 packages at once
   (`Portal.Catalog.ModuleIndex.max_concurrency/0`) and stores each one as
@@ -37,6 +46,7 @@ defmodule Portal.Workers.ModuleIndexRefresh do
   @impl Oban.Worker
   def perform(%Oban.Job{args: args}) do
     opts = if is_integer(args["limit"]), do: [limit: args["limit"]], else: []
+    opts = if args["incremental"] == true, do: [{:incremental, true} | opts], else: opts
     _counts = Portal.Catalog.ModuleIndex.refresh(opts)
     :ok
   end

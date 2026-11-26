@@ -7,6 +7,19 @@ defmodule Portal.Workers.ModuleIndexRefreshTest do
     assert ModuleIndexRefresh.perform(%Oban.Job{args: %{"limit" => 0}}) == :ok
   end
 
+  # S10 round 4: the hourly incremental run has args of its own, so one of
+  # each may wait; with no run yet it reads nothing.
+  test "an incremental run is a job of its own" do
+    assert ModuleIndexRefresh.perform(%Oban.Job{args: %{"incremental" => true}}) == :ok
+    {:ok, _daily} = Oban.insert(ModuleIndexRefresh.new(%{}))
+
+    assert {:ok, %Oban.Job{conflict?: false}} =
+             Oban.insert(ModuleIndexRefresh.new(%{"incremental" => true}))
+
+    assert {:ok, %Oban.Job{conflict?: true}} =
+             Oban.insert(ModuleIndexRefresh.new(%{"incremental" => true}))
+  end
+
   # R3-7: a deploy that kills the job leaves it executing; inserting it again
   # must not be a silent conflict for the 3 h until Lifeline rescues it.
   test "a job left executing does not block inserting it again" do

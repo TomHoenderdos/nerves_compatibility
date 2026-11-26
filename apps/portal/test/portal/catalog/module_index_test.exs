@@ -6,6 +6,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
   # module names of our own build manifests too (R3-5b) and matches apps as
   # well as packages (R3-9).
   use Portal.DataCase, async: false
+  use Oban.Testing, repo: Portal.Repo
 
   alias Portal.Catalog.ModuleIndex
 
@@ -361,6 +362,77 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
     assert %{indexed: 1, complete: true} = ModuleIndex.refresh(fetched)
     assert ModuleIndex.complete?()
+  end
+
+  # S10 round 4: the hourly, event-driven run reads only the candidates
+  # whose release changed, and moves each candidate row with its index row,
+  # so it never makes the index incomplete; a failed fetch leaves the
+  # package where it was, for the next run.
+  test "an incremental run reads only what changed and never makes the index incomplete",
+       %{opts: opts, latest: latest} do
+    assert %{incremental: true, skipped: :no_run} =
+             ModuleIndex.refresh(Keyword.put(opts, :incremental, true))
+
+    assert %{complete: true} = ModuleIndex.refresh(opts)
+    newer = tarball(%{"lib/money.ex" => "defmodule MoneyTwo do\nend\n"})
+    reads = :counters.new(1, [])
+
+    moved = [
+      registry: registry(Map.put(latest, "money", "2.0.0")),
+      tarball: fn
+        "money", "2.0.0" ->
+          :counters.add(reads, 1, 1)
+          {:ok, newer}
+
+        n, v ->
+          :counters.add(reads, 1, 1)
+          opts[:tarball].(n, v)
+      end,
+      outer_checksum: fn
+        "money", "2.0.0" -> {:ok, sha(newer)}
+        n, v -> opts[:outer_checksum].(n, v)
+      end,
+      incremental: true
+    ]
+
+    failing = Keyword.put(moved, :tarball, fn _n, _v -> {:error, :hex_registry_unavailable} end)
+    assert %{incremental: true, failed: 1, complete: true} = ModuleIndex.refresh(failing)
+    assert ModuleIndex.complete?()
+    refute "money" in ModuleIndex.definers("Elixir.MoneyTwo")
+
+    assert %{incremental: true, to_fetch: 1} =
+             ModuleIndex.refresh(Keyword.put(moved, :dry_run, true))
+
+    assert %{incremental: true, indexed: 1, complete: true} = ModuleIndex.refresh(moved)
+    assert :counters.get(reads, 1) == 1
+    assert ModuleIndex.complete?()
+    assert ModuleIndex.definers("Elixir.MoneyTwo") == ["money"]
+
+    assert Repo.query!(
+             "SELECT version FROM catalog_module_index_candidates WHERE package = 'money'"
+           ).rows == [["2.0.0"]]
+  end
+
+  test "the hourly check queues one incremental run when a candidate changed, after a run",
+       %{opts: opts, latest: latest} do
+    entries = fn versions ->
+      for {name, v} <- versions, do: %{name: name, latest_version: v, versions: [v]}
+    end
+
+    # No run yet: the index is built by the daily run, not by this one.
+    assert ModuleIndex.queue_incremental(entries.(latest)) == 0
+    refute_enqueued(worker: Portal.Workers.ModuleIndexRefresh)
+
+    assert %{complete: true} = ModuleIndex.refresh(opts)
+    assert ModuleIndex.queue_incremental(entries.(latest)) == 0
+    refute_enqueued(worker: Portal.Workers.ModuleIndexRefresh)
+
+    moved = entries.(Map.put(latest, "money", "2.0.0"))
+    assert ModuleIndex.queue_incremental(moved) == 1
+    assert ModuleIndex.queue_incremental(moved) == 1
+    assert [job] = all_enqueued(worker: Portal.Workers.ModuleIndexRefresh)
+    assert job.args == %{"incremental" => true}
+    assert ModuleIndex.queue_incremental(:not_a_list) == 0
   end
 
   # A run in progress does not make the index incomplete by itself: only

@@ -208,6 +208,106 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
     assert length(all_enqueued(worker: Portal.Workers.ToolchainBuild)) == 1
   end
 
+  # S10 round 4: every kind a module probe or record reaches at ingest. A
+  # pinned build refused that way is queued again from its own pins; a held
+  # pure_elixir result is judged again in place, and published when it
+  # passes.
+  test "a complete run queues the pinned builds and re-judges the held results it refused",
+       %{opts: opts} do
+    not_complete =
+      "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
+        "Code.ensure_loaded?/1 (module index not complete)"
+
+    image = hd(Portal.Toolchains.images())
+    {:ok, pkg} = Ingestion.ensure_package_id("pinned_waiting")
+    pins = %{"hash" => "h1", "deps" => []}
+
+    for {target, system_version, hash} <- [
+          {"pure_elixir", "", "h1"},
+          {"nerves_system_rpi4", "1.31.0", "h2"}
+        ] do
+      Repo.query!(
+        """
+        INSERT INTO catalog_pinned_builds
+          (id, package_id, version, pin_hash, target, system_version, toolchain, builder_version,
+           config_variant, pins, status, reason, inserted_at, updated_at)
+        VALUES (gen_random_uuid(), $1, '1.0.0', $2, $3, $4, $5, $6, 'default', $7, 'skipped', $8,
+                now(), now())
+        """,
+        [
+          Ecto.UUID.dump!(pkg),
+          hash,
+          target,
+          system_version,
+          image.toolchain,
+          Portal.Toolchains.builder_version(),
+          %{pins | "hash" => hash},
+          not_complete
+        ]
+      )
+    end
+
+    {:ok, pe} = Ingestion.ensure_package_id("pe_waiting")
+
+    %{rows: [[run_id]]} =
+      Repo.query!(
+        """
+        INSERT INTO catalog_runs (id, run_id, package_id, version_tested, overall_status, image_digest,
+                                  inserted_at, updated_at)
+        VALUES (gen_random_uuid(), 'r-pew', $1, '1.0.0', 'pass', 'sha256:x', now(), now())
+        RETURNING id
+        """,
+        [Ecto.UUID.dump!(pe)]
+      )
+
+    # One whose record names only ex_money's own module, one that collides.
+    own = %{@money | "module" => "Elixir.Cldr.Money"}
+
+    ids =
+      for record <- [own, @money] do
+        %{rows: [[sr]]} =
+          Repo.query!(
+            """
+            INSERT INTO catalog_system_results (id, run_id, system_pkg, status, declared_absent,
+                                                unpublished_at, unpublished_reason, inserted_at, updated_at)
+            VALUES (gen_random_uuid(), $1, 'pure_elixir', 'pass', $2, now(), $3, now(), now())
+            RETURNING id
+            """,
+            [run_id, [record], not_complete]
+          )
+
+        sr
+      end
+
+    assert %{complete: true, requeued: 3} = ModuleIndex.refresh(opts)
+
+    assert_enqueued(
+      worker: Portal.Workers.PinnedBuild,
+      args: %{"package" => "pinned_waiting", "target" => "pure_elixir", "image" => image.image}
+    )
+
+    assert_enqueued(
+      worker: Portal.Workers.PinnedBuild,
+      args: %{
+        "package" => "pinned_waiting",
+        "target" => "nerves_system_rpi4",
+        "system_version" => "1.31.0"
+      }
+    )
+
+    held = fn id ->
+      Repo.query!(
+        "SELECT unpublished_at IS NOT NULL, unpublished_reason FROM catalog_system_results WHERE id = $1",
+        [id]
+      ).rows
+    end
+
+    [published, collides] = ids
+    assert held.(published) == [[false, nil]]
+    assert [[true, reason]] = held.(collides)
+    assert reason =~ "also defined by money"
+  end
+
   # R5-6: a served pure_elixir result with a record is re-checked too, and
   # withheld as unpublished with the generation's reason.
   test "a served pure_elixir result that now collides is withheld, and the undo restores it",

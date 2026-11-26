@@ -184,6 +184,7 @@ defmodule Portal.Workers.UpdateCheck do
         "enqueued" => summary.enqueued,
         "nominated" => summary.nominated,
         "fast_path" => summary.fast_path,
+        "module_index" => Map.get(summary, :module_index, 0),
         "dry_run" => dry_run?
       })
 
@@ -240,6 +241,12 @@ defmodule Portal.Workers.UpdateCheck do
           end
 
         fast_path = if dry_run?, do: 0, else: ReleaseFastPath.offer(registry)
+
+        # S10 round 4: a release the module index does not hold yet queues
+        # its incremental run, so the index follows Hex within the hour.
+        module_index =
+          if dry_run?, do: 0, else: Portal.Catalog.ModuleIndex.queue_incremental(registry)
+
         unless dry_run?, do: refeed_pins(registry)
 
         Logger.info(
@@ -252,7 +259,8 @@ defmodule Portal.Workers.UpdateCheck do
            moved: length(moved),
            enqueued: enqueued,
            nominated: nominated,
-           fast_path: fast_path
+           fast_path: fast_path,
+           module_index: module_index
          }}
 
       {:error, reason} ->
