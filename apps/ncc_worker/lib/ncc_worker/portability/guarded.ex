@@ -8,9 +8,15 @@ defmodule NccWorker.Portability.Guarded do
         defmodule WebSockAdapter.CowboyAdapter do ... end
       end
 
-  P's own build refuses as before: a Mix.install user who has the probed
-  module gets A, the builder does not. A dependent whose beams are the
-  same whether A exists or not is not tainted by P's refusal. That is
+  P's own build is never waived: a Mix.install user who has the probed
+  module gets A, the builder does not. Since S10 the probe is a `probe`
+  compile input there (`NccWorker.Portability.Probes`), which client 0.10
+  checks against the user's project, and in a dependent's build too. A
+  dependent whose beams are the same whether A exists or not needs neither
+  the input nor the refusal: a waived probe's input is dropped
+  (`NccWorker.Portability`), and when the proof below refuses with the
+  first build back untouched, the build passes with the input instead
+  (`GuardedProof`). That is
   proved by building, never by the conditions below alone (S9 review B1,
   B2: the type checker reads A's signature through a value of A's atom's
   type, untraced, and P's Mix manifest lists A): a pass these conditions

@@ -1190,14 +1190,18 @@ defmodule NccWorker.Portability.ProbesTest do
                Probes.decide(hex("Elixir.Pg.Extensions.Int.Sub"), c, "pkg")
 
       # The namespace's package outside the prober's closure; a namespace
-      # no closure package builds; an Erlang module; a top-level module.
+      # no closure package builds; an Erlang module; a top-level module: no
+      # namespace record, but nothing in the build defines them, so each is
+      # a probe input (S10).
       for {module, owner} <- [
             {"Elixir.Pg.Timestamp", "other"},
             {"Elixir.Other.Timestamp", "pkg"},
             {"pg_timestamp", "pkg"},
             {"Elixir.Timestamp", "pkg"}
           ] do
-        assert {:refuse, _} = Probes.decide(hex(module), c, owner), module
+        assert {:observe, "probe_inputs", %{"of" => "module", "name" => ^module}} =
+                 Probes.decide(hex(module), c, owner),
+               module
       end
 
       # Built by name alone: the tarball does not define the namespace's
@@ -1220,12 +1224,14 @@ defmodule NccWorker.Portability.ProbesTest do
       built = with_modules(c, Map.put(c.modules, "Elixir.Pg.Timestamp", "other"))
       assert {:refuse, _} = Probes.decide(hex("Elixir.Pg.Timestamp"), built, "pkg")
 
+      # No namespace proof: a probe input (S10). Where pg defines the module
+      # only behind a probe of its own, that probe is an input too.
       for {h, release} <- [
             {Path.join(dir, "bare"), bare},
             {Path.join(dir, "both"), both},
             {nil, pg}
           ] do
-        assert {:refuse, _} =
+        assert {:observe, "probe_inputs", %{"name" => "Elixir.Pg.Timestamp"}} =
                  Probes.decide(
                    hex("Elixir.Pg.Timestamp"),
                    %{c | hex: {h, %{"pg" => release}}},

@@ -1187,6 +1187,7 @@ defmodule NccWorker.Portability do
     # A firmware target's or host-native verdict refuses on any refusal of
     # the closure (`target_verdict_of/1`): no taint is waived there.
     waivers = if target(opts), do: %{}, else: Guarded.waivers(ctx, report, guarded_tags)
+    {decided, waived} = waived_inputs(decided, waivers)
 
     {decided, deps} =
       dep_results(ctx, report, decided, libs, {target(opts) != nil, side != nil}, waivers)
@@ -1210,6 +1211,16 @@ defmodule NccWorker.Portability do
           os_type,
           Keyword.take(opts, [:roots, :target])
         ),
+      # S10: the inputs with the waived probes, for a refused proof.
+      fallback_inputs:
+        waived &&
+          CompileInputs.build(
+            decided ++ waived,
+            config.inputs ++ rebar_inputs,
+            endian,
+            os_type,
+            Keyword.take(opts, [:roots, :target])
+          ),
       trace_problems:
         trace_problems(report, ctx) ++
           built_problems(ctx, report, opts, settled.exclude) ++
@@ -1411,15 +1422,59 @@ defmodule NccWorker.Portability do
           do: {kept, guarded_site(kept, event, vm_ctx)}
 
     # Every refusal with the reviewed guarded site it came from, if any
-    # (`Guarded`, coverage drop 2026-11-22, F4).
-    tags = for {{owner, {:refuse, reason}}, site} <- decided, do: {owner, reason, site}
+    # (`Guarded`, coverage drop 2026-11-22, F4), and every probe S10 records
+    # instead of refusing, by the refusal it replaces: F4 may waive it too,
+    # and a waived one needs no input (`waived_inputs/2`).
+    tags =
+      for {{owner, decision}, site} <- decided,
+          reason = tag_reason(decision),
+          reason != nil,
+          do: {owner, reason, site}
+
     {Enum.map(decided, &elem(&1, 0)), tags}
   end
+
+  defp tag_reason({:refuse, reason}), do: reason
+  defp tag_reason({:observe, "probe_inputs", %{"refusal" => reason}}), do: reason
+  defp tag_reason(_decision), do: nil
 
   defp guarded_site({owner, {:refuse, _reason}}, event, ctx) when is_binary(owner),
     do: Guarded.site(event, ctx, owner)
 
+  defp guarded_site({owner, {:observe, "probe_inputs", _item}}, event, ctx)
+       when is_binary(owner),
+       do: Guarded.site(event, ctx, owner)
+
   defp guarded_site(_kept, _event, _ctx), do: nil
+
+  # S10 and F4: a probe input in a closure dependency's window whose refusal
+  # text F4 waived (`Guarded.waivers/3`) is no input: the waiver's proof
+  # build decides it (`GuardedProof`). Returns the decisions without them,
+  # and those dropped when every waived text was such an input, for the
+  # inputs a refused proof falls back to; `nil` otherwise (a waived refusal
+  # no input stands for).
+  defp waived_inputs(decided, waivers) when map_size(waivers) == 0, do: {decided, nil}
+
+  defp waived_inputs(decided, waivers) do
+    {kept, dropped} =
+      Enum.split_with(decided, fn
+        {owner, {:observe, "probe_inputs", %{"refusal" => reason}}} ->
+          not (Map.has_key?(waivers, owner) and MapSet.member?(waivers[owner].reasons, reason))
+
+        _ ->
+          true
+      end)
+
+    covered =
+      MapSet.new(dropped, fn {owner, {:observe, _, %{"refusal" => reason}}} -> {owner, reason} end)
+
+    every =
+      Enum.all?(waivers, fn {owner, %{reasons: reasons}} ->
+        Enum.all?(reasons, &MapSet.member?(covered, {owner, &1}))
+      end)
+
+    {kept, if(every, do: dropped)}
+  end
 
   # S10: a probe the builder answered "absent" is a compile input only where
   # a client checks it against the user's project. A firmware target's or a
@@ -3228,10 +3283,11 @@ defmodule NccWorker.Portability do
   # What a guarded-module proof needs of the first build
   # (`GuardedProof.hold/3`): the package's build dir and the closure's apps
   # in compile order.
-  defp guarded_context(%{ctx: ctx, deps: deps}) do
+  defp guarded_context(%{ctx: ctx, deps: deps} = facts) do
     %{
       build: Context.dep?(ctx, ctx.package) && ctx.deps[ctx.package].build,
-      order: Enum.map(deps, &elem(&1, 0))
+      order: Enum.map(deps, &elem(&1, 0)),
+      fallback_inputs: Map.get(facts, :fallback_inputs)
     }
   end
 

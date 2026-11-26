@@ -41,7 +41,28 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
 
   @refusal "compile-time probe of a dependency outside the closure: cowboy_websocket via " <>
              "Code.ensure_loaded?/1"
-  @taint "closure dependency observed the host: websock_adapter (#{@refusal})"
+
+  # S10: what the builder answered "absent" is a `probe` compile input,
+  # which client 0.10 checks against the user's project. A waived probe
+  # needs none; one whose waiver the proof refuses, or that no waiver
+  # covers, passes with it.
+  @cowboy_input %{
+    "kind" => "probe",
+    "of" => "module",
+    "name" => "cowboy_websocket",
+    "answer" => "absent",
+    "definers" => []
+  }
+  @poison_input %{
+    "kind" => "probe",
+    "of" => "module",
+    "name" => "Elixir.Poison",
+    "answer" => "absent",
+    "definers" => []
+  }
+
+  defp probe_inputs(verdict),
+    do: Enum.filter(verdict.compile_inputs || [], &(&1["kind"] == "probe"))
 
   @cowboy %{
     files: %{
@@ -174,6 +195,8 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
              verdict.observations["trace_stats"]["guarded_proof"]
 
     refute Portability.GuardedProof.hold_problem() in verdict.observations["problems"]
+    # Waived: no probe input.
+    assert probe_inputs(verdict) == []
 
     # The first build is back where it was, without the guarded module, and
     # the proof's dirs are gone.
@@ -202,10 +225,13 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
     assert %{status: :skip, reason: @refusal} = firmware
   end
 
-  # The prober's own build is refused as before.
-  test "the prober's own build still refuses", %{tmp_dir: dir} do
+  # The prober's own build is never waived (F4); S10 records its probe.
+  test "the prober's own build passes with its probe input", %{tmp_dir: dir} do
     proj = project(dir, @dependent)
-    assert %{status: :skip, reason: @refusal} = run(dir, proj, "websock_adapter")
+    verdict = run(dir, proj, "websock_adapter")
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+    assert probe_inputs(verdict) == [@cowboy_input]
+    assert verdict.observations["guarded_taint"] == []
   end
 
   # The review's counter-examples (S9 review B1, B2): both pass every static
@@ -239,17 +265,20 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
       ] do
     @body body
     @differs differs
-    test "a dependent that #{name} is refused by the proof build", %{tmp_dir: dir} do
+    # S10: the proof refuses the waiver, and the build passes with the probe
+    # input instead: client 0.10 takes it only where cowboy is absent.
+    test "a dependent that #{name} is not waived by the proof build", %{tmp_dir: dir} do
       proj = project(Path.join(dir, "w"), @body)
       verdict = run(dir, proj, "fx_dep")
-      assert %{status: :skip, reason: @taint} = verdict, inspect(verdict.reason)
+      assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+      assert probe_inputs(verdict) == [@cowboy_input]
 
-      assert %{"result" => "refused", "why" => why} =
+      assert %{"result" => "input", "why" => why} =
                verdict.observations["trace_stats"]["guarded_proof"]
 
       assert why =~ "the package builds otherwise with the guarded packages present", why
       assert why =~ @differs, why
-      assert verdict.observations["taint"]["websock_adapter"] == @refusal
+      assert verdict.observations["taint"] == %{}
       assert verdict.observations["trace_stats"]["transient"] == false
 
       # The first build is back.
@@ -296,12 +325,14 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
       })
 
     verdict = run(dir, proj, "fx_dep")
-    assert %{status: :skip, reason: "closure dependency observed the host: " <> _} = verdict
+    # S10: the waiver is refused, and both probes are inputs.
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+    assert probe_inputs(verdict) == [@poison_input, @cowboy_input]
 
     assert [%{"app" => "jose"}, %{"app" => "websock_adapter"}] =
              verdict.observations["guarded_taint"]
 
-    assert %{"result" => "refused", "why" => why} =
+    assert %{"result" => "input", "why" => why} =
              verdict.observations["trace_stats"]["guarded_proof"]
 
     # The first world, jose's guarded package alone, already differs.
@@ -340,6 +371,7 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
              verdict.observations["trace_stats"]["guarded_proof"]
 
     assert Enum.sort(present) == ["fx_cowboy", "fx_poison"]
+    assert probe_inputs(verdict) == []
   end
 
   # S9 re-review R1-3: the project dir reached through a link (macOS's
@@ -368,7 +400,8 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
     refute File.exists?(real <> ".ncc-guarded-first")
   end
 
-  # The proof build refuses when it cannot be made, or proves nothing.
+  # The proof build refuses when it cannot be made, or proves nothing. S10:
+  # the first build is back untouched, so it passes with the probe input.
   @lock ~s(%{"jason": {:hex, :jason, "1.4.4", "inner", [:mix], [], "hexpm", "outer"}}\n)
   @moved ~s(%{"jason": {:hex, :jason, "1.4.5", "inner", [:mix], [], "hexpm", "other"}}\n)
 
@@ -399,7 +432,7 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
       ] do
     @extra extra
     @why why
-    test "#{name}: refused", %{tmp_dir: dir} do
+    test "#{name}: the probe input instead", %{tmp_dir: dir} do
       proj =
         project(Path.join(dir, "w"), @dependent, %{
           "fx_broken" =>
@@ -409,8 +442,12 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
 
       File.write!(Path.join(proj, "mix.lock"), @lock)
       verdict = run(dir, proj, "fx_dep", @extra)
-      assert %{status: :skip, reason: @taint} = verdict, inspect(verdict.reason)
-      assert %{"why" => why} = verdict.observations["trace_stats"]["guarded_proof"]
+      assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+      assert probe_inputs(verdict) == [@cowboy_input]
+
+      assert %{"result" => "input", "why" => why} =
+               verdict.observations["trace_stats"]["guarded_proof"]
+
       assert why =~ @why, why
 
       # The first project is back as it was, its lock included.
@@ -428,38 +465,47 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
   end
 
   # The static conditions stay a pre-filter: a dependent that fails one
-  # refuses without a proof build.
-  for {name, body, reason} <- [
+  # gets no waiver and no proof build. S10: websock_adapter's probe is the
+  # dependent's input, and the dependent's own probe of the guarded module
+  # (nothing in the build defines it) is one too.
+  @guarded_input %{
+    "kind" => "probe",
+    "of" => "module",
+    "name" => "Elixir.WebSockAdapter.CowboyAdapter",
+    "answer" => "absent",
+    "definers" => []
+  }
+
+  for {name, body, inputs} <- [
         {"calls the guarded module",
          """
          defmodule FxDep do
            @compile {:no_warn_undefined, WebSockAdapter.CowboyAdapter}
            def init(req, state), do: WebSockAdapter.CowboyAdapter.init(req, state)
          end
-         """, @taint},
+         """, [@cowboy_input]},
         {"probes the guarded module at compile time",
          TracerFixtures.attr_module("FxDep", "Code.ensure_loaded?(WebSockAdapter.CowboyAdapter)"),
-         "compile-time probe of a dependency outside the closure: " <>
-           "Elixir.WebSockAdapter.CowboyAdapter via Code.ensure_loaded?/1"},
+         [@guarded_input, @cowboy_input]},
         {"lists the prober's ebin at compile time",
          TracerFixtures.attr_module(
            "FxDep",
            ~S{"../../_build/host/lib/websock_adapter/ebin" |> File.ls!() |> Enum.sort()}
-         ), @taint},
+         ), [@cowboy_input]},
         {"calls the guarded module at compile time",
          TracerFixtures.attr_module(
            "FxDep",
            "(try do WebSockAdapter.CowboyAdapter.init(1, 2) rescue _ -> :none end)"
-         ),
-         "compile-time probe of a dependency outside the closure: " <>
-           "Elixir.WebSockAdapter.CowboyAdapter via code:ensure_loaded/1"}
+         ), [@guarded_input, @cowboy_input]}
       ] do
     @body body
-    @reason reason
-    test "a dependent that #{name} is refused without a proof build", %{tmp_dir: dir} do
+    @inputs inputs
+    test "a dependent that #{name} passes with probe inputs and no proof build",
+         %{tmp_dir: dir} do
       proj = project(dir, @body)
       verdict = run(dir, proj, "fx_dep")
-      assert %{status: :skip, reason: @reason} = verdict, inspect(verdict.reason)
+      assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+      assert probe_inputs(verdict) == @inputs
       assert verdict.observations["guarded_taint"] == []
       refute Map.has_key?(verdict.observations["trace_stats"], "guarded_proof")
     end
