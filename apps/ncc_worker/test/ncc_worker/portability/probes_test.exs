@@ -1091,7 +1091,8 @@ defmodule NccWorker.Portability.ProbesTest do
           modules: %{"Elixir.Jason.Encoder" => ["child"], "Elixir.Poison" => ["other"]},
           apps: %{"jason" => ["child"]},
           owners: %{"Elixir.Jason.Encoder" => ["jason"], "Elixir.Poison" => ["poison"]},
-          packages: %{"jason" => "jason_app", "poison" => "poison"}
+          packages: %{"jason" => "jason_app", "poison" => "poison"},
+          gated: %{"Elixir.Jason.Encoder" => ["jason"]}
         })
 
       c = put_in(c.deps["pkg"].children, ["child"])
@@ -1104,6 +1105,8 @@ defmodule NccWorker.Portability.ProbesTest do
         "module" => "Elixir.Jason.Encoder",
         "declared" => ["jason"],
         "declared_apps" => ["jason_app"],
+        # S10 round 3: the declared packages past the review gate.
+        "optional_of" => ["jason"],
         "via" => "Code.ensure_loaded?/1"
       }
 

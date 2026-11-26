@@ -697,6 +697,11 @@ defmodule NccWorker.Portability.Probes do
         declared
         |> Enum.map(&Map.get(Map.get(ctx.declared, :packages, %{}), &1, &1))
         |> Enum.uniq(),
+      # S10 round 3: the declared packages that pass the declared-optional-
+      # dependency rule's review gate for this module
+      # (`NccWorker.Portability.Declared.gate?/3`), whose presence alone
+      # decides it for client 0.10.
+      "optional_of" => Map.get(Map.get(ctx.declared, :gated, %{}), module, []),
       "via" => via(event)
     }
   end

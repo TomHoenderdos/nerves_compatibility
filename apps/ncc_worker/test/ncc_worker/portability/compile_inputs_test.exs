@@ -111,6 +111,42 @@ defmodule NccWorker.Portability.CompileInputsTest do
              ]
     end
 
+    # S10 round 3: a declared-absent record's gated packages ride on the
+    # item as `declared`, and a merge keeps them (a fact about the module).
+    test "a declared-absent probe past the review gate carries its declared packages" do
+      gated = fn {owner, {:observe, kind, item}} ->
+        {owner, {:observe, kind, Map.put(item, "optional_of", ["jason"])}}
+      end
+
+      decided = [
+        gated.(declared("Elixir.Jason.Encoder", ["jason"], ["jason"])),
+        probed("module", "Elixir.Jason.Encoder", owner: "dep"),
+        declared("Elixir.Money", ["ex_money"], ["ex_money_app"], "dep")
+      ]
+
+      items = CompileInputs.build(decided, [])
+
+      assert items == [
+               %{
+                 "kind" => "probe",
+                 "of" => "module",
+                 "name" => "Elixir.Jason.Encoder",
+                 "answer" => "absent",
+                 "definers" => ["jason"],
+                 "declared" => ["jason"]
+               },
+               %{
+                 "kind" => "probe",
+                 "of" => "module",
+                 "name" => "Elixir.Money",
+                 "answer" => "absent",
+                 "definers" => ["ex_money", "ex_money_app"]
+               }
+             ]
+
+      assert Compatibility.CompileInputs.validate(items) == {:ok, items}
+    end
+
     test "a name the shared shape cannot carry, or more than 64, record config_unrecorded" do
       assert CompileInputs.build([probed("module", "Elixir.Bad Name")], []) ==
                [%{"kind" => "config_unrecorded"}]

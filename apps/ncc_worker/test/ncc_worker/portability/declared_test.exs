@@ -76,13 +76,59 @@ defmodule NccWorker.Portability.DeclaredTest do
     refute Map.has_key?(index.apps, "fx_dep")
   end
 
+  # S10 round 3, the declared-optional-dependency rule's review gate: the
+  # modules fx_opt's own tarball defines in its own namespace, not as a
+  # protocol's implementation. The protocol module itself passes; its
+  # implementations (and String.Chars's, outside the namespace) do not.
+  test "the gated modules of an absent declared dependency", %{tmp_dir: dir} do
+    index = Declared.index(ctx(dir))
+
+    assert index.gated == %{
+             "Elixir.FxOpt" => ["fx_opt"],
+             "Elixir.FxOpt.Inner" => ["fx_opt"],
+             "Elixir.FxOpt.Proto" => ["fx_opt"],
+             "fx_opt_erl" => ["fx_opt"]
+           }
+  end
+
+  test "gate?/3: own tarball, own namespace, no implementation" do
+    facts = %{
+      modules: ~w(Elixir.Jason Elixir.Jason.Encoder Elixir.Jason.Encoder.Decimal jason_nif),
+      protocols: ["Elixir.Jason.Encoder"],
+      impls: ["Elixir.Jason.Encoder.Decimal"]
+    }
+
+    assert Declared.gate?("Elixir.Jason.Encoder", facts, "jason")
+    assert Declared.gate?("Elixir.Jason", facts, "jason")
+    assert Declared.gate?("jason_nif", facts, "jason")
+    # An implementation, here or by a name under the protocol.
+    refute Declared.gate?("Elixir.Jason.Encoder.Decimal", facts, "jason")
+
+    refute Declared.gate?(
+             "Elixir.Jason.Encoder.Money",
+             %{facts | modules: facts.modules ++ ["Elixir.Jason.Encoder.Money"]},
+             "jason"
+           )
+
+    # Not in its tarball, or not in its namespace.
+    refute Declared.gate?("Elixir.Poison", facts, "jason")
+
+    refute Declared.gate?(
+             "Elixir.Other.Thing",
+             %{facts | modules: ["Elixir.Other.Thing"]},
+             "jason"
+           )
+
+    refute Declared.gate?("other_erl", %{facts | modules: ["other_erl"]}, "jason")
+  end
+
   # Round 3, R2-3: only an optional declaration counts (a non-optional one
   # the build lacks is a `targets:` dependency, which Mix still makes a
   # child of its declarer), and only when the lock, not only the closure,
   # lacks the dependency.
   test "a non-optional declared dependency is not declared-absent", %{tmp_dir: dir} do
     index = Declared.index(ctx(dir, requirements: [req("fx_opt", false)]))
-    assert index == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
+    assert index == Declared.empty()
   end
 
   test "a declared dependency the lock holds is not declared-absent", %{tmp_dir: dir} do
@@ -90,7 +136,7 @@ defmodule NccWorker.Portability.DeclaredTest do
     {home, releases} = c.hex
     {_, opt} = TracerFixtures.hex_release(home, "fx_opt", ["lib"])
     index = Declared.index(%{c | hex: {home, Map.put(releases, "fx_opt", opt)}})
-    assert index == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
+    assert index == Declared.empty()
   end
 
   test "each module names the declared packages that define it", %{tmp_dir: dir} do
@@ -110,13 +156,13 @@ defmodule NccWorker.Portability.DeclaredTest do
   test "a declaration from another repository is not read", %{tmp_dir: dir} do
     other = List.keyreplace(req("fx_opt"), "repository", 0, {"repository", "acme"})
     index = Declared.index(ctx(dir, requirements: [other]))
-    assert index == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
+    assert index == Declared.empty()
   end
 
   test "an unreadable declarer's tarball declares nothing", %{tmp_dir: dir} do
     c = ctx(dir)
     c = %{c | hex: {elem(c.hex, 0), %{}}}
-    assert Declared.index(c) == %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
+    assert Declared.index(c) == Declared.empty()
   end
 end
 

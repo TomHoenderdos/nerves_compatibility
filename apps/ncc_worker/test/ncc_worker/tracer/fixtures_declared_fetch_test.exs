@@ -103,6 +103,8 @@ defmodule NccWorker.Tracer.FixturesDeclaredFetchTest do
     verdict = run.(fetched, 3)
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
     assert [%{"module" => "Elixir.FxOpt.Codec"}] = verdict.observations["declared_absent"]
-    assert verdict.compile_inputs == [input.(["fx_opt"])]
+    # S10 round 3: FxOpt.Codec lies in fx_opt's own namespace (its tarball
+    # defines FxOpt), so fx_opt's presence decides it.
+    assert verdict.compile_inputs == [Map.put(input.(["fx_opt"]), "declared", ["fx_opt"])]
   end
 end

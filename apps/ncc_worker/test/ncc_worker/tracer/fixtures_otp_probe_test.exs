@@ -549,13 +549,15 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
 
     # A compile input client 0.10 checks, its declared definer named (S10).
+    # S10 round 3: in fx_opt's own namespace, so its presence decides it.
     assert verdict.compile_inputs == [
              %{
                "kind" => "probe",
                "of" => "module",
                "name" => "Elixir.FxOpt.Codec",
                "answer" => "absent",
-               "definers" => ["fx_opt"]
+               "definers" => ["fx_opt"],
+               "declared" => ["fx_opt"]
              }
            ]
 

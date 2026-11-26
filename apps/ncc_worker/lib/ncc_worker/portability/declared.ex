@@ -51,19 +51,24 @@ defmodule NccWorker.Portability.Declared do
   @max_fetch 64
   @fetch_timeout_sec 120
   @name ~r/\A[a-z][a-z0-9_]*\z/
+  @no_facts %{modules: [], protocols: [], impls: []}
 
   @type t :: %{
           modules: %{String.t() => [String.t()]},
           apps: %{String.t() => [String.t()]},
           owners: %{String.t() => [String.t()]},
-          packages: %{String.t() => String.t()}
+          packages: %{String.t() => String.t()},
+          gated: %{String.t() => [String.t()]}
         }
 
   @doc """
   The declared-absent dependencies' modules and applications, each with the
   members that declare it (`modules`, `apps`), each module with the
   declared packages that define it (`owners`), and each declared package's
-  application (`packages`). Declared-absent: an
+  application (`packages`). `gated` (S10 round 3, the declared-optional-
+  dependency rule's review gate) holds each module with the declared
+  packages whose own tarball defines it in their own namespace, not as a
+  protocol's implementation (`gate?/3`). Declared-absent: an
   `optional: true` requirement (round 3, R2-3: a non-optional one the build
   lacks is a `targets:` dependency, which Mix still makes a child of its
   declarer) whose application the lock does not hold.
@@ -84,20 +89,29 @@ defmodule NccWorker.Portability.Declared do
       |> Enum.group_by(fn {req, _} -> req.app end, &elem(&1, 1))
       |> Map.new(fn {app, members} -> {app, members |> Enum.uniq() |> Enum.sort()} end)
 
-    {modules, owners} =
+    packages = Map.new(declared, fn {req, _} -> {req.name, req.app} end)
+
+    {modules, owners, gated} =
       for {name, members} <- Enum.group_by(declared, fn {req, _} -> req.name end, &elem(&1, 1)),
-          module <- modules_of(home, name),
-          reduce: {%{}, %{}} do
-        {acc, own} ->
+          facts = facts_of(home, name),
+          module <- facts.modules,
+          reduce: {%{}, %{}, %{}} do
+        {acc, own, gate} ->
+          gate =
+            if gate?(module, facts, Map.get(packages, name, name)),
+              do: Map.update(gate, module, [name], &Enum.uniq([name | &1])),
+              else: gate
+
           {Map.update(acc, module, Enum.uniq(members), &Enum.uniq(&1 ++ members)),
-           Map.update(own, module, [name], &Enum.uniq([name | &1]))}
+           Map.update(own, module, [name], &Enum.uniq([name | &1])), gate}
       end
 
     %{
       modules: Map.new(modules, fn {m, ms} -> {m, Enum.sort(ms)} end),
       apps: apps,
       owners: Map.new(owners, fn {m, ns} -> {m, Enum.sort(ns)} end),
-      packages: Map.new(declared, fn {req, _} -> {req.name, req.app} end)
+      packages: packages,
+      gated: Map.new(gated, fn {m, ns} -> {m, Enum.sort(ns)} end)
     }
   rescue
     _ -> empty()
@@ -107,7 +121,51 @@ defmodule NccWorker.Portability.Declared do
 
   @doc "The index of a build that declares nothing absent."
   @spec empty() :: t()
-  def empty, do: %{modules: %{}, apps: %{}, owners: %{}, packages: %{}}
+  def empty, do: %{modules: %{}, apps: %{}, owners: %{}, packages: %{}, gated: %{}}
+
+  @doc """
+  The review gate of the declared-optional-dependency rule (S10 round 3):
+  whether a declared package D (`facts`: the modules, protocols and
+  implementations its own tarball defines, `app` its application) may
+  decide a probe of `module` by D's presence alone. D's tarball defines the
+  module, not as a `defimpl` (an implementation is defined by design in
+  other packages: Jason.Encoder's are `defimpl`s inside them); the module
+  is in D's namespace (for an Elixir module, D defines its first segment,
+  `Elixir.Postgrex` for `Elixir.Postgrex.Error`; for an Erlang module, it is
+  D's application or starts with it and `_`); and no proper prefix of the
+  module is a protocol D defines (a name under a protocol is an
+  implementation's). A probe of the protocol module itself passes: no
+  implementation defines it.
+  """
+  @spec gate?(
+          String.t(),
+          %{modules: [String.t()], protocols: [String.t()], impls: [String.t()]},
+          String.t()
+        ) ::
+          boolean()
+  def gate?(module, facts, app) do
+    module in facts.modules and module not in facts.impls and namespace?(module, facts, app) and
+      not Enum.any?(prefixes(module), &(&1 in facts.protocols))
+  end
+
+  defp namespace?("Elixir." <> rest, facts, _app) do
+    [root | _] = String.split(rest, ".")
+    ("Elixir." <> root) in facts.modules
+  end
+
+  defp namespace?(module, _facts, app) when is_binary(app),
+    do: module == app or String.starts_with?(module, app <> "_")
+
+  defp namespace?(_module, _facts, _app), do: false
+
+  # The proper prefixes of an Elixir module's name, `Elixir.A` and
+  # `Elixir.A.B` for `Elixir.A.B.C`.
+  defp prefixes("Elixir." <> rest) do
+    parts = String.split(rest, ".")
+    for n <- 1..(length(parts) - 1)//1, do: "Elixir." <> Enum.join(Enum.take(parts, n), ".")
+  end
+
+  defp prefixes(_module), do: []
 
   @doc """
   Downloads into `home` (the run's `HEX_HOME`) the declared-absent
@@ -393,8 +451,10 @@ defmodule NccWorker.Portability.Declared do
   defp props(props) when is_map(props), do: Map.to_list(props)
   defp props(_props), do: []
 
+  # The union of what the cached tarballs of package `name` define, newest
+  # @max_versions first: their modules, protocols and implementations.
   # sobelow_skip ["Traversal.FileModule"]
-  defp modules_of(home, name) when is_binary(home) do
+  defp facts_of(home, name) when is_binary(home) do
     dir = Path.join([home, "packages", "hexpm"])
 
     case File.ls(dir) do
@@ -403,15 +463,17 @@ defmodule NccWorker.Portability.Declared do
         |> Enum.flat_map(&release_of(&1, name, dir))
         |> Enum.sort_by(&elem(&1, 0), &newer?/2)
         |> Enum.take(@max_versions)
-        |> Enum.flat_map(fn {_version, path} -> tarball_modules(path) end)
-        |> Enum.uniq()
+        |> Enum.map(fn {_version, path} -> tarball_facts(path) end)
+        |> Enum.reduce(@no_facts, fn facts, acc ->
+          Map.new(acc, fn {key, list} -> {key, Enum.uniq(list ++ Map.fetch!(facts, key))} end)
+        end)
 
       _ ->
-        []
+        @no_facts
     end
   end
 
-  defp modules_of(_home, _name), do: []
+  defp facts_of(_home, _name), do: @no_facts
 
   # `{version, path}` of a cached tarball of package `name`.
   defp release_of(file, name, dir) do
@@ -429,14 +491,17 @@ defmodule NccWorker.Portability.Declared do
   end
 
   # sobelow_skip ["Traversal.FileModule"]
-  defp tarball_modules(path) do
+  defp tarball_facts(path) do
     max = Compatibility.StaticPriv.max_tarball_bytes()
 
-    case File.open(path, [:read, :raw, :binary], &IO.binread(&1, max + 1)) do
-      {:ok, bytes} when is_binary(bytes) -> Compatibility.HexModules.modules(bytes)
-      _ -> []
+    with {:ok, bytes} when is_binary(bytes) <-
+           File.open(path, [:read, :raw, :binary], &IO.binread(&1, max + 1)),
+         {:ok, read} <- Compatibility.HexModules.read(bytes) do
+      Map.take(read, [:modules, :protocols, :impls])
+    else
+      _ -> @no_facts
     end
   rescue
-    _ -> []
+    _ -> @no_facts
   end
 end

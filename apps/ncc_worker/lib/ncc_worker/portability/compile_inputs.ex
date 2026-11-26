@@ -180,12 +180,20 @@ defmodule NccWorker.Portability.CompileInputs do
   defp probe_item("probe_inputs", item),
     do: %{"kind" => "probe", "of" => item["of"], "name" => item["name"], "answer" => "absent"}
 
-  defp probe_item("declared_absent", item),
-    do:
+  defp probe_item("declared_absent", item) do
+    probe =
       module_probe(
         item["module"],
         List.wrap(item["declared"]) ++ List.wrap(item["declared_apps"])
       )
+
+    # S10 round 3: the declared packages that pass the review gate; their
+    # presence decides the item (`Compatibility.CompileInputs`).
+    case List.wrap(item["optional_of"]) do
+      [] -> probe
+      packages -> Map.put(probe, "declared", packages)
+    end
+  end
 
   defp module_probe(name, definers),
     do: %{
@@ -196,9 +204,13 @@ defmodule NccWorker.Portability.CompileInputs do
       "definers" => definers
     }
 
+  # A module's gated packages are a fact about the module, not about who
+  # asked: the merged item keeps every one any of the questions carried.
   defp merge_definers(%{"of" => "module"} = first, same) do
     definers = same |> Enum.flat_map(& &1["definers"]) |> Enum.uniq() |> Enum.sort()
-    %{first | "definers" => definers}
+    declared = same |> Enum.flat_map(&List.wrap(&1["declared"])) |> Enum.uniq() |> Enum.sort()
+    merged = first |> Map.delete("declared") |> Map.put("definers", definers)
+    if declared == [], do: merged, else: Map.put(merged, "declared", declared)
   end
 
   defp merge_definers(first, _same), do: first
