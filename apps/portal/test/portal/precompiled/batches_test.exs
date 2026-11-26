@@ -135,10 +135,11 @@ defmodule Portal.Precompiled.BatchesTest do
 
       # Three packages took a handful of queries each the first time.
       # The second batch reads the fingerprints (before and after), the
-      # package list and the systems table, records the named shas in one
-      # statement, and signs: a count that does not grow with the catalog.
+      # package list, the systems table and the release index's read set
+      # (S10 round 5), records the named shas in one statement, and signs:
+      # a count that does not grow with the catalog.
       assert first > 12
-      assert second <= 9, "second batch ran #{second} queries"
+      assert second <= 10, "second batch ran #{second} queries"
     end
 
     test "a revoked run drops out of the next batch" do
@@ -619,7 +620,7 @@ defmodule Portal.Precompiled.BatchesTest do
 
       assert JSON.decode!(b2.payload)["content"] == ["https://mirror.example"]
       assert Batches.manifests(b2) == Batches.manifests(b1)
-      assert second <= 9, "second batch ran #{second} queries"
+      assert second <= 10, "second batch ran #{second} queries"
       assert_stored_bytes_are_fresh_renders(b2)
     end
   end

@@ -121,10 +121,10 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
     assert revoked(colliding) == {false, nil}
   end
 
-  # S10: a served row whose module probe input was recorded before the index
-  # showed a popular definer is withheld like a colliding record; one whose
-  # input names every definer stays.
-  test "a served probe input that misses a popular definer is withheld", %{opts: opts} do
+  # S10 round 5 (review U5, U6): a probe input is client 0.10's to decide
+  # against each user's lock, by the batch's release index; the recheck
+  # neither reads nor withholds a row for it, nor for a record it carries.
+  test "a served probe input is not rechecked, nor a record it carries", %{opts: opts} do
     probe = fn definers ->
       %{
         "kind" => "probe",
@@ -135,19 +135,17 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
       }
     end
 
-    stale = served_with_inputs!("stale_probe", [probe.(["ex_money"])])
-    named = served_with_inputs!("named_probe", [probe.(["ex_money", "money"])])
+    input_only = served_with_inputs!("stale_probe", [probe.(["ex_money"])])
 
     covered =
       served!("covered_record", %{"declared_absent" => [@money]})
-      |> tap(&set_inputs!(&1, [probe.(["ex_money", "money"])]))
+      |> tap(&set_inputs!(&1, [probe.(["ex_money"])]))
 
-    assert %{complete: true, withheld: 1} = ModuleIndex.refresh(opts)
-    assert {true, _} = revoked(stale)
-    assert revoked(named) == {false, nil}
+    assert %{complete: true, withheld: 0} = ModuleIndex.refresh(opts)
+    assert revoked(input_only) == {false, nil}
     assert revoked(covered) == {false, nil}
-    # The two still served, each read for its input.
-    assert %{checked: 2, withheld: 0} = ModuleIndex.recheck(dry_run: true)
+    # Only the row with a record is read, and it does not collide.
+    assert %{checked: 1, withheld: 0} = ModuleIndex.recheck(dry_run: true)
   end
 
   defp served_with_inputs!(name, inputs),
@@ -306,6 +304,35 @@ defmodule Portal.Catalog.ModuleIndexRecheckTest do
     assert held.(published) == [[false, nil]]
     assert [[true, reason]] = held.(collides)
     assert reason =~ "also defined by money"
+  end
+
+  # S10 review U7: a host-native build refused for an incomplete index is a
+  # `fail` row; it is queued again, not left as a final verdict.
+  test "a complete run queues the host-native builds it refused", %{opts: opts} do
+    {:ok, pkg} = Ingestion.ensure_package_id("hn_waiting")
+
+    Repo.query!(
+      """
+      INSERT INTO catalog_host_native_builds
+        (id, package_id, version, toolchain, triple, builder_version, status, reason,
+         inserted_at, updated_at)
+      VALUES (gen_random_uuid(), $1, '1.0.0', '1.20/29', 'x86_64-linux-gnu', $2, 'fail', $3,
+              now(), now())
+      """,
+      [
+        Ecto.UUID.dump!(pkg),
+        Portal.HostNative.builder_version(),
+        "refused at ingest: compile-time probe of a dependency outside the closure: " <>
+          "Elixir.Money via Code.ensure_loaded?/1 (module index not complete)"
+      ]
+    )
+
+    assert %{complete: true, requeued: 1} = ModuleIndex.refresh(opts)
+
+    assert_enqueued(
+      worker: Portal.Workers.HostNativeBuild,
+      args: %{"package" => "hn_waiting", "triple" => "x86_64-linux-gnu"}
+    )
   end
 
   # R5-6: a served pure_elixir result with a record is re-checked too, and

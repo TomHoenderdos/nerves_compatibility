@@ -300,6 +300,10 @@ defmodule PortalWeb.Router do
 
     get "/precompiled/systems/by-sha/:sha", CatalogApiController, :precompiled_systems_by_sha
 
+    get "/precompiled/release-index/by-sha/:sha",
+        CatalogApiController,
+        :precompiled_release_doc_by_sha
+
     get "/precompiled/manifests/:package", CatalogApiController, :precompiled_manifest
     get "/precompiled/v2/manifests/:package", CatalogApiController, :precompiled_manifest_v2
     get "/precompiled/files/:sha256", CatalogApiController, :precompiled_file

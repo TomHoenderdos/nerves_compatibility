@@ -185,6 +185,7 @@ defmodule Portal.Workers.UpdateCheck do
         "nominated" => summary.nominated,
         "fast_path" => summary.fast_path,
         "module_index" => Map.get(summary, :module_index, 0),
+        "release_index" => Map.get(summary, :release_index, 0),
         "dry_run" => dry_run?
       })
 
@@ -242,10 +243,7 @@ defmodule Portal.Workers.UpdateCheck do
 
         fast_path = if dry_run?, do: 0, else: ReleaseFastPath.offer(registry)
 
-        # S10 round 4: a release the module index does not hold yet queues
-        # its incremental run, so the index follows Hex within the hour.
-        module_index =
-          if dry_run?, do: 0, else: Portal.Catalog.ModuleIndex.queue_incremental(registry)
+        {module_index, release_index} = index_runs(registry, dry_run?)
 
         unless dry_run?, do: refeed_pins(registry)
 
@@ -260,13 +258,24 @@ defmodule Portal.Workers.UpdateCheck do
            enqueued: enqueued,
            nominated: nominated,
            fast_path: fast_path,
-           module_index: module_index
+           module_index: module_index,
+           release_index: release_index
          }}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  # S10 round 4: a release the module index does not hold yet queues its
+  # incremental run, so the index follows Hex within the hour; round 5: so
+  # does a release the per-release index has not tried.
+  defp index_runs(_registry, true), do: {0, 0}
+
+  defp index_runs(registry, false),
+    do:
+      {Portal.Catalog.ModuleIndex.queue_incremental(registry),
+       Portal.Catalog.ReleaseIndex.queue_incremental(registry)}
 
   # The rebar3 plugin watch (`Portal.Precompiled.PluginWatch`): the same
   # registry, so a plugin release nobody reviewed withholds the builds that

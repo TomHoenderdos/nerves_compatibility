@@ -607,133 +607,39 @@ defmodule Portal.Catalog.ModuleIndexTest do
 
     @app_probe %{"kind" => "probe", "of" => "app", "name" => "poison", "answer" => "absent"}
 
-    test "settle_inputs adds every definer and its app, on a complete index",
-         %{opts: opts} do
+    # S10 round 5: nothing is added or refused at ingest any more; the
+    # client decides each user's lock against the batch's release index.
+    test "settle_inputs keeps the inputs, needs no index and refuses nothing", %{opts: opts} do
       env = %{"kind" => "env_all"}
+      items = [probe("Elixir.Money", ["ex_money"]), @app_probe, env]
 
-      assert {:refuse, why} = ModuleIndex.settle_inputs([probe("Elixir.Money", [])])
-
-      assert why ==
-               "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
-                 "a probe (module index not complete)"
-
-      # Nothing to settle needs no index.
-      assert ModuleIndex.settle_inputs([@app_probe, env]) == {:ok, [@app_probe, env]}
+      assert ModuleIndex.settle_inputs(items) == {:ok, items}
       assert ModuleIndex.settle_inputs(nil) == {:ok, nil}
       assert ModuleIndex.settle_inputs(:malformed) == {:ok, :malformed}
 
       assert %{complete: true} = ModuleIndex.refresh(opts)
+      assert ModuleIndex.settle_inputs(items) == {:ok, items}
 
-      assert {:ok, [settled, @app_probe]} =
-               ModuleIndex.settle_inputs([probe("Elixir.Money", ["ex_money"]), @app_probe])
+      many = probe("Elixir.Money", for(i <- 1..64, do: "p#{1000 + i}"))
+      assert ModuleIndex.settle_inputs([many]) == {:ok, [many]}
 
-      # S10 round 3: money_tiny too, below 1,000 recent downloads.
-      assert settled == probe("Elixir.Money", ["ex_money", "money", "money_tiny"])
-
-      # amqp's application is amqp; a module no indexed package defines
-      # keeps what the worker found.
-      assert {:ok, [%{"definers" => ["amqp"]}]} =
-               ModuleIndex.settle_inputs([probe("Elixir.AMQP", [])])
-
-      assert {:ok, [%{"definers" => ["jason"]}]} =
-               ModuleIndex.settle_inputs([probe("Elixir.Poison", ["jason"])])
+      # A declared item the release index cannot confirm loses `declared`.
+      declared = Map.put(probe("Elixir.Money", ["ex_money"]), "declared", ["ex_money"])
+      assert {:ok, [plain]} = ModuleIndex.settle_inputs([declared])
+      refute Map.has_key?(plain, "declared")
     end
 
-    test "a collision a probe input names is no refusal; a stale input is one", %{opts: opts} do
+    test "a record a probe input carries is no refusal; one it does not carry is", %{opts: opts} do
       assert %{complete: true} = ModuleIndex.refresh(opts)
-      named = probe("Elixir.Money", ["ex_money", "money", "money_tiny"])
 
-      assert ModuleIndex.refusal([money()], ["ecto"], [named]) == nil
-      assert ModuleIndex.refusal([], [], [named]) == nil
-      assert ModuleIndex.refusal(nil, [], [@app_probe, named]) == nil
+      assert ModuleIndex.refusal([money()], ["ecto"], [probe("Elixir.Money", ["ex_money"])]) ==
+               nil
 
-      assert ModuleIndex.refusal([money()], [], [probe("Elixir.Money", ["ex_money"])]) =~
-               "also defined by money"
+      assert ModuleIndex.refusal([], [], [probe("Elixir.Money", [])]) == nil
 
-      # A probe input alone, recorded before money was indexed.
-      assert ModuleIndex.refusal([], [], [probe("Elixir.Money", ["ex_money", "money_tiny"])]) ==
-               "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
-                 "a probe (also defined by money)"
-
-      # S10 round 3: client 0.10 trusts a probe input's definers, so one
-      # that misses even an unpopular definer collides; a record (for
-      # clients up to 0.9) still counts the popular ones alone.
-      assert ModuleIndex.refusal([], [], [probe("Elixir.Money", ["ex_money", "money"])]) =~
-               "also defined by money_tiny"
-
-      assert ModuleIndex.refusal([absent("Elixir.Money", ["ex_money", "money"])], []) == nil
-
-      # Another module's input covers nothing.
+      # Another module's input carries nothing.
       assert ModuleIndex.refusal([money()], [], [probe("Elixir.Jason", ["money"])]) =~
                "also defined by money"
-    end
-
-    # S10 round 3: the declared-optional-dependency rule's `declared`
-    # packages stay only where the index confirms each one defines the
-    # module, in its own namespace.
-    test "an input's declared packages stay only where the index confirms the gate",
-         %{opts: opts, latest: latest, tarballs: tarballs} do
-      ext =
-        tarball(%{
-          "lib/m.ex" =>
-            "defmodule Money do\nend\ndefmodule Money.Ext do\nend\ndefmodule Cldr.Money.Ext do\nend\n"
-        })
-
-      tarballs = Map.put(tarballs, {"money", "1.14.0"}, ext)
-
-      opts =
-        Keyword.merge(opts,
-          registry: registry(latest),
-          tarball: fn n, v -> Map.fetch(tarballs, {n, v}) end,
-          outer_checksum: fn n, v -> {:ok, sha(Map.fetch!(tarballs, {n, v}))} end
-        )
-
-      assert %{complete: true} = ModuleIndex.refresh(opts)
-      declared = &Map.put(probe(&1, &2), "declared", &3)
-
-      # money defines Money.Ext and its root Money: kept.
-      assert {:ok, [%{"declared" => ["money"], "definers" => ["money"]}]} =
-               ModuleIndex.settle_inputs([declared.("Elixir.Money.Ext", ["money"], ["money"])])
-
-      # money defines Cldr.Money.Ext, but not Cldr: not its namespace.
-      assert {:ok, [settled]} =
-               ModuleIndex.settle_inputs([
-                 declared.("Elixir.Cldr.Money.Ext", ["money"], ["money"])
-               ])
-
-      refute Map.has_key?(settled, "declared")
-
-      # jason does not define Money at all.
-      assert {:ok, [settled]} =
-               ModuleIndex.settle_inputs([declared.("Elixir.Money", ["jason"], ["jason"])])
-
-      refute Map.has_key?(settled, "declared")
-      assert settled["definers"] == ["ex_money", "jason", "money", "money_tiny"]
-
-      # An Erlang module in amqp's namespace (its app and `_`).
-      amqp = tarball(%{"src/amqp_conn.erl" => "-module(amqp_conn).\n"}, "amqp")
-      tarballs = Map.put(tarballs, {"amqp", "4.2.0"}, amqp)
-
-      opts =
-        Keyword.merge(opts,
-          registry: registry(Map.put(latest, "amqp", "4.2.0")),
-          tarball: fn n, v -> Map.fetch(tarballs, {n, v}) end,
-          outer_checksum: fn n, v -> {:ok, sha(Map.fetch!(tarballs, {n, v}))} end
-        )
-
-      assert %{complete: true} = ModuleIndex.refresh(opts)
-
-      assert {:ok, [%{"declared" => ["amqp"]}]} =
-               ModuleIndex.settle_inputs([declared.("amqp_conn", ["amqp"], ["amqp"])])
-    end
-
-    test "an input with more definers than the shape carries refuses", %{opts: opts} do
-      assert %{complete: true} = ModuleIndex.refresh(opts)
-      many = for i <- 1..65, do: %{module: "Elixir.Common", package: "p#{1000 + i}"}
-      Repo.insert_all("catalog_module_definers", many)
-
-      assert {:refuse, why} = ModuleIndex.settle_inputs([probe("Elixir.Common", [])])
-      assert why =~ "Elixir.Common via a probe (more than 64 definers)"
     end
   end
 end

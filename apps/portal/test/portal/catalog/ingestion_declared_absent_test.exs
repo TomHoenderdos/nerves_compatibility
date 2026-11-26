@@ -213,31 +213,30 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
         "definers" => definers
       }
 
-    test "a probe input gets every popular definer, and the colliding record passes" do
+    # S10 round 5: a record a probe input carries is that input's, which
+    # client 0.10 decides against each user's lock: no refusal, and the
+    # input is stored as the worker wrote it (no index definers added).
+    test "a probe input carries its record, which no longer refuses" do
       tb = toolchain!(%{"declared_absent" => [@money]}, %{}, [probe(["ex_money"])])
 
       assert tb.status == :pass
-      assert tb.compile_inputs == [probe(["ex_money", "money"])]
+      assert tb.compile_inputs == [probe(["ex_money"])]
     end
 
-    test "a probe input alone gets them too" do
-      tb = toolchain!(%{}, %{}, [probe([])])
-      assert tb.status == :pass
-      assert tb.compile_inputs == [probe(["ex_money", "money"])]
-    end
-
-    test "a probe input refuses while the index is not complete" do
+    test "a probe input needs no complete index any more" do
       Repo.query!("UPDATE catalog_module_index_runs SET complete = false")
       Repo.query!("DELETE FROM catalog_module_index_packages WHERE package = 'money'")
 
       tb = toolchain!(%{}, %{}, [probe([])])
+      assert tb.status == :pass
+      assert tb.compile_inputs == [probe([])]
+    end
+
+    # A record no probe input carries (a firmware target's) still refuses.
+    test "a record no probe input carries still refuses on a popular definer" do
+      tb = toolchain!(%{"declared_absent" => [@money]}, %{}, [])
       assert tb.status == :skipped
-
-      assert tb.reason ==
-               "compile-time probe of a dependency outside the closure: Elixir.Money via " <>
-                 "a probe (module index not complete)"
-
-      assert tb.compile_inputs == nil
+      assert tb.reason =~ "also defined by money"
     end
 
     test "a pure_elixir result's probe input is settled, and its record passes" do
@@ -273,7 +272,7 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
         |> Ash.read!(domain: @domain)
 
       assert sr.unpublished_at == nil
-      assert sr.compile_inputs == [probe(["ex_money", "money"])]
+      assert sr.compile_inputs == [probe(["ex_money"])]
     end
   end
 end

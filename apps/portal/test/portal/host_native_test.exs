@@ -290,6 +290,42 @@ defmodule Portal.HostNativeTest do
                  "Elixir.Money via Code.ensure_loaded?/1 (module index not complete)"
     end
 
+    # S10 review U2: the probe inputs are settled exactly as a toolchain
+    # build's: a declared item the release index cannot confirm loses
+    # `declared`, and the record it carries is its own, not refused.
+    test "a probe input is settled and stored settled, and carries its record" do
+      {tarball, origins, blobs} = downloader()
+      name = unique()
+
+      record = %{
+        "kind" => "module_absent",
+        "module" => "Elixir.Money",
+        "declared" => ["ex_money"],
+        "declared_apps" => ["ex_money"],
+        "optional_of" => ["ex_money"],
+        "via" => "Code.ensure_loaded?/1"
+      }
+
+      item = %{
+        "kind" => "probe",
+        "of" => "module",
+        "name" => "Elixir.Money",
+        "answer" => "absent",
+        "definers" => ["ex_money"],
+        "declared" => ["ex_money"]
+      }
+
+      result =
+        result(name, tarball, origins)
+        |> put_in(["host_native_build", "compile_observations"], %{"declared_absent" => [record]})
+        |> put_in(["host_native_build", "compile_inputs"], [item])
+
+      assert {:ok, %{status: :pass, compile_inputs: [stored]}} =
+               Ingest.ingest(result, opts(name, files_dir(blobs), tarball))
+
+      assert stored == Map.delete(item, "declared")
+    end
+
     test "a result naming another triple than the job is refused whole" do
       name = unique()
       tarball = hex_tarball(%{})

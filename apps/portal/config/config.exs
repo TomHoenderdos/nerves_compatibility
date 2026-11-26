@@ -129,6 +129,8 @@ config :portal, Oban,
        # report, final round, R6-2 and R6-3). Carries `:intake`, the web
        # host's queue: Hex tarball downloads, not compiles.
        {"17 6 * * *", Portal.Workers.ModuleIndexRefresh},
+       # S10 round 5: the module index per release, with its failed ones again.
+       {"37 6 * * *", Portal.Workers.ReleaseIndexRefresh},
        # Weekly, Tuesday 02:37: fetch the per-release download counts the
        # toolchain backlog orders a package's versions by. A day after the
        # metadata refresh, so it picks its packages by fresh recent counts

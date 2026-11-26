@@ -1326,10 +1326,11 @@ defmodule Portal.Catalog.Ingestion do
   # package defines too (`Portal.Catalog.ModuleIndex.refusal/2`), is a
   # refusal like the judge's own: skipped, no files.
   #
-  # S10: first each module `probe` compile input gets every popular definer
-  # the index shows (`ModuleIndex.settle_inputs/1`; refused while the index
-  # is not complete), and a declared-absent record whose collision the
-  # settled input names passes: client 0.10 checks its project for them.
+  # S10: first each module `probe` compile input is settled
+  # (`ModuleIndex.settle_inputs/1`: round 5, its `declared` packages kept
+  # only where the release index confirms the gate), and a declared-absent
+  # record a probe input carries is that input's: client 0.10 checks it
+  # against each user's lock.
   defp gate_declared_absent(%{"status" => "pass"} = build) do
     with {:ok, inputs} <- ModuleIndex.settle_inputs(build["compile_inputs"]),
          build = put_settled(build, inputs),
@@ -1766,6 +1767,7 @@ defmodule Portal.Catalog.Ingestion do
     })
     |> Ash.create(domain: @domain)
     |> plugins_recorded(opts.run_id, build)
+    |> release_modules_recorded(opts)
   end
 
   # The rebar3 plugin releases the run ran, by run id
@@ -1777,6 +1779,31 @@ defmodule Portal.Catalog.Ingestion do
   end
 
   defp plugins_recorded(other, _run_id, _build), do: other
+
+  # S10 round 5: a passing build's ebin and `defined_modules` join its
+  # release's definers in the release index (`Portal.Catalog.ReleaseIndex`):
+  # a module a macro defines is in no tarball parse.
+  defp release_modules_recorded({:ok, row} = ok, opts) do
+    :ok = add_release_modules(row, opts)
+    ok
+  end
+
+  defp release_modules_recorded(other, _opts), do: other
+
+  defp add_release_modules(%{status: :pass} = row, %{package: package, version: version}) do
+    beams =
+      for %{"path" => "ebin/" <> file} <- List.wrap(get_in(row.file_manifest || %{}, ["ebin"])),
+          String.ends_with?(file, ".beam"),
+          do: Path.basename(file, ".beam")
+
+    Portal.Catalog.ReleaseIndex.add_build_modules(
+      package,
+      version,
+      beams ++ List.wrap(Map.get(row, :defined_modules))
+    )
+  end
+
+  defp add_release_modules(_row, _opts), do: :ok
 
   defp optional_deps(%{} = optional_deps), do: optional_deps
   defp optional_deps(_), do: nil
@@ -2126,6 +2153,7 @@ defmodule Portal.Catalog.Ingestion do
     with {:ok, row} <-
            PinnedBuild |> Ash.Changeset.for_create(:upsert, attrs) |> Ash.create(domain: @domain) do
       :ok = PluginWatch.record(row.package_id, opts.run_id, build["compile_observations"])
+      :ok = add_release_modules(row, opts)
       # A firmware target's plugins, under the pinned row's run (review R2).
       :ok = PluginWatch.record_firmware(row.package_id, opts.run_id, build["rebar3_plugins"])
       :ok = PluginWatch.mark_unrecorded({:pinned, row.id})

@@ -198,106 +198,70 @@ defmodule Portal.Catalog.ModuleIndex do
   """
   @spec refusal([map()] | nil, [String.t()], [map()] | nil) :: String.t() | nil
   def refusal(items, locked, inputs \\ nil) do
-    probes = module_probes(inputs)
+    # S10 round 5: a record whose module a `probe` compile input carries is
+    # that input's to decide, by client 0.10 against each user's lock (and
+    # clients up to 0.9.1 miss every build with such an input). Only a
+    # record with no such input, a firmware target's, is refused here.
+    covered = MapSet.new(module_probes(inputs), & &1["name"])
 
-    # A record (for clients up to 0.9) collides with a popular definer, a
-    # probe input (client 0.10, which trusts its definers) with any one.
     records =
-      Enum.map(if(is_list(items), do: items, else: []), &{&1, :popular}) ++
-        Enum.map(probes, &{probe_record(&1), :all})
+      for item <- if(is_list(items), do: items, else: []),
+          not (is_map(item) and MapSet.member?(covered, item["module"])),
+          do: {item, :popular}
 
     if records == [] do
       nil
     else
       complete = complete?()
-      covered = Map.new(probes, &{&1["name"], &1["definers"]})
-      Enum.find_value(records, &item_refusal(&1, MapSet.new(locked), complete, covered))
+      Enum.find_value(records, &item_refusal(&1, MapSet.new(locked), complete, %{}))
     end
   end
 
   @doc """
-  S10: `inputs` (a build's `compile_inputs`) with each module `probe` item's
-  `definers` grown by every indexed package that defines the module (S10
-  round 3: every Hex package's last and latest stable release, and our
-  builds' lists, whatever its downloads), and that package's application,
-  sorted and each once: what client 0.10 checks its project for.
-
-  An item's `declared` packages (the declared-optional-dependency rule,
-  which the worker's review gate set: `NccWorker.Portability.Declared.gate?/3`)
-  stay only when the index confirms the gate's two index-visible parts:
-  each one defines the module, and the module is in its namespace (it
-  defines the module's first segment; an Erlang module is its application
-  or starts with it and `_`). Otherwise the key is dropped and the item is
-  decided as any module probe, by every other dependency's module list.
-
-  `{:refuse, reason}` when there is a module item and the index is not
-  complete, as a declared-absent record refuses then, or when an item
-  would have more definers than the shared shape carries. Anything that is
-  not a list, or holds no module probe, comes back as it is.
+  S10: `inputs` (a build's `compile_inputs`) as ingest stores them. Round 5:
+  a module `probe` item's `declared` packages (the declared-optional-
+  dependency rule, which the worker's review gate set:
+  `NccWorker.Portability.Declared.gate?/3`) stay only where the module
+  index per release (`Portal.Catalog.ReleaseIndex.gate?/2`) confirms the
+  gate's two index-visible parts: a read release of each one defines the
+  module, and the module is in its namespace. Otherwise the key is dropped
+  and the item is decided as any module probe, by every other dependency's
+  module list. A kept module is recorded as probed, so each batch renders
+  its definer set. Nothing is refused here any more: the client decides
+  each user's lock against the batch's release index, whatever the number
+  of definers, and an unread release is a miss there. Anything that is not
+  a list, or holds no module probe, comes back as it is.
   """
-  @spec settle_inputs(term()) :: {:ok, term()} | {:refuse, String.t()}
+  @spec settle_inputs(term()) :: {:ok, term()}
   def settle_inputs(inputs) do
     case module_probes(inputs) do
       [] ->
         {:ok, inputs}
 
-      [first | _] ->
-        if complete?(),
-          do: settled(Enum.map(inputs, &settle_input/1)),
-          else: {:refuse, reason(first["name"], "a probe", "module index not complete")}
+      _probes ->
+        settled = Enum.map(inputs, &settle_input/1)
+
+        :ok =
+          Portal.Catalog.ReleaseIndex.record_probed(
+            for %{"kind" => "probe", "of" => "module", "declared" => [_ | _], "name" => m} <-
+                  settled,
+                do: m
+          )
+
+        {:ok, settled}
     end
   end
 
-  defp settled(inputs) do
-    max = Compatibility.CompileInputs.max_probe_items()
-
-    case Enum.find(module_probes(inputs), &(length(&1["definers"]) > max)) do
-      nil -> {:ok, inputs}
-      item -> {:refuse, reason(item["name"], "a probe", "more than #{max} definers")}
-    end
-  end
-
-  defp settle_input(%{"kind" => "probe", "of" => "module", "name" => module} = item)
-       when is_binary(module) do
-    definers = all_definers(module)
-    found = for {package, app} <- definers, n <- [package, app], is_binary(n), do: n
-
-    item = %{
-      item
-      | "definers" => (List.wrap(item["definers"]) ++ found) |> Enum.uniq() |> Enum.sort()
-    }
-
-    case Map.fetch(item, "declared") do
-      {:ok, declared} when is_list(declared) ->
-        if Enum.all?(declared, &gate_holds?(module, &1, definers)),
-          do: item,
-          else: Map.delete(item, "declared")
-
-      _ ->
-        item
-    end
+  defp settle_input(
+         %{"kind" => "probe", "of" => "module", "name" => module, "declared" => declared} = item
+       )
+       when is_binary(module) and is_list(declared) do
+    if declared != [] and Enum.all?(declared, &Portal.Catalog.ReleaseIndex.gate?(module, &1)),
+      do: item,
+      else: Map.delete(item, "declared")
   end
 
   defp settle_input(item), do: item
-
-  # The review gate's index-visible parts: `package` defines `module`, in
-  # its own namespace.
-  defp gate_holds?(module, package, definers) do
-    by_package = Map.new(definers)
-
-    Map.has_key?(by_package, package) and
-      case module do
-        "Elixir." <> rest ->
-          [root | _] = String.split(rest, ".")
-
-          "Elixir." <> root == module or
-            package in Enum.map(all_definers("Elixir." <> root), &elem(&1, 0))
-
-        _ ->
-          app = Map.get(by_package, package) || package
-          module == app or String.starts_with?(module, app <> "_")
-      end
-  end
 
   defp module_probes(inputs) when is_list(inputs) do
     for %{"kind" => "probe", "of" => "module", "name" => name} = item <- inputs,
@@ -307,22 +271,11 @@ defmodule Portal.Catalog.ModuleIndex do
 
   defp module_probes(_inputs), do: []
 
-  # A module probe input, checked as a declared-absent record whose definers
-  # are named: a popular definer it does not name collides (it was recorded
-  # before the index showed that package).
-  defp probe_record(item),
-    do: %{
-      "kind" => "module_absent",
-      "module" => item["name"],
-      "declared" => item["definers"],
-      "declared_apps" => []
-    }
-
   defp item_refusal({%{"kind" => "truncated"}, _scope}, _locked, _complete, _covered),
     do: Compatibility.Portability.dependency_probe() <> "too many declared-absent probes recorded"
 
   defp item_refusal(
-         {%{"kind" => "module_absent", "module" => module} = item, scope},
+         {%{"kind" => "module_absent", "module" => module} = item, :popular},
          locked,
          complete,
          covered
@@ -336,13 +289,11 @@ defmodule Portal.Catalog.ModuleIndex do
       |> MapSet.new()
       |> MapSet.union(locked)
 
-    definers = if scope == :all, do: all_definers(module), else: popular_definers(module)
-
     others =
       if complete,
         do:
           for(
-            {package, app} <- definers,
+            {package, app} <- popular_definers(module),
             not MapSet.member?(named, package),
             not (is_binary(app) and MapSet.member?(named, app)),
             do: package
@@ -358,22 +309,6 @@ defmodule Portal.Catalog.ModuleIndex do
 
   defp item_refusal(_item, _locked, _complete, _covered),
     do: Compatibility.Portability.dependency_probe() <> "unreadable declared-absent probe record"
-
-  # Every indexed package that defines `module`, with its application.
-  defp all_definers(module) do
-    %{rows: rows} =
-      Repo.query!(
-        """
-        SELECT d.package, i.app FROM catalog_module_definers d
-        LEFT JOIN catalog_module_index_packages i ON i.package = d.package
-        WHERE d.module = $1
-        ORDER BY d.package
-        """,
-        [module]
-      )
-
-    Enum.map(rows, &List.to_tuple/1)
-  end
 
   defp reason(module, via, why),
     do: Compatibility.Portability.dependency_probe() <> "#{module} via #{via} (#{why})"
@@ -908,19 +843,19 @@ defmodule Portal.Catalog.ModuleIndex do
     * a pinned build (host or firmware target) at the current builder
       version, neither revoked nor withdrawn: its job again, from the row's
       own pins;
+    * a host-native build (a `fail` row with that reason): its job again;
     * a held `pure_elixir` result (stored with its files, withdrawn with
       that reason): judged again here, from the record and inputs the row
       keeps, and published when it passes, with its inputs settled; one
       that now collides keeps the hold with the real reason.
 
   A job is unique while it waits, so a later run does not queue it twice;
-  its rebuild is judged by the complete index. Host-native builds never
-  reach the index at ingest (their judge refuses such a probe itself).
-  Returns how many it queued or published.
+  its rebuild is judged by the complete index. Returns how many it queued
+  or published.
   """
   @spec requeue_not_complete() :: non_neg_integer()
   def requeue_not_complete do
-    requeue_toolchain() + requeue_pinned() + rejudge_pure_elixir()
+    requeue_toolchain() + requeue_pinned() + requeue_host_native() + rejudge_pure_elixir()
   end
 
   defp requeue_toolchain do
@@ -1005,6 +940,41 @@ defmodule Portal.Catalog.ModuleIndex do
     end)
   end
 
+  # S10 review U7: a host-native build refused for an incomplete index is a
+  # `fail` row with that reason; its job is queued again, as the others'.
+  defp requeue_host_native do
+    bv = Portal.HostNative.builder_version()
+
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT p.name, h.version, h.toolchain, h.triple
+        FROM catalog_host_native_builds h JOIN catalog_packages p ON p.id = h.package_id
+        WHERE h.builder_version = $1 AND h.status = 'fail' AND h.revoked_at IS NULL
+          AND h.reason LIKE $2
+        """,
+        [bv, "%" <> @not_complete]
+      )
+
+    Enum.count(rows, fn [name, version, toolchain, triple] ->
+      with {:ok, queue} <- Portal.HostNative.queue(triple),
+           {:ok, %Oban.Job{conflict?: false}} <-
+             %{
+               "package" => name,
+               "version" => version,
+               "toolchain" => toolchain,
+               "triple" => triple,
+               "builder_version" => bv
+             }
+             |> Portal.Workers.HostNativeBuild.new(queue: queue)
+             |> Oban.insert() do
+        true
+      else
+        _ -> false
+      end
+    end)
+  end
+
   # The toolchain path names its image, the firmware path its release
   # (`Portal.Pins`); a toolchain with no image here queues nothing.
   defp pinned_path(args, "pure_elixir", _system_version, image) when is_binary(image),
@@ -1029,11 +999,8 @@ defmodule Portal.Catalog.ModuleIndex do
       )
 
     Enum.count(rows, fn [id, records, lock, inputs] ->
-      verdict =
-        case settle_inputs(inputs) do
-          {:ok, settled} -> {refusal(records, lock_keys(lock), settled), settled}
-          {:refuse, why} -> {why, inputs}
-        end
+      {:ok, settled} = settle_inputs(inputs)
+      verdict = {refusal(records, lock_keys(lock), settled), settled}
 
       case verdict do
         {nil, settled} ->
@@ -1069,9 +1036,9 @@ defmodule Portal.Catalog.ModuleIndex do
   # column, reason column}`; a `pure_elixir` result keeps its record in a
   # column of its own (round 6, R5-6).
   # S10: a row whose `compile_inputs` hold a module probe is checked too.
-  @record_where "(jsonb_typeof(RECORDS) = 'array' AND jsonb_array_length(RECORDS) > 0) OR " <>
-                  "EXISTS (SELECT 1 FROM unnest(INPUTS) i " <>
-                  "WHERE i->>'kind' = 'probe' AND i->>'of' = 'module')"
+  # S10 round 5: only a row with a record; its records that a probe input
+  # carries are that input's (`refusal/3`), so nothing is withheld for one.
+  @record_where "jsonb_typeof(RECORDS) = 'array' AND jsonb_array_length(RECORDS) > 0"
   @recheck_kinds [
     {"toolchain_build", "catalog_toolchain_builds",
      "SELECT t.id, t.compile_observations->'declared_absent', t.deps_lock, t.compile_inputs " <>

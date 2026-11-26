@@ -103,6 +103,11 @@ defmodule Portal.HostNative.Ingest do
 
   # `{:ok, row attributes, shas to stage}`; a refusal is a `fail` row.
   defp judged(%{"status" => "pass"} = build, result, opts) do
+    # S10 review U2: the probe inputs are settled exactly as a toolchain
+    # build's (`Portal.Catalog.ModuleIndex.settle_inputs/1`), stored settled,
+    # and the records they carry are theirs (`declared_absent/1`).
+    build = settled(build)
+
     case verify(build, opts) do
       {:ok, needs} -> {:ok, attrs(build, result, opts, :pass, nil, needs), manifest_shas(build)}
       {:refused, reason} -> refused(build, result, opts, reason)
@@ -201,14 +206,28 @@ defmodule Portal.HostNative.Ingest do
   defp inputs_recorded(inputs) when is_list(inputs), do: :ok
   defp inputs_recorded(_inputs), do: {:refused, "records no compile inputs"}
 
+  defp settled(%{"compile_inputs" => inputs} = build) when is_list(inputs) do
+    {:ok, settled} = Portal.Catalog.ModuleIndex.settle_inputs(inputs)
+    %{build | "compile_inputs" => settled}
+  end
+
+  defp settled(build), do: build
+
   # A probe the judge passed because only a declared, absent dependency
   # defines the module, which another popular package defines too
-  # (`Portal.Catalog.ModuleIndex`, otp-probe round 5, R3-2).
+  # (`Portal.Catalog.ModuleIndex`, otp-probe round 5, R3-2). A record a
+  # probe input carries is that input's (S10 round 5). A refusal for an
+  # incomplete index is queued again after the next complete run
+  # (`Portal.Catalog.ModuleIndex.requeue_not_complete/0`).
   defp declared_absent(build) do
     items = get_in(build, ["compile_observations", "declared_absent"])
     lock = if is_map(build["deps_lock"]), do: Map.keys(build["deps_lock"]), else: []
 
-    case Portal.Catalog.ModuleIndex.refusal(if(is_list(items), do: items), lock) do
+    case Portal.Catalog.ModuleIndex.refusal(
+           if(is_list(items), do: items),
+           lock,
+           build["compile_inputs"]
+         ) do
       nil -> :ok
       reason -> {:refused, reason}
     end

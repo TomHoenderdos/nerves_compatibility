@@ -14,6 +14,7 @@ defmodule PortalWeb.CatalogApiController do
     ManifestV1,
     ManifestV2,
     PackagesResponse,
+    ReleaseIndexDoc,
     SignedEnvelope,
     StatsResponse,
     SystemsTable
@@ -306,6 +307,44 @@ defmodule PortalWeb.CatalogApiController do
         |> PrecompiledHTTP.no_store()
         |> put_status(:not_found)
         |> json(%{error: "systems table not found"})
+    end
+  end
+
+  operation :precompiled_release_doc_by_sha,
+    tags: ["Precompiled"],
+    operation_id: "getReleaseIndexDocBySha",
+    summary: "Release index document by SHA-256",
+    description:
+      "A release index document a signed batch named with this SHA-256 under `release_index` " <>
+        "(S10 round 5): a shard of the read releases or one probed module's definer set. " <>
+        "Content-addressed and immutable.",
+    parameters: [
+      sha:
+        Keyword.put(
+          @by_sha_param,
+          :description,
+          "Lowercase hex SHA-256 of the document bytes, then `.json`."
+        )
+    ],
+    responses: [
+      ok: {"The document", "application/json", ReleaseIndexDoc, headers: @etag_header},
+      not_modified: @not_modified,
+      not_found:
+        {"No batch named a release index document with this digest", "application/json", Error}
+    ]
+
+  # Only bytes a batch stored for this sha (`ReleaseIndex.store_docs/1`)
+  # that still hash to it; every miss looks the same.
+  def precompiled_release_doc_by_sha(conn, %{"sha" => raw}) do
+    with sha when is_binary(sha) <- by_sha_name(raw),
+         {:ok, body} <- Portal.Catalog.ReleaseIndex.stored(sha) do
+      PrecompiledHTTP.send_bytes(conn, body, PrecompiledHTTP.quote_sha(sha), :immutable)
+    else
+      _ ->
+        conn
+        |> PrecompiledHTTP.no_store()
+        |> put_status(:not_found)
+        |> json(%{error: "release index document not found"})
     end
   end
 

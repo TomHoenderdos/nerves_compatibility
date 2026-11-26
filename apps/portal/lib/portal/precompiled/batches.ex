@@ -59,7 +59,10 @@ defmodule Portal.Precompiled.Batches do
   of the fingerprint and a change takes effect at the next batch without
   invalidating the memo. The systems table (`Portal.Precompiled.SystemAbi`)
   is the same: rendered for every batch, named in the payload as `systems`,
-  and stored in the transaction that inserts the batch.
+  and stored in the transaction that inserts the batch. So is the release
+  index (S10 round 5, `Portal.Catalog.ReleaseIndex.render_docs/0`): named
+  as `release_index`, its read set in 256 shards and one definer set per
+  probed module, each a document served by its sha.
   """
   require Ash.Query
   require Logger
@@ -150,6 +153,11 @@ defmodule Portal.Precompiled.Batches do
     # release changes this sha and the batch's, and no manifest's.
     systems = systems_table()
 
+    # S10 round 5: the release index's read set and probed modules' definer
+    # sets, rendered for every batch from one read of the index, so a
+    # client decides each declared probe item against the batch it trusts.
+    release_index = Portal.Catalog.ReleaseIndex.render_docs()
+
     issued = DateTime.utc_now()
     expires = DateTime.add(issued, @ttl_hours, :hour)
     # No locking: this runs from one Oban cron job with a uniqueness
@@ -172,6 +180,7 @@ defmodule Portal.Precompiled.Batches do
       }
       |> put_content(Content.origins())
       |> put_systems(systems)
+      |> put_release_index(release_index)
       |> JSON.encode!()
 
     %{"signatures" => signatures} = Envelope.sign(payload, [{key.keyid, key.private}])
@@ -192,6 +201,7 @@ defmodule Portal.Precompiled.Batches do
       Portal.Repo.transaction(fn ->
         with :ok <- ManifestRefs.record(sequence, manifests, manifests_v2),
              :ok <- store_systems(systems),
+             :ok <- store_release_index(release_index),
              {:ok, batch} <- Ash.create(changeset, domain: Portal.Precompiled) do
           batch
         else
@@ -401,6 +411,12 @@ defmodule Portal.Precompiled.Batches do
 
   defp store_systems(nil), do: :ok
   defp store_systems({sha, body}), do: SystemAbi.store(sha, body)
+
+  defp put_release_index(doc, nil), do: doc
+  defp put_release_index(doc, {object, _docs}), do: Map.put(doc, "release_index", object)
+
+  defp store_release_index(nil), do: :ok
+  defp store_release_index({_object, docs}), do: Portal.Catalog.ReleaseIndex.store_docs(docs)
 
   # Packages whose fingerprint changed during the batch are left for the next
   # one to render again, and so is a package one of whose manifests failed to

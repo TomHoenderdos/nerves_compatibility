@@ -43,6 +43,28 @@ defmodule PortalWeb.ApiSchemas.BatchPayload do
           description:
             "SHA-256 of the systems table bytes (`/systems/by-sha/<sha>.json`). Absent " <>
               "while the table is empty."
+        },
+        release_index: %Schema{
+          type: :object,
+          description:
+            "S10 round 5: the module index per release, for client 0.10's declared probe " <>
+              "items. `shards`: 256 shards (`00` to `ff`, the first byte of the SHA-256 of " <>
+              "a package name) of the read releases; `modules`: each probed module's definer " <>
+              "set. Each value is the SHA-256 of a document at " <>
+              "`/release-index/by-sha/<sha>.json`. Absent before any release was read.",
+          properties: %{
+            format: %Schema{type: :integer, enum: [1]},
+            shards: %Schema{
+              type: :object,
+              additionalProperties: %Schema{type: :string, pattern: "^[0-9a-f]{64}$"}
+            },
+            modules: %Schema{
+              type: :object,
+              additionalProperties: %Schema{type: :string, pattern: "^[0-9a-f]{64}$"}
+            }
+          },
+          required: [:format, :shards, :modules],
+          additionalProperties: false
         }
       },
       required: [:version, :sequence, :issued, :expires, :manifests]
