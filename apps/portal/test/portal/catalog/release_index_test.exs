@@ -113,6 +113,26 @@ defmodule Portal.Catalog.ReleaseIndexTest do
     assert ["fresh_pkg", "0.1.0"] in read_set()
   end
 
+  # A failure that says "ask later" is no verdict on the release: it stays
+  # untried, and the next run, incremental or daily, reads it.
+  test "an unavailable registry or CDN leaves the release untried", %{
+    opts: opts,
+    tarballs: tarballs
+  } do
+    flaky =
+      Keyword.put(opts, :tarball, fn
+        "fresh_pkg", _v -> {:error, :hex_registry_unavailable}
+        n, v -> Map.fetch(tarballs, {n, v})
+      end)
+
+    assert %{read: 3, failed: 1} = ReleaseIndex.refresh(flaky)
+
+    assert Repo.query!("SELECT count(*) FROM catalog_release_index WHERE package = 'fresh_pkg'").rows ==
+             [[0]]
+
+    assert %{read: 1} = ReleaseIndex.refresh(opts)
+  end
+
   test "a checksum that does not match is a failure", %{opts: opts} do
     lying = Keyword.put(opts, :releases, fn _ -> {:ok, []} end)
     assert %{read: 0, failed: 4} = ReleaseIndex.refresh(lying)
