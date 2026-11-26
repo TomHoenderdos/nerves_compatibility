@@ -1306,8 +1306,10 @@ only on a passing target that publishes its own first build (no optional depende
 3. the binding: the traced beams of the package carry the code (`beam_lib:md5/1`) and the attributes chunk (persisted
    attributes) of the published ones, module for module, and the `.app` is the published one byte for byte.
 
-The target then carries the trace's `compile_inputs` and its `compile_env`; anything that does not hold leaves it
-without, as before. Past the tracer's run ceiling (105 minutes into the run) no further target is tried, its Nerves env
+The target then carries the trace's `compile_inputs` and its `compile_env`: the `.app`'s own items, then every config
+read of the trace the `.app` does not list (`ConfigReads.merge/2`, as R5 lists a toolchain build's), so Logger's
+compile-time purge keys, which a `Logger` macro reads with `Application.get_env/3`, are compared too; a `.app` whose
+list could not be read stays `null`. Anything that does not hold leaves the target without, as before. Past the tracer's run ceiling (105 minutes into the run) no further target is tried, its Nerves env
 included. The portal's `NCC_FIRMWARE_INPUTS=0` turns it off with no image change: firmware builds, local and remote,
 get `NCC_INPUT.firmware_inputs: false`; an input without the key (an older portal) is on.
 
@@ -1320,8 +1322,10 @@ dependency's taint by one (`NccWorker.FirmwareJudge`, the toolchain judge's own 
 `beam_scan.footprint.file_manifest`, so nothing of it is published, its status and firmware image kept. Any other
 refusal, no verdict, beams that do not bind, a spent budget or a target built against another closure (optional deps
 kept, variants) is `unjudged` and publishes here as before; the portal holds it while an earlier judge refusal of the
-target stands (`Portal.Precompiled.Holds`), and withdraws the target's older builds. `compile_inputs` are still
-recorded only for an env-reading package. A target the judge alone traces starts only within its own budget,
+target stands (`Portal.Precompiled.Holds`), and withdraws the target's older builds. A `pass` keeps the trace's
+`compile_inputs` and `compile_env` as above for every package, not only an env-reading one (stream S11: an OS type
+read a module attribute bakes, or Logger's purge config, reached the published beams with no client check); the
+portal's `NCC_FIRMWARE_INPUTS=0` keeps them out here too. A target the judge alone traces starts only within its own budget,
 `NCC_INPUT.firmware_judge_budget_sec` (the portal's `NCC_FIRMWARE_JUDGE_BUDGET_SEC`, default 1800 s), counted from
 the start of the inputs pass. The container sees no env of the host's, so both come through `NCC_INPUT` only.
 

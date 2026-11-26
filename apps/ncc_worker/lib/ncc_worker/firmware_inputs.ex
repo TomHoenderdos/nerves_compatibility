@@ -129,8 +129,13 @@ defmodule NccWorker.FirmwareInputs do
       spent), or a target built against another closure; the files
       publish, as every firmware target's did before.
 
-  `compile_inputs` are still recorded only for a package whose `lib/` reads
-  the environment at module level. A target the judge alone traces starts
+  A `"pass"` also keeps the trace's `compile_inputs` and `compile_env`, as
+  for an env-reading package, whatever its package reads (stream S11): a
+  compile-time read the `.app` does not list, an OS type a module attribute
+  bakes or Logger's purge config, otherwise reaches the published beams with
+  no client check. `compile_env` is the `.app`'s own items, then the trace's
+  config reads it does not list (`merged_env/2`). The inputs pass's rollback
+  (`enabled?/1`) keeps them out. A target the judge alone traces starts
   only within its own budget (`judge_budget/1`: `NCC_INPUT.firmware_judge_budget_sec`,
   default 1800 s, counted from the start of this pass).
 
@@ -141,7 +146,7 @@ defmodule NccWorker.FirmwareInputs do
 
   alias Compatibility.CompileInputs
   alias NccWorker.{BeamScan, FirmwareJudge, HexHome, Portability, TargetScan, Tracer}
-  alias NccWorker.Portability.Context
+  alias NccWorker.Portability.{ConfigReads, Context}
   alias NccWorker.FirmwareInputs.LayoutNotRestored
 
   @env_task :"Elixir.Mix.Tasks.Ncc.NervesEnv"
@@ -203,8 +208,10 @@ defmodule NccWorker.FirmwareInputs do
           {:ok, target_env} <- [Map.fetch(ctx.targets, name)],
           do: {name, target_env, eligible?(result)}
 
+    inputs? = enabled?(%{firmware_inputs: Map.get(ctx, :enabled, true)})
+
     reader? =
-      passing != [] and enabled?(%{firmware_inputs: Map.get(ctx, :enabled, true)}) and
+      passing != [] and inputs? and
         env_reads?(Path.join([ctx.project_dir, "deps", ctx.package]))
 
     if passing == [] or not (judge? or reader?) do
@@ -213,6 +220,7 @@ defmodule NccWorker.FirmwareInputs do
       how = %{
         reader?: reader?,
         judge?: judge?,
+        inputs?: inputs?,
         deadline: judge_deadline(ctx),
         package: ctx.package
       }
@@ -304,15 +312,20 @@ defmodule NccWorker.FirmwareInputs do
   @spec judge_enabled?(map()) :: boolean()
   def judge_enabled?(input) when is_map(input), do: Map.get(input, :firmware_judge) == true
 
+  # A pass whose beams bind keeps what its trace read, for an env reader and,
+  # with the judge on, for every package (stream S11): the trace's
+  # `compile_inputs`, and its config reads after the `.app`'s own
+  # (`merged_env/2`). Only the inputs pass's rollback (`enabled?/1`) keeps
+  # them out.
   defp put_one(systems, name, {:ok, %{compile_inputs: inputs, compile_env: env}}, how)
        when is_list(inputs) do
     {systems, inputs_lines} =
-      if how.reader?,
+      if how.reader? or (how.judge? and how.inputs?),
         do:
           {Map.update!(
              systems,
              name,
-             &Map.merge(&1, %{compile_inputs: inputs, compile_env: env})
+             &Map.merge(&1, %{compile_inputs: inputs, compile_env: merged_env(&1, env)})
            ), ["Compile inputs of #{name} recorded"]},
         else: {systems, []}
 
@@ -341,6 +354,14 @@ defmodule NccWorker.FirmwareInputs do
     {systems, judge_lines} = judged(systems, name, how, {"unjudged", "no inputs", []})
     {systems, not_recorded(name, "no inputs", how) ++ judge_lines}
   end
+
+  # The published `.app`'s own `compile_env`, then every config read of the
+  # trace it does not list (`NccWorker.Portability.ConfigReads.merge/2`, as R5
+  # lists a toolchain build's). Logger's compile-time purge keys, which every
+  # `Logger` macro reads with `Application.get_env/3` and no `.app` lists, come
+  # in this way. A `.app` whose list could not be read stays `nil`, which no
+  # client matches.
+  defp merged_env(result, env), do: ConfigReads.merge(result[:compile_env], env || [])
 
   defp not_recorded(name, why, %{reader?: true}),
     do: ["Compile inputs of #{name} not recorded: #{why}"]

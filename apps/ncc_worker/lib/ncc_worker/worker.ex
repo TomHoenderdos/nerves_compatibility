@@ -553,10 +553,11 @@ defmodule NccWorker.Worker do
               # absent on firmware results and from `result.json` when nil.
               optional(:compile_env_rule) => 1 | nil,
               # On a published pure_elixir result, and on a passing firmware
-              # target that publishes its own first build and whose package
-              # reads the environment at compile time, when its traced
-              # compile recorded them (`NccWorker.FirmwareInputs`); that
-              # target's `compile_env` is then the trace's too.
+              # target that publishes its own first build when its traced
+              # compile recorded them (`NccWorker.FirmwareInputs`: a package
+              # that reads the environment at compile time, or any package
+              # the firmware judge passed); that target's `compile_env` then
+              # lists the trace's config reads after the `.app`'s own.
               optional(:compile_inputs) => [map()] | nil,
               # Only on a passing firmware target, each absent when it could
               # not be read (`NccWorker.SystemAbi`, advisory): the toolchain

@@ -8,8 +8,11 @@ defmodule NccWorker.FirmwareInputsTest do
   @manifest %{"footprint" => %{"file_manifest" => %{"ebin" => []}}}
   @inputs [%{"kind" => "mix_target", "value" => "rpi4"}]
   @env [%{app: "pkg", path: ["default_backend"], value: "g3cFZXJyb3I"}]
+  @os_type [%{"kind" => "os_type", "family" => "unix", "name" => "linux"}]
+  @purge %{app: "logger", path: ["compile_time_purge_matching"], value: "g3cFZXJyb3I"}
 
-  defp pass(extra \\ %{}), do: Map.merge(%{status: :pass, beam_scan: @manifest}, extra)
+  defp pass(extra \\ %{}),
+    do: Map.merge(%{status: :pass, beam_scan: @manifest, compile_env: []}, extra)
 
   defp project(tmp_dir, lib) do
     dir = Path.join([tmp_dir, "deps", "pkg", "lib"])
@@ -168,10 +171,13 @@ defmodule NccWorker.FirmwareInputsTest do
 
     defp withheld?(result), do: not Map.has_key?(result.beam_scan["footprint"], "file_manifest")
 
-    test "traces a package that reads no env; a pass records the judge, not inputs",
+    # Stream S11: a firmware build's compile-time host reads (an OS type a
+    # module attribute bakes, Logger's purge config) reached the published
+    # beams with no client check. A judge pass keeps what its trace read.
+    test "traces a package that reads no env; a pass records the judge and the trace's inputs",
          %{tmp_dir: tmp_dir} do
       proj = project(tmp_dir, @plain)
-      record = recorder(self(), {:ok, %{compile_inputs: @inputs, compile_env: @env}})
+      record = recorder(self(), {:ok, %{compile_inputs: @os_type, compile_env: @env}})
 
       {systems, lines} =
         FirmwareInputs.put(%{"rpi4" => pass()}, judging(ctx(proj, ["rpi4"])), record: record)
@@ -179,9 +185,43 @@ defmodule NccWorker.FirmwareInputsTest do
       assert_received {:recorded, "rpi4", _}
       result = systems["rpi4"]
       assert result.firmware_judge == %{status: "pass", reason: nil, classes: []}
-      refute Map.has_key?(result, :compile_inputs)
+      assert result.compile_inputs == @os_type
+      assert result.compile_env == @env
       refute withheld?(result)
-      assert lines == ["Firmware judge of rpi4: pass"]
+      assert lines == ["Compile inputs of rpi4 recorded", "Firmware judge of rpi4: pass"]
+    end
+
+    test "a pass lists the trace's config reads after the .app's own, as R5 does",
+         %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @plain)
+      app_item = %{app: "pkg", path: ["default_backend"], value: "g2gCdwJva20AAAAB"}
+      trace = [hd(@env), @purge]
+      record = recorder(self(), {:ok, %{compile_inputs: [], compile_env: trace}})
+
+      {systems, _lines} =
+        FirmwareInputs.put(
+          %{"rpi4" => pass(%{compile_env: [app_item]})},
+          judging(ctx(proj, ["rpi4"])),
+          record: record
+        )
+
+      assert systems["rpi4"].compile_env == [app_item, @purge]
+      assert systems["rpi4"].compile_inputs == []
+    end
+
+    test "a .app whose compile_env could not be read stays unmatchable", %{tmp_dir: tmp_dir} do
+      proj = project(tmp_dir, @plain)
+      record = recorder(self(), {:ok, %{compile_inputs: [], compile_env: @env}})
+
+      {systems, _lines} =
+        FirmwareInputs.put(
+          %{"rpi4" => pass(%{compile_env: nil})},
+          judging(ctx(proj, ["rpi4"])),
+          record: record
+        )
+
+      assert systems["rpi4"].compile_env == nil
+      assert systems["rpi4"].compile_inputs == []
     end
 
     test "an env-reading package gets its inputs and the judge", %{tmp_dir: tmp_dir} do
