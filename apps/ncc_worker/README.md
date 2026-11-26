@@ -697,13 +697,16 @@ present. A cheap pre-filter first: none of the guarded modules is built, no Elix
 refers to one by a call, capture, `apply` or `make_fun` (read from the Elixir debug info), no traced probe of one was
 made anywhere, nothing probed the dependency's application, and nothing read, listed or copied a file in the
 dependency's ebin (a wildcard whose literal dir reaches it included; its `include` and `priv` are the same either way).
-Then the proof (`NccWorker.Portability.GuardedProof`): the project dir is moved aside whole, a copy without `_build`
-takes its place at the same paths, the entry's guarded package (cowboy, poison, decimal) is added to its `mix.exs` with
-`prune_code_paths: false` and fetched (every release of the first lock must stay locked the same), and the package's
-closure is compiled again, traced, with the guarded package's closure first (`NCC_TRACE_FIRST`). The guarded modules
-must be built there, and the package's app must be the first build's: the same ebin names, non-beam bytes and chunks
-(`Dbgi`, `ExCk` and `Docs` as decoded terms) and the same `priv` tree. Then the first project is put back and must hash
-the same. Anything else refuses with the taint; `trace_stats.guarded_proof` says what happened. The dependency's own
+Then the proof (`NccWorker.Portability.GuardedProof`), one world per non-empty subset of the waived entries (each
+entry's guarded package present or not; 1, 3 or 7 worlds, and more than three waived entries refuse): the real project
+dir is moved aside whole, a fresh copy without `_build` takes its place at the same paths for each world, the subset's
+guarded packages (cowboy, poison, decimal) are added to its `mix.exs` with `prune_code_paths: false` and fetched (every
+release of the first lock must stay locked the same), and the package's closure is compiled again, traced, with the
+guarded packages' closure first (`NCC_TRACE_FIRST`). The subset's guarded modules must be built there and no others,
+and the package's app must be the first build's: the same ebin names, non-beam bytes and chunks (`Dbgi`, `ExCk` and
+`Docs` as decoded terms) and the same `priv` tree. Then the first project is put back and must hash the same. Another
+release of a guarded package is no other world for the three entries (the prober declares no dependency on it and uses
+it only at run time or for a warning); a new entry's review must show the same. Anything else refuses with the taint; `trace_stats.guarded_proof` says what happened. The dependency's own
 build still refuses, and so does a firmware target's or host-native verdict. The waived refusals are recorded in
 `compile_observations.guarded_taint`. It is not a `compile_inputs` item yet: client 0.8 reads an unknown kind as a malformed entry and misses. The package's own probe
 of whether a module of its path is loaded now (`function_exported?/3`, `:code.is_loaded/1`), an every-path

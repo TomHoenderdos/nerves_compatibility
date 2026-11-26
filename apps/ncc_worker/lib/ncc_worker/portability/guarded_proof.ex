@@ -13,11 +13,17 @@ defmodule NccWorker.Portability.GuardedProof do
       (`guarded`), so a caller that judges a trace alone never publishes
       it. A verdict `PrivRepro` or `Differential` holds as well is
       could-not-judge for good: they are not settled together;
-    * `settle/5` (`NccWorker.Portability.run/3`) builds the second world at
-      the first build's own paths, so no path in a beam can differ: the
-      project dir is renamed aside whole (its `_build` and `deps` with it),
-      and a copy of it without `_build` takes its place. Into that copy's
-      `mix.exs` go the entries' guarded packages (`present`: cowboy for
+    * `settle/5` (`NccWorker.Portability.run/3`) builds one world per
+      non-empty subset of the waived entries (S9 re-review R1-1): a user's
+      world is any presence vector over them, each entry's guarded package
+      present or not, the all-absent one being the first build. That is
+      `2^n - 1` worlds, smallest first; more than three waived entries
+      refuse (at most 7 worlds). Each world is built at the first build's
+      own paths, so no path in a beam can differ: the real project dir
+      (`Context.realpath/1`, R1-3) is renamed aside whole (its `_build` and
+      `deps` with it), and a fresh copy of it without `_build` takes its
+      place for each world. Into that copy's `mix.exs` go the subset's
+      guarded packages (`present`: cowboy for
       websock_adapter, poison for jose, decimal for ymlr), `mix deps.get`
       fetches them, and every release of the first lock must be locked the
       same (a version conflict refuses). Its project gets
@@ -26,8 +32,9 @@ defmodule NccWorker.Portability.GuardedProof do
       judge mode), with the guarded packages' closure compiled first: on a
       code path no dependency's compile prunes, the prober finds the probed
       module and builds its guarded modules, which must then be in its
-      ebin (else the build proves nothing and refuses);
-    * the package's app of that build must be the first build's
+      ebin, and no guarded module of an entry outside the subset may be
+      (else the world is not the vector it stands for and refuses);
+    * the package's app of every world must be the first build's
       (`compare_app/2`): the same ebin file names, every non-beam file the
       same bytes, every beam the same chunk ids in the same order and every
       chunk the same bytes, but for `Dbgi`, `ExCk` and `Docs`, which must
@@ -44,12 +51,27 @@ defmodule NccWorker.Portability.GuardedProof do
   guarded modules that were not built, a build or deps dir outside the
   project dir, a first build that changed. Never raises.
 
-  Two residuals. The proof is one world: every guarded package present at
-  the newest release that resolves against the lock. A dependent whose
-  beams would differ only with another release of it, or with some of the
-  guarded packages present and others not, is not caught. And the second
-  build is one more traced compile of the whole closure: it roughly
-  doubles the judge's compile time for a build that passes with a waiver.
+  Each world adds the guarded package at the newest release that resolves
+  against the lock. Another release is no other world for the three
+  entries (S9 re-review Q2, R1-5), because the guarded modules' beams
+  depend only on whether the probed module is found: the prober declares
+  no dependency on its guarded package, so its type checker reads no
+  signature of it (Elixir 1.20 infers signatures only from the compiling
+  project's own dependency apps), and the guarded code uses the package
+  only at run time or for a warning (each entry's comment in `Guarded`
+  says how). A dependent sees the guarded package's own modules only
+  through traced probes, which the first build judged. A new entry's
+  review must check the same: an entry whose guarded code uses its package
+  at compile time (`use`, `require`, a struct, `@derive`), or whose prober
+  declares it, needs a world per release, which this module does not build.
+
+  The worlds' traces are recorded but not judged (R1-4). A world's
+  compile-time code runs at the project's real path while the first
+  project sits beside it, and could write into it; the digest after the
+  put-back covers the package's published app (ebin and priv, the link
+  followed). Only a deliberate write reaches anything else, which the spec
+  leaves out of scope. Each world is one more traced compile of the whole
+  closure: one waived entry costs one, two cost three, three cost seven.
   """
 
   alias Compatibility.Portability, as: Reasons

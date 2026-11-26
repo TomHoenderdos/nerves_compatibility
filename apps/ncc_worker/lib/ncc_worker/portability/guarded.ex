@@ -63,6 +63,12 @@ defmodule NccWorker.Portability.Guarded do
   changes what the package publishes, and the rebar3 app's own build is
   judged in its own closure.
 
+  A new entry's review states why another release of its guarded package
+  is no other world (`GuardedProof` builds one release per world): the
+  prober must not declare the package, and the guarded code must use it
+  only at run time or for a warning, never through `use`, `require`, a
+  struct or `@derive`.
+
   Never raises: a beam or debug info that cannot be read fails the waiver.
   """
 
@@ -71,7 +77,11 @@ defmodule NccWorker.Portability.Guarded do
   @entries [
     # websock_adapter 0.5.0 to 0.7.2 (read 2026-11-22): the file is one
     # top-level `if` around one `defmodule`; `WebSockAdapter.tuple_for/4`
-    # names the module only as an atom. 0.4.5 not read.
+    # names the module only as an atom. 0.4.5 not read. Another cowboy
+    # release is no other world (`GuardedProof`, R1-5): websock_adapter
+    # declares plug_cowboy optional and not cowboy, so its checker reads no
+    # cowboy signature, and the guarded module's `@behaviour
+    # :cowboy_websocket` is a lookup that only warns.
     %{
       id: "websock_adapter:cowboy_adapter",
       app: "websock_adapter",
@@ -85,7 +95,10 @@ defmodule NccWorker.Portability.Guarded do
     # other Elixir file names `JOSE.Poison` (the Erlang callers,
     # `jose_server` and `jose_json_poison_lexical_encoder`, call it at run
     # time). The `Poison.EncodeError` probe inside the second `if` runs
-    # only where Poison is found.
+    # only where Poison is found, and at run time (in `exception/1`'s
+    # body). Another poison release is no other world (R1-5): jose has no
+    # Hex requirement, so its checker reads no poison signature, and the
+    # guarded code calls Poison only at run time.
     %{
       id: "jose:poison",
       app: "jose",
@@ -101,7 +114,10 @@ defmodule NccWorker.Portability.Guarded do
     # around one `defimpl Ymlr.Encoder, for: Decimal`, and no other form
     # probes. A dependency compiles against the unconsolidated protocol,
     # which is the same either way. 5.0.0 to 5.1.3 define the impl without
-    # a probe.
+    # a probe. Another decimal release is no other world (R1-5): ymlr
+    # declares decimal only for `:test`, its `defimpl` calls only
+    # `Code.ensure_compiled(Decimal)` for a warning and reads no struct, and
+    # its body calls `Decimal.to_string/1` at run time.
     %{
       id: "ymlr:decimal",
       app: "ymlr",
