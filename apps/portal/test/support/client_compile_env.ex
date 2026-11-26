@@ -43,23 +43,23 @@ defmodule Portal.Test.ClientCompileEnv do
   end
 
   defp step(key, {:ok, value}) do
-    with {:ok, key} <- existing(key) do
-      case value do
-        list when is_list(list) ->
-          if Keyword.keyword?(list) and Keyword.has_key?(list, key),
-            do: {:cont, {:ok, list[key]}},
-            else: {:halt, :error}
-
-        %{} = map ->
-          if Map.has_key?(map, key), do: {:cont, {:ok, map[key]}}, else: {:halt, :error}
-
-        _ ->
-          {:halt, :error}
-      end
-    else
+    case existing(key) do
+      {:ok, key} -> fetch(value, key)
       :error -> {:halt, :error}
     end
   end
+
+  defp fetch(list, key) when is_list(list) do
+    if Keyword.keyword?(list) and Keyword.has_key?(list, key),
+      do: {:cont, {:ok, list[key]}},
+      else: {:halt, :error}
+  end
+
+  defp fetch(%{} = map, key) do
+    if Map.has_key?(map, key), do: {:cont, {:ok, map[key]}}, else: {:halt, :error}
+  end
+
+  defp fetch(_value, _key), do: {:halt, :error}
 
   defp existing(name) do
     {:ok, String.to_existing_atom(name)}
