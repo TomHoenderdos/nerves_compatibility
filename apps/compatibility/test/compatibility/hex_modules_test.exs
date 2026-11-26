@@ -68,13 +68,30 @@ defmodule Compatibility.HexModulesTest do
           "lib/a.ex" => "defmodule HmMany do\nend\n",
           # macOS AppleDouble junk, which Mix's lib/**/*.ex never matches.
           "lib/._a.ex" => <<0, 5, 22, 7, 0, 2, 0, 0>>,
-          "src/big.erl" => "-module(hm_big).\n" <> String.duplicate("%% pad\n", 5_000_000)
+          "src/hm_big.erl" => "-module(hm_big).\n" <> String.duplicate("%% pad\n", 5_000_000)
         })
       )
 
     assert {:ok, %{modules: modules}} = HexModules.read(bytes, max_tarball: 64 * 1024 * 1024)
     assert "Elixir.HmMany" in modules
     assert "hm_big" in modules
+  end
+
+  # S10 review S5: an Erlang module is named by its file, which
+  # `compile:file` checks the `-module` against. `-module (x).`, `-module(?M).`
+  # and a `-module` in an included `.hrl` all compile, and a regex on the
+  # form misses them.
+  test "an Erlang source's module is its file's base name" do
+    bytes =
+      tarball(%{
+        "src/hm_spaced.erl" => "-module (hm_spaced).\n-export([f/0]).\nf() -> ok.\n",
+        "src/hm_macro.erl" => "-define(M, hm_macro).\n-module(?M).\n",
+        "src/hm_hrl.erl" => "-include(\"hm_hrl.hrl\").\n",
+        "include/hm_hrl.hrl" => "-module(hm_hrl).\n"
+      })
+
+    modules = HexModules.modules(bytes)
+    for m <- ~w(hm_spaced hm_macro hm_hrl), do: assert(m in modules, m)
   end
 
   test "anything that is not a Hex tarball defines nothing" do

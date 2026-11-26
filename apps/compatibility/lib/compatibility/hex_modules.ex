@@ -7,11 +7,14 @@ defmodule Compatibility.HexModules do
 
   Every literal `defmodule`, `defprotocol` and `defimpl` name in the
   tarball's `.ex` sources (an implementation is `Protocol.For`), parsed
-  without creating atoms, and every `-module` of its `.erl` sources. A
+  without creating atoms, and the module of every `.erl` source, its file's
+  base name (S10 review S5: `compile:file` refuses a `-module` other than
+  the file's name, and `-module (x).`, `-module(?M).` or a `-module` in an
+  included `.hrl` defeat a regex on the form). A
   module a macro defines is not found. Bounded: the tarball at
   `Compatibility.StaticPriv.max_tarball_bytes/0` (or `:max_tarball`), its
   contents at 64 MiB inflated, 5,000 source files and 64 MiB of parsed
-  Elixir source (an Erlang source's `-module` is read by a regex).
+  Elixir source (an Erlang source is named by its file, not read).
   Never raises.
   """
 
@@ -109,7 +112,7 @@ defmodule Compatibility.HexModules do
   end
 
   # Only Elixir sources count against the parse cap: an Erlang source is
-  # read by a regex, which the inflated-contents cap bounds.
+  # named by its file and not read.
   defp source(name, body, used) do
     cond do
       String.ends_with?(name, ".ex") and used + byte_size(body) > @max_source_bytes ->
@@ -119,7 +122,7 @@ defmodule Compatibility.HexModules do
         elixir_source(name, body, used)
 
       String.ends_with?(name, ".erl") ->
-        {:ok, erlang_modules(body), used}
+        {:ok, [Path.basename(name, ".erl")], used}
 
       String.ends_with?(name, [".xrl", ".yrl"]) ->
         {:ok, [Path.basename(name, Path.extname(name))], used}
@@ -152,13 +155,6 @@ defmodule Compatibility.HexModules do
   end
 
   defp app(_meta), do: nil
-
-  defp erlang_modules(body) do
-    case Regex.run(~r/^-module\(\s*'?([a-z][A-Za-z0-9_@]*)'?\s*\)/m, body) do
-      [_, m] -> [m]
-      _ -> []
-    end
-  end
 
   # No atom is created: every atom of the source comes back as {:atom, name}.
   defp elixir_modules(body) do
