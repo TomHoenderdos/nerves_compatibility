@@ -172,15 +172,15 @@ if portal_available? do
 
   config :portal, :precompiled_signing, key_path: System.get_env("PRECOMPILED_SIGNING_KEY")
 
-  # `0` publishes an untraced firmware build's `compile_env` as stored,
-  # without Logger's compile-time purge keys (stream S11,
-  # `Portal.Catalog`'s `put_logger_keys/3`). Anything else, or unset, keeps
-  # them on.
+  # `0` publishes an untraced firmware build's `compile_env` without
+  # Logger's compile-time keys, the package's own Logger keys included
+  # (stream S11, `Portal.Catalog.UntracedConfig`). Anything else, or unset,
+  # keeps them on.
   config :portal, firmware_logger_keys: System.get_env("NCC_FIRMWARE_LOGGER_KEYS") != "0"
 
   # `0` leaves out of an untraced firmware build's `compile_env` the config
   # keys the package's own code read at compile time in a toolchain build of
-  # the same version (stream S11, `Portal.Catalog`'s `own_config_keys/1`).
+  # the same version (stream S11, `Portal.Catalog.UntracedConfig`).
   # Anything else, or unset, keeps them on.
   config :portal,
     firmware_own_config_keys: System.get_env("NCC_FIRMWARE_OWN_CONFIG_KEYS") != "0"

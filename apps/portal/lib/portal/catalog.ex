@@ -47,6 +47,7 @@ defmodule Portal.Catalog do
     SystemResult,
     ToolchainBuild,
     UnrecordedOptionalDeps,
+    UntracedConfig,
     VersionBackfill
   }
 
@@ -3922,7 +3923,7 @@ defmodule Portal.Catalog do
       |> Map.merge(
         Map.new(
           sources.pinned_builds,
-          &{{&1.id, &1.run_id}, {:pinned, &1, Map.get(sources.own_config_keys, &1.version, [])}}
+          &{{&1.id, &1.run_id}, {:pinned, &1, Map.get(sources.own_config_keys, &1.version, %{})}}
         )
       )
       |> Map.merge(sibling_results(sources, listed))
@@ -3980,7 +3981,7 @@ defmodule Portal.Catalog do
         stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
         built_by = built_by(runs_by_id, result),
         version = Map.fetch!(runs_by_id, result.run_id).version_tested,
-        keys = Map.get(sources.own_config_keys, version, []),
+        keys = Map.get(sources.own_config_keys, version, %{}),
         build = result_build(built_by, result, keys),
         [{files, ^build}] <- [own_build(result, build, stored, sources.present_shas)],
         entry = Map.merge(files, %{"target" => result.system_pkg, "build" => build}),
@@ -4005,7 +4006,7 @@ defmodule Portal.Catalog do
         files != nil,
         foreign = foreign_files(pb, stored, sources.present_shas),
         foreign != :absent,
-        keys = Map.get(sources.own_config_keys, pb.version, []),
+        keys = Map.get(sources.own_config_keys, pb.version, %{}),
         do: pb |> pinned_build_v2(files, keys) |> put_foreign(pb, foreign, sources)
   end
 
@@ -4264,7 +4265,7 @@ defmodule Portal.Catalog do
         stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
         built_by = built_by(runs_by_id, result),
         version = Map.fetch!(runs_by_id, result.run_id).version_tested,
-        keys = Map.get(sources.own_config_keys, version, []),
+        keys = Map.get(sources.own_config_keys, version, %{}),
         build = result_build(built_by, result, keys),
         {files, build} <-
           own_build(result, build, stored, sources.present_shas) ++
@@ -4298,106 +4299,31 @@ defmodule Portal.Catalog do
     |> put_untraced_keys(result.system_pkg, result.compile_inputs, keys)
   end
 
-  # The compile-time config a firmware build's files depend on that its
-  # `.app` does not list (stream S11). A toolchain build's trace lists such
-  # reads (R5), and so does a firmware target's (`NccWorker.FirmwareInputs`),
-  # which is when it records `compile_inputs`. Any other firmware build (no
-  # inputs: an untraced or unjudged target, a published variant, a pinned
-  # firmware build) is published with them as the builder's compile read
-  # them: unset, since the worker's Nerves project sets none of them. A
-  # client whose config sets one misses; any other is unaffected. A key the
-  # list already names is kept as it is, and a `compile_env` that could not
-  # be read stays `nil`. Two sets:
-  #
-  #   * Logger's: every `Logger` macro reads `:logger`'s
-  #     `compile_time_purge_matching`, `compile_time_purge_level` and
-  #     `always_evaluate_messages` with `Application.get_env/3` while its
-  #     caller compiles. `NCC_FIRMWARE_LOGGER_KEYS=0`
-  #     (`:firmware_logger_keys`) turns them off.
-  #   * the package's own: each key `own_config_keys/1` found for the
-  #     build's version, after Logger's, sorted.
-  #     `NCC_FIRMWARE_OWN_CONFIG_KEYS=0` (`:firmware_own_config_keys`) turns
-  #     them off.
-  @logger_keys ~w(compile_time_purge_matching compile_time_purge_level always_evaluate_messages)
-  @unset_value :error
-               |> :erlang.term_to_binary([:deterministic])
-               |> Base.url_encode64(padding: false)
-
+  # The compile-time config an untraced firmware build's files depend on
+  # that its `.app` does not list (`Portal.Catalog.UntracedConfig`): Logger's
+  # keys and the package's own, each with the value the builder's compile
+  # read. A firmware build with `compile_inputs` was traced, and its trace
+  # listed them. `NCC_FIRMWARE_LOGGER_KEYS=0` (`:firmware_logger_keys`) and
+  # `NCC_FIRMWARE_OWN_CONFIG_KEYS=0` (`:firmware_own_config_keys`) turn
+  # each set off; the first also drops the package's own Logger keys.
   defp put_untraced_keys(%{"compile_env" => env} = build, "nerves_system_" <> _, nil, own)
        when is_list(env) do
-    logger =
-      if Application.get_env(:portal, :firmware_logger_keys, true) == false,
-        do: [],
-        else: Enum.map(@logger_keys, &{"logger", [&1]})
+    opts = [
+      logger: Application.get_env(:portal, :firmware_logger_keys, true) != false,
+      own: Application.get_env(:portal, :firmware_own_config_keys, true) != false
+    ]
 
-    wanted = Enum.uniq(logger ++ own)
-    listed = MapSet.new(env, &{&1["app"], &1["path"]})
-
-    added =
-      for {app, path} <- wanted,
-          not MapSet.member?(listed, {app, path}),
-          do: %{"app" => app, "path" => path, "value" => @unset_value}
-
-    Map.put(build, "compile_env", env ++ added)
+    Map.put(build, "compile_env", UntracedConfig.items(env, build["elixir"], own, opts))
   end
 
   defp put_untraced_keys(build, _target, _inputs, _own), do: build
 
-  # What the worker's firmware project's config sets (the Nerves template,
-  # nerves_bootstrap 1.17.4, `--no-nerves-pack`, and `NccWorker.Project`'s
-  # own `:nerves, :firmware` line), by app, `:all` for every key: such a key
-  # is not unset in the builder's compile, so it is never listed as unset.
-  # The apps a `nerves_pack` template configures are kept out too.
-  @builder_config %{
-    "nerves" => :all,
-    "nerves_runtime" => :all,
-    "nerves_ssh" => :all,
-    "vintage_net" => :all,
-    "mdns_lite" => :all,
-    "shoehorn" => :all,
-    "logger" => ["default_handler"]
-  }
-
-  # The config keys the package's own code read at compile time, by
-  # version: from each toolchain build of the version (a listed variant)
-  # whose `compile_env` R5 wrote (`compile_env_rule` 1), the `[key]` items
-  # whose read its trace names the package as the owner of
-  # (`compile_observations.config_reads`), less the builder's own config
-  # (`@builder_config`). `%{version => [{app, [key]}]}`, each sorted; empty
-  # while `NCC_FIRMWARE_OWN_CONFIG_KEYS=0`. The toolchain builds' rows are in
-  # the package's fingerprint (`@precompiled_fingerprints_sql`, by `xmin`).
-  @own_config_keys_sql """
-  SELECT DISTINCT t.version, ce->>'app', ce->'path'->>0
-  FROM catalog_toolchain_builds t
-  CROSS JOIN LATERAL unnest(t.compile_env) AS ce
-  WHERE t.package_id = $1 AND t.variant IN #{ToolchainBuild.variants_sql()}
-    AND t.compile_env_rule = 1
-    AND jsonb_typeof(ce->'path') = 'array' AND jsonb_array_length(ce->'path') = 1
-    AND jsonb_typeof(ce->'path'->0) = 'string' AND jsonb_typeof(ce->'app') = 'string'
-    AND jsonb_typeof(t.compile_observations->'config_reads') = 'array'
-    AND EXISTS (
-      SELECT 1 FROM jsonb_array_elements(t.compile_observations->'config_reads') AS e
-      WHERE e->>'owner' = $2 AND e->'arg'->>'app' = ce->>'app'
-        AND e->'arg'->>'key' = ce->'path'->>0)
-  """
-
+  # The package's own keys by version (`UntracedConfig.own_keys/2`); none
+  # while `NCC_FIRMWARE_OWN_CONFIG_KEYS=0`.
   defp own_config_keys(package) do
-    if Application.get_env(:portal, :firmware_own_config_keys, true) == false do
-      %{}
-    else
-      Repo.query!(@own_config_keys_sql, [Ecto.UUID.dump!(package.id), package.name]).rows
-      |> Enum.reject(fn [_version, app, key] -> builder_config?(app, key) end)
-      |> Enum.group_by(&hd/1, fn [_version, app, key] -> {app, [key]} end)
-      |> Map.new(fn {version, keys} -> {version, Enum.sort(keys)} end)
-    end
-  end
-
-  defp builder_config?(app, key) do
-    case Map.get(@builder_config, app) do
-      :all -> true
-      keys when is_list(keys) -> key in keys
-      nil -> false
-    end
+    if Application.get_env(:portal, :firmware_own_config_keys, true) == false,
+      do: %{},
+      else: UntracedConfig.own_keys(package.id, package.name)
   end
 
   defp own_build(result, build, stored, present) do

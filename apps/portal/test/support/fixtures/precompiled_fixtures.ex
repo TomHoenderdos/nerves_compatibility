@@ -46,7 +46,8 @@ defmodule Portal.PrecompiledFixtures do
   lists the closure's traced config reads), `:status` (`"pass"`),
   `:mode` (`33_188`), `:config_variant` (`"default"`, both the result's echo
   and the job's value), `:portability_rule`, `:rule1_reason`, `:declared`,
-  `:manager`, `:judge_revision`, `:compile_inputs` and
+  `:manager`, `:judge_revision`, `:app_file` (an app name: the ebin also
+  lists `ebin/<app>.app`), `:compile_inputs` and
   `:compile_observations` (each absent from the result unless given), and `:variant` (the job's optional-deps variant and
   the result's echo of it; absent, a `with` build that echoes nothing).
   """
@@ -56,6 +57,9 @@ defmodule Portal.PrecompiledFixtures do
     dir = tmp_files_dir()
     File.write!(Path.join(dir, sha), content)
     write_app!(dir, name, opts)
+
+    if app = opts[:app_file],
+      do: File.write!(Path.join(dir, sha256(app_file(app))), app_file(app))
 
     result = toolchain_result(name, version, Keyword.put(opts, :content, content))
 
@@ -73,6 +77,24 @@ defmodule Portal.PrecompiledFixtures do
     if Keyword.has_key?(opts, :relocation),
       do: Portal.Test.RelocationFixtures.beam(name),
       else: "toolchain-beam-#{name}-#{version}-#{System.unique_integer([:positive])}"
+  end
+
+  # `:app_file`: the build's ebin also lists `ebin/<app>.app`, the app name
+  # a trace names the package by.
+  defp app_file(app), do: "{application,#{app},[]}."
+  defp sha256(bytes), do: Base.encode16(:crypto.hash(:sha256, bytes), case: :lower)
+
+  defp app_entries(nil), do: []
+
+  defp app_entries(app) do
+    [
+      %{
+        "path" => "ebin/#{app}.app",
+        "sha256" => sha256(app_file(app)),
+        "size" => byte_size(app_file(app)),
+        "mode" => 33_188
+      }
+    ]
   end
 
   defp write_app!(dir, name, opts) do
@@ -110,14 +132,15 @@ defmodule Portal.PrecompiledFixtures do
         "compile_env_rule" => Keyword.get(opts, :compile_env_rule),
         "config_variant" => Keyword.get(opts, :config_variant, "default"),
         "file_manifest" => %{
-          "ebin" => [
-            %{
-              "path" => "ebin/#{name}.beam",
-              "sha256" => sha,
-              "size" => byte_size(content),
-              "mode" => Keyword.get(opts, :mode, 33_188)
-            }
-          ],
+          "ebin" =>
+            [
+              %{
+                "path" => "ebin/#{name}.beam",
+                "sha256" => sha,
+                "size" => byte_size(content),
+                "mode" => Keyword.get(opts, :mode, 33_188)
+              }
+            ] ++ app_entries(opts[:app_file]),
           "priv" => []
         }
       }

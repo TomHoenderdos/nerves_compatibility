@@ -5,16 +5,6 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
   # its own, and listed in format 2 beside the build with them.
   use Portal.DataCase, async: false
 
-  # Logger's compile-time keys, which an untraced firmware build is
-  # published with, unset (stream S11, `Portal.Catalog.put_logger_keys/3`).
-  @logger_keys for key <-
-                     ~w(compile_time_purge_matching compile_time_purge_level always_evaluate_messages),
-                   do: %{
-                     "app" => "logger",
-                     "path" => [key],
-                     "value" => Base.url_encode64(:erlang.term_to_binary(:error), padding: false)
-                   }
-
   require Ash.Query
 
   import PortalWeb.ApiSpecAssertions
@@ -207,6 +197,35 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
   end
 
   describe "manifest_v2" do
+    # Stream S11: on the firmware image's Elixir minor, both builds carry
+    # Logger's compile-time keys with the values a project with no config
+    # reads (`Portal.Catalog.UntracedConfig`), as the client compares them.
+    test "on Elixir 1.20 both builds list Logger's keys, matched by a project with no config" do
+      [variant()]
+      |> kept_run()
+      |> Map.put("toolchain", %{"elixir" => "1.20.5", "erlang" => "29"})
+      |> ingest!()
+
+      assert [with_build] = rpi4_builds()
+      assert [without_build] = rpi4_builds("builds_closure")
+
+      for build <- [with_build, without_build] do
+        env = build["build"]["compile_env"]
+
+        assert [
+                 "compile_time_purge_matching",
+                 "always_evaluate_messages",
+                 "compile_time_purge_level"
+               ] --
+                 for(%{"app" => "logger", "path" => [key]} <- env, do: key) == []
+
+        assert env
+               |> Enum.filter(&(&1["app"] == "logger"))
+               |> Portal.Test.ClientCompileEnv.misses() ==
+                 []
+      end
+    end
+
     test "lists the build with the optional dependency and the one without, each its own" do
       ingest!(kept_run([variant()]))
 
@@ -218,7 +237,7 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
              ]
 
       assert with_build["build"]["deps"] == @with_lock
-      assert with_build["build"]["compile_env"] == @logger_keys
+      assert with_build["build"]["compile_env"] == []
 
       assert without_build["ebin"] == [
                %{
@@ -230,7 +249,7 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
 
       assert without_build["build"]["deps"] == @run_lock
 
-      assert without_build["build"]["compile_env"] == @compile_env ++ @logger_keys
+      assert without_build["build"]["compile_env"] == @compile_env
 
       # Everything else is the target's, and the variant's name is not in it.
       assert Map.drop(without_build["build"], ["deps", "compile_env"]) ==
