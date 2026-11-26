@@ -50,8 +50,21 @@ defmodule NccWorker.Tracer.FixturesNamespaceProbeTest do
              }
            ]
 
+    # S10: the record is a probe compile input too.
+    input = %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => "Elixir.FxPg.Timestamp",
+      "answer" => "absent",
+      "definers" => []
+    }
+
+    assert verdict.compile_inputs == [input]
+
     # A tarball that defines the probed module too (here behind a probe of
-    # its own, so the build left it out): refused, as before.
+    # its own, so the build left it out): no namespace record, but nothing
+    # in the build defines the module, so it is a probe input (S10); where
+    # fx_pg's own probe is traced, it is one too.
     guarded =
       sources
       |> Map.put("lib/fx_pg/timestamp.ex", """
@@ -61,7 +74,7 @@ defmodule NccWorker.Tracer.FixturesNamespaceProbeTest do
       end
       """)
 
-    assert %{status: :skip, reason: reason} =
+    assert %{status: :pass, compile_inputs: [^input], observations: obs} =
              TracerFixtures.judge(
                proj,
                "fx_probe",
@@ -70,8 +83,6 @@ defmodule NccWorker.Tracer.FixturesNamespaceProbeTest do
                opts(Path.join(dir, "g"), guarded)
              )
 
-    assert reason ==
-             "compile-time probe of a dependency outside the closure: Elixir.FxPg.Timestamp via " <>
-               "Code.ensure_loaded?/1"
+    assert obs["declared_absent"] == []
   end
 end
