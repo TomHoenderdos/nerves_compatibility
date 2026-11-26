@@ -10,21 +10,28 @@ defmodule Portal.Workers.PinRefeed do
 
   Before it feeds, the release must be one the worker builds: its own
   `nerves` requirement accepts the worker's Nerves
-  (`Compatibility.Nerves.buildable?/1`), else the job is cancelled
-  (`:not_nerves_2`); and its `catalog_system_abi` row must hold its OTP,
-  which `Portal.Workers.SystemAbiObserve` reads within hours of a release,
-  else the job snoozes an hour, at most 24 times, then is cancelled
-  (`:system_abi_unknown`). A registry that does not answer snoozes too.
+  (`Compatibility.Nerves.buildable?/1`), else every pending lock is
+  recorded as done with it and the job is cancelled (`:not_nerves_2`); and
+  its `catalog_system_abi` row must hold its OTP, which
+  `Portal.Workers.SystemAbiObserve` reads within hours of a release, else
+  the job snoozes an hour, at most 24 times, then is cancelled
+  (`:system_abi_unknown`) and offered again on the next update check. A
+  registry that does not answer snoozes too.
 
   At most 20 locks a perform, oldest feed first; it snoozes a minute
-  while more remain. Each lock fed is recorded (`Portal.Pins.Locks.refed/3`),
-  so a retry feeds only the rest.
+  while more remain. A lock is recorded as fed (`Portal.Pins.Locks.refed/3`)
+  only when `Portal.Pins.from_lock/2` answered `{:ok, _}`; when any lock's
+  feed failed the perform fails, and Oban retries it for the rest (review
+  S2). With `NCC_PIN_REFEED=0` it feeds nothing (`{:cancel, :pin_refeed_off}`).
+
+  Unique per system, release and pending set (`Portal.Pins.Refeed`) in
+  every state but cancelled and discarded.
   """
 
   use Oban.Worker,
     queue: :intake,
     max_attempts: 5,
-    unique: [period: :infinity, keys: [:system, :version], states: :all]
+    unique: [period: :infinity, keys: [:system, :version, :pending], states: :successful]
 
   require Ash.Query
   require Logger
@@ -37,12 +44,27 @@ defmodule Portal.Workers.PinRefeed do
 
   @impl Oban.Worker
   def perform(%Oban.Job{args: %{"system" => system, "version" => version}, attempt: attempt}) do
+    if Refeed.enabled?(), do: run(system, version, attempt), else: {:cancel, :pin_refeed_off}
+  end
+
+  defp run(system, version, attempt) do
     case check(system, version) do
       :ok -> feed(system, version)
       {:wait, _why} when attempt <= @abi_waits -> {:snooze, @abi_snooze}
       {:wait, why} -> {:cancel, why}
+      {:cancel, :not_nerves_2} -> done_with(system, version)
       {:cancel, why} -> {:cancel, why}
     end
+  end
+
+  # A release the worker cannot build: every pending lock is done with it,
+  # so it is not offered again.
+  defp done_with(system, version) do
+    system
+    |> Locks.pending(version, 1_000_000)
+    |> Enum.each(&(:ok = Locks.refed(&1.sha256, system, version)))
+
+    {:cancel, :not_nerves_2}
   end
 
   defp check(system, version) do
@@ -80,29 +102,39 @@ defmodule Portal.Workers.PinRefeed do
   defp feed(system, version) do
     locks = Locks.pending(system, version, @batch)
 
-    Enum.each(locks, fn lock ->
-      opts =
-        [system: system, system_release: version, dry_run: false, hex: Refeed.hex()] ++
-          if(lock.toolchain, do: [toolchain: lock.toolchain], else: []) ++
-          if(lock.deterministic, do: [deterministic: true], else: [])
+    failed = Enum.reject(locks, &feed_lock(&1, system, version))
 
-      case Portal.Pins.from_lock(lock.content, opts) do
-        {:ok, report} ->
-          Logger.info(
-            "Pin re-feed #{system} #{version} lock #{String.slice(lock.sha256, 0, 12)}: " <>
-              "#{report.counts["queue"]} queued, #{inspect(Map.delete(report.counts, "queue"))}"
-          )
+    cond do
+      failed != [] -> {:error, "#{length(failed)} of #{length(locks)} locks not fed"}
+      length(locks) == @batch -> {:snooze, 60}
+      true -> :ok
+    end
+  end
 
-        {:error, reason} ->
-          Logger.warning(
-            "Pin re-feed #{system} #{version} lock #{String.slice(lock.sha256, 0, 12)}: " <>
-              inspect(reason)
-          )
-      end
+  # Whether the lock was fed; only then is it recorded as fed.
+  defp feed_lock(lock, system, version) do
+    opts =
+      [system: system, system_release: version, dry_run: false, hex: Refeed.hex()] ++
+        if(lock.toolchain, do: [toolchain: lock.toolchain], else: []) ++
+        if(lock.deterministic, do: [deterministic: true], else: [])
 
-      :ok = Locks.refed(lock.sha256, system, version)
-    end)
+    case Portal.Pins.from_lock(lock.content, opts) do
+      {:ok, report} ->
+        Logger.info(
+          "Pin re-feed #{system} #{version} lock #{String.slice(lock.sha256, 0, 12)}: " <>
+            "#{report.counts["queue"]} queued, #{inspect(Map.delete(report.counts, "queue"))}"
+        )
 
-    if length(locks) == @batch, do: {:snooze, 60}, else: :ok
+        :ok = Locks.refed(lock.sha256, system, version)
+        true
+
+      {:error, reason} ->
+        Logger.warning(
+          "Pin re-feed #{system} #{version} lock #{String.slice(lock.sha256, 0, 12)}: " <>
+            inspect(reason)
+        )
+
+        false
+    end
   end
 end

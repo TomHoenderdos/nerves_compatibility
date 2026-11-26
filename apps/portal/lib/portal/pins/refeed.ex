@@ -10,9 +10,16 @@ defmodule Portal.Pins.Refeed do
   for each system a stored lock names (`Portal.Pins.Locks`), when the
   newest stable release on Hex is newer than some stored lock's own release
   and that lock was not fed again at it, it queues one
-  `Portal.Workers.PinRefeed` for the system and release. The job is unique
-  per system and release, ever, so a release is fed once; the job checks
-  the release, bounds the work and feeds.
+  `Portal.Workers.PinRefeed` for the system, the release and the set of
+  those locks (`pending`, a hash of their sha256s). The job is unique on
+  all three in every state but cancelled and discarded (review S2): a lock
+  stored after the release's job completed makes a new set and is fed
+  too, and a job that was cancelled (the ABI row a day late) or ran out of
+  attempts is offered again on the next check. The job checks the release,
+  bounds the work and feeds.
+
+  `NCC_PIN_REFEED=0` (`config :portal, Portal.Pins.Refeed, enabled:`) offers
+  nothing, and a job already queued feeds nothing (review S1).
   """
 
   alias Portal.Pins.Locks
@@ -25,26 +32,49 @@ defmodule Portal.Pins.Refeed do
   """
   @spec offer([map()]) :: non_neg_integer()
   def offer(registry) when is_list(registry) do
-    by_system = Enum.group_by(Locks.all(), & &1.system)
+    if enabled?(), do: offer_all(registry), else: 0
+  end
+
+  defp offer_all(registry) do
+    by_system = Enum.group_by(Locks.heads(), & &1.system)
     versions = Map.new(registry, &{&1.name, Map.get(&1, :versions, [])})
 
     Enum.count(by_system, fn {system, locks} ->
-      with true <- is_binary(system),
-           newest when is_binary(newest) <- newest_stable(Map.get(versions, system, [])),
-           true <- Enum.any?(locks, &behind?(&1, system, newest)) do
-        insert(system, newest)
+      with newest when is_binary(newest) <- newest_stable(Map.get(versions, system, [])),
+           [_ | _] = behind <- Enum.filter(locks, &behind?(&1, system, newest)) do
+        insert(system, newest, behind)
       else
         _ -> false
       end
     end)
   end
 
+  @doc "Whether the re-feed is on (`NCC_PIN_REFEED`, default on)."
+  @spec enabled?() :: boolean()
+  def enabled? do
+    :portal |> Application.get_env(__MODULE__, []) |> Keyword.get(:enabled, true) != false
+  end
+
+  @doc false
+  # The `pending` key of a job for `locks` (`%{sha256}` each).
+  @spec pending([map()]) :: String.t()
+  def pending(locks) do
+    locks
+    |> Enum.map(& &1.sha256)
+    |> Enum.sort()
+    |> Enum.join(",")
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
   defp behind?(lock, system, newest) do
     newer?(newest, lock.release) and Map.get(lock.refed, system) != newest
   end
 
-  defp insert(system, version) do
-    case %{system: system, version: version} |> PinRefeed.new() |> Oban.insert() do
+  defp insert(system, version, locks) do
+    case %{system: system, version: version, pending: pending(locks)}
+         |> PinRefeed.new()
+         |> Oban.insert() do
       {:ok, %Oban.Job{conflict?: false}} -> true
       _ -> false
     end

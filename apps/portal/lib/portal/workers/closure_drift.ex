@@ -662,7 +662,12 @@ defmodule Portal.Workers.ClosureDrift do
 
   @doc """
   At most this many firmware drift rebuilds waiting or queued the same UTC
-  day, across runs (`NCC_FIRMWARE_DRIFT_MAX`).
+  day, across runs (`NCC_FIRMWARE_DRIFT_MAX`). A run counts once against it
+  while it is judged, but its targets are queued as one Build per group of
+  systems whose newest releases want the same `nerves_system_br`
+  (`Portal.Catalog.SystemGroups`), two at most today (review N4), and the
+  next run counts those jobs one by one (`firmware_spent/0`). So one run of
+  this worker may queue up to that many Build jobs per counted run.
   """
   @spec firmware_max_per_run() :: non_neg_integer()
   def firmware_max_per_run, do: Keyword.get(config(), :firmware_max_per_run, 25)

@@ -55,6 +55,23 @@ defmodule Portal.Pins.Locks do
   def all, do: select("ORDER BY fed_at, sha256", [])
 
   @doc """
+  Every stored lock that names a system, without its content (review N3):
+  `%{sha256, system, release, refed}`, oldest feed first.
+  """
+  @spec heads() :: [map()]
+  def heads do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT sha256, system, release, refed FROM catalog_pin_locks " <>
+          "WHERE system IS NOT NULL ORDER BY fed_at, sha256",
+        []
+      )
+
+    for [sha, system, release, refed] <- rows,
+        do: %{sha256: sha, system: system, release: release, refed: refed || %{}}
+  end
+
+  @doc """
   The stored locks of `system` that were not fed again at `release` yet,
   oldest feed first, at most `limit`.
   """

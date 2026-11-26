@@ -202,6 +202,84 @@ defmodule Portal.Pins.RefeedTest do
       Process.put({:refeed_hex, "nerves_system_rpi4"}, [system_release("2.2.3", "~> 1.11")])
       assert {:cancel, :not_nerves_2} = perform_job(PinRefeed, args)
       refute Enum.any?(firmware_releases(), &(elem(&1, 1) == "2.2.3"))
+
+      # A release the worker cannot build is no release to feed at: the
+      # lock is done with it, so it is not offered again.
+      assert Refeed.offer(registry(["2.2.2", "2.2.3"])) == 0
+    end
+
+    # Review S1.
+    test "NCC_PIN_REFEED=0 offers nothing and a queued job feeds nothing" do
+      abi!("2.2.2")
+      abi!("2.2.3")
+      {:ok, _} = feed(lock("2.2.2"), dry_run: false)
+      Process.put({:refeed_hex, "nerves_system_rpi4"}, [system_release("2.2.3")])
+      Application.put_env(:portal, Portal.Pins.Refeed, hex: FakeHex, enabled: false)
+
+      assert Refeed.offer(registry(["2.2.2", "2.2.3"])) == 0
+      assert all_enqueued(worker: PinRefeed) == []
+
+      args = %{"system" => "nerves_system_rpi4", "version" => "2.2.3"}
+      assert {:cancel, :pin_refeed_off} = perform_job(PinRefeed, args)
+      refute Enum.any?(firmware_releases(), &(elem(&1, 1) == "2.2.3"))
+      assert [%{refed: %{}}] = Locks.all()
+    end
+
+    # Review S2: a cancelled job (the ABI row a day late) never blocks the
+    # release for good.
+    test "a cancelled or discarded job does not keep the release from being offered again" do
+      abi!("2.2.2")
+      {:ok, _} = feed(lock("2.2.2"), dry_run: false)
+
+      for state <- ["cancelled", "discarded"] do
+        assert Refeed.offer(registry(["2.2.2", "2.2.3"])) == 1
+
+        Portal.Repo.query!("UPDATE oban_jobs SET state = $1 WHERE worker = $2", [
+          state,
+          inspect(PinRefeed)
+        ])
+      end
+
+      assert Refeed.offer(registry(["2.2.2", "2.2.3"])) == 1
+    end
+
+    test "a lock stored after the release's job completed is offered at it too" do
+      abi!("2.2.2")
+      abi!("2.2.3")
+      {:ok, _} = feed(lock("2.2.2"), dry_run: false)
+
+      Process.put({:refeed_hex, "nerves_system_rpi4"}, [
+        system_release("2.2.2"),
+        system_release("2.2.3")
+      ])
+
+      assert Refeed.offer(registry(["2.2.2", "2.2.3"])) == 1
+      [job] = all_enqueued(worker: PinRefeed)
+      assert :ok = perform_job(PinRefeed, job.args)
+      Portal.Repo.query!("UPDATE oban_jobs SET state = 'completed' WHERE id = $1", [job.id])
+
+      other = String.replace(lock("2.2.2"), "\n}\n", hex("extra", "0.1.0", "7") <> "}\n")
+      {:ok, _} = feed(other, dry_run: false)
+
+      assert Refeed.offer(registry(["2.2.2", "2.2.3"])) == 1
+    end
+
+    test "a lock whose feed fails is not marked fed, and the job fails to be retried" do
+      abi!("2.2.2")
+      abi!("2.2.3")
+      {:ok, _} = feed(lock("2.2.2"), dry_run: false)
+      :ok = Locks.store("%{not a lock", %{system: "nerves_system_rpi4", release: "2.2.2"})
+
+      Process.put({:refeed_hex, "nerves_system_rpi4"}, [
+        system_release("2.2.2"),
+        system_release("2.2.3")
+      ])
+
+      args = %{"system" => "nerves_system_rpi4", "version" => "2.2.3"}
+      assert {:error, _} = perform_job(PinRefeed, args)
+
+      refed = Locks.all() |> Enum.map(&{&1.content =~ "not a lock", &1.refed}) |> Enum.sort()
+      assert refed == [{false, %{"nerves_system_rpi4" => "2.2.3"}}, {true, %{}}]
     end
   end
 end

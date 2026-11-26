@@ -178,6 +178,11 @@ if portal_available? do
   # keeps them on.
   config :portal, firmware_logger_keys: System.get_env("NCC_FIRMWARE_LOGGER_KEYS") != "0"
 
+  # `0` turns off the pin re-feed (stream S11, `Portal.Pins.Refeed`): the
+  # update check offers no `Portal.Workers.PinRefeed`, and one already
+  # queued feeds nothing. Anything else, or unset, keeps it on.
+  config :portal, Portal.Pins.Refeed, enabled: System.get_env("NCC_PIN_REFEED") != "0"
+
   # `0` leaves out of an untraced firmware build's `compile_env` the config
   # keys the package's own code read at compile time in a toolchain build of
   # the same version (stream S11, `Portal.Catalog.UntracedConfig`).
