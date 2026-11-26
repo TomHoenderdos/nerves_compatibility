@@ -13,10 +13,10 @@ defmodule Portal.Workers.PinRefeed do
   (`Compatibility.Nerves.buildable?/1`), else the job is cancelled
   (`:not_nerves_2`); and its `catalog_system_abi` row must hold its OTP,
   which `Portal.Workers.SystemAbiObserve` reads within hours of a release,
-  else the job snoozes an hour, at most #{24} times, then is cancelled
+  else the job snoozes an hour, at most 24 times, then is cancelled
   (`:system_abi_unknown`). A registry that does not answer snoozes too.
 
-  At most #{20} locks a perform, oldest feed first; it snoozes a minute
+  At most 20 locks a perform, oldest feed first; it snoozes a minute
   while more remain. Each lock fed is recorded (`Portal.Pins.Locks.refed/3`),
   so a retry feeds only the rest.
   """
