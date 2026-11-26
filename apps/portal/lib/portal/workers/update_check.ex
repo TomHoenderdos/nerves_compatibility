@@ -88,6 +88,13 @@ defmodule Portal.Workers.UpdateCheck do
   that may have run one (`PluginWatch.mark_unrecorded/1`): that sweep reads
   only the database.
 
+  ## Pinned builds at a new system release
+
+  It also hands the registry to `Portal.Pins.Refeed`, which queues a
+  `Portal.Workers.PinRefeed` when a Nerves system a stored project lock
+  names released since that lock was fed: the lock's pinned firmware builds
+  are built at the new release. A dry run queues none.
+
   ## Scope
 
   Only packages already in the catalogue. A registry package we have never
@@ -124,6 +131,7 @@ defmodule Portal.Workers.UpdateCheck do
   alias Portal.Catalog.LatestRun
   alias Portal.Catalog.Package
   alias Portal.Workers.Backfill
+  alias Portal.Pins.Refeed
   alias Portal.Precompiled.PluginWatch
   alias Portal.Workers.ReleaseFastPath
 
@@ -232,6 +240,7 @@ defmodule Portal.Workers.UpdateCheck do
           end
 
         fast_path = if dry_run?, do: 0, else: ReleaseFastPath.offer(registry)
+        unless dry_run?, do: refeed_pins(registry)
 
         Logger.info(
           "Update check: #{length(registry)} packages on hex, #{length(moved)} tracked and worth rebuilding, #{enqueued} queued, #{nominated} toolchain builds nominated, #{fast_path} releases on the fast path"
@@ -259,6 +268,15 @@ defmodule Portal.Workers.UpdateCheck do
     PluginWatch.refresh(registry)
   rescue
     e -> Logger.error("rebar3 plugin watch not refreshed: " <> Exception.message(e))
+  end
+
+  # The stored project locks whose Nerves system released since they were
+  # fed (`Portal.Pins.Refeed`): one `Portal.Workers.PinRefeed` per system and
+  # release. A failure is logged; the next run offers the release again.
+  defp refeed_pins(registry) do
+    Refeed.offer(registry)
+  rescue
+    e -> Logger.error("pin re-feed not offered: " <> Exception.message(e))
   end
 
   # The builds with no plugin record that may have run a plugin and that no

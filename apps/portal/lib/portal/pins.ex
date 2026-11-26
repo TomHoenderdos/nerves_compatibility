@@ -145,13 +145,17 @@ defmodule Portal.Pins do
   """
   @spec from_lock(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def from_lock(lock, opts \\ []) when is_binary(lock) do
+    hex = Keyword.get(opts, :hex, Portal.HexDeps)
+
     with {:ok, content} <- read(lock),
          {:ok, entries} <- Lock.parse(content),
          {:ok, target} <- target(Keyword.get(opts, :target, "host")),
          {:ok, toolchain, image} <- toolchain(Keyword.get(opts, :toolchain)),
          {:ok, cap} <- cap(Keyword.get(opts, :cap, @default_cap)),
          {:ok, deterministic} <- deterministic(Keyword.get(opts, :deterministic, false)),
-         {:ok, system} <- system(entries, Keyword.get(opts, :system)) do
+         {:ok, own_system} <- system(entries, Keyword.get(opts, :system)),
+         {:ok, entries, system} <-
+           at_release(entries, own_system, Keyword.get(opts, :system_release), hex) do
       lines = Map.new(systems(entries), fn {name, _version} -> {name, nerves(entries[name])} end)
 
       {sets, refused} = derive(entries)
@@ -171,9 +175,64 @@ defmodule Portal.Pins do
         deterministic: deterministic && Portal.Deterministic.enabled?()
       }
 
-      {:ok, decide(sets, refused, ctx, opts)}
+      report = decide(sets, refused, ctx, opts)
+      unless report.dry_run, do: store(content, own_system, ctx.pure.toolchain, deterministic)
+      {:ok, report}
     end
   end
+
+  # A real feed of a lock with a Nerves system is stored
+  # (`Portal.Pins.Locks`), with the lock's own release of it, so a newer
+  # release feeds it again (`Portal.Workers.PinRefeed`).
+  defp store(content, {name, version}, toolchain, deterministic) when is_binary(name) do
+    Portal.Pins.Locks.store(content, %{
+      system: name,
+      release: version,
+      toolchain: toolchain,
+      deterministic: deterministic == true
+    })
+  end
+
+  defp store(_content, _system, _toolchain, _deterministic), do: :ok
+
+  # `system_release:` (`Portal.Workers.PinRefeed`): the lock's system entry
+  # at that release, with that release's own `nerves` requirement from the
+  # signed registry; the sets and their closures are the lock's, only the
+  # firmware path's release moves. nil keeps the lock as it is.
+  defp at_release(entries, system, nil, _hex), do: {:ok, entries, system}
+
+  defp at_release(_entries, {:none, _reason}, _release, _hex),
+    do: {:error, :system_release_needs_system}
+
+  defp at_release(entries, {name, _version}, release, hex) when is_binary(release) do
+    with {:ok, releases} <- hex.releases(name, []),
+         %{deps: deps} <- Enum.find(releases, &(&1.version == release)) do
+      requirement =
+        Enum.find_value(deps, fn dep -> if dep.package == "nerves", do: dep.requirement end)
+
+      entry = entries[name]
+
+      edges =
+        [
+          %{
+            app: "nerves",
+            hex: "nerves",
+            requirement: requirement,
+            optional: false,
+            repo: "hexpm"
+          }
+        ] ++
+          Enum.reject(entry.deps, &(&1.app == "nerves"))
+
+      {:ok, Map.put(entries, name, %{entry | version: release, deps: edges}), {name, release}}
+    else
+      {:error, :hex_registry_unavailable} -> {:error, {:registry_unavailable, name}}
+      _ -> {:error, {:unknown_system_release, name, release}}
+    end
+  end
+
+  defp at_release(_entries, _system, release, _hex),
+    do: {:error, {:invalid_system_release, release}}
 
   @doc "The firmware image's toolchain, which every firmware pinned build is keyed on."
   @spec firmware_toolchain() :: String.t()
