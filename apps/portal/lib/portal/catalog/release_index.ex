@@ -195,16 +195,7 @@ defmodule Portal.Catalog.ReleaseIndex do
           {read + 1, failed}
 
         why ->
-          # Only a failure of the release itself is recorded; one that says
-          # "ask later" (the registry or the CDN unavailable, the node
-          # stopping under the run) leaves it untried, for the next run.
-          if transient?(why),
-            do:
-              Logger.warning(
-                "release index: #{name} #{version} left for later: #{inspect(why, limit: 5)}"
-              ),
-            else: store_failed(name, version, why)
-
+          record_failure(name, version, why)
           {read, failed + 1}
       end
     end)
@@ -255,6 +246,18 @@ defmodule Portal.Catalog.ReleaseIndex do
 
         :ok
       end)
+  end
+
+  # Only a failure of the release itself is recorded; one that says "ask
+  # later" (the registry or the CDN unavailable, the node stopping under the
+  # run) leaves it untried, for the next run.
+  defp record_failure(name, version, why) do
+    if transient?(why),
+      do:
+        Logger.warning(
+          "release index: #{name} #{version} left for later: #{inspect(why, limit: 5)}"
+        ),
+      else: store_failed(name, version, why)
   end
 
   defp transient?({:error, :hex_registry_unavailable}), do: true
