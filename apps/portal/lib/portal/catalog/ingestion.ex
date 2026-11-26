@@ -2099,6 +2099,7 @@ defmodule Portal.Catalog.Ingestion do
       compile_env: compiled_env,
       compile_env_rule: compile_env_rule(Map.get(build, "compile_env_rule"), compiled_env),
       compile_inputs: inputs,
+      defined_modules: defined_modules(status, build),
       foreign_priv: foreign_priv(status, build),
       foreign_priv_rule: foreign_priv_rule(status, build),
       file_manifest: file_manifest(build["file_manifest"]),

@@ -4046,7 +4046,8 @@ defmodule Portal.Catalog do
       |> Map.merge(%{
         variant: :pinned,
         config_variant: pb.config_variant,
-        compile_inputs: pb.compile_inputs
+        compile_inputs: pb.compile_inputs,
+        defined_modules: Map.get(pb, :defined_modules)
       })
       |> toolchain_build_v2(files)
 
@@ -4437,7 +4438,7 @@ defmodule Portal.Catalog do
       |> put_declared(tb.declared)
       |> put_manager(tb.manager)
       |> put_inputs(tb.compile_inputs)
-      |> put_defined(tb.defined_modules)
+      |> put_defined(Map.get(tb, :defined_modules))
 
     {tb.version, tb.finished_at, Map.merge(files, %{"target" => "pure_elixir", "build" => build})}
   end

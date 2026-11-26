@@ -615,12 +615,12 @@ What it lists:
   package itself.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
-- `build.defined_modules` (optional, S10, builds since 2026-11-26): the modules the build's compile
-  defined that its `ebin` does not hold (in memory: what the package's `mix.exs` defines or loads, a
-  module created at compile time outside a compiled file), from the builder's trace, sorted. With
-  the entry's `ebin` beams it is the package's exact module list, which a client 0.10.0 or later
-  reads for a dependency outside a probe build's closure. Absent when it cannot be told (a module
-  the trace cannot attribute) or before it was recorded.
+- `build.defined_modules` (optional, S10, toolchain and pinned host builds since 2026-11-26): the
+  modules the build's compile defined that its `ebin` does not hold (in memory: what the package's
+  `mix.exs` defines or loads, a module created at compile time outside a compiled file), from the
+  builder's trace, sorted. With the entry's `ebin` beams it is the package's exact module list,
+  which a client 0.10.0 or later reads for a dependency outside a probe build's closure. Absent
+  when it cannot be told (a module the trace cannot attribute) or before it was recorded.
 - `build.compile_inputs` (optional) lists what the build's compile read that a client checks on its
   own side (builds since 2026-11; absent before):
   - `{"kind": "env", "name", "value", "set_by": "host"}`: an environment variable, `value` being

@@ -67,6 +67,7 @@ defmodule Portal.Catalog.PinnedBuild do
     :compile_env,
     :compile_env_rule,
     :compile_inputs,
+    :defined_modules,
     :foreign_priv,
     :foreign_priv_rule,
     :file_manifest,
@@ -187,6 +188,9 @@ defmodule Portal.Catalog.PinnedBuild do
     attribute(:compile_env, {:array, :map}, public?: true)
     attribute(:compile_env_rule, :integer, public?: true)
     attribute(:compile_inputs, {:array, :map}, public?: true)
+    # S10 fix round 1, as `Portal.Catalog.ToolchainBuild`'s: a passing host
+    # build's in-memory modules; nil on a firmware target.
+    attribute(:defined_modules, {:array, :string}, public?: true)
     # Foreign priv spec 4.1, as `Portal.Catalog.ToolchainBuild`'s.
     attribute(:foreign_priv, {:array, :map}, public?: true)
     attribute(:foreign_priv_rule, :string, public?: true)

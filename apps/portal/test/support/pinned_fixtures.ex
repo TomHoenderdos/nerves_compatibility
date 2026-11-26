@@ -86,7 +86,11 @@ defmodule Portal.PinnedFixtures do
       "requested_optional_deps" => Keyword.get(opts, :echo, "pinned"),
       "optional_deps" => %{"added" => [], "dropped" => [], "skipped" => [], "reason" => "pinned"},
       "pins" => %{"hash" => Keyword.get(opts, :hash, pins["hash"]), "status" => "reproduced"},
-      "toolchain_build" => build
+      "toolchain_build" =>
+        if(Keyword.has_key?(opts, :defined_modules),
+          do: Map.put(build, "defined_modules", opts[:defined_modules]),
+          else: build
+        )
     }
     |> then(&if(opts[:sibling], do: Map.put(&1, "deterministic_build", opts[:sibling]), else: &1))
   end

@@ -8,6 +8,8 @@ defmodule Portal.Catalog.DefinedModulesTest do
   import Portal.PrecompiledFixtures
   import PortalWeb.ApiSpecAssertions
 
+  alias Portal.PinnedFixtures
+
   alias Portal.Catalog
 
   defp name, do: "dm_tc_#{System.unique_integer([:positive])}"
@@ -49,5 +51,25 @@ defmodule Portal.Catalog.DefinedModulesTest do
 
     skipped = ingest_toolchain_build(name(), "0.3.0", status: "skipped", defined_modules: [])
     assert skipped.defined_modules == nil
+  end
+
+  # A dependency a project matches only by a pinned build (its lock-driven
+  # build) has the list too.
+  test "a pinned pass stores the list and serves it under builds_closure" do
+    name = PinnedFixtures.unique()
+    list = ["Elixir.Pkg.MixProject"]
+    {:ok, row} = PinnedFixtures.ingest(name, PinnedFixtures.pins(name), defined_modules: list)
+    assert row.defined_modules == list
+
+    manifest = Catalog.precompiled_manifest_v2(name)
+    assert [entry] = manifest["versions"]["1.0.0"]["builds_closure"]
+    assert entry["build"]["defined_modules"] == list
+    assert_api_schema(manifest, "ManifestV2")
+
+    plain = PinnedFixtures.unique()
+    {:ok, row} = PinnedFixtures.ingest(plain, PinnedFixtures.pins(plain))
+    assert row.defined_modules == nil
+    [entry] = Catalog.precompiled_manifest_v2(plain)["versions"]["1.0.0"]["builds_closure"]
+    refute Map.has_key?(entry["build"], "defined_modules")
   end
 end
