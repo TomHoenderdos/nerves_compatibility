@@ -207,7 +207,7 @@ defmodule NccWorker.Portability.Probes do
   compile, is loaded either way and never traced.
 
   **Recorded, not refused (S10).** Three of the refusals above are probes
-  the builder answered "absent", which client 0.9 can check against the
+  the builder answered "absent", which client 0.10 can check against the
   user's project before it installs. For a closure dependency's probe
   (never one from a `mix.exs`, outside every window or of no closure
   dependency) each is `{:observe, "probe_inputs", item}` instead, and
@@ -556,7 +556,7 @@ defmodule NccWorker.Portability.Probes do
         {:observe, "declared_absent", namespaced(module, app, event)}
 
       # S10: nothing in the build defines it, so the builder's answer is
-      # "absent"; client 0.9 checks the user's project can supply it nowhere.
+      # "absent"; client 0.10 checks the user's project can supply it nowhere.
       Context.dep?(ctx, owner) ->
         {:observe, "probe_inputs", module_input(module, ctx, event)}
 

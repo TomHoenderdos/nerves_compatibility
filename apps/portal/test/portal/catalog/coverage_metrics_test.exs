@@ -260,7 +260,7 @@ defmodule Portal.Catalog.CoverageMetricsTest do
   end
 
   # S10: a pass with a probe input (or S5's config_all) is served; only a
-  # client of 0.9.0 or later checks it, so it is also counted as newest only,
+  # client of 0.10.0 or later checks it, so it is also counted as newest only,
   # unless another serving build of the version needs no such client.
   test "a pass with a probe or config_all input is served, and newest only" do
     probe = %{
@@ -281,7 +281,7 @@ defmodule Portal.Catalog.CoverageMetricsTest do
       set_inputs!(tb.id, inputs)
     end
 
-    # Both variants pass, one of them without an input only 0.9 checks.
+    # Both variants pass, one of them without an input only 0.10 checks.
     package!("both", 500)
     set_inputs!(build!("both", "1.0.0", status: :pass).id, [probe])
     build!("both", "1.0.0", status: :pass, variant: :without)

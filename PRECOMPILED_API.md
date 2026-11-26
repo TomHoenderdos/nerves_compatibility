@@ -1102,7 +1102,7 @@ build fails as the reason it was not used:
       every compile (`elixir`, `mix`, `ex_unit`, `iex`, `logger`), each of whose `.app` declares
       env, never holds: such a build is listed but no client takes it. Else `config_all_differs`, with `app` as
       its argument. A client that does not know the kind treats the item as malformed: a miss;
-    - a `probe` item (clients 0.9.0 and later) holds when nothing in the project can supply what
+    - a `probe` item (clients 0.10.0 and later) holds when nothing in the project can supply what
       the build's closure asked for, as the builder could not. For a module: no dependency the
       project's Mix loads in its env and target (every `mix.lock` entry when the dependencies did
       not load), by app or Hex package name, is in `definers`; no
@@ -1245,10 +1245,11 @@ later"), `relocation_refused` ("relocated build: the rewrite refused"), `relocat
 ("relocated build: this project's {0} path is not spelled as on disk"), `relocated_path_ascii`
 ("relocated build: this project's {0} path is not printable ASCII") and `relocated_path_envelope`
 ("relocated build: this project's {0} path is outside the paths it was proven at"), and client
-0.9.0's `config_all_differs` ("built with a different compile-time config of {0}"), `probe_definer`
-("built where {0} is absent; {1} can supply it here"), `probe_otp_app` ("built where OTP application
-{0} is absent; it is installed here") and `probe_unknown` ("built where {0} is absent; cannot tell
-whether this project supplies it"). Another code is stored as `unknown`.
+0.9.0's `config_all_differs` ("built with a different compile-time config of {0}"), and the probe
+codes of client 0.10.0: `probe_definer` ("built where {0} is absent; {1} can supply it here"),
+`probe_otp_app` ("built where OTP application {0} is absent; it is installed here") and
+`probe_unknown` ("built where {0} is absent; cannot tell whether this project supplies it").
+Another code is stored as `unknown`.
 
 Limits: 10 requests an hour per client, one budget that every `POST` and
 `DELETE` counts against, refused ones included; and, for `POST` only, 300

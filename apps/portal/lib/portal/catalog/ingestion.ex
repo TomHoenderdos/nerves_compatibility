@@ -1329,7 +1329,7 @@ defmodule Portal.Catalog.Ingestion do
   # S10: first each module `probe` compile input gets every popular definer
   # the index shows (`ModuleIndex.settle_inputs/1`; refused while the index
   # is not complete), and a declared-absent record whose collision the
-  # settled input names passes: client 0.9 checks its project for them.
+  # settled input names passes: client 0.10 checks its project for them.
   defp gate_declared_absent(%{"status" => "pass"} = build) do
     with {:ok, inputs} <- ModuleIndex.settle_inputs(build["compile_inputs"]),
          build = put_settled(build, inputs),

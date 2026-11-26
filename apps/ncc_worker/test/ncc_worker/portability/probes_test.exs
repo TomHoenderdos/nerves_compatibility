@@ -432,7 +432,7 @@ defmodule NccWorker.Portability.ProbesTest do
         )
 
     # S10: no closure application lists wx, so nothing in the build could
-    # load it and the builder's answer is "absent"; client 0.9 hits only
+    # load it and the builder's answer is "absent"; client 0.10 hits only
     # where wx is not installed at all.
     test "is recorded off the owner's path, by every probe function", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => ["kernel", "inets"]})
@@ -680,7 +680,7 @@ defmodule NccWorker.Portability.ProbesTest do
     end
 
     # S10: an application no package of the build is, and an OTP one no
-    # closure application lists, are recorded; client 0.9 checks them.
+    # closure application lists, are recorded; client 0.10 checks them.
     test "of any other application is recorded, an OTP one as such", %{tmp_dir: dir} do
       c = ctx(dir, %{"pkg" => ["kernel"]})
 
@@ -803,7 +803,7 @@ defmodule NccWorker.Portability.ProbesTest do
     defp with_modules(c, modules), do: %{c | modules: modules}
 
     # S10: nothing in the build defines it, so the builder's answer is
-    # "absent"; recorded for client 0.9, which misses where the user's
+    # "absent"; recorded for client 0.10, which misses where the user's
     # project can supply the module.
     test "of a module nothing in the build defines is recorded", %{tmp_dir: dir} do
       c =

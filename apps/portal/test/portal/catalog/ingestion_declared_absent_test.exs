@@ -202,7 +202,7 @@ defmodule Portal.Catalog.IngestionDeclaredAbsentTest do
 
   # S10: the worker's module probe inputs, settled at ingest: every popular
   # definer the index shows joins `definers`, and a declared-absent record
-  # whose collision the settled input names passes for client 0.9.
+  # whose collision the settled input names passes for client 0.10.
   describe "module probe inputs" do
     defp probe(definers),
       do: %{

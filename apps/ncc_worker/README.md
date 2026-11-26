@@ -651,7 +651,7 @@ today's verdict. `compile_observations.tree_check` says, per closure dependency,
 
 **Probes recorded, not refused (S10).** A closure dependency's probe (not one from a `mix.exs`, outside every window
 or of no closure dependency) that the builder answered "absent" is a `probe` compile input instead of the refusal
-below, which client 0.9 checks against the user's project (`Compatibility.CompileInputs`): a package's probe of a
+below, which client 0.10 checks against the user's project (`Compatibility.CompileInputs`): a package's probe of a
 module no application of the build defines and no declaration covers (`of: "module"`, the declared definers the judge
 knows in `definers`; the portal adds the module index's at ingest, `ModuleIndex.settle_inputs/1`, and refuses one while
 the index is not complete), an application probe of an application that is no package of the build (`app`), and a

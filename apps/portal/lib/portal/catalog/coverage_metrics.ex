@@ -30,8 +30,9 @@ defmodule Portal.Catalog.CoverageMetrics do
   version, of the default config and a `with` or `without` variant, as
   `Portal.Catalog.Coverage` counts one, a build whose closure is withheld
   included. Builds only the newest client installs count (F390): a pass
-  with a `probe` or `config_all` compile input (S10, S5), which clients
-  before 0.9.0 miss, and a relocated pass (S4, `Portal.Precompiled.Relocated`)
+  with a `config_all` compile input (S5, clients from 0.9.0) or a `probe`
+  one (S10, clients from 0.10.0), which earlier clients miss, and a
+  relocated pass (S4, clients from 0.9.0, `Portal.Precompiled.Relocated`)
   while the `relocated_enabled` setting is on; while it is off a relocated
   pass serves no one. A package served only by such builds is counted as
   well in `newest_only` (`newest_only_downloads`). One whose only passes

@@ -522,7 +522,7 @@ defmodule Portal.Catalog.ModuleIndexTest do
   end
 
   # S10: a module probe input carries every popular definer the index
-  # shows, and its application, so client 0.9 can check its project for
+  # shows, and its application, so client 0.10 can check its project for
   # them. Ingest refuses one while the index is not complete.
   describe "probe inputs" do
     defp probe(module, definers),

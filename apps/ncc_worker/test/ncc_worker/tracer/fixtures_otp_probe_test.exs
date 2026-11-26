@@ -96,7 +96,7 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
   end
 
   # S10: the builder's answer, "absent", is recorded instead, and client
-  # 0.9 takes the build only where mnesia is not installed at all.
+  # 0.10 takes the build only where mnesia is not installed at all.
   @mnesia %{"kind" => "probe", "of" => "otp_app", "name" => "mnesia", "answer" => "absent"}
 
   test "a probe of an OTP application the package does not list is recorded", %{tmp_dir: dir} do
@@ -448,7 +448,7 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
   # path, and in a Mix project a module an earlier dependency's compile-time
   # code loaded stays loaded, so only a module the package's closure holds
   # answers the same.
-  # S10: the builder's answer, "absent", is recorded; client 0.9 misses
+  # S10: the builder's answer, "absent", is recorded; client 0.10 misses
   # where the user's project holds fx_other (its sources define FxOther).
   test "a probe of a module only another dependency defines is recorded", %{tmp_dir: dir} do
     proj =
@@ -535,7 +535,7 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
 
     # fx_opt's tarball is not cached: who defines the module is unknown here,
     # so it is recorded with no definer (S10); the portal adds the index's,
-    # and client 0.9 reads the user's deps' sources itself.
+    # and client 0.10 reads the user's deps' sources itself.
     assert %{status: :pass, compile_inputs: [%{"name" => "Elixir.FxOpt.Codec"} = unknown]} =
              TracerFixtures.judge(proj, "fx_probe", traced, [], opts)
 
@@ -548,7 +548,7 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
     verdict = TracerFixtures.judge(proj, "fx_probe", traced, [], opts)
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
 
-    # A compile input client 0.9 checks, its declared definer named (S10).
+    # A compile input client 0.10 checks, its declared definer named (S10).
     assert verdict.compile_inputs == [
              %{
                "kind" => "probe",
@@ -576,7 +576,7 @@ defmodule NccWorker.Tracer.FixturesOtpProbeTest do
   # host build lacks it, but Mix still makes it a child of fx_probe wherever
   # it is present, so the client's closure check does not tell the two
   # apart. S10: its module's probe is recorded as one nothing in the build
-  # defines. Client 0.9 reads the sources of every dep Mix loads in the
+  # defines. Client 0.10 reads the sources of every dep Mix loads in the
   # project: on a target that brings fx_tgt in, fx_tgt defines the module
   # and the build misses; on the host, where Mix leaves fx_tgt out, the
   # user's own compile finds nothing either.

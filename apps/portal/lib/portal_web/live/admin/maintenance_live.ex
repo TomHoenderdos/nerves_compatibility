@@ -1164,8 +1164,11 @@ defmodule PortalWeb.Admin.MaintenanceLive do
                     <th class="text-right">Packages</th>
                     <th class="text-right">Served</th>
                     <th class="text-right">Relocated</th>
-                    <th class="text-right" title="Served only by builds client 0.9 installs">
-                      Client 0.9 only
+                    <th
+                      class="text-right"
+                      title="Served only by builds the newest client installs (relocated, config_all or probe inputs)"
+                    >
+                      Newest client only
                     </th>
                     <th class="text-right">Download-weighted</th>
                     <th class="text-right">Of packages that compile</th>

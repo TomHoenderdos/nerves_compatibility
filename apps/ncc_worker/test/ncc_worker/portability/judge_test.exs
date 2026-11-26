@@ -928,7 +928,7 @@ defmodule NccWorker.Portability.JudgeTest do
   defp clean_judged_project(proj), do: {proj, report(proj)}
 
   # S10: jose's `Code.ensure_loaded?(Poison)` in a dependency's window, with
-  # nothing in the build defining Poison: a compile input client 0.9 checks,
+  # nothing in the build defining Poison: a compile input client 0.10 checks,
   # no taint. A firmware target's trace refuses it as before.
   describe "a probe the builder answered absent" do
     defp poison_probe(ts, file) do

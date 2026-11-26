@@ -188,7 +188,7 @@ defmodule NccWorker.Tracer.FixturesForeignPrivTest do
   # dependency this closure lacks (fix/otp-app-probe round 1, F3). That
   # tainted every package with kino in its closure until S10 recorded it.
   # S10: kino's probe of `Nx.Heatmap`, which nothing in the build defines,
-  # is a compile input client 0.9 checks, so kino taints nothing.
+  # is a compile input client 0.10 checks, so kino taints nothing.
   test "a non-writer with kino in its closure: kino's own writes accepted", ctx do
     v = ctx.verdicts["fx_plain"]
     assert %{status: :pass, compile_inputs: inputs} = v, log(ctx, "fx_plain")

@@ -189,7 +189,7 @@ defmodule Portal.Catalog.ModuleIndex do
   S10: `inputs` (a build's `compile_inputs`) with each module `probe` item's
   `definers` grown by every indexed package with at least `min_recent/0`
   recent downloads that defines the module, and that package's
-  application, sorted and each once: what client 0.9 checks its project
+  application, sorted and each once: what client 0.10 checks its project
   for. `{:refuse, reason}` when there is such an item and the index is not
   complete, as a declared-absent record refuses then. Anything that is not
   a list, or holds no module probe, comes back as it is.
