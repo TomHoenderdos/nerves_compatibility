@@ -45,7 +45,14 @@ defmodule NccWorker.Portability.GuardedProof do
       name, and the first build's app must hash the same as before.
 
   Then the verdict is the pass it held, with `trace_stats["guarded_proof"]`
-  saying so. Anything else refuses with the taint the waiver lifted, and
+  saying so. When every waived refusal was a probe the judge records as a
+  `probe` compile input (S10, `NccWorker.Portability.Probes`), the hold
+  keeps those inputs aside (`fallback_inputs`, without them the held pass
+  needs none), and a proof that refuses while the first build is back
+  untouched passes with them instead (`"result" => "input"`): the first
+  build is the all-absent world, which every user without the guarded
+  packages compiles, and client 0.10 misses wherever one is present.
+  Anything else refuses with the taint the waiver lifted, and
   `observations["problems"]` says why: a different app, a second compile
   that failed or did not finish, a guarded package that could not be added,
   guarded modules that were not built, a build or deps dir outside the
@@ -126,7 +133,8 @@ defmodule NccWorker.Portability.GuardedProof do
       foreign_priv_rule: Map.get(verdict, :foreign_priv_rule),
       waivers: waivers,
       build: Map.get(context, :build),
-      refusal: refusal(waivers, Map.get(context, :order, []))
+      refusal: refusal(waivers, Map.get(context, :order, [])),
+      fallback_inputs: Map.get(context, :fallback_inputs)
     }
 
     %{verdict | status: :skip, reason: Reasons.could_not_judge(), compile_env: nil}
@@ -163,15 +171,26 @@ defmodule NccWorker.Portability.GuardedProof do
     entries = waived_entries(held.waivers, opts)
 
     result =
-      with {:ok, worlds} <- worlds(entries),
-           do: prove(held, project_dir, package, worlds, opts, digest)
+      case worlds(entries) do
+        {:ok, worlds} -> prove(held, project_dir, package, worlds, opts, digest)
+        {:refuse, why} -> {:refuse, why, :intact}
+      end
 
     ms = System.monotonic_time(:millisecond) - started
     present = %{first: entries |> Enum.flat_map(&elem(&1, 1).first) |> Enum.uniq()}
 
     case result do
-      :ok -> pass(verdict, held, Map.put(present, :worlds, length(subsets(entries))), ms)
-      {:refuse, why} -> refuse(verdict, held, why, present, ms)
+      :ok ->
+        pass(verdict, held, Map.put(present, :worlds, length(subsets(entries))), ms)
+
+      {:refuse, why, :intact} when is_list(held.fallback_inputs) ->
+        fallback(verdict, held, why, present, ms)
+
+      {:refuse, why, :intact} ->
+        refuse(verdict, held, why, present, ms)
+
+      {:refuse, why} ->
+        refuse(verdict, held, why, present, ms)
     end
   rescue
     e ->
@@ -239,10 +258,13 @@ defmodule NccWorker.Portability.GuardedProof do
   # The real project dir is what moves aside (S9 re-review R1-3): a
   # project dir reached through a link (macOS's `/var`) moves the dir, not
   # the link, and every path compared with it is resolved too.
+  # A refusal is `{:refuse, why, :intact}` when the first build is known to
+  # be as it was (nothing moved yet, or put back and hashed the same): the
+  # only one `settle/5` may fall back to the probe inputs on.
   defp prove(held, project_dir, package, worlds, opts, digest) do
     case Context.realpath(project_dir) do
       real when is_binary(real) -> prove_in(held, real, package, worlds, opts, digest)
-      nil -> {:refuse, "the project dir cannot be resolved"}
+      nil -> {:refuse, "the project dir cannot be resolved", :intact}
     end
   end
 
@@ -257,9 +279,8 @@ defmodule NccWorker.Portability.GuardedProof do
       result = every_world(held, project_dir, first, package, worlds, opts)
 
       with :ok <- put_back(project_dir, first),
-           :ok <- result,
            {:ok, ^before} <- checked_digest(digest, held.build) do
-        :ok
+        intact(result)
       else
         {:ok, _other} ->
           {:refuse, "the first build changed while the guarded packages were built"}
@@ -267,8 +288,13 @@ defmodule NccWorker.Portability.GuardedProof do
         other ->
           other
       end
+    else
+      {:refuse, why} -> {:refuse, why, :intact}
     end
   end
+
+  defp intact(:ok), do: :ok
+  defp intact({:refuse, why}), do: {:refuse, why, :intact}
 
   # Each world in turn, the first that does not prove refusing; the copy
   # each one built in is removed before the next.
@@ -843,6 +869,28 @@ defmodule NccWorker.Portability.GuardedProof do
       "ms" => ms,
       "present" => present.first,
       "worlds" => present.worlds
+    })
+  end
+
+  # S10: the held pass with its waived probe inputs put back, no taint.
+  defp fallback(verdict, held, why, present, ms) do
+    %{
+      verdict
+      | status: :pass,
+        reason: nil,
+        compile_env: held.compile_env
+    }
+    |> Map.put(:compile_inputs, held.fallback_inputs)
+    |> put_present(:built_priv, held.built_priv)
+    |> put_present(:foreign_priv, held.foreign_priv)
+    |> put_present(:foreign_priv_rule, held.foreign_priv_rule)
+    |> Map.delete(:guarded)
+    |> update_problems(&List.delete(&1, @hold_problem))
+    |> put_stat(%{
+      "result" => "input",
+      "why" => String.slice(why, 0, 500),
+      "ms" => ms,
+      "present" => present && present.first
     })
   end
 

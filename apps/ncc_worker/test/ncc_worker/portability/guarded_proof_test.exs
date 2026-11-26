@@ -251,4 +251,58 @@ defmodule NccWorker.Portability.GuardedProofTest do
              "guarded modules and own priv writes are not settled together"
            ]
   end
+
+  # S10: a waived probe the judge recorded as a `probe` compile input needs
+  # no input while the proof holds. When the proof refuses and the first
+  # build is untouched, the build is the all-absent world, so it passes with
+  # the input put back (`fallback_inputs`): a user with the guarded package
+  # misses. Without a fallback, or when the first build may have changed,
+  # the proof's refusal stands.
+  describe "a proof that refuses, with the waived probe inputs to fall back to" do
+    @probe %{
+      "kind" => "probe",
+      "of" => "module",
+      "name" => "Elixir.Poison",
+      "answer" => "absent",
+      "definers" => []
+    }
+
+    defp held_pass(fallback) do
+      pass = %{
+        status: :pass,
+        reason: nil,
+        compile_env: [],
+        compile_inputs: [],
+        observations: %{"problems" => [], "trace_stats" => %{}}
+      }
+
+      # No entry is waived: the proof refuses before it builds anything.
+      waivers = %{"jose" => %{reasons: MapSet.new(["r"]), entries: ["no:such_entry"]}}
+
+      GuardedProof.hold(pass, waivers, %{
+        build: nil,
+        order: ["jose"],
+        fallback_inputs: fallback
+      })
+    end
+
+    test "passes with the probe inputs put back", %{tmp_dir: dir} do
+      held = held_pass([@probe])
+      assert held.guarded.fallback_inputs == [@probe]
+
+      v = GuardedProof.settle(held, dir, "pkg", [], fn _ -> {:ok, "d"} end)
+      assert %{status: :pass, reason: nil, compile_inputs: [@probe], compile_env: []} = v
+      refute Map.has_key?(v, :guarded)
+      assert v.observations["problems"] == []
+      assert v.observations["trace_stats"]["guarded_proof"]["result"] == "input"
+      assert v.observations["trace_stats"]["guarded_proof"]["why"] =~ "no guarded entry is waived"
+      assert v.observations["taint"] in [nil, %{}]
+    end
+
+    test "refuses as before without a fallback", %{tmp_dir: dir} do
+      v = GuardedProof.settle(held_pass(nil), dir, "pkg", [], fn _ -> {:ok, "d"} end)
+      assert %{status: :skip, reason: "closure dependency observed the host: jose (r)"} = v
+      assert v.observations["trace_stats"]["guarded_proof"]["result"] == "refused"
+    end
+  end
 end
