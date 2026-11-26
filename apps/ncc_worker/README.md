@@ -691,7 +691,8 @@ refuses. The judge learns those packages' modules from their tarballs in the run
 traced, it fetches the missing ones with `mix hex.package fetch` after the trace, in a `HEX_HOME` of the fetch's own:
 at most 64 packages, 120 s kept by the BEAM, which kills the fetch past it. Only a package the fetch reports fetched
 goes into the run's cache; a checksum error, a crash or a kill leaves it unknown, and an unknown package owns no known
-module, so its probe refuses (`NCC_DECLARED_FETCH=0` turns the fetch off; `trace_stats.declared_fetch` names what was
+module, so its probe is a `probe` input with no known definer (S10, below) rather than a declared-absent one
+(`NCC_DECLARED_FETCH=0` turns the fetch off; `trace_stats.declared_fetch` names what was
 fetched and what failed). A name whose fetch failed is tried once more a second later: Hex's update check can crash
 `Hex.Registry.Server` after the first fetch closed the registry, and a fetch in flight then exits `:noproc`. When a
 probe of a dependency outside the closure (not from a `mix.exs`) decides the verdict and the fetch failed, the verdict

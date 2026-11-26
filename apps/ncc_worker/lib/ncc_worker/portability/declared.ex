@@ -31,9 +31,12 @@ defmodule NccWorker.Portability.Declared do
   signed registry), bounded in count and in time by the BEAM. What it
   downloads is a run's miss like any other: the host checks it against
   Hex.pm before it promotes it (`NccWorker.HexCache`). A failed, partial or
-  killed fetch leaves those modules unknown, so their probes refuse; a
-  verdict such a probe decides says nothing about the package and is a
-  transient could-not-judge, which the portal retries
+  killed fetch leaves those modules unknown, so their probes are no
+  declared-absent ones. Since S10 such a probe is a `probe` compile input
+  with no known definer (`NccWorker.Portability.Probes`), which client 0.10
+  checks against the user's deps' own sources; a verdict a refusal of such
+  a probe still decides says nothing about the package and is a transient
+  could-not-judge, which the portal retries
   (`NccWorker.Portability.settle_declared/1`, coverage drop 2026-11-22,
   F7). `NCC_DECLARED_FETCH=0` turns the
   download off (the ncc_worker test helper sets it: fixtures judge from the

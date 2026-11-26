@@ -174,8 +174,9 @@ defmodule NccWorker.Portability.Probes do
   and Mix makes a present optional dependency a child of its declarer, so a
   user who has it never gets this build (jason's `Decimal`, swoosh's
   `Plug`). A declared dependency whose tarball neither the run's Hex cache
-  holds nor the pre-judge fetch got owns no known module, so its probe
-  refuses. Nor when the module is under the namespace of a package of the
+  holds nor the pre-judge fetch got owns no known module, so its probe is
+  no declared-absent one: since S10 it is a `probe` input like any module
+  nothing in the build defines (below). Nor when the module is under the namespace of a package of the
   owner's closure whose locked release does not define it (eventstore's
   `Postgrex.Timestamp`): the client matches the build's `deps` by version
   and checksum, so every user has that release. The namespace's package
