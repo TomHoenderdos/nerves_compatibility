@@ -249,7 +249,13 @@ defmodule Portal.PinsTest do
   # Phase 2: native sets are firmware builds of the lock's one system at its
   # exact release.
   describe "native sets" do
-    defp system(name, version), do: hex(name, version, "9", [{"nerves", "~> 1.0", false}])
+    # A system's own `nerves` requirement says which Nerves line it is for:
+    # every Nerves 2 release declares this one (trellis 0.6.x, x86_64
+    # 1.35.x, rpi4 2.x alike), a Nerves 1 era one `~> 1.11`.
+    @nerves2 "~> 1.11 or ~> 2.0 or ~> 2.0.0-dev"
+
+    defp system(name, version, nerves \\ @nerves2),
+      do: hex(name, version, "9", [{"nerves", nerves, false}])
 
     defp abi!(system, version, otp) do
       {:ok, _} =
@@ -302,21 +308,52 @@ defmodule Portal.PinsTest do
       assert length(all_enqueued(worker: PinnedBuild, queue: :builds)) == 2
     end
 
-    test "a 1.x release is unbuildable, one the ABI table lacks or holds on another OTP is named" do
+    test "a Nerves 1 release is unbuildable, one the ABI table lacks or holds on another OTP is named" do
       abi!("nerves_system_rpi4", "2.0.0", "28.0.2")
 
-      for {version, reason} <- [
-            {"1.24.0", "unbuildable_system: nerves_system_rpi4 1.24.0"},
-            {"2.2.0", "system_abi_unknown: nerves_system_rpi4 2.2.0"},
-            {"2.0.0", "system_otp: nerves_system_rpi4 2.0.0 (OTP 28.0.2)"}
+      for {version, nerves, reason} <- [
+            {"1.24.0", "~> 1.11", "unbuildable_system: nerves_system_rpi4 1.24.0"},
+            {"2.2.0", @nerves2, "system_abi_unknown: nerves_system_rpi4 2.2.0"},
+            {"2.0.0", @nerves2, "system_otp: nerves_system_rpi4 2.0.0 (OTP 28.0.2)"}
           ] do
-        lock = with_system(system("nerves_system_rpi4", version))
+        lock = with_system(system("nerves_system_rpi4", version, nerves))
         assert {:ok, report} = run(lock: lock)
         assert reasons(report)["nif"] == reason
         assert reasons(report)["elixir_make"] == reason
         assert report.system.refused == reason
         assert length(report.queue) == 5
       end
+    end
+
+    # Stream S11: the rule read "major 2" as "a Nerves 2 system" and refused
+    # every trellis, x86_64, mangopi_mq_pro and qemu_aarch64 Nerves 2
+    # release (0.6.x, 1.35.x, 0.18.x, 0.5.x).
+    test "a Nerves 2 release of any major is built; the line comes from its nerves requirement" do
+      for {system, version} <- [
+            {"nerves_system_trellis", "0.6.4"},
+            {"nerves_system_x86_64", "1.35.3"},
+            {"nerves_system_mangopi_mq_pro", "0.18.0"},
+            {"nerves_system_qemu_aarch64", "0.5.0"}
+          ] do
+        abi!(system, version, "29.1.2")
+        assert {:ok, report} = run(lock: with_system(system(system, version)))
+        assert report.system == %{name: system, version: version, refused: nil}
+
+        assert %{target: ^system, system_version: ^version} =
+                 Enum.find(report.queue, &(&1.package == "nif"))
+      end
+
+      abi!("nerves_system_trellis", "0.3.0", "29.1.2")
+
+      for nerves <- ["~> 1.11", "~> 2.1"] do
+        lock = with_system(system("nerves_system_trellis", "0.3.0", nerves))
+        assert {:ok, report} = run(lock: lock)
+        assert report.system.refused == "unbuildable_system: nerves_system_trellis 0.3.0"
+      end
+
+      no_edge = with_system(hex("nerves_system_trellis", "0.3.0", "9"))
+      assert {:ok, report} = run(lock: no_edge)
+      assert report.system.refused == "unbuildable_system: nerves_system_trellis 0.3.0"
     end
 
     test "a system the worker does not build, several systems, and the system: option" do

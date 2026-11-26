@@ -30,9 +30,11 @@ defmodule Portal.Pins do
   A lock with several needs `system:` naming one, or every native set is
   skipped as `ambiguous_system`; one with none skips them as `no_system`.
   The release must be one this release can build exactly: a system the
-  worker builds (`unsupported_system` otherwise), a 2.x release
-  (`unbuildable_system` otherwise: a Nerves 1 era system requires
-  `nerves ~> 1.x`, and the worker's template pins Nerves 2), in the ABI table
+  worker builds (`unsupported_system` otherwise), a Nerves 2 release, whose
+  own `nerves` requirement in the lock accepts the Nerves the worker's
+  template pins (`Compatibility.Nerves.buildable?/1`; `unbuildable_system`
+  otherwise: a Nerves 1 era system requires `nerves ~> 1.11`; a release's
+  major says nothing, trellis numbers its Nerves 2 releases 0.6.x), in the ABI table
   with its OTP (`system_abi_unknown` otherwise; a `system_abi` run reads
   it), and on the firmware image's OTP major (`system_otp` otherwise, phase
   4). Each reason names the system and release.
@@ -150,6 +152,8 @@ defmodule Portal.Pins do
          {:ok, cap} <- cap(Keyword.get(opts, :cap, @default_cap)),
          {:ok, deterministic} <- deterministic(Keyword.get(opts, :deterministic, false)),
          {:ok, system} <- system(entries, Keyword.get(opts, :system)) do
+      lines = Map.new(systems(entries), fn {name, _version} -> {name, nerves(entries[name])} end)
+
       {sets, refused} = derive(entries)
 
       ctx = %{
@@ -160,7 +164,7 @@ defmodule Portal.Pins do
           toolchain: toolchain,
           image: image
         },
-        firmware: firmware(system),
+        firmware: firmware(system, lines),
         cap: cap,
         # `nil` without the option, else whether the setting holds sets to
         # their siblings.
@@ -205,18 +209,30 @@ defmodule Portal.Pins do
         do: {app, version}
   end
 
-  # The firmware path's context for the lock's system, or the reason every
-  # native set is refused (see the moduledoc).
-  defp firmware({:none, reason}), do: {:refused, reason, nil}
+  # A system entry's own `nerves` requirement, nil without one.
+  defp nerves(%{deps: deps}) do
+    case Enum.find(deps, &(&1.app == "nerves")) do
+      %{requirement: requirement} -> requirement
+      nil -> nil
+    end
+  end
 
-  defp firmware({name, version} = system) do
+  # The firmware path's context for the lock's system, or the reason every
+  # native set is refused (see the moduledoc). `lines` is each system's own
+  # `nerves` requirement, which says the release's Nerves line: a Nerves 2
+  # release of any major (trellis 0.6.x, x86_64 1.35.x, rpi4 2.x) accepts the
+  # worker's Nerves (`Compatibility.Nerves.buildable?/1`), a Nerves 1 era one
+  # does not.
+  defp firmware({:none, reason}, _lines), do: {:refused, reason, nil}
+
+  defp firmware({name, version} = system, lines) do
     release = "#{name} #{version}"
 
     cond do
       name not in Portal.Workers.PinnedBuild.firmware_targets() ->
         {:refused, "unsupported_system: " <> name, system}
 
-      not match?({:ok, %Version{major: 2}}, Version.parse(version)) ->
+      not Compatibility.Nerves.buildable?(lines[name]) ->
         {:refused, "unbuildable_system: " <> release, system}
 
       true ->

@@ -39,7 +39,9 @@ defmodule NccWorker.Project do
   # Hex move the Nerves version under an unchanged worker image -- and the
   # portal deduplicates runs on that image. Pinned exactly so a new Nerves
   # prerelease only arrives with a new image. Revisit once Nerves 2 is final.
-  @nerves_version "2.0.0-pre.3"
+  # The portal reads the same version (`Compatibility.Nerves`) to decide which
+  # system releases this project can build.
+  @nerves_version Compatibility.Nerves.firmware_version()
 
   @spec create(String.t(), map() | nil, [String.t()]) :: {:ok, String.t()} | {:error, term()}
   def create(work_dir, systems_override, targets) do
