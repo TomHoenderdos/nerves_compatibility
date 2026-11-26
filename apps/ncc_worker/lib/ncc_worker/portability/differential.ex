@@ -645,6 +645,9 @@ defmodule NccWorker.Portability.Differential do
   defp describe_input(%{"kind" => "config_order", "app" => app, "path" => path}),
     do: "config #{app} #{inspect(path)}"
 
+  defp describe_input(%{"kind" => "probe", "name" => name}) when is_binary(name),
+    do: "probe #{name}"
+
   defp describe_input(%{"kind" => kind}), do: "#{kind} input"
   defp describe_input(_item), do: "an input"
 

@@ -470,7 +470,9 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
   # Review N6: the pass's `declared_absent` list is the first build's, the
   # one the portal's module-index gate and the client decide on. A user
   # with more than 64 schedulers makes the probe: a popular package that
-  # defines FxOpt.Codec would be found, and another `@x` compiled.
+  # defines FxOpt.Codec would be found, and another `@x` compiled. S10: the
+  # probe is also a `probe` compile input of the variant, the first thing
+  # the differential compares, so that is what the refusal names.
   test "a declared-absent probe only the high variant makes refuses", ctx do
     v = ctx.probes["gated"]
     assert v.status == :skip, log(v)
@@ -478,7 +480,7 @@ defmodule NccWorker.Tracer.FixturesDifferentialTest do
 
     assert v.reason =~
              "; a differential build (high) read what the first did not: " <>
-               "declared-absent probe Elixir.FxOpt.Codec"
+               "probe Elixir.FxOpt.Codec"
 
     assert v.compile_inputs == nil
     assert v.observations["trace_stats"]["differential"] == "differs"
