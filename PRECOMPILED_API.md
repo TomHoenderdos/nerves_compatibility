@@ -679,8 +679,12 @@ What it lists:
   pass) lists three more `compile_env` items, unset (`:error`), unless it lists them already:
   `logger` `[compile_time_purge_matching]`, `[compile_time_purge_level]` and
   `[always_evaluate_messages]`. Every `Logger` macro reads them while its caller compiles and no
-  `.app` lists them; the builder's project leaves them unset. So does each of its published
-  variants.
+  `.app` lists them; the builder's project leaves them unset. After them, also unset, comes
+  every config key the package's own code read at compile time in a toolchain build of the same
+  version (its `compile_env` item whose read the trace names the package as the owner of), except
+  the keys the builder's firmware project's config sets (`nerves`, `nerves_runtime`, `nerves_ssh`,
+  `vintage_net`, `mdns_lite`, `shoehorn`, `logger` `[default_handler]`). So does each of its
+  published variants. A version with no such toolchain build lists Logger's keys only.
 
   A `compile_env` value may also be `"unrecordable"`, which matches no config. A list the portal
   rejects as malformed is stored as `[{"kind": "config_unrecorded"}]` with the build's `compile_env`

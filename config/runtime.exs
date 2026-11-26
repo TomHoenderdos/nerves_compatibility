@@ -178,6 +178,13 @@ if portal_available? do
   # them on.
   config :portal, firmware_logger_keys: System.get_env("NCC_FIRMWARE_LOGGER_KEYS") != "0"
 
+  # `0` leaves out of an untraced firmware build's `compile_env` the config
+  # keys the package's own code read at compile time in a toolchain build of
+  # the same version (stream S11, `Portal.Catalog`'s `own_config_keys/1`).
+  # Anything else, or unset, keeps them on.
+  config :portal,
+    firmware_own_config_keys: System.get_env("NCC_FIRMWARE_OWN_CONFIG_KEYS") != "0"
+
   # How many packages a precompiled batch renders at once (default 4; see
   # Portal.Precompiled.Batches). Lanes share this node's pool and schedulers:
   # more of them open no connection to Postgres, but take more of its CPU.

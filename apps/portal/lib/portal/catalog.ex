@@ -3685,6 +3685,7 @@ defmodule Portal.Catalog do
 
         %{
           package_name: package.name,
+          own_config_keys: own_config_keys(package),
           foreign_enabled: ForeignPriv.enabled?(),
           relocated_enabled: Relocated.enabled?(),
           runs: runs,
@@ -3918,7 +3919,12 @@ defmodule Portal.Catalog do
   defp deterministic_v2(sources, listed) do
     builds =
       Map.new(sources.toolchain_builds, &{{&1.id, &1.run_id}, {:toolchain, &1}})
-      |> Map.merge(Map.new(sources.pinned_builds, &{{&1.id, &1.run_id}, {:pinned, &1}}))
+      |> Map.merge(
+        Map.new(
+          sources.pinned_builds,
+          &{{&1.id, &1.run_id}, {:pinned, &1, Map.get(sources.own_config_keys, &1.version, [])}}
+        )
+      )
       |> Map.merge(sibling_results(sources, listed))
 
     for d <- sources.deterministic_builds,
@@ -3947,7 +3953,7 @@ defmodule Portal.Catalog do
   defp relocated_source?(_build), do: false
 
   defp sibling_build_v2({:toolchain, tb}, files), do: toolchain_build_v2(tb, files)
-  defp sibling_build_v2({:pinned, pb}, files), do: pinned_build_v2(pb, files)
+  defp sibling_build_v2({:pinned, pb, keys}, files), do: pinned_build_v2(pb, files, keys)
 
   defp sibling_build_v2({:result, version, at, target, build}, files),
     do: {version, at, Map.merge(files, %{"target" => target, "build" => build})}
@@ -3973,9 +3979,10 @@ defmodule Portal.Catalog do
         MapSet.member?(owners, result.id),
         stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
         built_by = built_by(runs_by_id, result),
-        build = result_build(built_by, result),
-        [{files, ^build}] <- [own_build(result, build, stored, sources.present_shas)],
         version = Map.fetch!(runs_by_id, result.run_id).version_tested,
+        keys = Map.get(sources.own_config_keys, version, []),
+        build = result_build(built_by, result, keys),
+        [{files, ^build}] <- [own_build(result, build, stored, sources.present_shas)],
         entry = Map.merge(files, %{"target" => result.system_pkg, "build" => build}),
         MapSet.member?(winners, {version, entry}),
         into: %{} do
@@ -3998,13 +4005,14 @@ defmodule Portal.Catalog do
         files != nil,
         foreign = foreign_files(pb, stored, sources.present_shas),
         foreign != :absent,
-        do: pb |> pinned_build_v2(files) |> put_foreign(pb, foreign, sources)
+        keys = Map.get(sources.own_config_keys, pb.version, []),
+        do: pb |> pinned_build_v2(files, keys) |> put_foreign(pb, foreign, sources)
   end
 
   # A firmware one (phase 2) is rendered as its target's build at its
   # release (`run_builds/1`'s shape), with its own lock as `deps`, and ABI
   # facts that keep it to that release (`put_pinned_abi_facts/2`).
-  defp pinned_build_v2(%{target: "nerves_system_" <> _} = pb, files) do
+  defp pinned_build_v2(%{target: "nerves_system_" <> _} = pb, files, keys) do
     build =
       %{
         "elixir" => pb.elixir,
@@ -4023,13 +4031,13 @@ defmodule Portal.Catalog do
       |> put_manager(pb.manager)
       |> put_pinned_abi_facts(pb)
       |> put_inputs(pb.compile_inputs)
-      |> put_logger_keys(pb.target, pb.compile_inputs)
+      |> put_untraced_keys(pb.target, pb.compile_inputs, keys)
 
     {pb.version, pb.finished_at,
      Map.merge(files, %{"target" => pb.target, "build" => build, closure_only: true})}
   end
 
-  defp pinned_build_v2(pb, files) do
+  defp pinned_build_v2(pb, files, _keys) do
     {version, at, entry} =
       pb
       |> Map.take([:version, :finished_at, :elixir, :otp, :deps_lock, :compile_env])
@@ -4256,10 +4264,11 @@ defmodule Portal.Catalog do
         stored = Map.get(sources.shas_by_system_result_id, result.id, MapSet.new()),
         built_by = built_by(runs_by_id, result),
         version = Map.fetch!(runs_by_id, result.run_id).version_tested,
-        build = result_build(built_by, result),
+        keys = Map.get(sources.own_config_keys, version, []),
+        build = result_build(built_by, result, keys),
         {files, build} <-
           own_build(result, build, stored, sources.present_shas) ++
-            variant_builds(result, build, stored, sources.present_shas) do
+            variant_builds(result, {build, keys}, stored, sources.present_shas) do
       {version, built_by.finished_at,
        Map.merge(files, %{"target" => result.system_pkg, "build" => build})}
     end
@@ -4278,7 +4287,7 @@ defmodule Portal.Catalog do
 
   defp own_build_refused?(_result), do: false
 
-  defp result_build(built_by, result) do
+  defp result_build(built_by, result, keys) do
     built_by
     |> build_inputs(result)
     |> Map.put("dep_env", "prod")
@@ -4286,45 +4295,110 @@ defmodule Portal.Catalog do
     |> put_declared(built_by.declared)
     |> put_abi_facts(result)
     |> put_inputs(result.compile_inputs)
-    |> put_logger_keys(result.system_pkg, result.compile_inputs)
+    |> put_untraced_keys(result.system_pkg, result.compile_inputs, keys)
   end
 
-  # Logger's compile-time keys (stream S11). Every `Logger` macro reads
-  # `:logger`'s `compile_time_purge_matching`, `compile_time_purge_level`
-  # and `always_evaluate_messages` with `Application.get_env/3` while its
-  # caller compiles, so no `.app` lists them, and a project that sets one
-  # compiles other beams. A toolchain build's trace lists them (R5), and so
-  # does a firmware target's (`NccWorker.FirmwareInputs`), which is when it
-  # records `compile_inputs`. Any other firmware build (no inputs: an
-  # untraced or unjudged target, a published variant, a pinned firmware
-  # build) is published with them as the builder's compile read them:
-  # unset, since the worker's Nerves project never sets them. A client whose
-  # config sets one misses; any other is unaffected. A key the list already
-  # names is kept as it is, and a `compile_env` that could not be read stays
-  # `nil`. `NCC_FIRMWARE_LOGGER_KEYS=0` (`:firmware_logger_keys`) turns it
-  # off.
+  # The compile-time config a firmware build's files depend on that its
+  # `.app` does not list (stream S11). A toolchain build's trace lists such
+  # reads (R5), and so does a firmware target's (`NccWorker.FirmwareInputs`),
+  # which is when it records `compile_inputs`. Any other firmware build (no
+  # inputs: an untraced or unjudged target, a published variant, a pinned
+  # firmware build) is published with them as the builder's compile read
+  # them: unset, since the worker's Nerves project sets none of them. A
+  # client whose config sets one misses; any other is unaffected. A key the
+  # list already names is kept as it is, and a `compile_env` that could not
+  # be read stays `nil`. Two sets:
+  #
+  #   * Logger's: every `Logger` macro reads `:logger`'s
+  #     `compile_time_purge_matching`, `compile_time_purge_level` and
+  #     `always_evaluate_messages` with `Application.get_env/3` while its
+  #     caller compiles. `NCC_FIRMWARE_LOGGER_KEYS=0`
+  #     (`:firmware_logger_keys`) turns them off.
+  #   * the package's own: each key `own_config_keys/1` found for the
+  #     build's version, after Logger's, sorted.
+  #     `NCC_FIRMWARE_OWN_CONFIG_KEYS=0` (`:firmware_own_config_keys`) turns
+  #     them off.
   @logger_keys ~w(compile_time_purge_matching compile_time_purge_level always_evaluate_messages)
   @unset_value :error
                |> :erlang.term_to_binary([:deterministic])
                |> Base.url_encode64(padding: false)
 
-  defp put_logger_keys(%{"compile_env" => env} = build, "nerves_system_" <> _, nil)
+  defp put_untraced_keys(%{"compile_env" => env} = build, "nerves_system_" <> _, nil, own)
        when is_list(env) do
-    if Application.get_env(:portal, :firmware_logger_keys, true) == false do
-      build
+    logger =
+      if Application.get_env(:portal, :firmware_logger_keys, true) == false,
+        do: [],
+        else: Enum.map(@logger_keys, &{"logger", [&1]})
+
+    wanted = Enum.uniq(logger ++ own)
+    listed = MapSet.new(env, &{&1["app"], &1["path"]})
+
+    added =
+      for {app, path} <- wanted,
+          not MapSet.member?(listed, {app, path}),
+          do: %{"app" => app, "path" => path, "value" => @unset_value}
+
+    Map.put(build, "compile_env", env ++ added)
+  end
+
+  defp put_untraced_keys(build, _target, _inputs, _own), do: build
+
+  # What the worker's firmware project's config sets (the Nerves template,
+  # nerves_bootstrap 1.17.4, `--no-nerves-pack`, and `NccWorker.Project`'s
+  # own `:nerves, :firmware` line), by app, `:all` for every key: such a key
+  # is not unset in the builder's compile, so it is never listed as unset.
+  # The apps a `nerves_pack` template configures are kept out too.
+  @builder_config %{
+    "nerves" => :all,
+    "nerves_runtime" => :all,
+    "nerves_ssh" => :all,
+    "vintage_net" => :all,
+    "mdns_lite" => :all,
+    "shoehorn" => :all,
+    "logger" => ["default_handler"]
+  }
+
+  # The config keys the package's own code read at compile time, by
+  # version: from each toolchain build of the version (a listed variant)
+  # whose `compile_env` R5 wrote (`compile_env_rule` 1), the `[key]` items
+  # whose read its trace names the package as the owner of
+  # (`compile_observations.config_reads`), less the builder's own config
+  # (`@builder_config`). `%{version => [{app, [key]}]}`, each sorted; empty
+  # while `NCC_FIRMWARE_OWN_CONFIG_KEYS=0`. The toolchain builds' rows are in
+  # the package's fingerprint (`@precompiled_fingerprints_sql`, by `xmin`).
+  @own_config_keys_sql """
+  SELECT DISTINCT t.version, ce->>'app', ce->'path'->>0
+  FROM catalog_toolchain_builds t
+  CROSS JOIN LATERAL unnest(t.compile_env) AS ce
+  WHERE t.package_id = $1 AND t.variant IN #{ToolchainBuild.variants_sql()}
+    AND t.compile_env_rule = 1
+    AND jsonb_typeof(ce->'path') = 'array' AND jsonb_array_length(ce->'path') = 1
+    AND jsonb_typeof(ce->'path'->0) = 'string' AND jsonb_typeof(ce->'app') = 'string'
+    AND jsonb_typeof(t.compile_observations->'config_reads') = 'array'
+    AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(t.compile_observations->'config_reads') AS e
+      WHERE e->>'owner' = $2 AND e->'arg'->>'app' = ce->>'app'
+        AND e->'arg'->>'key' = ce->'path'->>0)
+  """
+
+  defp own_config_keys(package) do
+    if Application.get_env(:portal, :firmware_own_config_keys, true) == false do
+      %{}
     else
-      listed = MapSet.new(env, &{&1["app"], &1["path"]})
-
-      added =
-        for key <- @logger_keys,
-            not MapSet.member?(listed, {"logger", [key]}),
-            do: %{"app" => "logger", "path" => [key], "value" => @unset_value}
-
-      Map.put(build, "compile_env", env ++ added)
+      Repo.query!(@own_config_keys_sql, [Ecto.UUID.dump!(package.id), package.name]).rows
+      |> Enum.reject(fn [_version, app, key] -> builder_config?(app, key) end)
+      |> Enum.group_by(&hd/1, fn [_version, app, key] -> {app, [key]} end)
+      |> Map.new(fn {version, keys} -> {version, Enum.sort(keys)} end)
     end
   end
 
-  defp put_logger_keys(build, _target, _inputs), do: build
+  defp builder_config?(app, key) do
+    case Map.get(@builder_config, app) do
+      :all -> true
+      keys when is_list(keys) -> key in keys
+      nil -> false
+    end
+  end
 
   defp own_build(result, build, stored, present) do
     case not own_build_refused?(result) && file_manifest(result, stored, present) do
@@ -4344,7 +4418,12 @@ defmodule Portal.Catalog do
   # a client then takes it at its exact system version only. The row's
   # `compile_inputs` were recorded against its own build
   # (`NccWorker.FirmwareInputs`), so a variant carries none.
-  defp variant_builds(%{published_variants: [_ | _] = variants} = result, build, stored, present) do
+  defp variant_builds(
+         %{published_variants: [_ | _] = variants} = result,
+         {build, keys},
+         stored,
+         present
+       ) do
     own_priv = priv_set(get_in(result.beam_scan || %{}, ["footprint", "file_manifest"]))
 
     for variant <- variants,
@@ -4355,7 +4434,7 @@ defmodule Portal.Catalog do
         |> Map.put("deps", variant["deps_lock"])
         |> Map.put("compile_env", variant["compile_env"])
         |> Map.delete("compile_inputs")
-        |> put_logger_keys(result.system_pkg, nil)
+        |> put_untraced_keys(result.system_pkg, nil, keys)
         |> keep_abi_facts(priv_set(variant["file_manifest"]) == own_priv)
 
       {Map.put(files, :closure_only, true), variant_build}
