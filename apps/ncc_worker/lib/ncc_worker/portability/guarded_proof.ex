@@ -54,9 +54,11 @@ defmodule NccWorker.Portability.GuardedProof do
 
   alias Compatibility.Portability, as: Reasons
   alias NccWorker.{DepsLock, Project, Tracer}
-  alias NccWorker.Portability.{Differential, Etf, ForeignPriv, Guarded, PrivRepro}
+  alias NccWorker.Portability.{Context, Differential, Etf, ForeignPriv, Guarded, PrivRepro}
 
   @hold_problem "guarded modules wait for a build with their package present"
+  # 2^3 - 1 = 7 proof worlds at most (S9 re-review R1-1).
+  @max_waived 3
   @together "guarded modules and own priv writes are not settled together"
   @with_varied "guarded modules and varied host reads are not settled together"
   @first_suffix ".ncc-guarded-first"
@@ -136,12 +138,17 @@ defmodule NccWorker.Portability.GuardedProof do
   def settle(%{guarded: held} = verdict, project_dir, package, opts, digest)
       when is_map(held) do
     started = System.monotonic_time(:millisecond)
-    present = present(held.waivers, opts)
-    result = prove(held, project_dir, package, present, opts, digest)
+    entries = waived_entries(held.waivers, opts)
+
+    result =
+      with {:ok, worlds} <- worlds(entries),
+           do: prove(held, project_dir, package, worlds, opts, digest)
+
     ms = System.monotonic_time(:millisecond) - started
+    present = %{first: entries |> Enum.flat_map(&elem(&1, 1).first) |> Enum.uniq()}
 
     case result do
-      :ok -> pass(verdict, held, present, ms)
+      :ok -> pass(verdict, held, Map.put(present, :worlds, length(subsets(entries))), ms)
       {:refuse, why} -> refuse(verdict, held, why, present, ms)
     end
   rescue
@@ -157,31 +164,75 @@ defmodule NccWorker.Portability.GuardedProof do
 
   def settle(verdict, _project_dir, _package, _opts, _digest), do: verdict
 
-  # The guarded packages of every waived entry, once each.
-  defp present(waivers, opts) do
+  # `{entry_id, present}` of every waived entry, once each, sorted by id.
+  defp waived_entries(waivers, opts) do
     overrides = Keyword.get(opts, :guarded_present, %{})
 
-    specs =
-      for id <-
-            waivers |> Map.values() |> Enum.flat_map(& &1.entries) |> Enum.uniq() |> Enum.sort(),
-          entry = Enum.find(Guarded.entries(), &(&1.id == id)),
-          entry != nil,
-          do: Map.get(overrides, id, entry.present)
+    for id <-
+          waivers |> Map.values() |> Enum.flat_map(& &1.entries) |> Enum.uniq() |> Enum.sort(),
+        entry = Enum.find(Guarded.entries(), &(&1.id == id)),
+        entry != nil,
+        do: {id, Map.get(overrides, id, entry.present)}
+  end
+
+  @doc false
+  # Public for tests (S9 re-review R1-1). A user's world is a presence
+  # vector over the waived entries: each entry's guarded package present or
+  # not. The first build is the all-absent one; every other vector is a
+  # non-empty subset, and each is one proof world, `2^n - 1` of them,
+  # smallest first. More than `max_entries/0` waived entries refuses
+  # rather than build more than 7 worlds (`max_entries/0`).
+  @spec worlds([{String.t(), map()}]) :: {:ok, [[{String.t(), map()}]]} | {:refuse, String.t()}
+  def worlds(entries) when length(entries) > @max_waived,
+    do:
+      {:refuse,
+       "more than #{@max_waived} guarded entries are waived (#{length(entries)}): " <>
+         "not proved"}
+
+  def worlds([]), do: {:refuse, "no guarded entry is waived"}
+  def worlds(entries), do: {:ok, subsets(entries)}
+
+  @doc "The most waived entries a proof builds every world for."
+  @spec max_entries() :: pos_integer()
+  def max_entries, do: @max_waived
+
+  defp subsets(entries) do
+    entries
+    |> Enum.reduce([[]], fn entry, acc -> acc ++ Enum.map(acc, &(&1 ++ [entry])) end)
+    |> Enum.reject(&(&1 == []))
+    |> Enum.sort_by(&length/1)
+  end
+
+  # One world's guarded packages.
+  defp present(subset) do
+    specs = Enum.map(subset, &elem(&1, 1))
 
     %{
+      ids: Enum.map(subset, &elem(&1, 0)),
       deps: specs |> Enum.flat_map(& &1.deps) |> Enum.uniq(),
       first: specs |> Enum.flat_map(& &1.first) |> Enum.uniq()
     }
   end
 
-  defp prove(held, project_dir, package, present, opts, digest) do
+  # The real project dir is what moves aside (S9 re-review R1-3): a
+  # project dir reached through a link (macOS's `/var`) moves the dir, not
+  # the link, and every path compared with it is resolved too.
+  defp prove(held, project_dir, package, worlds, opts, digest) do
+    case Context.realpath(project_dir) do
+      real when is_binary(real) -> prove_in(held, real, package, worlds, opts, digest)
+      nil -> {:refuse, "the project dir cannot be resolved"}
+    end
+  end
+
+  defp prove_in(held, project_dir, package, worlds, opts, digest) do
     first = project_dir <> @first_suffix
 
     with :ok <- inside(held.build, project_dir, opts),
+         held = %{held | build: Context.realpath(held.build)},
          {:ok, before} <- checked_digest(digest, held.build),
          :ok <- absent(first),
          :ok <- move(project_dir, first) do
-      result = guarded_world(held, project_dir, first, package, present, opts)
+      result = every_world(held, project_dir, first, package, worlds, opts)
 
       with :ok <- put_back(project_dir, first),
            :ok <- result,
@@ -197,8 +248,38 @@ defmodule NccWorker.Portability.GuardedProof do
     end
   end
 
-  # The second world, whatever it raises: the first project goes back
-  # under its own name in any case (`prove/6`).
+  # Each world in turn, the first that does not prove refusing; the copy
+  # each one built in is removed before the next.
+  defp every_world(held, project_dir, first, package, worlds, opts) do
+    worlds
+    |> Enum.with_index(1)
+    |> Enum.reduce_while(:ok, fn {subset, n}, :ok ->
+      present = present(subset)
+
+      case guarded_world(held, project_dir, first, package, present, world_opts(opts, n)) do
+        :ok ->
+          {:cont, clear(project_dir)}
+
+        {:refuse, why} ->
+          {:halt, {:refuse, "with #{Enum.join(present.first, ", ")} present: " <> why}}
+      end
+    end)
+  end
+
+  defp world_opts(opts, n),
+    do: Keyword.update!(opts, :guarded_trace_dir, &"#{&1}-#{n}")
+
+  # The copy a world built in, so the next world copies afresh.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp clear(project_dir) do
+    case File.rm_rf(project_dir) do
+      {:ok, _} -> :ok
+      {:error, why, _} -> {:refuse, "a proof world cannot be removed: #{inspect(why)}"}
+    end
+  end
+
+  # One world, whatever it raises: the first project goes back under its
+  # own name in any case (`prove/6`).
   defp guarded_world(held, project_dir, first, package, present, opts) do
     world(held, project_dir, first, package, present, opts)
   rescue
@@ -211,9 +292,10 @@ defmodule NccWorker.Portability.GuardedProof do
 
   # The first build's app, its build path and its deps dir all lie in the
   # project dir, which is what moves aside.
+  # Every path real (`Context.realpath/1`, links followed), `project_dir`
+  # already so (S9 re-review R1-3).
   defp inside(build, project_dir, opts) do
     env = Keyword.get(opts, :env, [])
-    root = Path.expand(project_dir)
 
     paths = [
       build,
@@ -221,13 +303,19 @@ defmodule NccWorker.Portability.GuardedProof do
       env_value(env, "MIX_DEPS_PATH") || Path.join(project_dir, "deps")
     ]
 
-    if Enum.all?(
-         paths,
-         &(is_binary(&1) and String.starts_with?(Path.expand(&1, project_dir), root <> "/"))
-       ),
-       do: :ok,
-       else: {:refuse, "the build or deps dir is not in the project dir"}
+    if Enum.all?(paths, &in_project?(&1, project_dir)),
+      do: :ok,
+      else: {:refuse, "the build or deps dir is not in the project dir"}
   end
+
+  defp in_project?(path, project_dir) when is_binary(path) do
+    case Context.realpath(Path.expand(path, project_dir)) do
+      real when is_binary(real) -> String.starts_with?(real, project_dir <> "/")
+      nil -> false
+    end
+  end
+
+  defp in_project?(_path, _project_dir), do: false
 
   defp checked_digest(digest, dir) do
     case digest.(dir) do
@@ -276,7 +364,7 @@ defmodule NccWorker.Portability.GuardedProof do
            :ok <- same_lock(first, project_dir),
            :ok <-
              traced(Tracer.run(project_dir, [package], trace_opts(opts, env, trace_dir, present))),
-           :ok <- guarded_built(held, present) do
+           :ok <- guarded_built(held, present.ids) do
         compared(compare_app(moved(held.build, project_dir, first), held.build))
       end
     after
@@ -284,8 +372,10 @@ defmodule NccWorker.Portability.GuardedProof do
     end
   end
 
+  # `path` in the moved-aside first project: its real path, `project_dir`
+  # (real) replaced by `first`, resolved before the move.
   defp moved(path, project_dir, first),
-    do: first <> String.replace_prefix(Path.expand(path), Path.expand(project_dir), "")
+    do: first <> String.replace_prefix(path, project_dir, "")
 
   # Every entry of the moved project but `_build`, so the copy compiles
   # from nothing at the first build's own paths.
@@ -447,29 +537,36 @@ defmodule NccWorker.Portability.GuardedProof do
   defp traced(other),
     do: {:refuse, "the build with the guarded packages did not finish: #{brief(other)}"}
 
-  # Every guarded module of every waived entry is in its prober's ebin of
-  # the second build: an exact name's beam, or for a prefix at least one
-  # beam under it.
-  # sobelow_skip ["Traversal.FileModule"]
-  defp guarded_built(held, _present) do
+  # Every guarded module of every entry in this world (`ids`) is in its
+  # prober's ebin (an exact name's beam, or for a prefix at least one beam
+  # under it), and none of an entry outside it: the world is the presence
+  # vector it stands for.
+  defp guarded_built(held, ids) do
     root = held.build |> Path.dirname()
 
-    missing =
-      for {app, %{entries: ids}} <- held.waivers,
-          entry <- Enum.filter(Guarded.entries(), &(&1.id in ids)),
+    built =
+      for {app, %{entries: entries}} <- held.waivers,
+          entry <- Enum.filter(Guarded.entries(), &(&1.id in entries)),
           beams = beams(Path.join([root, app, "ebin"])),
           guard <- entry.guards,
-          not Enum.any?(beams, &Guarded.guarded?(&1, [guard])),
-          uniq: true,
-          do: app
+          do: {entry.id, app, Enum.any?(beams, &Guarded.guarded?(&1, [guard]))}
 
-    case missing do
-      [] ->
-        :ok
+    missing = for {id, app, false} <- built, id in ids, uniq: true, do: app
+    extra = for {id, app, true} <- built, id not in ids, uniq: true, do: app
 
-      apps ->
+    cond do
+      missing != [] ->
         {:refuse,
-         "the guarded modules were not built with their package present: #{Enum.join(apps, ", ")}"}
+         "the guarded modules were not built with their package present: " <>
+           Enum.join(missing, ", ")}
+
+      extra != [] ->
+        {:refuse,
+         "the guarded modules were built without their package present: " <>
+           Enum.join(extra, ", ")}
+
+      true ->
+        :ok
     end
   end
 
@@ -719,7 +816,12 @@ defmodule NccWorker.Portability.GuardedProof do
     |> put_present(:foreign_priv_rule, held.foreign_priv_rule)
     |> Map.delete(:guarded)
     |> update_problems(&List.delete(&1, @hold_problem))
-    |> put_stat(%{"result" => "same", "ms" => ms, "present" => present.first})
+    |> put_stat(%{
+      "result" => "same",
+      "ms" => ms,
+      "present" => present.first,
+      "worlds" => present.worlds
+    })
   end
 
   defp refuse(verdict, held, why, present, ms) do

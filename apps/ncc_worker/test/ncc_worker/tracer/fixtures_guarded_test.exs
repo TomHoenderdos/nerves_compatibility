@@ -54,8 +54,28 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
     "websock_adapter:cowboy_adapter" => %{
       deps: [~s({:fx_cowboy, path: "deps/fx_cowboy"})],
       first: ["fx_cowboy"]
+    },
+    "jose:poison" => %{
+      deps: [~s({:fx_poison, path: "deps/fx_poison"})],
+      first: ["fx_poison"]
     }
   }
+
+  # jose 1.11.x's `lib/jose/poison.ex` shape, and a stand-in for poison.
+  @jose %{
+    files: %{
+      "lib/jose.ex" => "defmodule JOSE do\n  def f, do: :ok\nend\n",
+      "lib/jose/poison.ex" => """
+      if Code.ensure_loaded?(Poison) do
+        defmodule JOSE.Poison do
+          def lexical_encode!(v), do: v
+        end
+      end
+      """
+    }
+  }
+
+  @poison %{files: %{"lib/poison.ex" => "defmodule Poison do\n  def encode!(v), do: v\nend\n"}}
 
   defp project(dir, dep_body, extra \\ %{}) do
     TracerFixtures.project(
@@ -86,7 +106,10 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
     {app, release} =
       TracerFixtures.hex_release(home, "websock_adapter", ["lib"], %{}, [{"version", "0.7.2"}])
 
-    [releases: %{app => release}, hex_home: home]
+    {jose, jose_release} =
+      TracerFixtures.hex_release(home, "jose", ["lib"], %{}, [{"version", "1.11.13"}])
+
+    [releases: %{app => release, jose => jose_release}, hex_home: home]
   end
 
   # The traced host compile and its judgement, the proof build included.
@@ -233,6 +256,116 @@ defmodule NccWorker.Tracer.FixturesGuardedTest do
       assert Map.has_key?(app_files(proj, "fx_dep"), "ebin/Elixir.FxDep.beam")
       refute File.exists?(proj <> ".ncc-guarded-first")
     end
+  end
+
+  # S9 re-review R1-1: a user's world is any presence vector over the
+  # waived entries. The dependent below reads two probers' manifests and
+  # compares them: `true` with neither guarded module and with both, `false`
+  # for a user with cowboy and without poison (or the reverse). A proof of
+  # the all-present world alone passed it; one world per non-empty subset
+  # refuses it, at the first one-package world.
+  test "a dependent of two probers whose beams depend on the pair refuses in a subset world",
+       %{tmp_dir: dir} do
+    body = """
+    defmodule FxDep do
+      m = fn app, mod ->
+        "../../_build/host/lib/\#{app}/.mix/compile.elixir"
+        |> File.read!()
+        |> :erlang.binary_to_term()
+        |> elem(1)
+        |> Map.has_key?(mod)
+      end
+
+      @x m.(:websock_adapter, WebSockAdapter.CowboyAdapter) == m.(:jose, JOSE.Poison)
+      def x, do: @x
+    end
+    """
+
+    proj =
+      TracerFixtures.project(Path.join(dir, "w"), ["fx_dep"], %{
+        "websock_adapter" => %{
+          files: %{
+            "lib/websock_adapter.ex" => @main,
+            "lib/websock_adapter/cowboy_adapter.ex" => @adapter
+          }
+        },
+        "jose" => @jose,
+        "fx_dep" => %{deps: ["websock_adapter", "jose"], files: %{"lib/fx_dep.ex" => body}},
+        "fx_cowboy" => @cowboy,
+        "fx_poison" => @poison
+      })
+
+    verdict = run(dir, proj, "fx_dep")
+    assert %{status: :skip, reason: "closure dependency observed the host: " <> _} = verdict
+
+    assert [%{"app" => "jose"}, %{"app" => "websock_adapter"}] =
+             verdict.observations["guarded_taint"]
+
+    assert %{"result" => "refused", "why" => why} =
+             verdict.observations["trace_stats"]["guarded_proof"]
+
+    # The first world, jose's guarded package alone, already differs.
+    assert why =~ "with fx_poison present: the package builds otherwise", why
+    refute File.exists?(proj <> ".ncc-guarded-first")
+    assert Map.has_key?(app_files(proj, "fx_dep"), "ebin/Elixir.FxDep.beam")
+  end
+
+  # Two probers whose guarded modules a dependent cannot see: every one of
+  # the three worlds is the first build.
+  test "a dependent of two probers passes once all three worlds are the same", %{tmp_dir: dir} do
+    proj =
+      TracerFixtures.project(Path.join(dir, "w"), ["fx_dep"], %{
+        "websock_adapter" => %{
+          files: %{
+            "lib/websock_adapter.ex" => @main,
+            "lib/websock_adapter/cowboy_adapter.ex" => @adapter
+          }
+        },
+        "jose" => @jose,
+        "fx_dep" => %{
+          deps: ["websock_adapter", "jose"],
+          files: %{
+            "lib/fx_dep.ex" =>
+              "defmodule FxDep do\n  def f(w, s), do: {WebSockAdapter.upgrade(w, s), JOSE.f()}\nend\n"
+          }
+        },
+        "fx_cowboy" => @cowboy,
+        "fx_poison" => @poison
+      })
+
+    verdict = run(dir, proj, "fx_dep")
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+
+    assert %{"result" => "same", "worlds" => 3, "present" => present} =
+             verdict.observations["trace_stats"]["guarded_proof"]
+
+    assert Enum.sort(present) == ["fx_cowboy", "fx_poison"]
+  end
+
+  # S9 re-review R1-3: the project dir reached through a link (macOS's
+  # `/var`, which is `/private/var`), the build dir named by its real path.
+  # Both are resolved before they are compared, and the real dir is what
+  # moves aside.
+  test "a project dir reached through a link is resolved before the proof", %{tmp_dir: dir} do
+    real = project(Path.join(dir, "w"), @dependent)
+    link = Path.join(dir, "link")
+    File.ln_s!(Path.dirname(real), link)
+    proj = Path.join(link, "proj")
+
+    env =
+      TracerFixtures.env(proj)
+      |> List.keystore(
+        "MIX_BUILD_PATH",
+        0,
+        {"MIX_BUILD_PATH", Path.join([real, "_build", "host"])}
+      )
+
+    verdict = run(dir, proj, "fx_dep", env: env)
+    assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
+    assert %{"result" => "same"} = verdict.observations["trace_stats"]["guarded_proof"]
+    assert File.lstat!(link).type == :symlink
+    assert Map.has_key?(app_files(real, "fx_dep"), "ebin/Elixir.FxDep.beam")
+    refute File.exists?(real <> ".ncc-guarded-first")
   end
 
   # The proof build refuses when it cannot be made, or proves nothing.

@@ -181,6 +181,40 @@ defmodule NccWorker.Portability.GuardedProofTest do
     assert {:error, :no_project_list} = GuardedProof.unpruned("defmodule X do\nend\n")
   end
 
+  # S9 re-review R1-1: one world per non-empty subset of the waived
+  # entries, smallest first; more than three entries refuse.
+  test "the proof worlds: every non-empty subset, at most three entries" do
+    spec = fn n -> %{deps: [~s({:p#{n}, ">= 0.0.0"})], first: ["p#{n}"]} end
+    entry = fn n -> {"e#{n}", spec.(n)} end
+
+    assert {:ok, [[{"e1", _}]]} = GuardedProof.worlds([entry.(1)])
+
+    assert {:ok, worlds} = GuardedProof.worlds([entry.(1), entry.(2)])
+
+    assert Enum.map(worlds, fn w -> Enum.map(w, &elem(&1, 0)) end) == [
+             ["e1"],
+             ["e2"],
+             ["e1", "e2"]
+           ]
+
+    assert {:ok, seven} = GuardedProof.worlds(Enum.map(1..3, entry))
+    assert length(seven) == 7
+
+    assert seven
+           |> Enum.map(fn w -> w |> Enum.map(&elem(&1, 0)) |> Enum.sort() end)
+           |> Enum.uniq()
+           |> length() == 7
+
+    assert Enum.map(seven, &length/1) == [1, 1, 1, 2, 2, 2, 3]
+
+    assert GuardedProof.max_entries() == 3
+
+    assert {:refuse, "more than 3 guarded entries are waived (4): not proved"} =
+             GuardedProof.worlds(Enum.map(1..4, entry))
+
+    assert {:refuse, _} = GuardedProof.worlds([])
+  end
+
   test "hold: a waived pass waits; with PrivRepro's hold too it is could-not-judge for good" do
     waivers = %{
       "websock_adapter" => %{
