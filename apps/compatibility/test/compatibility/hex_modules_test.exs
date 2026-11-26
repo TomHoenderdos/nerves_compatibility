@@ -58,6 +58,36 @@ defmodule Compatibility.HexModulesTest do
     assert_raise ArgumentError, fn -> String.to_existing_atom("NeverAnAtomBeforeThisTestXyz") end
   end
 
+  # S10 round 3: which of them a `defprotocol` names and which a `defimpl`
+  # makes, for the declared-optional-dependency rule's review gate.
+  test "read names the protocols and the implementations among the modules" do
+    bytes =
+      tarball(%{
+        "lib/p.ex" => """
+        defprotocol HmP.Encoder do
+          def encode(x)
+        end
+
+        defimpl HmP.Encoder, for: Integer do
+          def encode(x), do: x
+        end
+
+        defmodule HmP do
+          defimpl String.Chars do
+            def to_string(_), do: "p"
+          end
+        end
+        """
+      })
+
+    assert {:ok, read} = HexModules.read(bytes)
+    assert read.protocols == ["Elixir.HmP.Encoder"]
+    assert Enum.sort(read.impls) == ["Elixir.HmP.Encoder.Integer", "Elixir.String.Chars.HmP"]
+
+    assert Enum.sort(read.modules) ==
+             ~w(Elixir.HmP Elixir.HmP.Encoder Elixir.HmP.Encoder.Integer Elixir.String.Chars.HmP)
+  end
+
   # Round 6: what a real index run of the 5,008 popular packages hit.
   test "hidden files, many non-source files and large Erlang sources are read" do
     many = for i <- 1..6_000, into: %{}, do: {"priv/icons/i#{i}.svg", "<svg/>"}

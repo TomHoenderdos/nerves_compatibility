@@ -66,6 +66,13 @@ defmodule Compatibility.CompileInputs do
       and each once, at most 64. A client misses when its project can supply
       the module: a dependency named in `definers`, a dependency outside the
       build's closure whose sources define it, or the module on its code path.
+      With `"declared" => [package]` (S10 round 3), each a definer: the
+      packages that a closure member declares as optional dependencies,
+      whose own tarball defines the module in their own namespace, not as a
+      protocol implementation (the review gate, worker and portal both).
+      A client decides such an item by those packages' presence and the
+      other definers (the module index of every Hex package and our builds'
+      lists), with no module list of its other dependencies.
     * `%{"kind" => "probe", "of" => "app", "name", "answer" => "absent"}`: the
       same for an application that is no package of the build. A client
       misses when a dependency of its project is that application, or the
@@ -98,6 +105,7 @@ defmodule Compatibility.CompileInputs do
   @max_config_order_items 96
   @max_config_all_entries 128
   @max_probe_items 64
+  @max_declared 8
   @probe_kinds ["module", "app", "otp_app"]
   # A module as its atom renders (`Elixir.Jason.Encoder`, `cowboy_websocket`)
   # and an application name.
@@ -206,7 +214,10 @@ defmodule Compatibility.CompileInputs do
            "definers" => definers
          } = item
        ),
-       do: map_size(item) == 5 and module_name?(name) and definers?(definers)
+       do:
+         module_name?(name) and definers?(definers) and
+           (map_size(item) == 5 or
+              (map_size(item) == 6 and declared?(Map.get(item, "declared"), definers)))
 
   defp item?(%{"kind" => "probe", "of" => of, "name" => name, "answer" => "absent"} = item)
        when of in ["app", "otp_app"],
@@ -236,6 +247,15 @@ defmodule Compatibility.CompileInputs do
     do: Enum.all?(definers, &app_name?/1) and definers == Enum.sort(Enum.uniq(definers))
 
   defp definers?(_definers), do: false
+
+  # S10 round 3: a module probe's declared packages, which decide it by
+  # their presence: 1 to 8 package names, strictly sorted, each a definer.
+  defp declared?(declared, definers) when is_list(declared) and declared != [] do
+    length(declared) <= @max_declared and declared == Enum.sort(Enum.uniq(declared)) and
+      Enum.all?(declared, &(app_name?(&1) and &1 in definers))
+  end
+
+  defp declared?(_declared, _definers), do: false
 
   @doc "The most `probe` items a build records; more record `config_unrecorded`."
   @spec max_probe_items() :: pos_integer()

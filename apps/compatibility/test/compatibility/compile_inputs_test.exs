@@ -285,6 +285,10 @@ defmodule Compatibility.CompileInputsTest do
     erlang = %{@probe | "name" => "cowboy_websocket", "definers" => []}
     items = [@probe, erlang, app, otp]
 
+    # S10 round 3: a module item whose declared packages decide it.
+    declared = Map.put(@probe, "declared", ["poison"])
+    items = items ++ [declared]
+
     assert CompileInputs.validate(items) == {:ok, items}
     assert CompileInputs.needs_check?([app])
     assert CompileInputs.max_probe_items() == 64
@@ -310,6 +314,11 @@ defmodule Compatibility.CompileInputsTest do
           %{@probe | "definers" => ["Poison"]},
           %{@probe | "definers" => "poison"},
           %{@probe | "definers" => for(i <- 1..65, do: "p#{1000 + i}")},
+          Map.put(@probe, "declared", []),
+          Map.put(@probe, "declared", ["jason"]),
+          Map.put(@probe, "declared", ["poison_fork", "poison"]),
+          Map.put(@probe, "declared", "poison"),
+          Map.put(app, "declared", ["phoenix_html"]),
           Map.put(app, "definers", []),
           %{app | "name" => "Elixir.Phoenix"},
           %{app | "name" => "phoenix-html"}

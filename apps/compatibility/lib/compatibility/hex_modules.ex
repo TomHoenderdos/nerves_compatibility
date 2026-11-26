@@ -38,14 +38,23 @@ defmodule Compatibility.HexModules do
 
   @doc """
   The modules the Hex tarball `bytes` defines and the application its
-  `metadata.config` names, or why they cannot be known in full: a tarball
+  `metadata.config` names, with the ones a `defprotocol` names
+  (`protocols`) and the ones a `defimpl` makes (`impls`, S10 round 3), or
+  why they cannot be known in full: a tarball
   or its contents over the caps, more files or more source than the caps
   allow, or a `.ex` file under `lib/` that does not parse. A leex or yecc
   file (`.xrl`, `.yrl`) defines the module of its base name. Options:
   `:max_tarball` (bytes, default `Compatibility.StaticPriv.max_tarball_bytes/0`).
   """
   @spec read(binary() | nil, keyword()) ::
-          {:ok, %{modules: [String.t()], app: String.t() | nil}} | {:error, term()}
+          {:ok,
+           %{
+             modules: [String.t()],
+             protocols: [String.t()],
+             impls: [String.t()],
+             app: String.t() | nil
+           }}
+          | {:error, term()}
   def read(bytes, opts \\ [])
 
   def read(bytes, opts) when is_binary(bytes) do
@@ -58,8 +67,16 @@ defmodule Compatibility.HexModules do
          {:ok, files} <- :erl_tar.extract({:binary, tar}, [:memory]) |> tar_files(),
          files = Enum.filter(files, &source_file?/1),
          :ok <- if(length(files) <= @max_files, do: :ok, else: {:error, :too_many_files}),
-         {:ok, modules} <- sources(files) do
-      {:ok, %{modules: Enum.uniq(modules), app: app(Map.get(outer, "metadata.config"))}}
+         {:ok, found} <- sources(files) do
+      found = Enum.uniq(found)
+
+      {:ok,
+       %{
+         modules: found |> Enum.map(&elem(&1, 1)) |> Enum.uniq(),
+         protocols: for({:protocol, name} <- found, do: name),
+         impls: for({:impl, name} <- found, do: name),
+         app: app(Map.get(outer, "metadata.config"))
+       }}
     end
   rescue
     e -> {:error, {:unreadable, Exception.message(e)}}
@@ -122,10 +139,10 @@ defmodule Compatibility.HexModules do
         elixir_source(name, body, used)
 
       String.ends_with?(name, ".erl") ->
-        {:ok, [Path.basename(name, ".erl")], used}
+        {:ok, [{:module, Path.basename(name, ".erl")}], used}
 
       String.ends_with?(name, [".xrl", ".yrl"]) ->
-        {:ok, [Path.basename(name, Path.extname(name))], used}
+        {:ok, [{:module, Path.basename(name, Path.extname(name))}], used}
 
       true ->
         {:ok, [], used}
@@ -176,9 +193,11 @@ defmodule Compatibility.HexModules do
 
   defp walk({{:atom, kind}, _, [name_ast | rest]}, outer, acc)
        when kind in ["defmodule", "defprotocol"] do
+    tag = if kind == "defprotocol", do: :protocol, else: :module
+
     case alias_name(name_ast, outer) do
       nil -> walk(rest, outer, acc)
-      name -> walk(rest, name, [name | acc])
+      name -> walk(rest, name, [{tag, name} | acc])
     end
   end
 
@@ -190,7 +209,7 @@ defmodule Compatibility.HexModules do
     impls =
       for f <- fors,
           is_binary(proto) and is_binary(f),
-          do: proto <> "." <> String.replace_prefix(f, "Elixir.", "")
+          do: {:impl, proto <> "." <> String.replace_prefix(f, "Elixir.", "")}
 
     walk(rest, outer, impls ++ acc)
   end
