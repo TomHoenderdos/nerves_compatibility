@@ -52,21 +52,15 @@ defmodule Portal.Catalog.ModuleIndex do
   record and withholds (revokes, with a tag and an undo) any that now
   collides (`recheck/1`, R3-5a).
 
-  **Every package (S10 round 3).** The candidates are every package in the
-  catalog, not only the popular ones, at their last and latest stable
-  release, and the build lists are every passing toolchain and pinned host
-  build's ebin and `defined_modules`. A module `probe` compile input is
-  settled at ingest with every indexed definer (`settle_inputs/1`), which
-  client 0.10 trusts: a project holding any one misses. A declared-absent
-  record (for clients up to 0.9) still refuses only on a definer with at
-  least `min_recent/0` recent downloads. The declared-optional-dependency
-  rule (an input's `declared` packages) needs no module list of the user's
-  other dependencies, so its residual is exactly what this index cannot
-  see: a module that a package in the user's lock other than the declared
-  one defines by a macro or at compile time, outside any tarball parse
-  (also: in a release other than the last and latest stable ones this
-  index read) and outside any build list; and, until the next run and its
-  recheck, a package or release published since the last run's start.
+  **Records only (S10 round 5).** This per-package index now serves the
+  declared-absent records alone: a firmware target's build, whose records
+  carry no `probe` compile input, and rows from before S10. A record that a
+  probe input carries is that input's (`refusal/3`), and a probe input is
+  no longer settled with this index's definers, refused, rechecked or
+  withheld here: `Portal.Catalog.ReleaseIndex`, the module index per
+  release, is named in every batch, and client 0.10 decides each user's
+  exact locked releases against it. The candidates are every catalog
+  package at its last and latest stable release, with our builds' lists.
 
   **Following Hex (S10 round 4).** The hourly `Portal.Workers.UpdateCheck`
   queues an incremental run whenever the registry lists a release the index
