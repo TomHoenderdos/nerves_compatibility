@@ -464,9 +464,7 @@ defmodule NccWorker.Portability.Declared do
         |> Enum.sort_by(&elem(&1, 0), &newer?/2)
         |> Enum.take(@max_versions)
         |> Enum.map(fn {_version, path} -> tarball_facts(path) end)
-        |> Enum.reduce(@no_facts, fn facts, acc ->
-          Map.new(acc, fn {key, list} -> {key, Enum.uniq(list ++ Map.fetch!(facts, key))} end)
-        end)
+        |> Enum.reduce(@no_facts, &union_facts/2)
 
       _ ->
         @no_facts
@@ -474,6 +472,9 @@ defmodule NccWorker.Portability.Declared do
   end
 
   defp facts_of(_home, _name), do: @no_facts
+
+  defp union_facts(facts, acc),
+    do: Map.new(acc, fn {key, list} -> {key, Enum.uniq(list ++ Map.fetch!(facts, key))} end)
 
   # `{version, path}` of a cached tarball of package `name`.
   defp release_of(file, name, dir) do
