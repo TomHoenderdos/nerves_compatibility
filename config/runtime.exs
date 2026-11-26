@@ -172,6 +172,12 @@ if portal_available? do
 
   config :portal, :precompiled_signing, key_path: System.get_env("PRECOMPILED_SIGNING_KEY")
 
+  # `0` publishes an untraced firmware build's `compile_env` as stored,
+  # without Logger's compile-time purge keys (stream S11,
+  # `Portal.Catalog`'s `put_logger_keys/3`). Anything else, or unset, keeps
+  # them on.
+  config :portal, firmware_logger_keys: System.get_env("NCC_FIRMWARE_LOGGER_KEYS") != "0"
+
   # How many packages a precompiled batch renders at once (default 4; see
   # Portal.Precompiled.Batches). Lanes share this node's pool and schedulers:
   # more of them open no connection to Postgres, but take more of its CPU.

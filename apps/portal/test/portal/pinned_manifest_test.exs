@@ -308,6 +308,32 @@ defmodule Portal.PinnedManifestTest do
       refute Map.has_key?(build, "portable")
     end
 
+    # Stream S11: a judge pass whose inputs were recorded traced the build at
+    # moved Nerves roots and bound its beams to the published ones, so the
+    # system's paths and release reach none of them, and every read is one
+    # a client compares. Its ABI facts are then a system result's.
+    test "a judge pass with recorded inputs carries native false and portable" do
+      pass = %{"status" => "pass", "reason" => nil, "classes" => []}
+      %{name: name, row: row} = ingested_firmware(judge: pass)
+      assert row.native == false and row.portable == true and row.compile_inputs == []
+
+      assert %{"builds_closure" => [%{"build" => build}]} = version(name)
+      assert build["native"] == false
+      assert build["portable"] == true
+      assert build["otp_full"] == "29.0.6"
+
+      for {judge, inputs} <- [
+            {%{"status" => "unjudged", "reason" => "run budget exhausted", "classes" => []}, []},
+            {pass, nil}
+          ] do
+        %{name: name} = ingested_firmware(judge: judge, firmware: %{"compile_inputs" => inputs})
+        assert %{"builds_closure" => [%{"build" => build}]} = version(name)
+
+        for key <- ["native", "portable", "elf"],
+            do: refute(Map.has_key?(build, key), "#{key} #{inspect(judge)}")
+      end
+    end
+
     test "a skipped one is not served" do
       %{name: name, sha: sha} = ingested_firmware(system_version: "2.2.0")
       assert version(name) == nil

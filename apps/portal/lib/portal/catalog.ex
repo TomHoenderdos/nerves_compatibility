@@ -4023,6 +4023,7 @@ defmodule Portal.Catalog do
       |> put_manager(pb.manager)
       |> put_pinned_abi_facts(pb)
       |> put_inputs(pb.compile_inputs)
+      |> put_logger_keys(pb.target, pb.compile_inputs)
 
     {pb.version, pb.finished_at,
      Map.merge(files, %{"target" => pb.target, "build" => build, closure_only: true})}
@@ -4285,7 +4286,45 @@ defmodule Portal.Catalog do
     |> put_declared(built_by.declared)
     |> put_abi_facts(result)
     |> put_inputs(result.compile_inputs)
+    |> put_logger_keys(result.system_pkg, result.compile_inputs)
   end
+
+  # Logger's compile-time keys (stream S11). Every `Logger` macro reads
+  # `:logger`'s `compile_time_purge_matching`, `compile_time_purge_level`
+  # and `always_evaluate_messages` with `Application.get_env/3` while its
+  # caller compiles, so no `.app` lists them, and a project that sets one
+  # compiles other beams. A toolchain build's trace lists them (R5), and so
+  # does a firmware target's (`NccWorker.FirmwareInputs`), which is when it
+  # records `compile_inputs`. Any other firmware build (no inputs: an
+  # untraced or unjudged target, a published variant, a pinned firmware
+  # build) is published with them as the builder's compile read them:
+  # unset, since the worker's Nerves project never sets them. A client whose
+  # config sets one misses; any other is unaffected. A key the list already
+  # names is kept as it is, and a `compile_env` that could not be read stays
+  # `nil`. `NCC_FIRMWARE_LOGGER_KEYS=0` (`:firmware_logger_keys`) turns it
+  # off.
+  @logger_keys ~w(compile_time_purge_matching compile_time_purge_level always_evaluate_messages)
+  @unset_value :error
+               |> :erlang.term_to_binary([:deterministic])
+               |> Base.url_encode64(padding: false)
+
+  defp put_logger_keys(%{"compile_env" => env} = build, "nerves_system_" <> _, nil)
+       when is_list(env) do
+    if Application.get_env(:portal, :firmware_logger_keys, true) == false do
+      build
+    else
+      listed = MapSet.new(env, &{&1["app"], &1["path"]})
+
+      added =
+        for key <- @logger_keys,
+            not MapSet.member?(listed, {"logger", [key]}),
+            do: %{"app" => "logger", "path" => [key], "value" => @unset_value}
+
+      Map.put(build, "compile_env", env ++ added)
+    end
+  end
+
+  defp put_logger_keys(build, _target, _inputs), do: build
 
   defp own_build(result, build, stored, present) do
     case not own_build_refused?(result) && file_manifest(result, stored, present) do
@@ -4316,6 +4355,7 @@ defmodule Portal.Catalog do
         |> Map.put("deps", variant["deps_lock"])
         |> Map.put("compile_env", variant["compile_env"])
         |> Map.delete("compile_inputs")
+        |> put_logger_keys(result.system_pkg, nil)
         |> keep_abi_facts(priv_set(variant["file_manifest"]) == own_priv)
 
       {Map.put(files, :closure_only, true), variant_build}
@@ -4442,20 +4482,35 @@ defmodule Portal.Catalog do
     |> put_known("elf", elf_fact(result))
   end
 
-  # A pinned firmware build's facts, which never let a client take it on
-  # another release of its system: the client takes a build that says
+  # A pinned firmware build's facts. The client takes a build that says
   # `native: false`, or `native` and `portable`, on any release whose ABI
   # matches (`Precompiled.Match.target_reason/4`), and a pinned build was
-  # made for one project's exact release. So never `portable`, and `native`
-  # only when true, with the `elf` needs the client's install-time library
-  # check reads; without either, the client takes it at its own release
-  # only.
+  # made for one project's exact release. So a pinned build is never
+  # `portable`, and `native` only when true, with the `elf` needs the
+  # client's install-time library check reads; without either, the client
+  # takes it at its own release only.
+  #
+  # Except one the firmware judge passed with its inputs recorded (stream
+  # S11): its trace ran with the toolchain and system dirs at paths and
+  # artifact names of their own, and its beams bound to the published ones
+  # (`NccWorker.FirmwareInputs`), so neither the system's paths nor its
+  # release reach them, and every read it made is an input the client
+  # compares. It carries a system result's facts (`put_abi_facts/2`).
   defp put_pinned_abi_facts(build, pb) do
-    build
-    |> put_known("otp_full", pb.otp_full)
-    |> put_known("toolchain", toolchain_fact(pb))
-    |> put_pinned_native(pb)
+    if pinned_judged?(pb) do
+      put_abi_facts(build, pb)
+    else
+      build
+      |> put_known("otp_full", pb.otp_full)
+      |> put_known("toolchain", toolchain_fact(pb))
+      |> put_pinned_native(pb)
+    end
   end
+
+  defp pinned_judged?(%{firmware_judge: %{"status" => "pass"}, compile_inputs: inputs}),
+    do: is_list(inputs)
+
+  defp pinned_judged?(_pb), do: false
 
   defp put_pinned_native(build, %{native: true} = pb),
     do: build |> Map.put("native", true) |> put_known("elf", elf_fact(pb))

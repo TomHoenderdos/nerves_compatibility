@@ -5,6 +5,16 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
   # its own, and listed in format 2 beside the build with them.
   use Portal.DataCase, async: false
 
+  # Logger's compile-time keys, which an untraced firmware build is
+  # published with, unset (stream S11, `Portal.Catalog.put_logger_keys/3`).
+  @logger_keys for key <-
+                     ~w(compile_time_purge_matching compile_time_purge_level always_evaluate_messages),
+                   do: %{
+                     "app" => "logger",
+                     "path" => [key],
+                     "value" => Base.url_encode64(:erlang.term_to_binary(:error), padding: false)
+                   }
+
   require Ash.Query
 
   import PortalWeb.ApiSpecAssertions
@@ -208,7 +218,7 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
              ]
 
       assert with_build["build"]["deps"] == @with_lock
-      assert with_build["build"]["compile_env"] == []
+      assert with_build["build"]["compile_env"] == @logger_keys
 
       assert without_build["ebin"] == [
                %{
@@ -220,7 +230,7 @@ defmodule Portal.Catalog.FirmwareVariantsTest do
 
       assert without_build["build"]["deps"] == @run_lock
 
-      assert without_build["build"]["compile_env"] == @compile_env
+      assert without_build["build"]["compile_env"] == @compile_env ++ @logger_keys
 
       # Everything else is the target's, and the variant's name is not in it.
       assert Map.drop(without_build["build"], ["deps", "compile_env"]) ==

@@ -148,6 +148,7 @@ defmodule Portal.PinnedFixtures do
       |> put_build_root(build_root)
       |> put_judge(judge)
       |> put_plugins(Keyword.fetch(opts, :plugins))
+      |> Map.merge(Keyword.get(opts, :firmware, %{}))
 
     %{
       "scope" => Keyword.get(opts, :scope, "targets"),

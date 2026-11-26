@@ -1,6 +1,16 @@
 defmodule Portal.Catalog.PrecompiledManifestV2Test do
   use Portal.DataCase, async: false
 
+  # Logger's compile-time keys, which an untraced firmware build is
+  # published with, unset (stream S11, `Portal.Catalog.put_logger_keys/3`).
+  @logger_keys for key <-
+                     ~w(compile_time_purge_matching compile_time_purge_level always_evaluate_messages),
+                   do: %{
+                     "app" => "logger",
+                     "path" => [key],
+                     "value" => Base.url_encode64(:erlang.term_to_binary(:error), padding: false)
+                   }
+
   alias Portal.{ArtifactStore, Catalog}
 
   import Portal.PrecompiledFixtures
@@ -54,7 +64,7 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
              "mix_target" => "rpi4",
              "system_version" => "1.24.0",
              "deps" => @deps,
-             "compile_env" => [],
+             "compile_env" => @logger_keys,
              "package_checksum" => "outer",
              "run_id" => "fixture-jason-1.4.1",
              "image_digest" => "sha256:precompiled",
@@ -342,7 +352,7 @@ defmodule Portal.Catalog.PrecompiledManifestV2Test do
                "otp" => "26",
                "system_version" => "1.24.0",
                "deps" => @deps,
-               "compile_env" => [],
+               "compile_env" => @logger_keys,
                "package_checksum" => "outer",
                "dep_env" => "prod",
                "mix_target" => "rpi4"
