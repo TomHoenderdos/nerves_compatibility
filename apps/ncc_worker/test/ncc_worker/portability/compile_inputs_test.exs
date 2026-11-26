@@ -147,6 +147,19 @@ defmodule NccWorker.Portability.CompileInputsTest do
       assert Compatibility.CompileInputs.validate(items) == {:ok, items}
     end
 
+    # S10 review U7: no probe items on a firmware target's build (a device
+    # misses every one), as before S10; a host-native build keeps them.
+    test "a firmware target's build gets no probe items; a host-native one does" do
+      decided = [
+        declared("Elixir.Jason.Encoder", ["jason"], ["jason"]),
+        probed("app", "phoenix_html")
+      ]
+
+      assert CompileInputs.build(decided, [], nil, nil, target: "rpi4") == []
+      assert [_, _] = CompileInputs.build(decided, [], nil, nil, target: "host")
+      assert [_, _] = CompileInputs.build(decided, [])
+    end
+
     test "a name the shared shape cannot carry, or more than 64, record config_unrecorded" do
       assert CompileInputs.build([probed("module", "Elixir.Bad Name")], []) ==
                [%{"kind" => "config_unrecorded"}]

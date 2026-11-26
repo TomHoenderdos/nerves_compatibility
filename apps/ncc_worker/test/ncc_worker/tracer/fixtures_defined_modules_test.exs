@@ -66,10 +66,48 @@ defmodule NccWorker.Tracer.FixturesDefinedModulesTest do
 
     refute "Elixir.FxDef.Made" in names
 
-    # The rest: the package's `mix.exs` and the helper it defines. Not the
-    # wrapper project's own `mix.exs`, nor Elixir's `elixir_compiler_<n>`.
+    # The rest: the package's `mix.exs` and the helper it defines, and the
+    # wrapper project's own `mix.exs` (re-review R3: every in-memory module,
+    # whatever file it came from); not Elixir's `elixir_compiler_<n>`.
     verdict = TracerFixtures.judge(proj, "fx_def", traced)
     assert %{status: :pass} = verdict, inspect(Map.take(verdict, [:reason, :observations]))
-    assert verdict.defined_modules == ~w(Elixir.FxDef.MixProject Elixir.FxDefMixHelper)
+
+    assert verdict.defined_modules ==
+             ~w(Elixir.FixtureWrapper.MixProject Elixir.FxDef.MixProject Elixir.FxDefMixHelper)
+  end
+
+  # Review U10: a beam the compile loads from an `ebin` that is no project
+  # build ebin (a vendored prebuilt) is listed too.
+  test "a beam loaded from another ebin dir is in the list", %{tmp_dir: dir} do
+    {:ok, :fx_pre, beam} =
+      :compile.forms(
+        [
+          {:attribute, 1, :module, :fx_pre},
+          {:attribute, 1, :export, [x: 0]},
+          {:function, 1, :x, 0, [{:clause, 1, [], [], [{:integer, 1, 1}]}]}
+        ],
+        [:binary]
+      )
+
+    lib = """
+    defmodule FxDef do
+      prebuilt = Path.join([__DIR__, "..", "priv", "prebuilt", "ebin", "fx_pre"])
+      {:module, :fx_pre} = :code.load_abs(String.to_charlist(prebuilt))
+      def x, do: :fx_pre.x()
+    end
+    """
+
+    proj =
+      TracerFixtures.project(dir, ["fx_def"], %{
+        "fx_def" => %{
+          mix_exs: @mix_exs,
+          files: %{"lib/fx_def.ex" => lib, "priv/prebuilt/ebin/fx_pre.beam" => beam}
+        }
+      })
+
+    traced = TracerFixtures.trace(proj, ["fx_def"], mode: :host)
+    assert {:ok, 0} = traced.result, traced.log
+    names = for %{"module" => m} <- traced.report.ending["in_memory"], do: m
+    assert "fx_pre" in names
   end
 end

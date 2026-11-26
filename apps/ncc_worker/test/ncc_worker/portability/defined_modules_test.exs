@@ -1,6 +1,6 @@
 defmodule NccWorker.Portability.DefinedModulesTest do
   # S10 fix round 1: a package's in-memory modules, from the tracer's end
-  # line, attributed by the dir that holds each one's source.
+  # line. Re-review R3: every one, whatever file it came from.
   use ExUnit.Case, async: true
 
   alias NccWorker.Portability.{Context, DefinedModules}
@@ -49,7 +49,10 @@ defmodule NccWorker.Portability.DefinedModulesTest do
   defp ending(items, over \\ false), do: %{"in_memory" => items, "in_memory_over" => over}
   defp item(module, source), do: %{"module" => module, "source" => source}
 
-  test "the package's own, sorted; another app's and the project's are left out", %{tmp_dir: dir} do
+  # A module only this package's compile loaded from another closure app's
+  # file is in no other list, so it is in this one; the project's and a
+  # source outside every app's dir are too (listing more only misses more).
+  test "every in-memory module, whatever file it came from, sorted", %{tmp_dir: dir} do
     c = ctx(dir)
 
     items = [
@@ -57,30 +60,29 @@ defmodule NccWorker.Portability.DefinedModulesTest do
       item("Elixir.Pkg.Helper", file(c, "deps/pkg/mix/helpers.exs")),
       item("pkg_loaded", file(c, "_build/host/lib/pkg/priv/pkg_loaded.beam")),
       item("Elixir.Dep.MixProject", file(c, "deps/dep/mix.exs")),
+      item("Elixir.FromDepFile", file(c, "deps/dep/lib/shared.exs")),
       item("Elixir.Wrapper.MixProject", Path.join(c.project_dir, "mix.exs")),
+      item("Elixir.Made", "/elsewhere/x.ex"),
+      item("Elixir.NoSource", nil),
       item("elixir_compiler_0", "/usr/local/lib/elixir/bin/mix"),
       item("elixir_compiler_12", file(c, "deps/pkg/mix.exs")),
-      # Not Elixir's transient form: the package's like any other.
+      # Not Elixir's transient form: listed like any other.
       item("elixir_compiler_x", file(c, "deps/pkg/a.exs"))
     ]
 
     assert DefinedModules.of(c, ending(items)) ==
-             ~w(Elixir.Pkg.Helper Elixir.Pkg.MixProject elixir_compiler_x pkg_loaded)
+             ~w(Elixir.Dep.MixProject Elixir.FromDepFile Elixir.Made Elixir.NoSource
+                Elixir.Pkg.Helper Elixir.Pkg.MixProject Elixir.Wrapper.MixProject
+                elixir_compiler_x pkg_loaded)
 
     assert DefinedModules.of(c, ending([])) == []
   end
 
-  test "a source no closure app or the project holds leaves no list", %{tmp_dir: dir} do
+  test "a name no module has, or an item with no name, leaves no list", %{tmp_dir: dir} do
     c = ctx(dir)
     own = item("Elixir.Pkg.MixProject", file(c, "deps/pkg/mix.exs"))
 
-    for bad <- [
-          item("Elixir.Made", "/elsewhere/x.ex"),
-          item("Elixir.Made", Path.join(c.project_dir, "nofile_missing")),
-          item("Elixir.Made", nil),
-          item("Elixir.Bad Name", file(c, "deps/pkg/b.exs")),
-          %{"module" => "Elixir.Made"}
-        ] do
+    for bad <- [item("Elixir.Bad Name", file(c, "deps/pkg/b.exs")), %{"source" => "/x"}] do
       assert DefinedModules.of(c, ending([own, bad])) == nil, inspect(bad)
     end
   end

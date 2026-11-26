@@ -1804,11 +1804,48 @@ in_memory() ->
         false -> {Found, false}
     end.
 
+%% S10 review U10: a beam counts as built only from a build ebin of the
+%% project (`_build/<env>/lib/<app>/ebin`, the closure's and the project's
+%% own), its consolidated protocols, the OTP install, the Elixir install or
+%% a Mix archive. Any other beam loaded at compile time (a vendored prebuilt
+%% under a dep's dir, an `ebin` anywhere else) is listed, as a module with no
+%% object file is.
 elsewhere([]) -> true;
 elsewhere(cover_compiled) -> true;
 elsewhere(Path) when is_list(Path) ->
-    not lists:member(filename:basename(filename:dirname(Path)), ["ebin", "consolidated"]);
+    Dir = filename:dirname(Path),
+    not (filename:basename(Dir) =:= "consolidated" orelse build_ebin(Dir) orelse
+         lists:any(fun(Root) -> under(Path, Root) end, installed_roots()));
 elsewhere(_Other) -> false.
+
+build_ebin(Dir) ->
+    AppDir = filename:dirname(Dir),
+    Lib = filename:dirname(AppDir),
+    filename:basename(Dir) =:= "ebin" andalso filename:basename(Lib) =:= "lib" andalso
+        filename:basename(filename:dirname(filename:dirname(Lib))) =:= "_build".
+
+installed_roots() ->
+    Otp = [code:root_dir()],
+    Elixir = case code:lib_dir(elixir) of
+                 Dir when is_list(Dir) -> [filename:dirname(Dir)];
+                 _ -> []
+             end,
+    Archives = [D || D <- [os:getenv("MIX_ARCHIVES"), archives_of(os:getenv("MIX_HOME")),
+                           archives_of(home_mix())],
+                     is_list(D)],
+    Otp ++ Elixir ++ Archives.
+
+archives_of(false) -> false;
+archives_of(Dir) -> filename:join(Dir, "archives").
+
+home_mix() ->
+    case os:getenv("HOME") of
+        false -> false;
+        Home -> filename:join(Home, ".mix")
+    end.
+
+under(Path, Root) ->
+    lists:prefix(string:trim(Root, trailing, "/") ++ "/", Path).
 
 in_memory_item(M, Which) ->
     Source = try proplists:get_value(source, M:module_info(compile)) catch _:_ -> undefined end,

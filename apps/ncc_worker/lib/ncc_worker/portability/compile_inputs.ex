@@ -144,8 +144,16 @@ defmodule NccWorker.Portability.CompileInputs do
           endian_inputs(decided, endian) ++
           os_type_inputs(decided, os_type) ++
           target_inputs(decided, Keyword.get(opts, :target)) ++ config_inputs
-      ) ++ probe_inputs(decided)
+      ) ++ target_probe_inputs(decided, Keyword.get(opts, :target))
   end
+
+  # S10 review U7: a firmware target's build gets no probe items (a device
+  # misses every one); its declared-absent records stay, as before S10. A
+  # host build and a host-native one (`target: "host"`) get them.
+  defp target_probe_inputs(decided, target) when target in [nil, "host"],
+    do: probe_inputs(decided)
+
+  defp target_probe_inputs(_decided, _target), do: []
 
   # S10: every probe the builder answered "absent" (`probe_inputs`, from
   # `NccWorker.Portability.Probes`), and every declared-absent one, its
