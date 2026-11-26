@@ -24,7 +24,22 @@ defmodule PortalWeb.ApiSchemas.ReleaseIndexDoc do
         description:
           "A shard: the first byte, in hex, of the SHA-256 of each package name it holds."
       },
-      read: %{@versions | description: "The releases the index has read, by package."},
+      read: %Schema{
+        type: :object,
+        description:
+          "The releases the index has read, by package: each `[version, outer checksum]`, " <>
+            "the registry's outer checksum of the tarball it was read from, sorted. A lock " <>
+            "with another outer checksum for the release (one replaced since) does not match.",
+        additionalProperties: %Schema{
+          type: :array,
+          items: %Schema{
+            type: :array,
+            items: %Schema{type: :string},
+            minItems: 2,
+            maxItems: 2
+          }
+        }
+      },
       module: %Schema{type: :string, description: "A definer set: the probed module."},
       definers: %{@versions | description: "The read releases that define the module."}
     },

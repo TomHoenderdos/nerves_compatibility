@@ -177,7 +177,8 @@ Status codes:
 
 A release index document whose SHA256 a signed batch named under
 `release_index` (S10 round 5, client 0.10.0; see `batch.json`): a shard of
-the read releases (`{"format": 1, "shard", "read": {package: [version]}}`)
+the read releases (`{"format": 1, "shard", "read": {package: [[version,
+outer_checksum]]}}`)
 or a probed module's definer set (`{"format": 1, "module", "definers":
 {package: [version]}}`). Content-addressed and cached like the systems
 table (`immutable`, the quoted SHA256 as `etag`, `304` on `If-None-Match`),
@@ -298,13 +299,18 @@ with the modules our passing builds of it wrote. `{"format": 1, "shards":
 {"00": sha, ..., "ff": sha}, "modules": {module: sha}}`: `shards` holds the
 read releases, in 256 documents by the first byte of the SHA-256 of the
 package name, each `{"format": 1, "shard": "ab", "read": {package:
-[version]}}`; `modules` holds, for each module a served build's declared
+[[version, outer_checksum]]}}`, the registry's outer checksum of the tarball
+each release was read from; a lock whose outer checksum for the release
+differs (a release replaced with `mix hex.publish --replace` since) is
+unread to a client, and the index reads a release read in the last three
+hours again when the registry's checksum changes; `modules` holds, for each module a served build's declared
 `probe` item names, `{"format": 1, "module", "definers": {package: [version
 that defines it]}}`. Each is served at
 `/api/precompiled/release-index/by-sha/<sha256>.json` (content-addressed,
 immutable, and at each content origin's `release-index/by-sha/` path). Both
 come from one read of the index, the read set first: a release read in
-between is unread to a client, never a definer a set leaves out. Rendered
+between is unread to a client, never a definer a set leaves out, and a
+release read again in between (replaced) is left out of the read set. Rendered
 for every batch; absent before any release was read. An added field.
 
 An `etag` header of the SHA256 of the envelope bytes (quoted, strong) is set,
@@ -1155,9 +1161,10 @@ build fails as the reason it was not used:
       its `ebin` and its `build.defined_modules`. An item with `declared` needs no such list: it
       holds when no dependency is in `definers`, the code path and the VM lack the module, no inert
       dependency's `ebin` holds it, every dependency is a hex.pm one (an inert one aside), and each
-      dependency outside the build's `deps` (not the package), at its locked release, is one the
-      batch's `release_index` has read and does not list in the module's definer set; a release it
-      has not read, or a batch without the index, is `probe_unknown`. Its residual is a module
+      dependency outside the build's `deps` (not the package, an inert dependency or an umbrella
+      child), at its locked release and outer checksum, is one the batch's `release_index` has
+      read and does not list in the module's definer set; a release it has not read (or read from
+      another tarball), or a batch without the index, is `probe_unknown`. Its residual is a module
       another dependency defines by a macro or at compile time, outside any tarball parse and any
       build list. In a Mix
       project, a path or git dependency with

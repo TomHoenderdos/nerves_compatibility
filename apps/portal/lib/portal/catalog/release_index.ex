@@ -11,7 +11,12 @@ defmodule Portal.Catalog.ReleaseIndex do
   signed batch names under `release_index` (`render_docs/0`):
 
     * the read releases, in 256 shards by the first byte of the SHA-256 of
-      the package name (`shard/1`), each `%{package => [version]}`;
+      the package name (`shard/1`), each `%{package => [[version, outer
+      checksum]]}`: a release is known by the tarball it was read from, so
+      to a client whose lock has another outer checksum for it (a release
+      replaced with `mix hex.publish --replace` since) it is unread (review
+      F2). A release read within the last three hours is read again when
+      the registry's checksum for it changes;
     * one definer set per probed module (`catalog_release_probed_modules`,
       filled at ingest), `%{package => [version that defines it]}`.
 
@@ -120,32 +125,52 @@ defmodule Portal.Catalog.ReleaseIndex do
     end)
   end
 
-  # `[{package, [version]}]` of the releases to read, packages by name.
+  # `[{package, [version to read], %{version => outer checksum}}]`, packages
+  # by name: the releases to read, and the ones read within the replace
+  # window (review F2), with the checksum each was read at, to read again
+  # when the registry's checksum differs.
   defp todo(listed, retry_failed, limit) do
     tried = tried()
 
     listed
     |> Enum.flat_map(fn {name, versions} ->
-      case Enum.reject(versions, &skip?(Map.get(tried, {name, &1}), retry_failed)) do
-        [] -> []
-        open -> [{name, Enum.sort(open)}]
-      end
+      open = Enum.reject(versions, &skip?(Map.get(tried, {name, &1}), retry_failed))
+
+      recent =
+        for v <- versions,
+            {"read", outer, true} when is_binary(outer) <- [Map.get(tried, {name, v})],
+            into: %{},
+            do: {v, outer}
+
+      if open == [] and recent == %{}, do: [], else: [{name, Enum.sort(open), recent}]
     end)
     |> Enum.sort()
     |> then(&if(is_integer(limit), do: Enum.take(&1, limit), else: &1))
   end
 
-  defp skip?("read", _retry), do: true
-  defp skip?("failed", retry), do: not retry
+  # A release read before the index stored checksums is read again.
+  defp skip?({"read", outer, _recent}, _retry), do: is_binary(outer)
+  defp skip?({"failed", _outer, _recent}, retry), do: not retry
   defp skip?(_none, _retry), do: false
+
+  # Hex lets a public release be replaced (`mix hex.publish --replace`)
+  # within an hour of its publication, and the registry's CDN copy lags up
+  # to an hour: a release read within the last three hours is checked again.
+  @replace_window_hours 3
 
   defp tried do
     %{rows: rows} =
-      Repo.query!("SELECT package, version, state FROM catalog_release_index", [],
+      Repo.query!(
+        """
+        SELECT package, version, state, outer_checksum,
+               tried_at > now() - make_interval(hours => $1)
+        FROM catalog_release_index
+        """,
+        [@replace_window_hours],
         timeout: 600_000
       )
 
-    Map.new(rows, fn [p, v, s] -> {{p, v}, s} end)
+    Map.new(rows, fn [p, v, s, outer, recent] -> {{p, v}, {s, outer, recent}} end)
   end
 
   defp run(todo, opts) do
@@ -165,7 +190,8 @@ defmodule Portal.Catalog.ReleaseIndex do
       opts |> Keyword.get(:concurrency, @max_concurrency) |> min(@max_concurrency) |> max(1)
 
     todo
-    |> Task.async_stream(fn {name, versions} -> read_package(name, versions, reader) end,
+    |> Task.async_stream(
+      fn {name, versions, recent} -> read_package(name, versions, recent, reader) end,
       max_concurrency: concurrency,
       timeout: @package_timeout_ms,
       on_timeout: :kill_task,
@@ -180,18 +206,26 @@ defmodule Portal.Catalog.ReleaseIndex do
     end)
   end
 
-  # Each release of a package, one after another: `{read, failed}`.
-  defp read_package(name, versions, reader) do
+  # Each release of a package, one after another: `{read, failed}`. A
+  # release read within the replace window whose registry checksum is no
+  # longer the one it was read at (review F2) is read again.
+  defp read_package(name, versions, recent, reader) do
     checksums =
       case reader.releases.(name) do
         {:ok, releases} -> Map.new(releases, &{&1.version, &1.outer_checksum})
         {:error, why} -> {:error, why}
       end
 
-    Enum.reduce(versions, {0, 0}, fn version, {read, failed} ->
+    replaced =
+      case checksums do
+        %{} -> for {v, outer} <- recent, Map.get(checksums, v) not in [nil, outer], do: v
+        _ -> []
+      end
+
+    Enum.reduce(Enum.sort(versions ++ replaced), {0, 0}, fn version, {read, failed} ->
       case read_release(name, version, checksums, reader) do
         {:ok, %{modules: modules, app: app}} ->
-          store_read(name, version, app, modules)
+          store_read(name, version, app, modules, Map.get(checksums, version))
           {read + 1, failed}
 
         why ->
@@ -221,7 +255,7 @@ defmodule Portal.Catalog.ReleaseIndex do
     e -> {:error, {:raised, Exception.message(e)}}
   end
 
-  defp store_read(name, version, app, modules) do
+  defp store_read(name, version, app, modules, outer) do
     modules = Enum.uniq(modules ++ build_modules(name, version))
 
     {:ok, :ok} =
@@ -235,13 +269,14 @@ defmodule Portal.Catalog.ReleaseIndex do
 
         Repo.query!(
           """
-          INSERT INTO catalog_release_index (package, version, state, reason, app, modules, tried_at)
-          VALUES ($1, $2, 'read', NULL, $3, $4, now())
+          INSERT INTO catalog_release_index
+            (package, version, state, reason, app, modules, outer_checksum, tried_at)
+          VALUES ($1, $2, 'read', NULL, $3, $4, $5, now())
           ON CONFLICT (package, version) DO UPDATE
           SET state = 'read', reason = NULL, app = EXCLUDED.app, modules = EXCLUDED.modules,
-              tried_at = now()
+              outer_checksum = EXCLUDED.outer_checksum, tried_at = now()
           """,
-          [name, version, app, length(modules)]
+          [name, version, app, length(modules), outer]
         )
 
         :ok
@@ -274,7 +309,10 @@ defmodule Portal.Catalog.ReleaseIndex do
       VALUES ($1, $2, 'failed', $3, 0, now())
       ON CONFLICT (package, version) DO UPDATE
       SET state = CASE WHEN catalog_release_index.state = 'read' THEN 'read' ELSE 'failed' END,
-          reason = EXCLUDED.reason, tried_at = now()
+          reason = EXCLUDED.reason,
+          tried_at =
+            CASE WHEN catalog_release_index.state = 'read' THEN catalog_release_index.tried_at
+            ELSE now() END
       """,
       [name, version, inspect(why, limit: 5) |> String.slice(0, 500)]
     )
@@ -354,10 +392,11 @@ defmodule Portal.Catalog.ReleaseIndex do
   @spec queue_incremental([map()]) :: non_neg_integer()
   def queue_incremental(entries) when is_list(entries) do
     if started?() do
-      new =
-        entries |> listed() |> todo(false, nil) |> Enum.map(&length(elem(&1, 1))) |> Enum.sum()
+      todo = entries |> listed() |> todo(false, nil)
+      new = todo |> Enum.map(&length(elem(&1, 1))) |> Enum.sum()
 
-      if new > 0,
+      # A release read within the replace window is checked again hourly.
+      if new > 0 or Enum.any?(todo, &(elem(&1, 2) != %{})),
         do: Oban.insert(Portal.Workers.ReleaseIndexRefresh.new(%{"incremental" => true}))
 
       new
@@ -447,28 +486,28 @@ defmodule Portal.Catalog.ReleaseIndex do
   """
   @spec render_docs() :: {map(), [{String.t(), binary()}]} | nil
   def render_docs do
-    %{rows: read} =
-      Repo.query!(
-        "SELECT package, version FROM catalog_release_index WHERE state = 'read'",
-        [],
-        timeout: 600_000
-      )
+    read = read_set()
 
-    if read == [] do
+    if read == %{} do
       nil
     else
+      sets = definer_sets(probed())
+      # A release read again while the sets were read (replaced, review F2)
+      # is unread in this batch: its read-set entry and its definers might
+      # come from different tarballs.
+      again = read_set()
+      read = for {release, outer} <- read, Map.get(again, release) == outer, do: {release, outer}
+
       shard_docs =
         read
-        |> Enum.group_by(fn [p, _v] -> shard(p) end, fn [p, v] -> {p, v} end)
+        |> Enum.group_by(fn {{p, _v}, _o} -> shard(p) end, fn {{p, v}, o} -> {p, [v, o]} end)
         |> then(fn by_shard -> Map.new(@shards, &{&1, Map.get(by_shard, &1, [])}) end)
         |> Map.new(fn {shard, pairs} ->
           {shard, doc(%{"format" => 1, "shard" => shard, "read" => by_package(pairs)})}
         end)
 
       module_docs =
-        probed()
-        |> definer_sets()
-        |> Map.new(fn {module, pairs} ->
+        Map.new(sets, fn {module, pairs} ->
           {module, doc(%{"format" => 1, "module" => module, "definers" => by_package(pairs)})}
         end)
 
@@ -480,6 +519,22 @@ defmodule Portal.Catalog.ReleaseIndex do
 
       {object, Map.values(shard_docs) ++ Map.values(module_docs)}
     end
+  end
+
+  # `%{{package, version} => outer checksum}` of the read releases; one read
+  # before the index stored checksums is left out until it is read again.
+  defp read_set do
+    %{rows: rows} =
+      Repo.query!(
+        """
+        SELECT package, version, outer_checksum FROM catalog_release_index
+        WHERE state = 'read' AND outer_checksum IS NOT NULL
+        """,
+        [],
+        timeout: 600_000
+      )
+
+    Map.new(rows, fn [p, v, o] -> {{p, v}, o} end)
   end
 
   defp probed do
