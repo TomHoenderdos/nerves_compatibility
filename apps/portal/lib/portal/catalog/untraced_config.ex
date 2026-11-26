@@ -162,7 +162,15 @@ defmodule Portal.Catalog.UntracedConfig do
   """
   @spec own_keys(term(), String.t()) :: %{String.t() => own()}
   def own_keys(package_id, package_name) do
-    Repo.query!(@own_keys_sql, [Ecto.UUID.dump!(package_id), package_name]).rows
+    group(Repo.query!(@own_keys_sql, [Ecto.UUID.dump!(package_id), package_name]).rows)
+  end
+
+  @doc false
+  # `own_keys/2`'s rows (`[version, app, key, elixir, default?, value]`) by
+  # version.
+  @spec group([list()]) :: %{String.t() => own()}
+  def group(rows) do
+    rows
     |> Enum.reduce(%{}, fn [version, app, key, elixir, default?, value], acc ->
       update_in(acc, [Access.key(version, %{}), Access.key({app, key}, %{})], fn by_minor ->
         Map.update(by_minor, minor(elixir), entry(default?, value), &merge(&1, default?, value))
