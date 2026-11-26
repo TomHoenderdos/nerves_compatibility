@@ -615,6 +615,12 @@ What it lists:
   package itself.
 - A build whose `elixir`, `otp`, `deps`, `package_checksum` or `compile_env`
   is `null` is left out, since no client can match it (it stays in format 1).
+- `build.defined_modules` (optional, S10, builds since 2026-11-26): the modules the build's compile
+  defined that its `ebin` does not hold (in memory: what the package's `mix.exs` defines or loads, a
+  module created at compile time outside a compiled file), from the builder's trace, sorted. With
+  the entry's `ebin` beams it is the package's exact module list, which a client 0.10.0 or later
+  reads for a dependency outside a probe build's closure. Absent when it cannot be told (a module
+  the trace cannot attribute) or before it was recorded.
 - `build.compile_inputs` (optional) lists what the build's compile read that a client checks on its
   own side (builds since 2026-11; absent before):
   - `{"kind": "env", "name", "value", "set_by": "host"}`: an environment variable, `value` being
@@ -1105,22 +1111,20 @@ build fails as the reason it was not used:
     - a `probe` item (clients 0.10.0 and later) holds when nothing in the project can supply what
       the build's closure asked for, as the builder could not. For a module: no dependency the
       project's Mix loads in its env and target (every `mix.lock` entry when the dependencies did
-      not load), by app or Hex package name, is in `definers`; no
-      such dependency outside the build's `deps` and the package itself defines the module in its
-      sources or its `mix.exs` (every literal `defmodule`, `defprotocol` and `defimpl` name,
-      through nesting and the file's aliases, a module another macro may define from a literal
-      alias such as `defenum Name` or an inline `embeds_one :x, Name do`, each implementation an
-      `@derive` defines, every Erlang `-module`, and each leex and yecc file's base name; a file that
-      names the module's last segment and defines a module under a computed name, or one inside a
-      `quote`, a symlink, a source that does not parse or a dependency without a readable dir is
-      `probe_unknown`); and the client's code path holds no `<name>.beam` and its VM has no such
-      module loaded. Else `probe_definer`,
-      with the module and the dependency (or `code_path`) as its arguments. For an application: no
-      dependency is that application, and no `<name>.app` is on the code path or under OTP's or
-      Elixir's lib dir; else `probe_definer`. For an OTP application: it is installed nowhere on
-      the client's side, and no dependency has its name; else `probe_otp_app`. Under Mix.install
-      the project is the install's. A client that does not know the kind treats the item as
-      malformed: a miss.
+      not load), by app or Hex package name, is in `definers`; the module is in the exact module
+      list of no such dependency outside the build's `deps` (and not the package itself); and the
+      client's code path holds no `<name>.beam` and its VM has no such module loaded. A
+      dependency's exact module list is that of its own served build that matches the project
+      by every rule here (the build's probe items left unread: such a build gives no list): the
+      beams of its `ebin` and its `build.defined_modules`. A dependency Mix loads that is no Hex
+      dependency (path or git, or a closure dependency switched to one with `override: true`), a
+      release with no matching build, or a build without `defined_modules` is `probe_unknown`.
+      Else `probe_definer`, with the module and the dependency (or `code_path`) as its
+      arguments. For an application: no dependency is that application, and no `<name>.app` is
+      on the code path, under OTP's or Elixir's lib dir, or loaded; else `probe_definer`. For an
+      OTP application: it is installed nowhere on the client's side, and no dependency has its
+      name; else `probe_otp_app`. Under Mix.install the project is the install's. A client that
+      does not know the kind treats the item as malformed: a miss.
 
     On a device, a `config_order` item holds only when `app` and `reader` are both present or both
     being installed, `default` is `:error`, and the device's value for the key equals `seen`.
