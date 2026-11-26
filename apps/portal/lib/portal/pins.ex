@@ -106,8 +106,16 @@ defmodule Portal.Pins do
   It only lists unless given `dry_run: false`. Options: `target:` (the
   toolchain path's, `"host"`), `toolchain:` (the toolchain path's, the first
   configured toolchain by default), `system:` (a `nerves_system_*` the lock
-  holds), `cap:`, `deterministic:` (`false` by default), `hex:` (a module
-  with `releases/2`, for tests).
+  holds), `system_release:` (the firmware path at another release of that
+  system: the lock's sets as they are, the release and its own `nerves`
+  requirement from the signed registry, `{:error, {:unknown_system_release,
+  name, release}}` for one it does not list), `cap:`, `deterministic:`
+  (`false` by default), `hex:` (a module with `releases/2`, for tests).
+
+  A call with `dry_run: false` on a lock with a Nerves system stores the
+  lock (`Portal.Pins.Locks`) with its options and its own release of the
+  system, and `Portal.Workers.PinRefeed` feeds it again with
+  `system_release:` when the system releases (stream S11).
   """
 
   require Ash.Query
